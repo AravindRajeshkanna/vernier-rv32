@@ -10,8 +10,19 @@
 // instructions through the main port before paging is enabled. Real
 // block RAMs commonly support this (true/simple multi-port); this is the
 // same "just add another read" trick real FPGA memories use.
+//
+// INIT_FILE, if non-empty, preloads the array from a $readmemh file after
+// the zero-fill below - used to preload a compiled program's .rodata/
+// .data segment (see software/, whose Makefile rule produces this via
+// `objcopy -O binary` + software/bin2hex.py --word-size=1, a plain
+// sequential byte-per-line file starting at address 0 - not objcopy's
+// own `-O verilog` output, which addresses by load address (LMA) rather
+// than run address (VMA), the wrong one for a preloaded RAM image with
+// no runtime ROM-to-RAM copy step). Left empty (the default), this is
+// unchanged from before: an all-zero array, nothing preloaded.
 module dmem #(
-    parameter MEM_BYTES = 4096
+    parameter MEM_BYTES = 4096,
+    parameter INIT_FILE = ""
 )(
     input  wire        clk,
     input  wire [31:0] addr,
@@ -32,6 +43,8 @@ module dmem #(
     initial begin
         for (i = 0; i < MEM_BYTES; i = i + 1)
             mem[i] = 8'b0;
+        if (INIT_FILE != "")
+            $readmemh(INIT_FILE, mem);
     end
 
     wire [31:0] a = addr;

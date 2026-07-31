@@ -1,8 +1,14 @@
 # Build artifacts
 obj_dir/
 sim/sim.out
+sim/sim_software.out
 sim/wave.vcd
 sim/wave_verilator.vcd
+sim/firmware_imem.hex
+sim/firmware_dmem.hex
+software/firmware.elf
+software/firmware_text.bin
+software/firmware_data.bin
 
 # Local tool config (not shared)
 .claude/settings.local.json

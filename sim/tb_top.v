@@ -76,7 +76,8 @@ module tb_top;
     ) DUT (
         .clk(clk),
         .rst(rst),
-        .irq_sources(irq_sources)
+        .irq_sources(irq_sources),
+        .uart_rx(1'b1) // idle-high (real UART idle level); this test doesn't exercise the UART
     );
 
     always #5 clk = ~clk; // 100 MHz virtual clock

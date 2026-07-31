@@ -1,7 +1,8 @@
 // Generic FPGA top level. This is intentionally board-agnostic: you must
 // add a board-specific constraints file (.xdc for Vivado/Xilinx, .pcf for
 // icestorm/iCE40, .lpf for ECP5/trellis, .qsf for Quartus/Intel, etc.)
-// that maps clk / rst_n / led to real pins on your board.
+// that maps clk / rst_n / led / uart_tx / uart_rx to real pins on your
+// board.
 //
 // What it proves: the CPU is actually executing instructions on real
 // silicon - the LEDs will show the program counter's upper bits changing
@@ -9,13 +10,20 @@
 module top_fpga (
     input  wire       clk,     // board oscillator, wire to your board's clock pin
     input  wire       rst_n,   // active-low reset button (invert if your board is active-high)
-    output reg  [3:0] led
+    output reg  [3:0] led,
+    output wire       uart_tx, // to your USB-serial adapter's RX pin
+    input  wire       uart_rx  // from your USB-serial adapter's TX pin
 );
     wire rst = ~rst_n;
 
     localparam CLINT_BASE_HI = 16'h0200;
     localparam PLIC_BASE_HI  = 16'h0300;
+    localparam UART_BASE_HI  = 16'h0400;
     localparam NUM_IRQ_SOURCES = 8;
+    // 115200 baud at an assumed 50MHz board clock (50_000_000/115200 ~=
+    // 434) - adjust to your board's actual clock frequency and desired
+    // baud rate.
+    localparam UART_CLKS_PER_BIT = 434;
 
     wire [31:0] imem_addr, imem_rdata;
     wire [31:0] dmem_addr, dmem_wdata, dmem_rdata;
@@ -33,8 +41,11 @@ module top_fpga (
 
     wire is_clint = (dmem_addr[31:16] == CLINT_BASE_HI);
     wire is_plic  = (dmem_addr[31:16] == PLIC_BASE_HI);
-    wire [31:0] dmem_rdata_raw, clint_rdata, plic_rdata;
-    assign dmem_rdata = is_clint ? clint_rdata : (is_plic ? plic_rdata : dmem_rdata_raw);
+    wire is_uart  = (dmem_addr[31:16] == UART_BASE_HI);
+    wire [31:0] dmem_rdata_raw, clint_rdata, plic_rdata, uart_rdata;
+    assign dmem_rdata = is_clint ? clint_rdata :
+                         is_plic  ? plic_rdata  :
+                         is_uart  ? uart_rdata  : dmem_rdata_raw;
 
     cpu_core CPU (
         .clk(clk), .rst(rst),
@@ -53,7 +64,7 @@ module top_fpga (
 
     dmem #(.MEM_BYTES(32768)) DMEM (
         .clk(clk), .addr(dmem_addr), .wdata(dmem_wdata),
-        .we(dmem_we && !is_clint && !is_plic), .size(dmem_size), .rdata(dmem_rdata_raw),
+        .we(dmem_we && !is_clint && !is_plic && !is_uart), .size(dmem_size), .rdata(dmem_rdata_raw),
         .addr2(ptw_addr), .rdata2(ptw_rdata),
         .addr3(iptw_addr), .rdata3(iptw_rdata)
     );
@@ -72,6 +83,14 @@ module top_fpga (
         .rdata(plic_rdata),
         .irq_sources(irq_sources),
         .eip(meip)
+    );
+
+    uart #(.CLKS_PER_BIT(UART_CLKS_PER_BIT)) UART (
+        .clk(clk), .rst(rst),
+        .addr(dmem_addr), .wdata(dmem_wdata),
+        .we(dmem_we && is_uart), .re(dmem_re && is_uart),
+        .rdata(uart_rdata),
+        .tx(uart_tx), .rx(uart_rx)
     );
 
     always @(posedge clk)

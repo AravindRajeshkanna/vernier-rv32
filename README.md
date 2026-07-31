@@ -3,8 +3,10 @@
 A small, working RISC-V (RV32IMA + Zicsr) 5-stage pipelined CPU core, with
 full M/S/U privilege modes and trap delegation, timer/software/external
 interrupts (a real prioritized/claimable PLIC), a Sv32 MMU covering both
-data and instruction fetch, a BTB branch predictor, a self-checking
-simulation testbench for macOS, and a minimal FPGA wrapper.
+data and instruction fetch, a BTB branch predictor, a UART, a
+self-checking simulation testbench for macOS, a real
+`riscv64-unknown-elf-gcc` build flow so it runs actual compiled C (not
+just hand-assembled hex), and a minimal FPGA wrapper.
 
 **Read the "Can this run Linux?" section before you get too attached to that
 plan** — the honest answer is not with this core, and I explain why and what
@@ -23,12 +25,21 @@ rtl/
   btb.v          branch target buffer: 64-entry, 2-bit saturating counters
   clint.v        timer/software-interrupt peripheral (mtime/mtimecmp/msip)
   plic.v         prioritized/claimable external interrupt controller
+  uart.v         TX+RX serial console, polled (txdata/rxdata/status)
   cpu_core.v     the CPU itself: 5-stage pipeline (IF/ID/EX/MEM/WB)
-  top.v          simulation top level (cpu + imem + dmem + clint + plic)
+  top.v          simulation top level (cpu + imem + dmem + clint + plic + uart)
 sim/
-  tb_top.v            self-checking testbench
+  tb_top.v            self-checking testbench (hand-assembled program.hex)
+  tb_software.v       runs the real compiled firmware, decodes UART output to the console
   verilator_main.cpp  optional Verilator harness
   program.hex         hand-assembled RV32IMA test program
+software/
+  crt0.S         startup code (stack/gp setup, zero .bss, call main)
+  link.ld        two-region Harvard linker script (imem "ROM" + dmem "RAM")
+  uart.c/.h      UART driver (uart_putc/uart_getc)
+  syscalls.c     newlib syscall stubs (_write/_read route through the UART)
+  main.c         demo program: printf a greeting and a small loop
+  bin2hex.py     packs objcopy's raw binary output into $readmemh hex
 fpga/
   top_fpga.v     board-agnostic FPGA top level (drives LEDs from PC bits)
 Makefile
@@ -104,7 +115,54 @@ word for it.
 `make verilator` runs the same design through Verilator instead, producing
 `sim/wave_verilator.vcd`.
 
-## 2. Getting it onto an actual FPGA
+## 2. Run real compiled C on it
+
+```bash
+brew install riscv-software-src/riscv/riscv-tools   # riscv64-unknown-elf-gcc
+
+make sim_software
+```
+
+This compiles `software/main.c` with `riscv64-unknown-elf-gcc`
+(`-march=rv32im -mabi=ilp32 -specs=nano.specs` — see below for why), links
+it against `software/crt0.S`/`link.ld`/`syscalls.c`, converts the result
+into the two hex files `imem`/`dmem` preload from, and runs it against a
+new testbench (`sim/tb_software.v`) that decodes the CPU's simulated UART
+output back into ASCII and prints it live. Expected output:
+
+```
+Hello from RV32IMA!
+This is real C, compiled with riscv64-unknown-elf-gcc,
+running on a from-scratch RISC-V core, printing over a
+simulated UART.
+i = 0
+i = 1
+i = 2
+i = 3
+i = 4
+done.
+```
+
+That's real `printf`, through newlib, through this project's own
+`_write` syscall stub, through `rtl/uart.v`'s bit-banged TX shift
+register, decoded back into characters by a matching receiver state
+machine in the testbench — not a canned string. `sim/tb_top.v` and
+`sim/program.hex` (the hand-assembled self-checking regression test from
+before) are completely untouched by any of this; `make sim` still runs
+exactly as it always has, side by side with this new flow.
+
+Two things that weren't obvious going in, in case you extend
+`software/`: this toolchain build has no exact `rv32ima` multilib (use
+`-march=rv32im` — the A extension just goes unused by compiled code), and
+full newlib `printf` is ~69KB for even a trivial program against this
+core's 4KB-by-default `imem` — `-specs=nano.specs` gets the same real
+`printf` down to ~9KB, which is why `IMEM_WORDS` defaults to 8192 now.
+See `ARCHITECTURE.md` section 12 for the full story, including a second
+linker-script gotcha (Harvard regions both based at address 0 confuse the
+linker's *load*-address overlap check, which doesn't know they're
+different physical memories).
+
+## 3. Getting it onto an actual FPGA
 
 This is genuinely board-dependent, and I don't know which board you have, so
 I can't hand you a working bitstream flow — but here's the shape of it:
@@ -134,7 +192,7 @@ I can't hand you a working bitstream flow — but here's the shape of it:
 Tell me your specific board (model number is fine) and I'll write you the
 actual constraints file and exact toolchain commands.
 
-## 3. "Then install Linux and test CPU performance" — the honest picture
+## 4. "Then install Linux and test CPU performance" — the honest picture
 
 This is the part I want to be direct about rather than let you find out the
 hard way: **this core (or a beginner-scale core like it) cannot run Linux**,
@@ -162,7 +220,9 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
 - **A real memory controller** driving actual DRAM — Linux plus a minimal
   root filesystem needs tens of megabytes at least; FPGA block RAM alone
   (tens of KB–a few MB) isn't enough.
-- **A UART** (for a console) and usually **SPI/SD or similar storage**.
+- **A UART** (for a console) — this core now has a real one (`rtl/uart.v`,
+  polled TX+RX) — and usually **SPI/SD or similar storage**, which it
+  still doesn't have.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
   runtime) → U-Boot → Linux kernel → a root filesystem (often built with
   Buildroot). OpenSBI in particular expects real M/S-mode separation with
@@ -205,9 +265,8 @@ milestones — happy to help with any of these next:
   the list: register renaming, a reorder buffer, reservation stations or
   a scoreboard, multiple execution units. A genuine microarchitecture
   redesign, not an incremental add, so worth treating as its own project.
-- Add a UART peripheral so you can print from running code
-- Write actual assembly/C programs for it (via the `riscv64-unknown-elf`
-  GNU toolchain — `brew install riscv-software-src/riscv/riscv-tools`) instead of hand-assembled hex
+- Make the UART interrupt-driven (a PLIC source) instead of polled, and
+  write a real console/shell in C now that `printf`/`scanf` both work
 - Hardware PTE Accessed/Dirty auto-update in the MMU walker, so it
   doesn't have to fault when software forgot to pre-set those bits
 - A second, PLIC-fed external-interrupt context for S-mode (real `SEIP`
@@ -215,3 +274,5 @@ milestones — happy to help with any of these next:
 - Try booting a minimal OpenSBI + bare-metal payload now that M/S/U modes,
   trap delegation, and a real MMU exist — still well short of Linux, but a
   meaningfully closer milestone than before
+- SPI/SD storage, so `software/` programs could load data larger than
+  fits in `dmem`

@@ -21,9 +21,12 @@ privilege modes with real trap delegation**, timer/software/external
 **interrupts** (the external source now a real prioritized/claimable
 **PLIC**), a **Sv32 MMU covering both data and instruction fetch** (two
 independent TLBs/walkers sharing one page-table structure), and a **BTB +
-2-bit saturating-counter branch predictor**. It's still single-issue and
-in-order — no superscalar issue, no out-of-order execution/speculation —
-see `README.md` for what that next step would look like.
+2-bit saturating-counter branch predictor**, and a **UART** peripheral —
+which, together with a real `software/` build using
+`riscv64-unknown-elf-gcc`, means this core now runs actual compiled C, not
+just hand-assembled test programs (section 12). It's still single-issue
+and in-order — no superscalar issue, no out-of-order execution/speculation
+— see `README.md` for what that next step would look like.
 
 ### Module hierarchy
 
@@ -38,7 +41,8 @@ top.v                          (simulation top level)
  ├── imem.v                    (instruction memory / ROM)
  ├── dmem.v                    (data memory / RAM, 3 read ports)
  ├── clint.v                   (timer/software-interrupt peripheral)
- └── plic.v                    (prioritized/claimable external interrupt controller)
+ ├── plic.v                    (prioritized/claimable external interrupt controller)
+ └── uart.v                    (TX+RX serial console)
 ```
 
 `fpga/top_fpga.v` mirrors `top.v` but for real hardware — same modules,
@@ -485,6 +489,14 @@ the MEM stage's own loads/stores or with the other walker. Real block
 RAMs commonly support this (true/simple multi-port); it's the same
 technique here, just extended to a third port.
 
+Both now take an `INIT_FILE` parameter for `$readmemh`-preloading their
+array — `imem`'s has existed since the beginning (the hand-assembled test
+program); `dmem`'s (`INIT_FILE`, defaulting to `""` — empty, meaning
+"unchanged, all-zero") is new, and exists specifically to preload a
+compiled C program's `.rodata`/`.data` segment (section 12) without
+needing runtime `sw` instructions to populate it, the way the
+hand-assembled test's MMU page tables already do.
+
 ## 8. `csr_file.v` — M/S-mode CSRs
 
 | Addr | Name | Access | Notes |
@@ -563,17 +575,107 @@ to be on the bus" — `dmem_addr` is driven combinationally from EX every
 cycle regardless of instruction type, so an unqualified address match
 would spuriously claim on unrelated instructions.
 
+## 9a. `uart.v` — TX + RX serial console
+
+A minimal memory-mapped UART, polled rather than interrupt-driven (same
+"software checks a status bit" convention as the CLINT, rather than
+adding another interrupt source): `TXDATA` (write starts a send if not
+busy), `RXDATA` (read returns the last received byte, clearing
+`STATUS.rx_valid`), `STATUS` (`tx_busy`/`rx_valid`). `CLKS_PER_BIT` is a
+fixed module parameter (not a runtime baud-rate register — nothing here
+needs to reconfigure it) — `top.v` uses a small value for fast
+simulation, `fpga/top_fpga.v` a realistic one for an assumed board clock.
+
+TX and RX are independent shift-register state machines (`IDLE → START →
+8×DATA → STOP` and its mirror); RX runs the async `rx` pin through a 2-FF
+synchronizer first. Reading `RXDATA` has a side effect (clearing
+`rx_valid`), so — the same pitfall `plic.v`'s claim register has to avoid
+— it needs a genuine "this cycle is a real load" signal (`re`, from
+`cpu_core.v`'s `dmem_re`), not just an address match, since `dmem_addr` is
+driven combinationally from EX every cycle regardless of instruction
+type. When a same-cycle read-clear and a new-byte-arrival collide, the
+arrival wins (scheduled last in the always block) — the other order would
+silently drop the new byte's `rx_valid` flag while still overwriting its
+data register, a real, if rare, data-loss bug worth avoiding deliberately
+rather than by accident of statement order.
+
+Documented simplification: no minimum idle-high gap is enforced before
+re-arming for a new start bit, so a transmitter sending frames back-to-back
+with *zero* gap between the stop bit and the next start bit could shift
+the sampling point within that next byte. This core's own TX never does
+that (always at least one idle cycle, and in practice many more from
+software's own poll-loop overhead).
+
 ## 10. `top.v` and `fpga/top_fpga.v` — integration
 
 Same role as before: wire `cpu_core`, `imem`, and `dmem` together, plus
-`clint` and `plic` and the address decode in front of them, both MMU
-walkers' ports to `dmem`'s 2nd/3rd ports, and `irq_sources[7:0]` (was a
-single `irq_ext` pin). `fpga/top_fpga.v` ties `irq_sources` low by default
-(documented as a hook for board buttons/peripherals). The CPU's status
+`clint`/`plic`/`uart` and the address decode in front of them (`0x0200_
+0000`/`0x0300_0000`/`0x0400_0000` respectively), both MMU walkers' ports
+to `dmem`'s 2nd/3rd ports, `irq_sources[7:0]` (was a single `irq_ext`
+pin), and `uart_tx`/`uart_rx`. `fpga/top_fpga.v` ties `irq_sources` low by
+default (documented as a hook for board buttons/peripherals) and exposes
+real `uart_tx`/`uart_rx` pins for a USB-serial adapter. `top.v` also
+gained a `DMEM_INIT_FILE` parameter (default empty, unused by the
+hand-assembled test) and bumped its default `IMEM_WORDS` from 1024 to
+8192 — headroom for compiled programs (section 12), harmless to the
+hand-assembled test, which uses well under either size. The CPU's status
 output, `trap`, still pulses for exactly one cycle whenever *any* trap or
 interrupt redirect is taken.
 
-## 11. Where this design stops (by design)
+## 12. `software/` — a real `riscv64-unknown-elf-gcc` build
+
+Every program before this update was hand-assembled by a throwaway Python
+script directly into `sim/program.hex`. `software/` is a real, permanent
+build flow alongside it (`sim/tb_top.v` and `sim/program.hex` are
+untouched — see `README.md` for how the two coexist): `crt0.S` (startup:
+set `gp`/`sp`, zero `.bss`, call `main`, spin forever), `link.ld`, a
+`uart.c`/`.h` driver, `syscalls.c` (newlib stubs), and `main.c`, built
+with `riscv64-unknown-elf-gcc` and turned into the two hex files `top.v`
+preloads `imem`/`dmem` from.
+
+Two real, non-obvious things came up getting this working, both worth
+recording so they don't have to be rediscovered:
+
+- **No exact `rv32ima` multilib exists** in this toolchain build — the
+  precompiled variants are `rv32i`/`rv32im`/`rv32iac`/`rv32imac`/
+  `rv32imafc`. Asking for `-march=rv32ima` directly doesn't fail loudly;
+  it makes the linker silently fall back to a 64-bit libc and fail with a
+  confusing "ABI is incompatible with... target emulation" error. The fix
+  is `-march=rv32im -mabi=ilp32` — a strict subset of what this core
+  implements, so nothing GCC emits can be an instruction this CPU doesn't
+  support (the A extension just goes unexercised by compiled code; it's
+  still covered by the hand-assembled test).
+- **Full newlib printf is surprisingly large.** A trivial
+  `printf("hi %d\n", 42)` program links to **~69KB** with the default
+  (full) newlib — mostly `vfprintf`/float-formatting machinery — against
+  this core's 4KB-by-default `imem`. `-specs=nano.specs` (newlib-nano,
+  already bundled with this toolchain) gives the same real `printf` at
+  **~9KB**. This is why `IMEM_WORDS` defaults to 8192 (32KB, ~3x headroom
+  over that) rather than something enormous: this project uses
+  newlib-nano, not full newlib.
+
+**The Harvard linker script has one more real gotcha beyond "two `MEMORY`
+regions both based at `ORIGIN = 0`"**: the linker's own load-address
+(LMA) overlap check doesn't know these are two separate physical
+memories — by default a section's LMA equals its VMA, so `.text` (ROM,
+VMA/LMA both 0) and `.data` (RAM, VMA 0 too) collide in *LMA* space even
+though they're going to entirely different arrays at runtime, and `ld`
+refuses to link ("section .data LMA … overlaps section .text LMA …").
+The fix is a third, fictitious, never-actually-loaded-from `MEMORY`
+region (`RAM_LMA`, based at an arbitrary non-overlapping address) that
+`.data` is told to use for its *LMA* only (`> RAM AT> RAM_LMA`), leaving
+its *VMA* — the address that actually matters, since `dmem` is preloaded
+directly rather than copied at boot — at 0. A related consequence: GNU
+`objcopy -O verilog`'s `@address` output uses **LMA, not VMA** — feeding
+that straight to `dmem`'s preload would produce addresses like
+`@10000000`, nonsensical for a 32KB array based at 0. `software/Makefile`
+rule instead uses `objcopy -O binary` (raw bytes, no address baked in) and
+`software/bin2hex.py` to produce a plain sequential hex file, sidestepping
+LMA/VMA entirely by relying on the fact that both `imem`'s and `dmem`'s
+preloaded content is already known, by construction, to start at address
+0.
+
+## 13. Where this design stops (by design)
 
 - **Single-issue, in-order** — one instruction fetched per cycle, no
   superscalar issue, no out-of-order execution, no register renaming, no
@@ -584,6 +686,11 @@ interrupt redirect is taken.
 - **A single external PLIC context** — M-mode only; no S-mode external
   interrupt delivery (`SEIP`).
 - **No hypervisor extension** — only M/S/U, no virtualization.
+- **The UART is polled, not interrupt-driven**, and `software/`'s libc is
+  newlib-nano, not full newlib — `printf`'s float formatting is disabled
+  by default under nano (`-u _printf_float` at the link line re-enables
+  it, at a size cost) and no compiled program uses the A extension
+  (`-march=rv32im`, a strict subset of what this core implements).
 - **No hardware PTE A/D auto-update** — a PTE missing Accessed (or Dirty,
   for a store) faults rather than being set automatically by the walker.
 - **`MXR`/`SUM`/`TVM`/`TW`/`TSR`** in `mstatus` are hardwired 0 — real
