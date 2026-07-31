@@ -1,13 +1,14 @@
 # Simulation Makefile.
 #
 # macOS setup (one-time):
-#   brew install icarus-verilog gtkwave
+#   brew install icarus-verilog surfer
 #   brew install verilator          # optional, for the verilator target
 #   brew install riscv-software-src/riscv/riscv-tools   # for `make software`
 #
 # Usage:
 #   make sim         -> run the hand-assembled self-checking testbench (Icarus)
-#   make wave         -> run sim, then open the waveform in GTKWave
+#   make wave         -> run sim, then open the waveform (surfer)
+#   make wave_soc     -> same for the SoC simulation
 #   make verilator    -> build and run with Verilator instead
 #   make software     -> compile software/ with riscv64-unknown-elf-gcc
 #   make sim_software -> build software/ and run it, showing real UART output
@@ -49,7 +50,7 @@ SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave verilator software sim_software soc sim_soc dtb clean
+.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc dtb clean
 
 all: sim
 
@@ -57,8 +58,16 @@ sim:
 	$(IVERILOG) -g2012 -o sim/sim.out $(TB) $(RTL)
 	cd sim && $(VVP) sim.out
 
+# Waveform viewer. GTKWave was discontinued upstream and Homebrew disabled
+# its cask on 2025-10-29, so `surfer` is the default here; VIEWER= overrides
+# it if you still have gtkwave installed from elsewhere.
+VIEWER = surfer
+
 wave: sim
-	gtkwave sim/wave.vcd &
+	$(VIEWER) sim/wave.vcd &
+
+wave_soc: sim_soc
+	$(VIEWER) sim/wave_soc.vcd &
 
 verilator:
 	$(VERILATOR) --cc --exe --build --trace -j 4 --top-module top \

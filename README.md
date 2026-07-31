@@ -98,7 +98,7 @@ separate future effort instead of bolted onto this pipeline.
 ## 1. Simulate it on your Mac
 
 ```bash
-brew install icarus-verilog gtkwave
+brew install icarus-verilog surfer
 # optional, for the faster/alternate simulator:
 brew install verilator
 
@@ -129,7 +129,7 @@ visible to the program itself); a PLIC test with three sources at
 different priorities/thresholds proving real claim/complete ordering;
 and a deliberate instruction-fetch page fault. See the comment block in
 `sim/tb_top.v` for the exact program. View the waveform with `make wave`
-(opens GTKWave).
+(opens Surfer; GTKWave was discontinued upstream and pulled from Homebrew).
 
 I hand-assembled the test program's encodings with a small Python script
 (not part of the repo) and cross-checked several against the RV32I spec by

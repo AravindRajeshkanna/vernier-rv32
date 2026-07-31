@@ -15,12 +15,60 @@ That distinction matters, so it is worth being precise about what *is* known:
 | `constraints/*.xdc`, `*.lpf` | **Placeholder pins.** Never parsed by any tool |
 | `synth/synth_ecp5.sh` | Never executed |
 | `synth/vivado.tcl` | Never executed |
-| Achievable Fmax | **Unknown.** No timing analysis was ever run |
-| Resource usage | **Unknown.** No synthesis was ever run |
+| Achievable Fmax | **Unknown.** No place-and-route has been run |
+| Resource usage | **Partially measured** — see below |
 
 The RTL itself is thoroughly simulated — `make sim`, `make sim_software` and
 `make sim_soc` all pass — so the *logic* has real evidence behind it. What
-has no evidence is that it meets timing, fits, or works against real pins.
+has no evidence is that it meets timing or works against real pins.
+
+## Measured: the CPU core does not fit an iCE40
+
+Yosys 0.67 is now installed, so these are real synthesis numbers rather than
+guesses. Synthesizing **`cpu_core` alone** (regfile, CSRs, divider, BTB, MMU
+— no memories, no peripherals, no bus) for iCE40:
+
+```
+11859  SB_LUT4
+ 5729  flip-flops
+    4  SB_RAM40_4K
+  492  SB_CARRY
+```
+
+For context, the largest iCE40 that `nextpnr-ice40` targets is the HX8K at
+**7,680 LUTs**. So the bare core overshoots the biggest iCE40 by roughly
+55%, before adding a single byte of memory or any peripheral. **The iCE40
+path is not viable for this design**, which matters because `nextpnr-ice40`
+is the only nextpnr Homebrew ships — ECP5 needs the oss-cad-suite bundle.
+
+An ECP5 is the realistic target: an LFE5U-25F has ~24k LUTs, comfortably
+more than double what the core needs, leaving room for the memories and
+peripherals.
+
+The likely dominant consumer is the multiplier. `cpu_core.v` computes three
+full 32×32→64 products combinationally (`mul_ss`/`mul_uu`/`mul_su`) to cover
+MUL/MULH/MULHSU/MULHU, and an HX8K has no DSP blocks at all, so all of that
+lands in LUTs and carry chains. Sharing one multiplier across the four
+operations, or pipelining it behind the existing `ex_busy_stall` mechanism
+the divider already uses, is where to start if area matters.
+
+## Measured: the SoC's RAM does not synthesize as written
+
+Synthesizing the full `soc_fpga` did not complete in over 10 minutes and was
+abandoned. The cause is `wb_ram.v`: 256 KB as a byte array with **three
+asynchronous read ports** (the bus port plus two page-table-walker ports).
+Yosys can't map an asynchronous read to block RAM, so it tries to build a
+quarter-million-entry mux tree in logic.
+
+This is the exact risk flagged in the "what to expect on timing" section
+below, now confirmed rather than predicted. Before any real synthesis run,
+`wb_ram.v` needs converting to **synchronous** (registered) reads so it
+infers block RAM. That is not a free change — it makes RAM a 1-wait-state
+slave, which breaks `wb_interconnect.v`'s "the instruction master must only
+reach zero-wait-state slaves" invariant and would require giving the arbiter
+a sticky grant. The async read was chosen deliberately to keep the SoC
+zero-wait-state and its pipeline timing comparable to the pre-bus design;
+that tradeoff now has a measured price attached to it.
 
 ## Before you run any of this
 
@@ -56,19 +104,15 @@ first, in rough order of suspicion:
   is very often the critical path; pipelining it over two cycles behind the
   existing `ex_busy_stall` mechanism would be the natural fix, and that
   mechanism already exists for the divider.
-- **`wb_ram.v`'s asynchronous read.** It is written as combinational-read
-  RAM, which infers distributed RAM (LUTRAM) rather than block RAM on some
-  tools — expensive in area and slow. If utilization looks absurd, this is
-  why. Converting it to a registered (synchronous) read makes it infer block
-  RAM properly, but that changes it to a 1-wait-state slave, which means
-  `wb_interconnect.v`'s "instruction master must only reach zero-wait-state
-  slaves" note stops holding and the arbiter needs a sticky grant.
+- **`wb_ram.v`'s asynchronous read.** Already confirmed to be a blocker —
+  see the measured section above. This has to be fixed before any full-SoC
+  synthesis run will even terminate.
 
-That last one is the most likely thing to bite, and it is a design decision
-this project deliberately deferred rather than an oversight: asynchronous
-read is what let the whole SoC stay zero-wait-state and keep the pipeline
-timing identical to the pre-bus design, which is exactly what made the
-simulation results comparable.
+That last one was the most likely thing to bite, and it did. It is a design
+decision this project deliberately deferred rather than an oversight:
+asynchronous read is what let the whole SoC stay zero-wait-state and keep
+the pipeline timing identical to the pre-bus design, which is exactly what
+made the simulation results comparable.
 
 ## What is genuinely missing for "boots on hardware"
 
