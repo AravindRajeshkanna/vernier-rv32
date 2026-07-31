@@ -6,7 +6,9 @@ interrupts (a real prioritized/claimable PLIC), a Sv32 MMU covering both
 data and instruction fetch, a BTB branch predictor, a UART, a
 self-checking simulation testbench for macOS, a real
 `riscv64-unknown-elf-gcc` build flow so it runs actual compiled C (not
-just hand-assembled hex), and a minimal FPGA wrapper.
+just hand-assembled hex), and — new — a complete **Wishbone SoC** around
+it: boot ROM, RAM, GPIO, SPI/SD storage, a device tree, and a first-stage
+loader that boots a program off an SD card into RAM and runs it.
 
 **Read the "Can this run Linux?" section before you get too attached to that
 plan** — the honest answer is not with this core, and I explain why and what
@@ -27,10 +29,21 @@ rtl/
   plic.v         prioritized/claimable external interrupt controller
   uart.v         TX+RX serial console, polled (txdata/rxdata/status)
   cpu_core.v     the CPU itself: 5-stage pipeline (IF/ID/EX/MEM/WB)
-  top.v          simulation top level (cpu + imem + dmem + clint + plic + uart)
+  top.v          flat top level (cpu + imem + dmem + clint + plic + uart)
+  soc/
+    soc_top.v          the SoC: CPU on a Wishbone bus, unified address space
+    wb_interconnect.v  2-master/7-slave shared bus, priority arbitration
+    cpu_wb.v           core's native ports -> two Wishbone masters
+    wb_ram.v           RAM slave (+ direct read ports for the MMU walkers)
+    wb_rom.v           boot ROM slave
+    wb_periph_bridge.v adapts clint/plic/uart onto the bus unchanged
+    wb_gpio.v          GPIO with per-pin interrupts
+    wb_spi.v           SPI master (the one slave with real wait states)
 sim/
   tb_top.v            self-checking testbench (hand-assembled program.hex)
-  tb_software.v       runs the real compiled firmware, decodes UART output to the console
+  tb_software.v       runs the real compiled firmware, decodes UART to the console
+  tb_soc.v            boots the SoC from a simulated SD card
+  sd_card_model.v     SD card in SPI mode (CMD0/8/55/58, ACMD41, CMD17)
   verilator_main.cpp  optional Verilator harness
   program.hex         hand-assembled RV32IMA test program
 software/
@@ -40,8 +53,20 @@ software/
   syscalls.c     newlib syscall stubs (_write/_read route through the UART)
   main.c         demo program: printf a greeting and a small loop
   bin2hex.py     packs objcopy's raw binary output into $readmemh hex
+  soc/
+    soc.h        SoC memory map, shared by the boot ROM and the RAM program
+    bootrom.c    first-stage loader: SPI/SD init, load image, jump
+    main.c       acceptance test: RAM, atomics, GPIO, timer
+    crt0_rom.S / crt0_ram.S, link_rom.ld / link_ram.ld
+    mkcard.py    builds the SD card image (header block + program)
+dts/
+  soc.dts        device tree describing the SoC (`make dtb`)
 fpga/
-  top_fpga.v     board-agnostic FPGA top level (drives LEDs from PC bits)
+  top_fpga.v     board-agnostic FPGA top for the flat design
+  soc_fpga.v     board-agnostic FPGA top for the SoC (UNVERIFIED - see below)
+  constraints/   pin templates (.xdc/.lpf) - PLACEHOLDER pins
+  synth/         Vivado and yosys/nextpnr batch scripts (never executed)
+  README.md      what is and isn't known about the FPGA path
 Makefile
 ```
 
@@ -162,10 +187,81 @@ linker-script gotcha (Harvard regions both based at address 0 confuse the
 linker's *load*-address overlap check, which doesn't know they're
 different physical memories).
 
-## 3. Getting it onto an actual FPGA
+## 3. Run the full SoC
 
-This is genuinely board-dependent, and I don't know which board you have, so
-I can't hand you a working bitstream flow — but here's the shape of it:
+```bash
+make sim_soc
+```
+
+This is the CPU as an actual system-on-chip: a Wishbone B4 bus, boot ROM,
+256 KB RAM, CLINT, PLIC, UART, GPIO and SPI, with a simulated SD card
+attached. It runs the real boot sequence — nothing is preloaded into RAM.
+
+```
+=== RV32IMA SoC boot ROM ===
+SPI/SD init...
+  card ready
+  image 0x00002A3C bytes -> 0x80001000
+  loaded, starting program
+
+=== SoC acceptance test ===
+Running from RAM at 0x80001000, loaded from SD by the boot ROM.
+
+  RAM walking ones             ok
+  RAM address uniqueness       ok
+  RAM byte/half access         ok
+  AMO read-modify-write        ok
+  LR/SC success                ok
+  LR/SC broken by store        ok
+  GPIO loopback                ok
+  CLINT mtime advances         ok
+
+0 failure(s)
+SOC-TEST: PASS
+```
+
+The boot ROM brings up SPI, initializes the card, reads an image header,
+pulls 21 blocks in over a bit-banged SPI link, and jumps to RAM; the loaded
+program then runs its own acceptance tests and reports over the UART. Every
+character above is decoded off the CPU's actual serial TX pin by a receiver
+state machine in `sim/tb_soc.v`. Pass/fail is also written as a magic word
+to a fixed RAM address so the result is machine-checkable rather than
+eyeballed.
+
+`make dtb` compiles `dts/soc.dts` — a standard device tree describing the
+hardware, which is the interface OpenSBI/U-Boot/Linux would come looking
+for. Nothing in this project consumes it yet (the firmware has the memory
+map compiled in via `software/soc/soc.h`), but it makes the address map
+explicit and reviewable in one place.
+
+**The SoC is a separate top level, not a replacement.** `rtl/top.v` and its
+hand-assembled regression test are untouched, so `make sim` still proves
+exactly what it always did — including reporting the same BTB mispredict
+count, which is a usefully sensitive canary for accidental timing changes
+in the core.
+
+Adding a bus meant teaching the pipeline to wait on it, which is a real
+change to `cpu_core.v` (two new stall inputs, both tied low by the old top
+level). It also surfaced a genuine latent bug: an `SC` both reads and clears
+the reservation, and with zero-latency memory those happened in the same
+cycle so the order never mattered — over a multi-cycle bus, clearing it
+first pulled the success check out from under the write phase. See
+`ARCHITECTURE.md` section 12a.
+
+## 4. Getting it onto an actual FPGA
+
+**Nothing in `fpga/` has been synthesized, placed, routed, or run on
+hardware** — no FPGA toolchain and no board were available where this was
+built, so those files are elaborated and lint-clean but otherwise unproven.
+`fpga/README.md` is explicit about exactly what is and isn't known, and
+about which paths are the likely suspects if timing doesn't close.
+
+What's there to start from: `fpga/soc_fpga.v` (the SoC with a reset
+synchronizer and tristate GPIO), constraints templates with **placeholder
+pins** for Xilinx and ECP5, and batch scripts for both Vivado and the
+open-source yosys/nextpnr flow.
+
+The rest is genuinely board-dependent:
 
 1. **Pick your toolchain based on your FPGA vendor:**
    - Lattice iCE40 (e.g. iCEBreaker, Alchitry Cu) → open-source flow:
@@ -176,23 +272,30 @@ I can't hand you a working bitstream flow — but here's the shape of it:
      you'd typically use a Linux VM, or use the open-source `f4pga`/
      `symbiflow` flow instead)
    - Intel/Altera (e.g. DE10) → Quartus (also not native macOS)
-2. **Write a constraints file** (`.pcf` for iCE40, `.lpf` for ECP5, `.xdc`
-   for Xilinx) mapping `clk`, `rst_n`, and `led[3:0]` in `fpga/top_fpga.v`
-   to real pins on your board. This is specific to your exact board model.
-3. **Synthesize, place & route, and flash**, e.g. for an iCE40 board with
-   the open-source flow:
+2. **Fill in real pins** in `fpga/constraints/generic.xdc` (Xilinx) or
+   `generic.lpf` (ECP5). Every pin in those files today is a placeholder
+   copied from no board in particular — start from your vendor's master
+   constraints file.
+3. **Set `CLK_HZ` in `fpga/soc_fpga.v`** to your board's actual oscillator.
+   The UART divisor is derived from it, so getting this wrong produces a
+   console emitting garbage even when timing closes — and it looks like a
+   CPU bug rather than a configuration one.
+4. **Run `make soc` first**, then synthesize. The boot ROM image is pulled
+   in with `$readmemh` at elaboration time, which makes it a *synthesis*
+   input, not just a simulation one. Both scripts refuse to start without
+   it, because otherwise you get a board that comes up and does nothing.
+5. **Synthesize, place & route, and flash:**
    ```bash
-   yosys -p "synth_ice40 -top top_fpga -json top_fpga.json" \
-       rtl/*.v fpga/top_fpga.v
-   nextpnr-ice40 --hx8k --json top_fpga.json --pcf your_board.pcf --asc top_fpga.asc
-   icepack top_fpga.asc top_fpga.bin
-   iceprog top_fpga.bin
+   make soc
+   DEVICE=25k PACKAGE=CABGA381 ./fpga/synth/synth_ecp5.sh   # open-source flow
+   # or:
+   vivado -mode batch -source fpga/synth/vivado.tcl -tclargs xc7a35ticsg324-1L
    ```
 
 Tell me your specific board (model number is fine) and I'll write you the
 actual constraints file and exact toolchain commands.
 
-## 4. "Then install Linux and test CPU performance" — the honest picture
+## 5. "Then install Linux and test CPU performance" — the honest picture
 
 This is the part I want to be direct about rather than let you find out the
 hard way: **this core (or a beginner-scale core like it) cannot run Linux**,
@@ -219,14 +322,19 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   logic.
 - **A real memory controller** driving actual DRAM — Linux plus a minimal
   root filesystem needs tens of megabytes at least; FPGA block RAM alone
-  (tens of KB–a few MB) isn't enough.
-- **A UART** (for a console) — this core now has a real one (`rtl/uart.v`,
-  polled TX+RX) — and usually **SPI/SD or similar storage**, which it
-  still doesn't have.
+  (tens of KB–a few MB) isn't enough. **This is now the single biggest
+  gap.** The SoC has 256 KB of on-chip RAM behind a Wishbone slave; the
+  seam where a LiteDRAM controller would go is marked in `wb_ram.v`, but
+  wiring one up needs LiteX and a board with DDR.
+- **A UART** (for a console) and **SPI/SD or similar storage** — the SoC
+  now has both, and actually boots off the SD card.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
   runtime) → U-Boot → Linux kernel → a root filesystem (often built with
-  Buildroot). OpenSBI in particular expects real M/S-mode separation with
-  trap delegation, which this core now has.
+  Buildroot). The first link in that chain now exists — `software/soc/
+  bootrom.c` is a genuine first-stage loader — and OpenSBI's prerequisites
+  (real M/S-mode separation with trap delegation, an MMU, a device tree)
+  are all present. What's missing for OpenSBI specifically is somewhere to
+  put it: it wants considerably more RAM than 256 KB.
 - Performance that isn't so slow it's unusable — this core is pipelined
   and now has a branch predictor, but it's still single-issue and
   in-order, with no cache; real Linux-capable FPGA cores typically add
@@ -261,18 +369,26 @@ Linux path which is a much longer undertaking.
 
 That's also a great learning path, just with different, more achievable
 milestones — happy to help with any of these next:
-- **Superscalar issue and out-of-order execution** — the big one left on
-  the list: register renaming, a reorder buffer, reservation stations or
-  a scoreboard, multiple execution units. A genuine microarchitecture
-  redesign, not an incremental add, so worth treating as its own project.
+- **Actually get a bitstream onto a board.** Everything in `fpga/` is
+  written but unproven — no toolchain or hardware was available here. This
+  is the highest-value next step by a distance, because it's the one thing
+  simulation fundamentally can't substitute for, and it's what turns the
+  timing/resource numbers from unknown into measured.
+- **External DRAM**, which unblocks essentially everything else on this
+  list (OpenSBI, FreeRTOS/Zephyr with any real workload, and eventually
+  Linux). LiteDRAM via LiteX is the well-trodden path.
+- **Caches.** Every fetch and load currently goes to the bus, and the
+  shared-bus interconnect means a load costs the fetch behind it a cycle.
+  An I-cache alone would help a lot.
 - Make the UART interrupt-driven (a PLIC source) instead of polled, and
   write a real console/shell in C now that `printf`/`scanf` both work
+- Bring up FreeRTOS or Zephyr — a realistic intermediate milestone now
+  that there's a bus, a timer, an interrupt controller and storage
+- **Superscalar issue and out-of-order execution** — register renaming, a
+  reorder buffer, reservation stations or a scoreboard, multiple execution
+  units. A genuine microarchitecture redesign, not an incremental add.
 - Hardware PTE Accessed/Dirty auto-update in the MMU walker, so it
   doesn't have to fault when software forgot to pre-set those bits
-- A second, PLIC-fed external-interrupt context for S-mode (real `SEIP`
-  delivery), and a cache hierarchy
-- Try booting a minimal OpenSBI + bare-metal payload now that M/S/U modes,
-  trap delegation, and a real MMU exist — still well short of Linux, but a
-  meaningfully closer milestone than before
+- A JTAG TAP and a RISC-V Debug Module, so debugging isn't just `printf`
 - SPI/SD storage, so `software/` programs could load data larger than
   fits in `dmem`

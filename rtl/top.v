@@ -56,6 +56,9 @@ module top #(
         .imem_addr(imem_addr), .imem_rdata(imem_rdata),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),
+        .dmem_is_amo(), // only a bus adapter needs this (see rtl/soc/cpu_wb.v)
+        // This top level's memories are zero-latency, so the core never waits.
+        .ibus_wait(1'b0), .dbus_wait(1'b0),
         .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata),
         .iptw_addr(iptw_addr), .iptw_rdata(iptw_rdata),
         .mtip(mtip), .msip_in(msip), .meip(meip),

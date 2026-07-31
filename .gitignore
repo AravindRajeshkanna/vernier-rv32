@@ -10,6 +10,16 @@ software/firmware.elf
 software/firmware_text.bin
 software/firmware_data.bin
 
+# SoC build artifacts
+sim/sim_soc.out
+sim/wave_soc.vcd
+sim/bootrom.hex
+sim/card.hex
+software/soc/*.elf
+software/soc/*.bin
+dts/*.dtb
+fpga/build/
+
 # Local tool config (not shared)
 .claude/settings.local.json
 

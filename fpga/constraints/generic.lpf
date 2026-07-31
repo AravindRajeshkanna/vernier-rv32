@@ -1,0 +1,79 @@
+# Lattice ECP5 (nextpnr/Trellis) constraints TEMPLATE for fpga/soc_fpga.v.
+#
+# !! EVERY PIN BELOW IS A PLACEHOLDER !!  Replace with your board's actual
+# pin numbers before use - the open-source flow will happily place a design
+# onto whatever pins you name here, including wrong ones.
+#
+# Never run: no Lattice toolchain was available where this was written.
+# See fpga/README.md.
+
+# ---- clock ----
+# FREQUENCY is in MHz. Keep soc_fpga.v's CLK_HZ parameter in step with it, or
+# the UART baud divisor will be wrong even if timing closes.
+LOCATE COMP "clk" SITE "P3";
+IOBUF  PORT "clk" IO_TYPE=LVCMOS33;
+FREQUENCY PORT "clk" 50 MHZ;
+
+# ---- reset ----
+LOCATE COMP "rst_n" SITE "R1";
+IOBUF  PORT "rst_n" IO_TYPE=LVCMOS33 PULLMODE=UP;
+
+# ---- UART ----
+LOCATE COMP "uart_tx" SITE "L4";
+IOBUF  PORT "uart_tx" IO_TYPE=LVCMOS33;
+LOCATE COMP "uart_rx" SITE "M1";
+IOBUF  PORT "uart_rx" IO_TYPE=LVCMOS33;
+
+# ---- SD card (SPI mode) ----
+LOCATE COMP "spi_sck"  SITE "N2";
+IOBUF  PORT "spi_sck"  IO_TYPE=LVCMOS33;
+LOCATE COMP "spi_mosi" SITE "N3";
+IOBUF  PORT "spi_mosi" IO_TYPE=LVCMOS33;
+LOCATE COMP "spi_miso" SITE "P1";
+IOBUF  PORT "spi_miso" IO_TYPE=LVCMOS33 PULLMODE=UP;
+LOCATE COMP "spi_cs_n" SITE "P2";
+IOBUF  PORT "spi_cs_n" IO_TYPE=LVCMOS33;
+
+# ---- GPIO ----
+LOCATE COMP "gpio[0]"  SITE "C4";
+LOCATE COMP "gpio[1]"  SITE "B4";
+LOCATE COMP "gpio[2]"  SITE "A3";
+LOCATE COMP "gpio[3]"  SITE "B3";
+LOCATE COMP "gpio[4]"  SITE "A2";
+LOCATE COMP "gpio[5]"  SITE "B2";
+LOCATE COMP "gpio[6]"  SITE "C2";
+LOCATE COMP "gpio[7]"  SITE "C1";
+LOCATE COMP "gpio[8]"  SITE "D2";
+LOCATE COMP "gpio[9]"  SITE "D1";
+LOCATE COMP "gpio[10]" SITE "E2";
+LOCATE COMP "gpio[11]" SITE "E1";
+LOCATE COMP "gpio[12]" SITE "F2";
+LOCATE COMP "gpio[13]" SITE "F1";
+LOCATE COMP "gpio[14]" SITE "G2";
+LOCATE COMP "gpio[15]" SITE "G1";
+IOBUF PORT "gpio[0]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[1]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[2]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[3]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[4]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[5]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[6]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[7]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[8]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[9]"  IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[10]" IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[11]" IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[12]" IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[13]" IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[14]" IO_TYPE=LVCMOS33;
+IOBUF PORT "gpio[15]" IO_TYPE=LVCMOS33;
+
+# ---- LEDs ----
+LOCATE COMP "led[0]" SITE "H3";
+LOCATE COMP "led[1]" SITE "J3";
+LOCATE COMP "led[2]" SITE "K3";
+LOCATE COMP "led[3]" SITE "L3";
+IOBUF PORT "led[0]" IO_TYPE=LVCMOS33;
+IOBUF PORT "led[1]" IO_TYPE=LVCMOS33;
+IOBUF PORT "led[2]" IO_TYPE=LVCMOS33;
+IOBUF PORT "led[3]" IO_TYPE=LVCMOS33;

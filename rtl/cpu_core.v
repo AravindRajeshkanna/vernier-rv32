@@ -85,6 +85,30 @@ module cpu_core #(
                                     // just happens to be on the bus"
     output wire [1:0]   dmem_size,
     input  wire [31:0] dmem_rdata,
+    output wire         dmem_is_amo, // this MEM access is an AMO/LR/SC - a bus
+                                      // adapter needs to know, since an AMO is a
+                                      // read-modify-write that takes two bus
+                                      // phases (see rtl/soc/cpu_wb.v)
+
+    // Bus wait states. Both default to "never wait" for a zero-latency
+    // memory system (rtl/top.v ties them low, so that path is bit-identical
+    // to before these existed); a real interconnect (rtl/soc/) drives them
+    // to hold the pipeline until a bus transaction is acknowledged.
+    //  - `ibus_wait`: this cycle's instruction fetch has no valid data yet.
+    //    Folds into `if_stall`, so PC freezes and IF/ID bubbles - exactly
+    //    the shape an ITLB-miss stall already had.
+    //  - `dbus_wait`: the MEM-stage access is still in flight. This is a
+    //    *new* stall shape: it freezes the whole pipeline including EX,
+    //    holds EX/MEM (the request must stay asserted on the bus) and holds
+    //    MEM/WB, and suppresses every EX-stage architectural side effect,
+    //    since the instruction in EX is being re-presented next cycle and
+    //    must not commit twice. Holding (rather than bubbling) MEM/WB also
+    //    keeps the MEM/WB forwarding path alive across the stall - bubbling
+    //    it would silently drop a forwarded operand for whatever is sitting
+    //    in EX, the same class of bug the `store_data_latched` snapshot
+    //    exists to prevent.
+    input  wire         ibus_wait,
+    input  wire         dbus_wait,
 
     // data-MMU page-table-walker's dedicated read-only physical memory port
     output wire [31:0] ptw_addr,
@@ -376,7 +400,7 @@ module cpu_core #(
     // whether id_ex is free to accept if_id's *current* content. Folding
     // the two together would double-latch an instruction - see the
     // if_id register block below.
-    wire if_stall    = itlb_wait_stall;
+    wire if_stall    = itlb_wait_stall || ibus_wait;
     wire pc_freeze   = id_ex_stall || if_stall;
 
     // =======================================================================
@@ -477,7 +501,7 @@ module cpu_core #(
 
     wire actual_taken  = (id_ex_is_branch && branch_taken) || id_ex_is_jal || id_ex_is_jalr;
     wire is_control_flow = id_ex_is_branch || id_ex_is_jal || id_ex_is_jalr;
-    wire btb_train_en = id_ex_valid && is_control_flow;
+    wire btb_train_en = id_ex_valid && is_control_flow && ex_commit;
 
     reg branch_taken;
     always @(*) begin
@@ -511,7 +535,7 @@ module cpu_core #(
     wire need_translate  = is_mem_op_now && satp_mode && (effective_priv_for_data != PRIV_M);
     wire mmu_resolved, mmu_fault, mmu_busy;
     wire [31:0] mmu_pa;
-    wire sfence_en = id_ex_valid && id_ex_is_sfence_vma && !interrupt_taken;
+    wire sfence_en = id_ex_valid && id_ex_is_sfence_vma && !interrupt_taken && ex_commit;
 
     mmu MMU (
         .clk(clk), .rst(rst),
@@ -526,7 +550,20 @@ module cpu_core #(
     wire [31:0] mmu_cause = id_ex_is_store ? 32'd15 : 32'd13; // store/AMO or load page fault
     wire [31:0] mem_phys_addr = need_translate ? mmu_pa : mem_addr_ex;
 
-    wire ex_busy_stall = div_stall || mmu_wait_stall;
+    // A MEM-stage bus access that hasn't been acknowledged freezes EX too
+    // (folded in here so PC/IF-ID/ID-EX hold and interrupts stop being
+    // sampled, all of which this signal already does) - but EX/MEM must
+    // *hold* rather than bubble for it, so its own register block special-
+    // cases `dbus_stall` ahead of `ex_busy_stall`.
+    wire dbus_stall = dbus_wait;
+    // Whether the instruction in EX may take architectural effect this
+    // cycle. Under `dbus_stall` it may not: ID/EX is being held and will
+    // re-present the same instruction next cycle, so letting it redirect,
+    // write a CSR, take a trap, return from one, flush the TLB, or train
+    // the predictor now would do all of that twice.
+    wire ex_commit = !dbus_stall;
+
+    wire ex_busy_stall = div_stall || mmu_wait_stall || dbus_stall;
 
     // op2_reg is live-forwarded and drifts once EX/MEM and MEM/WB drain
     // (a few cycles into a walk, well before it resolves, since the rest
@@ -612,7 +649,7 @@ module cpu_core #(
     wire interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall;
 
     wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now;
-    wire take_trap = id_ex_valid && (interrupt_taken || synchronous_trap);
+    wire take_trap = id_ex_valid && (interrupt_taken || synchronous_trap) && ex_commit;
     wire [31:0] cause_for_csr = interrupt_taken ? interrupt_cause :
                                  (mmu_fault_now  ? mmu_cause : id_ex_trap_cause);
     wire [31:0] val_for_csr   = interrupt_taken ? 32'b0 :
@@ -623,13 +660,13 @@ module cpu_core #(
     // MRET/SRET never architecturally completes, so it must not pop
     // mstatus/current_priv either (it'll simply be re-fetched after the
     // interrupt handler returns).
-    wire mret_en = id_ex_valid && id_ex_is_mret && !interrupt_taken;
-    wire sret_en = id_ex_valid && id_ex_is_sret && !interrupt_taken;
+    wire mret_en = id_ex_valid && id_ex_is_mret && !interrupt_taken && ex_commit;
+    wire sret_en = id_ex_valid && id_ex_is_sret && !interrupt_taken && ex_commit;
     assign trap = take_trap;
 
     csr_file CSR (
         .clk(clk), .rst(rst),
-        .addr(id_ex_csr_addr), .we(id_ex_valid && id_ex_csr_we && !interrupt_taken),
+        .addr(id_ex_csr_addr), .we(id_ex_valid && id_ex_csr_we && !interrupt_taken && ex_commit),
         .wdata(csr_new_value), .rdata(csr_rdata),
         .trap_en(take_trap), .trap_pc(id_ex_pc), .trap_cause(cause_for_csr), .trap_val(val_for_csr),
         .mtvec_out(csr_mtvec), .stvec_out(csr_stvec), .trap_to_s_out(csr_trap_to_s),
@@ -649,8 +686,9 @@ module cpu_core #(
                       ((id_ex_pred_taken != actual_taken) ||
                        (actual_taken && (id_ex_pred_target != actual_target)));
 
-    wire redirect_valid = id_ex_valid && (interrupt_taken || synchronous_trap || mispredict ||
-                                           mret_en || sret_en);
+    wire redirect_valid = id_ex_valid && ex_commit &&
+                          (interrupt_taken || synchronous_trap || mispredict ||
+                           mret_en || sret_en);
     reg [31:0] redirect_target;
     always @(*) begin
         if (interrupt_taken)        redirect_target = trap_redirect_target;
@@ -667,7 +705,7 @@ module cpu_core #(
     reg [31:0] mispredict_count;
     always @(posedge clk or posedge rst) begin
         if (rst) mispredict_count <= 32'b0;
-        else if (mispredict) mispredict_count <= mispredict_count + 32'd1;
+        else if (mispredict && ex_commit) mispredict_count <= mispredict_count + 32'd1;
     end
 
     reg [31:0] ex_result;
@@ -744,6 +782,7 @@ module cpu_core #(
     assign dmem_we    = (ex_mem_valid && ex_mem_mem_we) || dmem_we_amo;
     assign dmem_re    = ex_mem_valid && ex_mem_is_load;
     assign dmem_size  = ex_mem_mem_size;
+    assign dmem_is_amo = ex_mem_valid && ex_mem_is_amo;
 
     // ---- LR/SC reservation - MEM stage only ----
     // Required, not stylistic: for back-to-back LR;SC, SC reaches EX the
@@ -764,6 +803,16 @@ module cpu_core #(
         if (rst) begin
             reservation_valid <= 1'b0;
             reservation_addr  <= 32'b0;
+        end else if (dbus_stall) begin
+            // Hold until the access actually completes. This is load-bearing
+            // for SC over a multi-cycle bus, not just tidiness: an SC both
+            // *reads* the reservation (to decide success) and *clears* it.
+            // With a zero-latency memory those happen in the same single
+            // cycle and the order never mattered. With a bus, an SC occupies
+            // MEM for several cycles, so clearing on the first of them would
+            // pull `sc_match` out from under the write phase - the store
+            // would still be issued but would report failure. Every other
+            // update here is idempotent across a stall; this one is not.
         end else if (take_trap) begin
             reservation_valid <= 1'b0;
         end else if (ex_mem_valid && ex_mem_is_lr) begin
@@ -893,6 +942,12 @@ module cpu_core #(
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             ex_mem_valid <= 1'b0;
+        end else if (dbus_stall) begin
+            // Hold: this MEM access is still on the bus and its request
+            // signals (driven straight off these registers) have to stay
+            // asserted until the slave acknowledges. Checked ahead of
+            // `ex_busy_stall`, which `dbus_stall` is a member of but whose
+            // bubble behavior would drop the in-flight request.
         end else if (ex_busy_stall) begin
             ex_mem_valid <= 1'b0; // multi-cycle op still running - nothing new for MEM this cycle
         end else begin
@@ -914,6 +969,14 @@ module cpu_core #(
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             mem_wb_reg_we_r <= 1'b0;
+        end else if (dbus_stall) begin
+            // Hold rather than bubble. The MEM access hasn't produced its
+            // result yet, so there's nothing new to write back - but
+            // clearing reg_we here would also tear down the MEM/WB
+            // forwarding path mid-stall, and whatever is sitting in EX may
+            // still be depending on it. Re-writing the same rd with the
+            // same data for a few extra cycles is idempotent; losing a
+            // forwarded operand is not.
         end else begin
             mem_wb_reg_we_r  <= ex_mem_valid && ex_mem_reg_we;
             mem_wb_rd_r      <= ex_mem_rd;

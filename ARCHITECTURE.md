@@ -675,6 +675,181 @@ LMA/VMA entirely by relying on the fact that both `imem`'s and `dmem`'s
 preloaded content is already known, by construction, to start at address
 0.
 
+## 12a. `rtl/soc/` — the Wishbone SoC
+
+`rtl/top.v` (section 10) is a flat address decoder in front of two
+zero-latency memories. `rtl/soc/soc_top.v` is the same CPU wired as an
+actual system-on-chip: one unified address space, a real bus, a boot ROM
+and storage. **Both exist**; the SoC did not replace the older top level,
+because `sim/tb_top.v`'s hand-assembled regression test runs against
+`rtl/top.v` and is worth keeping exactly as it is.
+
+### The address map
+
+| Base | Slave |
+|---|---|
+| `0x0000_0000` | Boot ROM (reset vector) |
+| `0x0200_0000` | CLINT |
+| `0x0300_0000` | PLIC |
+| `0x0400_0000` | UART |
+| `0x0500_0000` | GPIO |
+| `0x0600_0000` | SPI |
+| `0x8000_0000` | Main RAM |
+
+Decoded on `addr[31:24]`. CLINT/PLIC/UART keep the bases they already had,
+so the drivers in `software/` work unchanged; RAM sits at `0x8000_0000`
+where essentially every real RISC-V platform puts it, which is also what
+makes `dts/soc.dts` look like an ordinary device tree.
+
+**This retires the Harvard wart.** Section 6 documented an awkward
+consequence of `imem`/`dmem` being separate arrays both based at zero: a
+PTE's PPN meant different things depending on which walker resolved it.
+In the SoC there is one physical address space, and instruction fetch and
+data access are separate *bus masters* rather than separate address
+spaces, so a PPN now means exactly one thing.
+
+### Teaching the pipeline to wait
+
+The core assumed memory answered in the same cycle it was asked. A bus
+doesn't, so `cpu_core.v` gained two inputs — `ibus_wait` and `dbus_wait` —
+both of which `rtl/top.v` ties low, leaving that path bit-identical to
+before (`make sim` still reports the same mispredict count, 54, which is a
+usefully sensitive canary for accidental timing changes).
+
+`ibus_wait` was easy: it folds into `if_stall`, which is exactly the shape
+an ITLB-miss stall already had.
+
+`dbus_wait` is a genuinely new stall shape and needed care in three places:
+
+- **EX/MEM must *hold*, not bubble.** The request signals are driven
+  straight off those registers, so bubbling would retract an in-flight bus
+  request. It is checked ahead of `ex_busy_stall`, which it is otherwise a
+  member of.
+- **MEM/WB must also hold, not bubble.** This one is subtle: bubbling
+  MEM/WB would tear down the MEM/WB *forwarding* path mid-stall, and
+  whatever is sitting in EX may still depend on it. Re-writing the same
+  register with the same data for a few extra cycles is idempotent; losing
+  a forwarded operand is not. This is the same class of bug the
+  `store_data_latched` snapshot (section 2c) exists to prevent.
+- **Every EX-stage architectural side effect must be suppressed**
+  (`ex_commit`). ID/EX is being held and will re-present the same
+  instruction next cycle, so letting it redirect, write a CSR, take a trap,
+  return from one, flush the TLB or train the predictor would do all of
+  that twice. The pre-existing stalls never needed this, because the only
+  instructions that could cause them were divides and memory accesses —
+  neither of which writes a CSR or redirects. Under `dbus_wait` the
+  instruction in EX can be anything.
+
+The page-table walkers deliberately stayed *off* the bus, on dedicated read
+ports into `wb_ram.v`. Page tables were already documented as living in
+plain RAM, so bussing them would have bought nothing and cost a stall path
+inside `mmu.v`, whose FSM latches PTE data assuming it arrives
+combinationally.
+
+### The interconnect
+
+`wb_interconnect.v` is a shared bus, not a crossbar: one master at a time,
+so address/data/`we`/`sel` are a single broadcast copy and only `stb` is
+decoded per slave. A load or store therefore costs the fetch behind it a
+cycle — the classic single-port-memory tradeoff, taken deliberately for a
+much smaller and more obviously-correct interconnect.
+
+Arbitration is combinational fixed priority, data over instruction, with no
+sticky grant. Two consequences are load-bearing:
+
+- **Atomics are safe for free.** `cpu_wb.v` holds `cyc` across both phases
+  of an AMO's read-modify-write; since the data master is top priority,
+  holding `cyc` means it keeps winning, so nothing can slip a write in
+  between the read and the write-back. That is the Wishbone locked-cycle
+  idiom, implemented by priority alone. A *sticky* grant was the other way
+  to get this, and it turned out to be worse: stickiness plus
+  combinational re-arbitration on `ack` is a combinational loop
+  (`ack` → grant → `stb` → `ack`).
+- **The instruction master must only reach zero-wait-state slaves.**
+  Without stickiness, master 0 can lose the bus mid-transfer. That is
+  harmless only because its transfers complete in the cycle they are
+  granted, which holds while it only reaches ROM and RAM.
+
+Starvation isn't possible despite the fetch master always losing: a data
+access is one transaction that then completes, and while it is outstanding
+the whole pipeline is frozen, so nothing can queue behind it.
+
+An access decoding to no slave is acked immediately with zero data rather
+than left hanging — a bus that never acks would wedge the CPU permanently,
+turning a stray pointer into a silent hang.
+
+### `cpu_wb.v` — the adapter
+
+Requests are issued *combinationally* rather than out of a state register,
+so against a zero-wait-state slave a transfer completes in the cycle it
+starts and memory costs what it did before the bus existed; a registered
+"go to REQUEST state" FSM would have doubled the cost of every access.
+
+Two pieces of real work happen here:
+
+- **Byte lanes.** The core's native convention puts sub-word data in the
+  *low* lanes with the exact byte address on the bus (what `dmem.v`
+  implemented). Wishbone wants a word-aligned address plus `sel`, so the
+  adapter shifts store data up into the addressed lane and load data back
+  down. This assumes naturally-aligned accesses — true here, but an
+  assumption.
+- **Two-phase AMO.** `dmem_re` is *not* asserted for AMO/LR/SC (the core
+  doesn't classify them as loads), so a new `dmem_is_amo` output is what
+  says a read is needed at all. The read data is latched so it stays stable
+  for the write phase, because the core recomputes `dmem_wdata`
+  combinationally from whatever `dmem_rdata` currently shows.
+
+There is also a one-entry fetch buffer, tagged with the full address. Its
+real job isn't caching — it's to stop the fetch master re-requesting the
+same word every cycle while the pipeline is held up by something else, and
+in particular to stop it holding `cyc` permanently asserted.
+
+### A real bug this found
+
+The SoC's first full run passed every test except atomics, and the cause
+was a latent ordering assumption rather than anything in the new code. An
+SC both *reads* the reservation (to decide success) and *clears* it. With
+zero-latency memory those happen in the same single cycle and the order
+never mattered. Over a bus, an SC occupies MEM for several cycles, so
+clearing it on the first pulled `sc_match` out from under the write phase:
+the store was still issued, but reported failure. The fix is that the
+reservation now holds across `dbus_stall`. Every other update in that
+block is idempotent across a stall; that one is not — which is precisely
+why it survived until a multi-cycle memory existed to expose it.
+
+### Peripherals
+
+`clint.v`, `plic.v` and `uart.v` needed **no changes** to join the bus —
+`wb_periph_bridge.v` adapts their existing `addr/wdata/we/re/rdata`
+convention, instantiated once each. The bridge is also where a real hazard
+gets handled: the PLIC's claim register and the UART's RXDATA have *read
+side effects*, so `re` is gated on the interconnect's `s_data_master`,
+ensuring a stray instruction fetch into MMIO space can't claim an interrupt
+or eat a received byte. MMIO registers are word-accessed by convention;
+a sub-word access to one would go through the adapter's lane shifting and
+is not something the peripherals model.
+
+`wb_gpio.v` and `wb_spi.v` are native Wishbone. The SPI master is
+deliberately the one slave with **real multi-cycle wait states** — a DATA
+write withholds `ack` until all 8 bits have shifted. That makes the driver
+trivial (a byte exchange is one store plus one load, no polling), and more
+importantly it is what actually exercises `dbus_wait` end to end; every
+other slave acks combinationally and would have left that logic unverified.
+
+### Boot flow
+
+`software/soc/bootrom.c` runs from ROM at the reset vector: bring up the
+console, initialize the SD card over SPI, read a header block, pull the
+program image into RAM and jump to it. It is freestanding — no libc, no
+`.data` — so it can't be broken by an image that hasn't been copied in yet.
+`link_rom.ld` asserts `.data` is empty rather than silently producing a
+broken image, since `crt0_rom.S` has no ROM-to-RAM copy loop.
+
+`sim/tb_soc.v` runs the whole thing with a simulated SD card
+(`sim/sd_card_model.v`, implementing CMD0/8/55/58, ACMD41 and CMD17) and
+decodes the UART line back into console text. Nothing is preloaded into
+RAM, so the output is real evidence the entire chain works.
+
 ## 13. Where this design stops (by design)
 
 - **Single-issue, in-order** — one instruction fetched per cycle, no
@@ -695,6 +870,14 @@ preloaded content is already known, by construction, to start at address
   for a store) faults rather than being set automatically by the walker.
 - **`MXR`/`SUM`/`TVM`/`TW`/`TSR`** in `mstatus` are hardwired 0 — real
   spec fields this core doesn't implement the semantics of yet.
+- **The SoC is memory-limited and has never run on hardware.** 256 KB of
+  on-chip RAM, no external DRAM controller (`wb_ram.v`'s header marks the
+  seam where one would go), no JTAG debug module, no Ethernet. And nothing
+  in `fpga/` has been synthesized, placed, routed or timed — see
+  `fpga/README.md`, which is explicit about what is and isn't known.
+- **No caches.** Every fetch and every load goes to the bus. With a
+  shared-bus interconnect that also means a load or store costs the fetch
+  behind it a cycle.
 
 These are exactly the gaps discussed in `README.md`'s section on what it
 would take to run Linux — worth reading that section if you're wondering

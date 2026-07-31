@@ -1,0 +1,152 @@
+/dts-v1/;
+
+/*
+ * Device tree for the SoC in rtl/soc/soc_top.v.
+ *
+ * Build it with `make dtb`, which compiles it and then round-trips the
+ * result back to source to confirm it decodes.
+ *
+ * What this is and isn't: it is an accurate description of the hardware in
+ * the standard format that RISC-V firmware (OpenSBI, U-Boot, Linux) expects
+ * to be handed. It is *not* consumed by anything in this project today - the
+ * boot ROM and the RAM program both have the memory map compiled in via
+ * software/soc/soc.h. It exists because a device tree is the interface any
+ * real system software would come looking for, and writing it now is what
+ * makes the address map explicit and reviewable in one place.
+ *
+ * Anything here that would need to change before real supervisor software
+ * could use it is called out in a comment rather than quietly fudged.
+ *
+ * Frequencies assume a 50 MHz board clock. That is a placeholder - see
+ * fpga/README.md. The `timebase-frequency` in particular must match what the
+ * CLINT's mtime actually counts at, and in this design mtime increments once
+ * per *system clock* (rtl/clint.v, a documented simplification versus a real
+ * separate always-on reference clock), so the two are the same number here.
+ */
+
+/ {
+    #address-cells = <1>;
+    #size-cells = <1>;
+    compatible = "riscv-fpga-cpu,soc";
+    model = "From-scratch RV32IMA Wishbone SoC";
+
+    chosen {
+        /* No bootargs: there is no kernel to pass them to yet. stdout-path
+         * is honored by U-Boot/OpenSBI-style firmware to pick a console. */
+        stdout-path = "serial0:115200n8";
+    };
+
+    aliases {
+        serial0 = &uart0;
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <50000000>;
+
+        cpu0: cpu@0 {
+            device_type = "cpu";
+            reg = <0>;
+            compatible = "riscv";
+            /* M and A are implemented in hardware even though software/ is
+             * compiled as rv32im - see software/soc/main.c's note on the
+             * missing rv32ima multilib. */
+            riscv,isa = "rv32ima_zicsr_zifencei";
+            riscv,isa-base = "rv32i";
+            riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei";
+            mmu-type = "riscv,sv32";
+            clock-frequency = <50000000>;
+            status = "okay";
+
+            cpu0_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                compatible = "riscv,cpu-intc";
+                interrupt-controller;
+            };
+        };
+    };
+
+    memory@80000000 {
+        device_type = "memory";
+        /* 256 KB of on-chip block RAM. This is the node that would grow to
+         * the DRAM size if wb_ram.v were swapped for a real memory
+         * controller - see ARCHITECTURE.md's SoC section. */
+        reg = <0x80000000 0x00040000>;
+    };
+
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        compatible = "simple-bus";
+        ranges;
+
+        rom@0 {
+            compatible = "mtd-rom";
+            reg = <0x00000000 0x00004000>;
+            read-only;
+        };
+
+        clint0: clint@2000000 {
+            compatible = "riscv,clint0";
+            reg = <0x02000000 0x00010000>;
+            /* 3 = machine software interrupt, 7 = machine timer interrupt */
+            interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+        };
+
+        plic0: plic@3000000 {
+            compatible = "riscv,plic0";
+            reg = <0x03000000 0x00010000>;
+            /* Single M-mode context. Real supervisor software generally
+             * wants an S-mode context (cpu0_intc 9) as well; rtl/plic.v
+             * implements only the M-mode one, and that limitation is
+             * described in its header. */
+            interrupts-extended = <&cpu0_intc 11>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+            riscv,ndev = <8>;
+        };
+
+        uart0: serial@4000000 {
+            /* Not a 16550 - this is rtl/uart.v, a three-register polled
+             * design with its own layout (txdata/rxdata/status). A driver
+             * would have to match on this compatible string specifically;
+             * claiming ns16550a here would be a lie that loads a driver
+             * which then talks to the wrong registers. */
+            compatible = "riscv-fpga-cpu,uart0";
+            reg = <0x04000000 0x00010000>;
+            clock-frequency = <50000000>;
+            current-speed = <115200>;
+            status = "okay";
+        };
+
+        gpio0: gpio@5000000 {
+            compatible = "riscv-fpga-cpu,gpio0";
+            reg = <0x05000000 0x00010000>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            ngpios = <16>;
+            interrupt-controller;
+            #interrupt-cells = <2>;
+            interrupt-parent = <&plic0>;
+            interrupts = <2>;
+            status = "okay";
+        };
+
+        spi0: spi@6000000 {
+            compatible = "riscv-fpga-cpu,spi0";
+            reg = <0x06000000 0x00010000>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            /* The card the boot ROM loads the program image from. */
+            mmc@0 {
+                compatible = "mmc-spi-slot";
+                reg = <0>;
+                spi-max-frequency = <25000000>;
+                voltage-ranges = <3300 3300>;
+            };
+        };
+    };
+};
