@@ -1,0 +1,11 @@
+# Build artifacts
+obj_dir/
+sim/sim.out
+sim/wave.vcd
+sim/wave_verilator.vcd
+
+# Local tool config (not shared)
+.claude/settings.local.json
+
+# OS cruft
+.DS_Store
