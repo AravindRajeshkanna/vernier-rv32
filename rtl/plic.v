@@ -148,4 +148,76 @@ module plic #(
             end
         end
     end
+`ifdef FORMAL
+    // ---- formal properties (formal/run.sh) ----
+    //
+    // These live inside the module rather than in a wrapper because the
+    // interesting state is in arrays (`pending`, `enable_r`, `priority_r`),
+    // and yosys cannot follow a hierarchical reference into a submodule's
+    // array with a variable index. Compiled only under -DFORMAL, so
+    // simulation and synthesis never see them.
+    //
+    // This encoder already shipped one bug of exactly the shape these
+    // properties catch: it overwrote its answer on every eligible source
+    // instead of comparing priorities, silently degenerating into "lowest
+    // eligible ID wins". A directed test happened to catch it. A solver
+    // checking all 2^30-odd priority/enable/pending/threshold combinations
+    // would have caught it on the first run.
+    // BMC starts from a completely unconstrained state, so without this the
+    // solver is free to invent a power-on state no reset sequence can reach
+    // - both `pending` and `in_service` set for the same source, say - and
+    // report a counterexample for it. Requiring reset in the first step
+    // makes every trace it explores start from the real reset state.
+    reg f_initialized = 1'b0;
+    always @(posedge clk) f_initialized <= 1'b1;
+    always @(*) if (!f_initialized) assume (rst);
+
+    integer f;
+    reg       f_any_eligible;
+    reg [2:0] f_max_priority;
+    always @(*) begin
+        f_any_eligible = 1'b0;
+        f_max_priority = 3'd0;
+        for (f = 1; f <= NUM_SOURCES; f = f + 1) begin
+            if (pending[f] && enable_r[f] && (priority_r[f] > threshold_r)) begin
+                f_any_eligible = 1'b1;
+                if (priority_r[f] > f_max_priority)
+                    f_max_priority = priority_r[f];
+            end
+        end
+    end
+
+    always @(posedge clk) begin
+        if (!rst) begin
+            // The interrupt line is exactly "something is claimable" - not an
+            // approximation. A spurious eip sends the CPU into a handler with
+            // nothing to claim; a missing one loses the interrupt.
+            assert (eip == f_any_eligible);
+
+            if (claim_any) begin
+                // A claim names a source that is genuinely eligible...
+                assert (claim_id >= 1 && claim_id <= NUM_SOURCES);
+                assert (pending[claim_id]);
+                assert (enable_r[claim_id]);
+                assert (priority_r[claim_id] > threshold_r);
+                // ...and the *highest*-priority one. This is the property the
+                // original bug violated.
+                assert (priority_r[claim_id] == f_max_priority);
+            end else begin
+                // Software reads zero as "spurious interrupt, nothing to do",
+                // so a nonzero ID here would have it complete a source it
+                // never claimed.
+                assert (claim_id == 8'd0);
+            end
+
+            // A source in service is never handed out again. This is what
+            // makes claim/complete a handshake rather than a suggestion: a
+            // still-asserted level source must not be re-claimed before the
+            // handler that owns it has finished.
+            for (f = 1; f <= NUM_SOURCES; f = f + 1)
+                if (in_service[f] && claim_any)
+                    assert (claim_id != f[7:0]);
+        end
+    end
+`endif
 endmodule

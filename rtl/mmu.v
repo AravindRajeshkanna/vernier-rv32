@@ -21,7 +21,8 @@
 //  - TLB permission bits are cached at install time and trusted on every
 //    hit (never re-walked) - per spec, software must SFENCE.VMA after
 //    changing a PTE that's could be cached, so this is correct as long as
-//    that contract is honored.
+//    that contract is honored. The U bit is cached alongside them, so the
+//    user/supervisor check below applies identically on a hit and on a walk.
 //
 // The walker reads PTEs through its own read-only port (`ptw_addr`/
 // `ptw_rdata`) so it never contends with the MEM stage's own load/store
@@ -35,6 +36,9 @@ module mmu (
     input  wire [31:0] va,
     input  wire        is_store,
     input  wire        is_fetch,   // instruction fetch: check X instead of R/W permission
+    input  wire        is_user,    // effective privilege of this access is U (not S)
+    input  wire        sum,        // mstatus.SUM: let S-mode read/write user pages
+    input  wire        mxr,        // mstatus.MXR: let a load read an execute-only page
     input  wire        sfence,     // SFENCE.VMA: flush the whole TLB
     input  wire [21:0] satp_ppn,
 
@@ -51,6 +55,13 @@ module mmu (
     reg [31:0] va_r;
     reg        store_r;
     reg        fetch_r;
+    // Latched with the request, like store_r/fetch_r, rather than read live
+    // during the walk. A walk takes several cycles, and the pipeline behind
+    // it keeps moving; sampling the privilege or the SUM/MXR bits at the end
+    // would let an unrelated later instruction's state decide whether this
+    // access is permitted.
+    reg        user_r;
+    reg        sum_r, mxr_r;
     reg [31:0] pte1_r;
 
     // ---- TLB ----
@@ -59,6 +70,7 @@ module mmu (
     reg        tlb_super [0:7];
     reg [21:0] tlb_ppn   [0:7]; // the leaf PTE's raw PPN field
     reg        tlb_r [0:7], tlb_w [0:7], tlb_x [0:7], tlb_a [0:7], tlb_d [0:7];
+    reg        tlb_u [0:7];
     reg [2:0]  repl_ptr;
 
     integer i;
@@ -76,9 +88,37 @@ module mmu (
         end
     end
 
-    wire perm_ok_hit = tlb_a[tlb_hit_idx] &&
-                        (is_fetch ? tlb_x[tlb_hit_idx] :
-                         is_store ? (tlb_w[tlb_hit_idx] && tlb_d[tlb_hit_idx]) : tlb_r[tlb_hit_idx]);
+    // Sv32 permission check, shared by the TLB-hit path and both walk levels.
+    //
+    // The user/supervisor rule is the part that was missing entirely before:
+    // without it a U-mode access could reach a supervisor page and an S-mode
+    // access could reach a user page, which is the whole isolation boundary
+    // the U bit exists to draw. riscv-tests found the thread (rv32mi-p-illegal
+    // probes for SUM/MXR); the missing U check was underneath it.
+    //
+    //  - U-mode may only touch pages with U=1.
+    //  - S-mode may only touch pages with U=1 if SUM is set, and *never* may
+    //    fetch instructions from one regardless of SUM - the spec carves
+    //    execution out explicitly, so that SUM cannot be used to make user
+    //    code executable at supervisor privilege.
+    //  - MXR widens a load (not a fetch) to accept an execute-only page.
+    function perm_ok;
+        input pu, pr, pw, px, pa, pd;   // the PTE's permission bits
+        input fetch, store, user, sum_b, mxr_b;
+        begin
+            if (!pa)                                   perm_ok = 1'b0; // no hardware A/D update
+            else if (user && !pu)                      perm_ok = 1'b0;
+            else if (!user && pu && (fetch || !sum_b)) perm_ok = 1'b0;
+            else if (fetch)                            perm_ok = px;
+            else if (store)                            perm_ok = pw && pd;
+            else                                       perm_ok = pr || (mxr_b && px);
+        end
+    endfunction
+
+    wire perm_ok_hit = perm_ok(tlb_u[tlb_hit_idx], tlb_r[tlb_hit_idx],
+                               tlb_w[tlb_hit_idx], tlb_x[tlb_hit_idx],
+                               tlb_a[tlb_hit_idx], tlb_d[tlb_hit_idx],
+                               is_fetch, is_store, is_user, sum, mxr);
     wire [33:0] pa_hit_normal_wide = {tlb_ppn[tlb_hit_idx], va[11:0]};
     wire [33:0] pa_hit_super_wide  = {tlb_ppn[tlb_hit_idx][21:10], va[21:0]};
     wire [31:0] pa_hit_normal = pa_hit_normal_wide[31:0];
@@ -93,7 +133,7 @@ module mmu (
     wire [31:0] l1_addr     = l1_sum[31:0];
 
     wire v1 = pte1_r[0], r1 = pte1_r[1], w1 = pte1_r[2], x1 = pte1_r[3];
-    wire a1 = pte1_r[6], d1 = pte1_r[7];
+    wire u1 = pte1_r[4], a1 = pte1_r[6], d1 = pte1_r[7];
     wire leaf1       = v1 && (r1 || (x1 && !w1));
     wire reserved1   = v1 && !r1 && w1;
     wire misaligned1 = leaf1 && (pte1_r[19:10] != 10'b0); // superpage needs PPN[0]=0
@@ -106,16 +146,18 @@ module mmu (
     wire [31:0] pte2 = ptw_rdata; // only meaningful while in S_L2 and pte1 was a pointer
 
     wire v2 = pte2[0], r2 = pte2[1], w2 = pte2[2], x2 = pte2[3];
-    wire a2 = pte2[6], d2 = pte2[7];
+    wire u2 = pte2[4], a2 = pte2[6], d2 = pte2[7];
     wire leaf2     = v2 && (r2 || (x2 && !w2));
     wire reserved2 = v2 && !r2 && w2;
 
     wire l1_conclusive = !v1 || reserved1 || leaf1; // fault-or-leaf at level 1: no level-2 read needed
 
     wire fault_from_l1 = !v1 || reserved1 || misaligned1 ||
-                          !(a1 && (fetch_r ? x1 : (store_r ? (w1 && d1) : r1)));
+                          !perm_ok(u1, r1, w1, x1, a1, d1,
+                                   fetch_r, store_r, user_r, sum_r, mxr_r);
     wire fault_from_l2 = !v2 || reserved2 || !leaf2 ||
-                          !(a2 && (fetch_r ? x2 : (store_r ? (w2 && d2) : r2)));
+                          !perm_ok(u2, r2, w2, x2, a2, d2,
+                                   fetch_r, store_r, user_r, sum_r, mxr_r);
 
     wire        walk_fault = l1_conclusive ? fault_from_l1 : fault_from_l2;
     wire [33:0] walk_pa_super_wide  = {pte1_r[31:20], vpn0, va_r[11:0]};
@@ -142,6 +184,9 @@ module mmu (
                         va_r    <= va;
                         store_r <= is_store;
                         fetch_r <= is_fetch;
+                        user_r  <= is_user;
+                        sum_r   <= sum;
+                        mxr_r   <= mxr;
                         state   <= S_L1;
                     end
                 end
@@ -160,6 +205,7 @@ module mmu (
                         tlb_x[repl_ptr]     <= l1_conclusive ? x1 : x2;
                         tlb_a[repl_ptr]     <= l1_conclusive ? a1 : a2;
                         tlb_d[repl_ptr]     <= l1_conclusive ? d1 : d2;
+                        tlb_u[repl_ptr]     <= l1_conclusive ? u1 : u2;
                         repl_ptr <= repl_ptr + 3'd1;
                     end
                     state <= S_IDLE;

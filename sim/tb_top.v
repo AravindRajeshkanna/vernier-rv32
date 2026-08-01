@@ -47,12 +47,29 @@
 //      handler must claim the priority-5 source first, then priority-3,
 //      demonstrating real claim/complete semantics (not just a single
 //      pending bit).
-//  13. Instruction-fetch page fault (cause 12): a 4MB identity-mapping
-//      superpage keeps this program's own code fetchable once satp is
-//      enabled and the hart drops to U-mode, but a second mapping is
-//      deliberately non-executable (X=0) - jumping there must fault via
-//      the *instruction* MMU's own permission check, recovered the same
-//      forced-return-to-M way as the EBREAK case above.
+//  13. Instruction-fetch page fault (cause 12), via the *instruction* MMU's
+//      own permission check, recovered the same forced-return-to-M way as
+//      the EBREAK case above.
+//
+//      This part no longer demonstrates what it was written to demonstrate,
+//      and it is worth being precise about why. It was built around a 4MB
+//      identity-mapping superpage that kept this program's own code
+//      fetchable once satp is enabled and the hart drops to U-mode, with a
+//      jump to a second, unmapped region as the thing that faults. But that
+//      superpage's PTE has U=0, and the MMU now enforces the U bit (it
+//      previously ignored it entirely - see rtl/mmu.v). A U-mode fetch from
+//      a supervisor page must fault, so the fault now happens on the very
+//      first U-mode instruction instead of at the jump.
+//
+//      The part still passes, and still proves a U-mode instruction-fetch
+//      page fault is raised and recovered from. It no longer distinguishes
+//      *which* permission was violated. Fixing that would mean giving the
+//      U-mode code its own U=1 page - impossible here without regenerating
+//      the program, because its U-mode and S-mode code are interleaved in
+//      the same 4KB pages, and this program is hand-assembled hex with no
+//      source. The riscv-tests suite (tests/, `make isa`) covers the
+//      distinction properly: rv32si-p-dirty and the rv32mi page-fault tests
+//      check each permission bit separately against a real page table.
 module tb_top;
     // Whole-program total, not just Part 11's loop: every branch/JAL/
     // JALR/MRET/SRET in the entire run trains the same BTB and can
@@ -65,7 +82,14 @@ module tb_top;
     // loop contributes only 2 of these (a cold-miss on the first taken
     // branch, a loop-exit mispredict on the last) rather than one per
     // iteration, which is the predictor actually working.
-    localparam EXPECT_MISPREDICTS = 54;
+    //
+    // Moved 54 -> 53 when the MMU started enforcing the PTE's U bit. See the
+    // Part 13 note above: the program now takes its instruction-fetch page
+    // fault one instruction earlier, at the drop into U-mode rather than at
+    // the jump, so one taken jump (and its cold-miss mispredict) no longer
+    // executes. That is a control-flow change in the program, which is
+    // exactly the case this comment says to recompute for.
+    localparam EXPECT_MISPREDICTS = 53;
 
     reg clk = 0;
     reg rst = 1;

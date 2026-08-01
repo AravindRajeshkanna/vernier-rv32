@@ -7,6 +7,11 @@
 #
 # Usage:
 #   make sim         -> run the hand-assembled self-checking testbench (Icarus)
+#   make isa          -> build + run the official RISC-V architectural tests
+#   make cosim        -> co-simulate every ISA test against Spike, instruction
+#                        by instruction
+#   make formal       -> bounded model checking of key modules (yosys + z3)
+#   make coremark     -> build and run CoreMark on the SoC in simulation
 #   make wave         -> run sim, then open the waveform (surfer)
 #   make wave_soc     -> same for the SoC simulation
 #   make verilator    -> build and run with Verilator instead
@@ -53,7 +58,8 @@ SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc dtb clean
+.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc dtb \
+        isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
 
@@ -128,6 +134,82 @@ dts/soc.dtb: dts/soc.dts
 	@echo "--- round-tripping back to source as a sanity check ---"
 	@dtc -I dtb -O dts $@ > /dev/null && echo "device tree OK"
 
+# =====================================================================
+# Verification
+# =====================================================================
+# The RTL list for anything built on the SoC. Same files as SOC_RTL, but the
+# ISA/benchmark testbenches bring their own top-level rather than tb_soc.v.
+ISA_TB   = sim/tb_isa.v sim/tracer.v
+BENCH_TB = sim/tb_bench.v
+
+# ---- RISC-V architectural tests (riscv-tests) ----
+# Not vendored; tests/fetch.sh clones them at a pinned commit. See
+# tests/README.md for what passes, what doesn't, and why.
+isa-fetch:
+	./tests/fetch.sh
+
+tests/build/manifest.txt:
+	@test -d tests/riscv-tests/env/p || \
+	    { echo "riscv-tests not fetched - run 'make isa-fetch'"; exit 1; }
+	./tests/build.sh
+
+isa-build: tests/build/manifest.txt
+
+sim/sim_isa.out: $(ISA_TB) $(SOC_RTL)
+	$(IVERILOG) -g2012 -o $@ $(ISA_TB) $(SOC_RTL)
+
+isa: sim/sim_isa.out isa-build
+	./tests/run.sh
+
+# ---- co-simulation against Spike ----
+# Stricter than the tests: compares every retired instruction, not just the
+# final verdict. Needs `spike` on PATH.
+cosim: sim/sim_isa.out isa-build
+	python3 tests/cosim.py --all
+
+# ---- formal (yosys + yosys-smtbmc + z3) ----
+formal:
+	./formal/run.sh
+
+# ---- CoreMark ----
+COREMARK_DIR   = software/bench/coremark
+COREMARK_ITERS ?= 1
+COREMARK_SRCS  = $(COREMARK_DIR)/core_main.c $(COREMARK_DIR)/core_list_join.c \
+                  $(COREMARK_DIR)/core_matrix.c $(COREMARK_DIR)/core_state.c \
+                  $(COREMARK_DIR)/core_util.c
+COREMARK_PORT  = software/bench/crt0_bench.S software/bench/core_portme.c \
+                  software/syscalls.c software/uart.c
+# -march must match the rest of software/: rv32im is what has a multilib, and
+# zicsr is needed because core_portme.c reads the `cycle` CSR directly.
+COREMARK_CFLAGS = -march=rv32im_zicsr_zifencei -mabi=ilp32 -specs=nano.specs \
+                   -ffreestanding -O2 -nostartfiles \
+                   -DITERATIONS=$(COREMARK_ITERS) -DPERFORMANCE_RUN=1 \
+                   -DFLAGS_STR='"-O2 -march=rv32im"' \
+                   -I$(COREMARK_DIR) -Isoftware/bench -Isoftware \
+                   -T software/bench/link_bench.ld
+
+coremark-fetch:
+	./software/bench/fetch-coremark.sh
+
+software/bench/coremark.elf: $(COREMARK_PORT) software/bench/link_bench.ld \
+                              software/bench/core_portme.h
+	@test -f $(COREMARK_DIR)/core_main.c || \
+	    { echo "coremark not fetched - run 'make coremark-fetch'"; exit 1; }
+	$(RISCV_CC) $(COREMARK_CFLAGS) -o $@ $(COREMARK_PORT) $(COREMARK_SRCS)
+
+sim/coremark.hex: software/bench/coremark.elf software/bin2hex.py
+	$(RISCV_OBJCOPY) -O binary software/bench/coremark.elf software/bench/coremark.bin
+	python3 software/bin2hex.py --word-size=1 software/bench/coremark.bin > $@
+
+sim/sim_bench.out: $(BENCH_TB) $(SOC_RTL)
+	$(IVERILOG) -g2012 -o $@ $(BENCH_TB) $(SOC_RTL)
+
+coremark: sim/sim_bench.out sim/coremark.hex
+	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
+
+# Everything that can gate a change, in rough order of how fast it fails.
+verify: sim sim_software sim_soc isa cosim formal
+
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \
@@ -135,4 +217,7 @@ clean:
 	       sim/sim_soc.out sim/wave_soc.vcd sim/bootrom.hex sim/card.hex \
 	       software/soc/bootrom.elf software/soc/bootrom.bin \
 	       software/soc/socprog.elf software/soc/socprog.bin \
-	       dts/soc.dtb
+	       dts/soc.dtb \
+	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \
+	       software/bench/coremark.elf software/bench/coremark.bin \
+	       tests/build formal/build

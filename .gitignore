@@ -25,3 +25,14 @@ fpga/build/
 
 # OS cruft
 .DS_Store
+
+# Verification: upstream suites (fetched, not vendored) and their build output
+tests/riscv-tests/
+tests/build/
+software/bench/coremark/
+software/bench/coremark.elf
+software/bench/coremark.bin
+sim/sim_isa.out
+sim/sim_bench.out
+sim/coremark.hex
+formal/build/

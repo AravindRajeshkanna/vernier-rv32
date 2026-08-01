@@ -76,4 +76,68 @@ module btb #(
             end
         end
     end
+`ifdef FORMAL
+    // ---- formal properties (formal/run.sh) ----
+    //
+    // The BTB is never architecturally authoritative - EX recomputes every
+    // outcome and overrides a wrong prediction - so its bugs cost
+    // performance, not correctness, and a pass/fail test cannot see them.
+    // The only other check on this module is a single recorded mispredict
+    // count in sim/tb_top.v, which says nothing about *why* a prediction
+    // was made. Compiled only under -DFORMAL.
+    // BMC starts from a completely unconstrained state, so without this the
+    // solver is free to invent a power-on state no reset sequence can reach
+    // - a witness register already armed against garbage, say - and report a
+    // counterexample for it. Requiring reset in the first step
+    // makes every trace it explores start from the real reset state.
+    reg f_initialized = 1'b0;
+    always @(posedge clk) f_initialized <= 1'b1;
+    always @(*) if (!f_initialized) assume (rst);
+
+    always @(posedge clk) begin
+        if (!rst) begin
+            if (predicted_taken) begin
+                // No prediction without a tag match. This is the aliasing
+                // property: the table is direct-mapped, so two PCs sharing an
+                // index will collide, and the tag is the only thing stopping
+                // one branch from inheriting another's target.
+                assert (valid[predict_idx]);
+                assert (tag[predict_idx] == predict_tag);
+                // And it is genuinely in a taken counter state - predicting
+                // taken from weakly-not-taken would make the counter pointless.
+                assert (counter[predict_idx][1]);
+            end
+        end
+    end
+
+    // Training touches only the entry it indexes. Watched via one
+    // arbitrary-but-fixed witness entry: if training could corrupt a
+    // neighbour, unrelated branches would start mispredicting with nothing
+    // in the trace to explain it.
+    reg [IDX_BITS-1:0] f_witness_idx;
+    reg [31:0]         f_witness_target;
+    reg                f_witness_valid;
+    reg [TAG_BITS-1:0] f_witness_tag;
+    reg                f_armed;
+
+    // Synchronous reset only: an assertion inside a block with two edge
+    // triggers is not something yosys's async2sync can lower.
+    always @(posedge clk) begin
+        if (rst) begin
+            f_armed <= 1'b0;
+        end else if (!f_armed) begin
+            f_witness_idx    <= train_idx + 1'b1; // any index but the trained one
+            f_witness_target <= target[train_idx + 1'b1];
+            f_witness_valid  <= valid[train_idx + 1'b1];
+            f_witness_tag    <= tag[train_idx + 1'b1];
+            f_armed          <= 1'b1;
+        end else if (!(train_en && train_idx == f_witness_idx)) begin
+            assert (target[f_witness_idx] == f_witness_target);
+            assert (valid[f_witness_idx]  == f_witness_valid);
+            assert (tag[f_witness_idx]    == f_witness_tag);
+        end else begin
+            f_armed <= 1'b0; // the witness got trained; stop watching it
+        end
+    end
+`endif
 endmodule

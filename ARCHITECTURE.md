@@ -903,6 +903,80 @@ walk, so a walk in progress always implies the address was already judged
 aligned on cycle one, making "not mid-walk" exactly the right window to
 decide this in.
 
+## 12c. Verification
+
+Four layers, each answering something the one before it cannot. `make verify`
+runs all of them; `tests/README.md` is the detailed writeup.
+
+| Layer | Question | Result |
+|---|---|---|
+| Directed tests | Does the feature I just wrote work? | `make sim`, `make sim_soc` pass |
+| riscv-tests | Does this implement *RISC-V*, judged by somebody else's suite? | 79 pass, 3 xfail |
+| Spike co-simulation | Did it execute the *same instructions* as the reference model? | 82/82 traces match |
+| Formal (yosys + z3) | Does this module hold for *every* input? | 4 proved, bound 12 cycles |
+
+The layering is not redundancy. A directed test only catches what its author
+thought to assert. An architectural test catches what the ISA requires but
+still only checks an end-of-program verdict — a core can reach the right
+answer through a wrong sequence. Co-simulation closes that by diffing every
+retired instruction `(pc, insn, rd, value)` against Spike. And formal closes
+what neither can: the PLIC's arbitration is a function of 8 priorities, 8
+enables, 8 pending bits and a threshold, and no test suite is going to
+enumerate 2^30 configurations.
+
+### The retire trace
+
+`cpu_core.v` carries shadow PC/instruction registers down the pipeline and
+exposes a one-line-per-retired-instruction trace, printed by `sim/tracer.v`
+and diffed by `tests/cosim.py`. Two decisions in it are load-bearing:
+
+- The shadow registers ride **inside the existing pipeline-register `always`
+  blocks**. A parallel block would have to restate every stall and flush
+  condition and would drift the first time one changed — precisely the shape
+  of the operand-drift bug in §12b. Riding along makes the trace incapable of
+  disagreeing with the pipeline.
+- A **trapping instruction is not traced**, because it does not retire. Spike
+  draws the same line (an exception line instead of a commit line), and
+  matching that definition is what makes the two traces comparable at all.
+
+`instret_retire` — the same signal — also feeds `minstret`, which is now
+counted at the *end of EX* rather than at MEM. Every exception this core can
+raise is resolved by then, so nothing downstream can cancel an instruction
+that gets that far; the old MEM-based count included trapping instructions,
+which by definition do not retire.
+
+### What it found
+
+Fifteen real bugs, listed in full in `tests/README.md`. The three worth
+repeating here because they are architectural rather than cosmetic:
+
+**The MMU never checked the PTE's `U` bit.** `mmu.v` checked V/R/W/X/A/D and
+simply ignored U, so U-mode could read *and execute* supervisor pages, and
+S-mode could freely touch user pages. The entire user/supervisor isolation
+boundary — the reason U mode exists — was absent. Fixing it required adding
+`mstatus.SUM` and `MXR` too, since S-mode's legitimate access to user memory
+is gated on SUM.
+
+That fix broke the legacy hand-assembled test, in an instructive way: its
+page table maps everything as one supervisor superpage (`U=0`) and then drops
+to U-mode and keeps executing, which is architecturally impossible once the
+check exists. The test had been depending on the missing check. Its U-mode
+and S-mode code are interleaved in the same 4 KB pages, so it cannot be fixed
+without regenerating the program; the Part 13 note in `sim/tb_top.v` records
+exactly what it now does and does not demonstrate.
+
+**`mcycle` and `minstret` were driven from two `always` blocks at once** —
+the free-running increment in one, the CSR write in another. That is a
+multiple-driver conflict: undefined in simulation (whichever block the
+simulator evaluates last wins) and rejected outright by synthesis. They are
+now one block each, with the spec's priority made explicit — a write wins
+over the tick and suppresses it on *both* halves of the 64-bit counter.
+
+**An AMO was permission-checked as a load.** The data MMU's `is_store` input
+was `id_ex_is_store`, which excludes AMOs, so an atomic read-modify-write
+against a read-only page would translate successfully and then write it. LR
+is correctly still a read, which is also how Spike models it.
+
 ## 13. Where this design stops (by design)
 
 - **Single-issue, in-order** — one instruction fetched per cycle, no
@@ -921,11 +995,14 @@ decide this in.
   (`-march=rv32im`, a strict subset of what this core implements).
 - **No hardware PTE A/D auto-update** — a PTE missing Accessed (or Dirty,
   for a store) faults rather than being set automatically by the walker.
-- **`MXR`/`SUM`/`TVM`/`TW`/`TSR`** in `mstatus` are hardwired 0 — real
-  spec fields this core doesn't implement the semantics of yet.
+- **No PMP** (`pmpcfg`/`pmpaddr`) and **no debug-spec triggers**
+  (`tselect`/`tdata`). These are the only two features the RISC-V
+  architectural test suite fails this core on — see
+  `tests/expected-failures.txt`.
 - **The SoC is memory-limited and has never run on hardware.** 256 KB of
   on-chip RAM, no external DRAM controller (`wb_ram.v`'s header marks the
-  seam where one would go), no JTAG debug module, no Ethernet. And nothing
+  seam where one would go), no JTAG debug module (`docs/DEBUG.md` sets out
+  exactly what one would take), no Ethernet. And nothing
   in `fpga/` has been synthesized, placed, routed or timed — see
   `fpga/README.md`, which is explicit about what is and isn't known.
 - **No caches.** Every fetch and every load goes to the bus. With a

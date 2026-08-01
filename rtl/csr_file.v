@@ -83,17 +83,39 @@ module csr_file (
     // lets M-mode loads/stores act, for translation purposes only, as if
     // running at MPP's privilege - never affects instruction fetch)
     output wire         mstatus_mprv_out,
-    output wire [1:0]   mstatus_mpp_out
+    output wire [1:0]   mstatus_mpp_out,
+
+    // mstatus.SUM/MXR, the supervisor's two translation-control bits.
+    // SUM permits S-mode data accesses to user pages; MXR makes an
+    // execute-only page readable. Both are consumed by the data MMU.
+    output wire         mstatus_sum_out,
+    output wire         mstatus_mxr_out,
+
+    // mstatus.TVM/TW/TSR - M-mode's three "trap what supervisor does" bits.
+    // They exist so firmware can intercept operations it needs to emulate or
+    // police: TVM traps S-mode's address-translation control (SFENCE.VMA and
+    // satp), TW traps a supervisor WFI so an idle hart can be reclaimed, and
+    // TSR traps SRET. Decode in cpu_core.v turns each into an
+    // illegal-instruction trap.
+    output wire         mstatus_tvm_out,
+    output wire         mstatus_tw_out,
+    output wire         mstatus_tsr_out
 );
     localparam [1:0] PRIV_U = 2'b00, PRIV_S = 2'b01, PRIV_M = 2'b11;
 
     // MXL=1 (32-bit) in [31:30], plus one bit per implemented extension:
-    // A=bit 0, I=bit 8, M=bit 12. This previously advertised 'I' only, which
-    // was simply wrong - the core has implemented M and A for several
-    // revisions. It matters beyond tidiness: M-mode firmware (OpenSBI) and
-    // any OS read `misa` to decide what the hart can do, so under-reporting
-    // makes them disable features the hardware actually has.
-    localparam MISA    = 32'h4000_1101;
+    // A=bit 0, I=bit 8, M=bit 12, S=bit 18, U=bit 20. It matters beyond
+    // tidiness: M-mode firmware (OpenSBI) and any OS read `misa` to decide
+    // what the hart can do, so under-reporting makes them disable features
+    // the hardware actually has.
+    //
+    // This has now been wrong twice. It first advertised 'I' only, omitting M
+    // and A; the S and U bits were then still missing even though this core
+    // has full supervisor and user modes with trap delegation - which is
+    // precisely the thing firmware checks before trying to hand off to an
+    // S-mode payload. The Spike co-simulation caught the second one by
+    // diffing the value a `csrr a0, misa` actually returned.
+    localparam MISA    = 32'h4014_1101;
     localparam MHARTID = 32'h0000_0000;
 
     reg [1:0]  current_priv;
@@ -101,6 +123,8 @@ module csr_file (
     reg        mstatus_mie,  mstatus_mpie;
     reg        mstatus_sie,  mstatus_spie, mstatus_spp;
     reg        mstatus_mprv;
+    reg        mstatus_sum, mstatus_mxr;
+    reg        mstatus_tvm, mstatus_tw, mstatus_tsr;
     reg [1:0]  mstatus_mpp;
 
     reg [31:0] mtvec_r, mie_r, mscratch_r, mepc_r, mcause_r, mtval_r;
@@ -115,24 +139,65 @@ module csr_file (
     // storage), which is what the spec requires.
     reg [63:0] mcycle_r, minstret_r;
     reg [31:0] mcounteren_r, scounteren_r;
+    // mcountinhibit: bit 0 (CY) stops mcycle, bit 2 (IR) stops minstret.
+    // Only those two bits exist here, matching the only two counters that do.
+    // A stopped counter still reads and writes normally - it just does not
+    // tick, which is what makes it possible to read a consistent pair or to
+    // measure without the measurement itself counting.
+    reg [31:0] mcountinhibit_r;
 
     assign mcounteren_out = mcounteren_r;
     assign scounteren_out = scounteren_r;
 
+    // The counters are the one pair of CSRs that a write and the hardware
+    // both drive, so their writes are handled *here* rather than in the main
+    // CSR write block below. Having both blocks assign the same reg is a
+    // multiple-driver conflict: Verilog leaves the outcome to whichever block
+    // the simulator happens to evaluate last, and synthesis rejects it
+    // outright. Keeping the two effects in one block also makes their
+    // priority explicit, which the spec has an opinion about (below).
+    wire csr_write_now  = we && !trap_en && !mret_en && !sret_en;
+    wire mcycle_lo_we   = csr_write_now && (addr == 12'hB00);
+    wire mcycle_hi_we   = csr_write_now && (addr == 12'hB80);
+    wire minstret_lo_we = csr_write_now && (addr == 12'hB02);
+    wire minstret_hi_we = csr_write_now && (addr == 12'hB82);
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            mcycle_r   <= 64'b0;
-            minstret_r <= 64'b0;
-        end else begin
+            mcycle_r <= 64'b0;
+        end else if (mcycle_lo_we || mcycle_hi_we) begin
+            // A write wins over the tick, and suppresses it on *both* halves:
+            // the two halves are one 64-bit counter, so writing either one
+            // has to leave the other alone rather than letting it carry.
+            mcycle_r <= {mcycle_hi_we ? wdata : mcycle_r[63:32],
+                         mcycle_lo_we ? wdata : mcycle_r[31:0]};
+        end else if (!mcountinhibit_r[0]) begin
             mcycle_r <= mcycle_r + 64'd1;
-            if (instret_inc) minstret_r <= minstret_r + 64'd1;
+        end
+    end
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            minstret_r <= 64'b0;
+        end else if (minstret_lo_we || minstret_hi_we) begin
+            minstret_r <= {minstret_hi_we ? wdata : minstret_r[63:32],
+                           minstret_lo_we ? wdata : minstret_r[31:0]};
+        end else if (instret_inc && !mcountinhibit_r[2]) begin
+            minstret_r <= minstret_r + 64'd1;
         end
     end
 
     // Legal delegation masks: causes this core can actually raise.
-    // Exceptions {2,3,8,9,12,13,15} = illegal instr, ebreak, ECALL-from-U,
+    // Exceptions {0,2,3,4,6,8,9,12,13,15} = misaligned fetch, illegal instr,
+    // ebreak, misaligned load, misaligned store/AMO, ECALL-from-U,
     // ECALL-from-S, instruction/load/store page fault.
-    localparam [31:0] MEDELEG_MASK = 32'h0000_B30C;
+    //
+    // Causes 0/4/6 were added to this mask when the corresponding traps were
+    // implemented. Leaving them out was a real bug and not a cosmetic one: a
+    // cause that is raiseable but not delegatable always lands in M-mode, so
+    // an S-mode kernel that had asked for its own misaligned-access handler
+    // silently never got one.
+    localparam [31:0] MEDELEG_MASK = 32'h0000_B35D;
     // Interrupts {1,5,9} = SSI/STI/SEI - the only causes with a real
     // S-level target in this design.
     localparam [31:0] MIDELEG_MASK = 32'h0000_0222;
@@ -149,15 +214,20 @@ module csr_file (
     assign satp_mode_out    = satp_r[31];
     assign satp_ppn_out     = satp_r[21:0];
     assign mstatus_mprv_out = mstatus_mprv;
+    assign mstatus_sum_out  = mstatus_sum;
+    assign mstatus_mxr_out  = mstatus_mxr;
+    assign mstatus_tvm_out  = mstatus_tvm;
+    assign mstatus_tw_out   = mstatus_tw;
+    assign mstatus_tsr_out  = mstatus_tsr;
     assign mstatus_mpp_out  = mstatus_mpp;
 
     wire [31:0] mstatus_full = {
         9'b0,            // [31:23] reserved
-        1'b0,            // TSR  [22]
-        1'b0,            // TW   [21]
-        1'b0,            // TVM  [20]
-        1'b0,            // MXR  [19]
-        1'b0,            // SUM  [18]
+        mstatus_tsr,     // TSR  [22]
+        mstatus_tw,      // TW   [21]
+        mstatus_tvm,     // TVM  [20]
+        mstatus_mxr,     // MXR  [19]
+        mstatus_sum,     // SUM  [18]
         mstatus_mprv,    // MPRV [17]
         2'b00,           // XS   [16:15]
         2'b00,           // FS   [14:13]
@@ -174,8 +244,11 @@ module csr_file (
         1'b0             // WPRI [0]
     };
     // sstatus is a masked *view* of the same mstatus storage - only
-    // SPP/SPIE/SIE are visible (no separate flip-flops).
-    wire [31:0] sstatus_view = mstatus_full & 32'h0000_0122;
+    // SPP/SPIE/SIE plus the two translation-control bits SUM/MXR are
+    // visible (no separate flip-flops). SUM and MXR belong in the S-mode
+    // view because they are the supervisor's own knobs: an OS sets them
+    // around a user-memory access, and it has no access to mstatus.
+    wire [31:0] sstatus_view = mstatus_full & 32'h000C_0122;
 
     assign mtvec_out = mtvec_r;
     assign stvec_out = stvec_r;
@@ -205,6 +278,7 @@ module csr_file (
             12'h180: rdata = satp_r;
             12'h300: rdata = mstatus_full;
             12'h306: rdata = mcounteren_r;
+            12'h320: rdata = mcountinhibit_r;
             // RV32 splits every 64-bit counter into a low half and an `h`
             // high half at +0x80.
             12'hB00: rdata = mcycle_r[31:0];
@@ -241,6 +315,11 @@ module csr_file (
             mstatus_spie <= 1'b0;
             mstatus_spp  <= 1'b0;
             mstatus_mprv <= 1'b0;
+            mstatus_sum  <= 1'b0;
+            mstatus_mxr  <= 1'b0;
+            mstatus_tvm  <= 1'b0;
+            mstatus_tw   <= 1'b0;
+            mstatus_tsr  <= 1'b0;
             mstatus_mpp  <= PRIV_M;
             mtvec_r      <= 32'b0;
             mie_r        <= 32'b0;
@@ -259,6 +338,7 @@ module csr_file (
             stip_r       <= 1'b0;
             satp_r       <= 32'b0;
             mcounteren_r <= 32'b0;
+            mcountinhibit_r <= 32'b0;
             scounteren_r <= 32'b0;
         end else if (trap_en) begin
             if (trap_to_s) begin
@@ -295,9 +375,19 @@ module csr_file (
                     mstatus_sie  <= wdata[1];
                     mstatus_spie <= wdata[5];
                     mstatus_spp  <= wdata[8];
+                    // Same flip-flops as mstatus[19:18]: sstatus is a view,
+                    // not a second copy, so a supervisor writing sstatus.SUM
+                    // has to land on the bit the MMU actually reads.
+                    mstatus_sum  <= wdata[18];
+                    mstatus_mxr  <= wdata[19];
                 end
                 12'h104: mie_r <= (mie_r & ~mideleg_r) | (wdata & mideleg_r);
-                12'h105: stvec_r    <= {wdata[31:2], 2'b00};
+                // MODE is WARL and only Direct (0) and Vectored (1) are
+                // legal, so bit 1 is forced to zero rather than the whole
+                // field being flattened to Direct. Keeping bit 0 is what lets
+                // software select vectored interrupt entry; discarding it
+                // would be legal but would silently ignore the request.
+                12'h105: stvec_r    <= {wdata[31:2], 1'b0, wdata[0]};
                 12'h140: sscratch_r <= wdata;
                 12'h141: sepc_r     <= {wdata[31:1], 1'b0};
                 12'h142: scause_r   <= wdata;
@@ -306,10 +396,10 @@ module csr_file (
                 12'h144: ssip_r     <= wdata[1];
                 12'h180: satp_r     <= wdata;
                 12'h306: mcounteren_r <= wdata;
-                12'hB00: mcycle_r[31:0]    <= wdata;
-                12'hB02: minstret_r[31:0]  <= wdata;
-                12'hB80: mcycle_r[63:32]   <= wdata;
-                12'hB82: minstret_r[63:32] <= wdata;
+                12'h320: mcountinhibit_r <= wdata & 32'h0000_0005; // CY and IR only
+                // 0xB00/0xB02/0xB80/0xB82 (mcycle/minstret and their high
+                // halves) are handled in their own block above, alongside the
+                // hardware increment they share a register with.
                 12'h300: begin
                     mstatus_mie  <= wdata[3];
                     mstatus_mpie <= wdata[7];
@@ -318,11 +408,19 @@ module csr_file (
                     mstatus_spp  <= wdata[8];
                     mstatus_mpp  <= wdata[12:11];
                     mstatus_mprv <= wdata[17];
+                    mstatus_sum  <= wdata[18];
+                    mstatus_mxr  <= wdata[19];
+                    // Machine-level only: deliberately absent from the
+                    // sstatus write case, since a supervisor must not be able
+                    // to clear the bits that are trapping it.
+                    mstatus_tvm  <= wdata[20];
+                    mstatus_tw   <= wdata[21];
+                    mstatus_tsr  <= wdata[22];
                 end
                 12'h302: medeleg_r <= wdata & MEDELEG_MASK;
                 12'h303: mideleg_r <= wdata & MIDELEG_MASK;
                 12'h304: mie_r      <= wdata;
-                12'h305: mtvec_r    <= {wdata[31:2], 2'b00};
+                12'h305: mtvec_r    <= {wdata[31:2], 1'b0, wdata[0]}; // see stvec above
                 12'h340: mscratch_r <= wdata;
                 12'h341: mepc_r     <= {wdata[31:1], 1'b0};
                 12'h342: mcause_r   <= wdata;

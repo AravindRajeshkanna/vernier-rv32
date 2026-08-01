@@ -164,6 +164,11 @@ module cpu_core #(
     mmu IMMU (
         .clk(clk), .rst(rst),
         .req(itlb_req), .va(pc), .is_store(1'b0), .is_fetch(1'b1),
+        // Fetch privilege is always the hart's real current_priv: MPRV
+        // relocates data accesses only, never instruction fetch. SUM/MXR are
+        // tied off because neither applies to execution - SUM is carved out
+        // for fetch by the spec, and MXR only widens loads.
+        .is_user(current_priv == PRIV_U), .sum(1'b0), .mxr(1'b0),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(itlb_resolved), .fault(itlb_fault), .pa(itlb_pa), .busy(itlb_busy),
         .ptw_addr(iptw_addr), .ptw_rdata(iptw_rdata)
@@ -253,10 +258,30 @@ module cpu_core #(
     wire is_mret   = is_priv && (d_funct12 == 12'h302);
     wire is_sret   = is_priv && (d_funct12 == 12'h102);
     wire is_sfence_vma = is_priv && (d_funct7 == 7'b0001001); // has real rs1/rs2, not a fixed funct12
+    // WFI retires as a plain no-op. The spec explicitly permits that ("a
+    // legal implementation is to simply implement WFI as a NOP"), and it is
+    // the honest choice for this core: there is no clock gating or power
+    // state to enter, so a stall loop would burn exactly the same energy
+    // while making the pipeline harder to reason about. What matters
+    // architecturally is that WFI does not trap - software (including
+    // OpenSBI's idle path and any Linux cpuidle driver) executes it
+    // unconditionally and expects to keep running.
+    wire is_wfi        = is_priv && (d_funct12 == 12'h105);
 
+    // mstatus.TVM/TW/TSR let M-mode trap the supervisor operations it wants
+    // to intercept. Each turns an otherwise-legal instruction into an
+    // illegal-instruction trap when executed at S (never at M - firmware
+    // must not be able to trap itself).
     wire mret_priv_ok    = (current_priv == PRIV_M);
-    wire sret_priv_ok    = (current_priv != PRIV_U);
-    wire sfence_priv_ok  = (current_priv != PRIV_U);
+    wire sret_priv_ok    = (current_priv == PRIV_M) ||
+                           ((current_priv == PRIV_S) && !csr_mstatus_tsr);
+    wire sfence_priv_ok  = (current_priv == PRIV_M) ||
+                           ((current_priv == PRIV_S) && !csr_mstatus_tvm);
+    // U-mode WFI is illegal here (this core never enables it), and S-mode
+    // WFI is illegal while TW is set. Trapping immediately rather than after
+    // a bounded wait is allowed: the spec's limit is an upper bound.
+    wire wfi_priv_ok     = (current_priv == PRIV_M) ||
+                           ((current_priv == PRIV_S) && !csr_mstatus_tw);
 
     wire csr_imm_form   = is_csr && d_funct3[2];                 // CSRRWI/SI/CI
     wire csr_set_clear  = (d_funct3[1:0] == 2'b10) || (d_funct3[1:0] == 2'b11); // CSRRS(I)/CSRRC(I)
@@ -269,9 +294,16 @@ module cpu_core #(
                 12'h100, 12'h104, 12'h105, 12'h106, 12'h140, 12'h141, 12'h142,
                 12'h143, 12'h144, 12'h180,
                 12'h300, 12'h301, 12'h302, 12'h303, 12'h304, 12'h305, 12'h306,
+                12'h320,
                 12'h340, 12'h341, 12'h342, 12'h343, 12'h344,
                 12'hB00, 12'hB02, 12'hB80, 12'hB82,
                 12'hC00, 12'hC01, 12'hC02, 12'hC80, 12'hC81, 12'hC82,
+                // Machine identity. All read-only zero, which the spec allows
+                // ("may return 0 ... to indicate the field is not
+                // implemented"). They exist because firmware reads them
+                // unconditionally during boot - not returning *something* is
+                // an illegal-instruction trap in the middle of startup.
+                12'hF11, 12'hF12, 12'hF13,
                 12'hF14: csr_addr_ok = 1'b1;
                 default: csr_addr_ok = 1'b0;
             endcase
@@ -284,7 +316,16 @@ module cpu_core #(
             case (a)
                 // The user-level counter views are read-only; the machine-level
                 // originals (0xB00/0xB02/...) are writable.
-                12'h301, 12'hF14,
+                //
+                // `misa` (0x301) is deliberately *not* here. It is WARL, not
+                // read-only: software legitimately writes it to try to turn an
+                // extension off, and the architected response to an
+                // unsupported request is to ignore the write - not to trap.
+                // csr_file.v has no write case for it, so the write lands in
+                // the ignore-by-default branch, which is exactly WARL. Making
+                // it trap instead breaks any feature-probing code that writes
+                // a bit and reads it back.
+                12'hF11, 12'hF12, 12'hF13, 12'hF14,
                 12'hC00, 12'hC01, 12'hC02, 12'hC80, 12'hC81, 12'hC82: csr_addr_ro = 1'b1;
                 default: csr_addr_ro = 1'b0;
             endcase
@@ -309,12 +350,19 @@ module cpu_core #(
         (((current_priv != PRIV_M) && !csr_mcounteren[counter_idx]) ||
          ((current_priv == PRIV_U) && !csr_scounteren[counter_idx]));
 
-    wire csr_priv_illegal = is_csr && ((current_priv < d_csr_addr[9:8]) || counter_denied);
+    // satp is also gated by TVM: with it set, a supervisor reading or writing
+    // satp traps so M-mode firmware can virtualize translation.
+    wire satp_denied = is_csr && (d_csr_addr == 12'h180) &&
+                       (current_priv == PRIV_S) && csr_mstatus_tvm;
+
+    wire csr_priv_illegal = is_csr && ((current_priv < d_csr_addr[9:8]) ||
+                                       counter_denied || satp_denied);
     wire csr_illegal      = is_csr && (!csr_funct3_ok || !csr_addr_ok(d_csr_addr) ||
                                        (csr_will_write && csr_addr_ro(d_csr_addr)) || csr_priv_illegal);
     wire priv_illegal     = is_priv && !(is_ecall || is_ebreak ||
                                          (is_mret && mret_priv_ok) ||
                                          (is_sret && sret_priv_ok) ||
+                                         (is_wfi && wfi_priv_ok) ||
                                          (is_sfence_vma && sfence_priv_ok));
 
     wire valid_opcode = is_op || is_opimm || is_load || is_store || is_branch ||
@@ -460,6 +508,35 @@ module cpu_core #(
     reg        id_ex_pred_taken;
     reg [31:0] id_ex_pred_target;
 
+    // ---- retire trace (simulation only) ----
+    // A shadow copy of the PC and instruction word carried alongside the real
+    // pipeline registers, so that what leaves MEM/WB can be reported as a
+    // retired instruction. This is what sim/tracer.v prints and what the
+    // Spike co-simulation in tests/cosim.py diffs against.
+    //
+    // These deliberately ride *inside* the existing pipeline-register always
+    // blocks rather than in a parallel block of their own. A separate block
+    // would have to restate every stall and flush condition, and would then
+    // silently drift out of step the first time one of those conditions
+    // changed - the same failure mode that produced the misaligned-address
+    // bug (an operand recomputed from a control signal that had moved on).
+    // Riding along means the trace cannot disagree with the pipeline.
+    //
+    // Nothing outside a testbench reads these, so synthesis strips them; see
+    // fpga/README.md for the measured before/after.
+    reg [31:0] id_ex_instr;
+    reg [31:0] ex_mem_pc, ex_mem_instr;
+    // Carries `instret_retire` down to the trace strobe, so a trapping
+    // instruction is not reported as retired. Spike's --log-commits makes the
+    // same distinction (it prints an exception line instead of a commit line),
+    // and matching it is what lets the two traces be diffed at all.
+    reg        ex_mem_retire;
+    reg [31:0] trace_pc, trace_instr;
+    reg        trace_valid;
+    wire       trace_rd_we   = mem_wb_reg_we;
+    wire [4:0] trace_rd      = mem_wb_rd;
+    wire [31:0] trace_rd_data = mem_wb_wb_data;
+
     // =======================================================================
     // EX stage
     // =======================================================================
@@ -531,7 +608,10 @@ module cpu_core #(
 
     wire actual_taken  = (id_ex_is_branch && branch_taken) || id_ex_is_jal || id_ex_is_jalr;
     wire is_control_flow = id_ex_is_branch || id_ex_is_jal || id_ex_is_jalr;
-    wire btb_train_en = id_ex_valid && is_control_flow && ex_commit;
+    // Not trained on a misaligned target: that branch traps rather than
+    // transferring control, so caching its target would mispredict the next
+    // time round for a jump that never actually goes there.
+    wire btb_train_en = id_ex_valid && is_control_flow && ex_commit && !fetch_misaligned;
 
     reg branch_taken;
     always @(*) begin
@@ -553,6 +633,21 @@ module cpu_core #(
     wire [31:0] auipc_result  = id_ex_pc + id_ex_imm;
     wire [31:0] actual_target = id_ex_is_jal  ? jal_target  :
                                 id_ex_is_jalr ? jalr_target : branch_target;
+
+    // Misaligned instruction fetch (cause 0). Without the C extension
+    // IALIGN is 32, so any taken control transfer to an address with bit 1
+    // set is an exception - and it is reported against the *jumping*
+    // instruction, before the bad fetch is ever issued. That ordering is the
+    // whole point: the faulting PC in mepc is the branch, not the target, so
+    // a handler can see what tried to jump where.
+    //
+    // Bit 0 needs no check: JALR clears it by definition, and JAL/branch
+    // immediates have it hardwired to zero by the encoding.
+    //
+    // A not-taken branch to a misaligned target must *not* trap, which is why
+    // `actual_taken` gates this rather than the target being computed for
+    // every branch.
+    wire fetch_misaligned = is_control_flow && actual_taken && actual_target[1];
 
     // ---- data MMU: translate load/store/AMO addresses ----
     // Real spec: satp/paging only applies at S/U privilege, or to an
@@ -608,9 +703,19 @@ module cpu_core #(
     wire fence_i_en = id_ex_valid && id_ex_is_fence_i && !interrupt_taken && ex_commit;
     assign fence_i = fence_i_en;
 
+    // An AMO writes memory, so it needs W permission and reports a *store*
+    // page fault when it lacks one - checking it as a load would let a
+    // read-only page be modified. LR is the exception: it only reads, and
+    // Spike models it that way too, which matters because the co-simulation
+    // in tests/ compares fault causes against Spike's.
+    wire id_ex_is_lr_ex      = id_ex_is_amo && (id_ex_funct5 == 5'b00010);
+    wire mmu_access_is_write = id_ex_is_store || (id_ex_is_amo && !id_ex_is_lr_ex);
+
     mmu MMU (
         .clk(clk), .rst(rst),
-        .req(need_translate), .va(mem_addr_ex), .is_store(id_ex_is_store), .is_fetch(1'b0),
+        .req(need_translate), .va(mem_addr_ex), .is_store(mmu_access_is_write), .is_fetch(1'b0),
+        .is_user(effective_priv_for_data == PRIV_U),
+        .sum(csr_mstatus_sum), .mxr(csr_mstatus_mxr),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(mmu_resolved), .fault(mmu_fault), .pa(mmu_pa), .busy(mmu_busy),
         .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata)
@@ -618,7 +723,7 @@ module cpu_core #(
 
     wire mmu_wait_stall = need_translate && !mmu_resolved;
     wire mmu_fault_now  = need_translate && mmu_resolved && mmu_fault;
-    wire [31:0] mmu_cause = id_ex_is_store ? 32'd15 : 32'd13; // store/AMO or load page fault
+    wire [31:0] mmu_cause = mmu_access_is_write ? 32'd15 : 32'd13; // store/AMO or load page fault
     wire [31:0] mem_phys_addr = need_translate ? mmu_pa : mem_addr_ex;
 
     // A MEM-stage bus access that hasn't been acknowledged freezes EX too
@@ -663,6 +768,8 @@ module cpu_core #(
     wire [21:0] satp_ppn;
     wire        csr_mstatus_mprv;
     wire [1:0]  csr_mstatus_mpp;
+    wire        csr_mstatus_sum, csr_mstatus_mxr;
+    wire        csr_mstatus_tvm, csr_mstatus_tw, csr_mstatus_tsr;
     wire [31:0] csr_op_operand = id_ex_csr_imm_form ? id_ex_zimm : op1;
     reg  [31:0] csr_new_value;
     always @(*) begin
@@ -720,22 +827,47 @@ module cpu_core #(
 
     wire interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall;
 
-    wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now || mem_misaligned;
+    wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now ||
+                            mem_misaligned || fetch_misaligned;
     wire take_trap = id_ex_valid && (interrupt_taken || synchronous_trap) && ex_commit;
     // Misalignment outranks a page fault: it is detected on the virtual
     // address before translation is even attempted (see above).
+    //
+    // `fetch_misaligned` sits last because it is mutually exclusive with the
+    // others by construction - a control transfer is not a memory access and
+    // does not decode to an illegal instruction or ECALL - but ordering it
+    // explicitly means a future decoder change cannot turn an overlap into a
+    // silently wrong mcause.
     wire [31:0] cause_for_csr = interrupt_taken ? interrupt_cause :
-                                 (mem_misaligned ? misaligned_cause :
-                                 (mmu_fault_now  ? mmu_cause : id_ex_trap_cause));
+                                 (id_ex_is_trap_event ? id_ex_trap_cause :
+                                 (mem_misaligned  ? misaligned_cause :
+                                 (mmu_fault_now   ? mmu_cause :
+                                 (fetch_misaligned ? 32'd0 : id_ex_trap_cause))));
     wire [31:0] val_for_csr   = interrupt_taken ? 32'b0 :
-                                 (mem_misaligned ? mem_addr_ex :
-                                 (mmu_fault_now  ? mem_addr_ex : id_ex_trap_val));
+                                 (id_ex_is_trap_event ? id_ex_trap_val :
+                                 (mem_misaligned  ? mem_addr_ex :
+                                 (mmu_fault_now   ? mem_addr_ex :
+                                 (fetch_misaligned ? actual_target : id_ex_trap_val))));
 
     // MRET/SRET's own privilege-restore side effect must be suppressed
     // the same way reg/mem/CSR writes already are: an interrupt-preempted
     // MRET/SRET never architecturally completes, so it must not pop
     // mstatus/current_priv either (it'll simply be re-fetched after the
     // interrupt handler returns).
+    // `minstret` counts *retired* instructions, and this core's retirement
+    // point is the end of EX, not MEM: every exception it can raise - illegal
+    // instruction, page fault, misaligned address, misaligned target - is
+    // resolved by then, so nothing downstream can cancel an instruction that
+    // gets this far.
+    //
+    // This used to count `ex_mem_valid` instead, which was wrong twice over:
+    // it counted trapping instructions (which by definition do not retire),
+    // and it put the increment a stage later than the CSR write that
+    // riscv-tests' instret_overflow expects to observe. `!ex_busy_stall` is
+    // what keeps a multi-cycle divide or page walk from counting itself once
+    // per cycle it spends parked in EX.
+    wire instret_retire = id_ex_valid && !ex_busy_stall && !take_trap;
+
     wire mret_en = id_ex_valid && id_ex_is_mret && !interrupt_taken && ex_commit;
     wire sret_en = id_ex_valid && id_ex_is_sret && !interrupt_taken && ex_commit;
     assign trap = take_trap;
@@ -752,13 +884,29 @@ module cpu_core #(
         .mie_out(csr_mie), .mip_out(csr_mip), .mideleg_out(csr_mideleg),
         .mstatus_mie_out(csr_mstatus_mie), .sstatus_sie_out(csr_sstatus_sie),
         .current_priv_out(current_priv),
-        .mtime_in(mtime_in), .instret_inc(ex_mem_valid && !dbus_stall),
+        .mtime_in(mtime_in), .instret_inc(instret_retire),
         .mcounteren_out(csr_mcounteren), .scounteren_out(csr_scounteren),
         .satp_mode_out(satp_mode), .satp_ppn_out(satp_ppn),
-        .mstatus_mprv_out(csr_mstatus_mprv), .mstatus_mpp_out(csr_mstatus_mpp)
+        .mstatus_mprv_out(csr_mstatus_mprv), .mstatus_mpp_out(csr_mstatus_mpp),
+        .mstatus_sum_out(csr_mstatus_sum), .mstatus_mxr_out(csr_mstatus_mxr),
+        .mstatus_tvm_out(csr_mstatus_tvm), .mstatus_tw_out(csr_mstatus_tw),
+        .mstatus_tsr_out(csr_mstatus_tsr)
     );
 
-    wire [31:0] trap_redirect_target = csr_trap_to_s ? csr_stvec : csr_mtvec;
+    // Trap vector, honoring mtvec/stvec MODE.
+    //
+    // Direct (MODE=0): every trap enters at BASE.
+    // Vectored (MODE=1): *interrupts* enter at BASE + 4*cause, so each
+    //   interrupt source gets its own entry point and the handler skips the
+    //   dispatch it would otherwise have to do by reading mcause. Synchronous
+    //   exceptions still enter at BASE even in vectored mode - the spec is
+    //   explicit about that, and getting it wrong would send a page fault to
+    //   whatever handler shares its cause number with an interrupt.
+    wire [31:0] tvec         = csr_trap_to_s ? csr_stvec : csr_mtvec;
+    wire        tvec_vectored = tvec[0] && cause_for_csr[31];
+    wire [31:0] tvec_offset  = {24'b0, cause_for_csr[5:0], 2'b00};
+    wire [31:0] trap_redirect_target =
+        {tvec[31:2], 2'b00} + (tvec_vectored ? tvec_offset : 32'b0);
     wire [31:0] mispredict_recovery_target = actual_taken ? actual_target : (id_ex_pc + 32'd4);
     wire mispredict = id_ex_valid && is_control_flow &&
                       ((id_ex_pred_taken != actual_taken) ||
@@ -804,7 +952,13 @@ module cpu_core #(
     // discovered only once the walk resolves, well after id_ex_reg_we/
     // id_ex_mem_we were already latched true for what was, at decode
     // time, a legitimately-decoded access.
-    wire commit_ok = !interrupt_taken && !mmu_fault_now && !mem_misaligned;
+    // `!fetch_misaligned` is what keeps JAL/JALR from writing its link
+    // register on a misaligned target. riscv-tests checks exactly this
+    // ("verify that return address was not written"), and it matters: a
+    // handler that emulated the jump would otherwise see a return address
+    // for a jump that never happened.
+    wire commit_ok = !interrupt_taken && !mmu_fault_now && !mem_misaligned &&
+                     !fetch_misaligned;
 
     // =======================================================================
     // EX/MEM pipeline register
@@ -1016,6 +1170,7 @@ module cpu_core #(
             id_ex_funct5        <= d_funct5;
             id_ex_pred_taken    <= if_id_pred_taken;
             id_ex_pred_target   <= if_id_pred_target;
+            id_ex_instr         <= if_id_instr;               // trace only
         end
     end
 
@@ -1029,7 +1184,13 @@ module cpu_core #(
             // `ex_busy_stall`, which `dbus_stall` is a member of but whose
             // bubble behavior would drop the in-flight request.
         end else if (ex_busy_stall) begin
-            ex_mem_valid <= 1'b0; // multi-cycle op still running - nothing new for MEM this cycle
+            ex_mem_valid  <= 1'b0; // multi-cycle op still running - nothing new for MEM this cycle
+            ex_mem_retire <= 1'b0; // trace only, and it must bubble with ex_mem_valid:
+                                    // leaving it set makes the divide or page walk
+                                    // that caused this stall show up in the trace once
+                                    // per stalled cycle. Found by the Spike
+                                    // co-simulation, which is exactly the class of
+                                    // thing an end-of-test pass/fail check cannot see.
         end else begin
             ex_mem_valid     <= id_ex_valid;
             ex_mem_rd        <= id_ex_rd;
@@ -1043,13 +1204,21 @@ module cpu_core #(
             ex_mem_mem_size  <= id_ex_mem_size;
             ex_mem_is_amo    <= id_ex_valid && id_ex_is_amo && commit_ok;
             ex_mem_funct5    <= id_ex_funct5;
+            ex_mem_pc        <= id_ex_pc;                     // trace only
+            ex_mem_instr     <= id_ex_instr;                  // trace only
+            ex_mem_retire    <= instret_retire;               // trace only
         end
     end
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             mem_wb_reg_we_r <= 1'b0;
+            trace_valid     <= 1'b0;
         end else if (dbus_stall) begin
+            // Trace only: MEM/WB's contents are held below, so without this
+            // an instruction stalled on the bus would be reported as retiring
+            // once per stall cycle instead of once.
+            trace_valid <= 1'b0;
             // Hold rather than bubble. The MEM access hasn't produced its
             // result yet, so there's nothing new to write back - but
             // clearing reg_we here would also tear down the MEM/WB
@@ -1061,6 +1230,9 @@ module cpu_core #(
             mem_wb_reg_we_r  <= ex_mem_valid && ex_mem_reg_we;
             mem_wb_rd_r      <= ex_mem_rd;
             mem_wb_wb_data_r <= mem_result;
+            trace_valid      <= ex_mem_retire;                // trace only
+            trace_pc         <= ex_mem_pc;                    // trace only
+            trace_instr      <= ex_mem_instr;                 // trace only
         end
     end
 endmodule

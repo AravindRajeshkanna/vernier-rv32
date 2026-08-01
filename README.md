@@ -43,9 +43,25 @@ sim/
   tb_top.v            self-checking testbench (hand-assembled program.hex)
   tb_software.v       runs the real compiled firmware, decodes UART to the console
   tb_soc.v            boots the SoC from a simulated SD card
+  tb_isa.v            runs the official RISC-V architectural tests on the SoC
+  tb_bench.v          runs CoreMark, ends on the benchmark's own verdict
+  tracer.v            retired-instruction tracer (drives the Spike co-simulation)
   sd_card_model.v     SD card in SPI mode (CMD0/8/55/58, ACMD41, CMD17)
   verilator_main.cpp  optional Verilator harness
   program.hex         hand-assembled RV32IMA test program
+tests/
+  fetch.sh            clone riscv-tests at a pinned commit (not vendored)
+  build.sh            build the rv32ui/um/ua/mi/si suites into loadable images
+  run.sh              run them all, with an XFAIL list that cannot go stale
+  cosim.py            diff every retired instruction against Spike
+  expected-failures.txt   the 3 known failures, each with a reason
+  README.md           what each layer proves, and what it found
+formal/
+  run.sh              yosys -> SMT2 -> yosys-smtbmc -> z3, with a flow self-test
+  fv_regfile.v        x0 semantics and the write-to-read bypass
+  fv_interconnect.v   one-hot slave select, arbitration, ack routing
+  fv_selftest.v       a property that MUST fail (proves the flow can go red)
+  (plic.v and btb.v carry their own properties under `ifdef FORMAL)
 software/
   crt0.S         startup code (stack/gp setup, zero .bss, call main)
   link.ld        two-region Harvard linker script (imem "ROM" + dmem "RAM")
@@ -59,6 +75,12 @@ software/
     main.c       acceptance test: RAM, atomics, GPIO, timer
     crt0_rom.S / crt0_ram.S, link_rom.ld / link_ram.ld
     mkcard.py    builds the SD card image (header block + program)
+  bench/
+    fetch-coremark.sh  clone CoreMark at a pinned commit (not vendored)
+    core_portme.c/.h   the port layer: cycle-counter timer, printf over UART
+    crt0_bench.S, link_bench.ld
+docs/
+  DEBUG.md       UART, tracer, and an honest account of the missing JTAG
 dts/
   soc.dts        device tree describing the SoC (`make dtb`)
 fpga/
@@ -87,6 +109,34 @@ a page fault that could still commit its write, an MRET/SRET that could
 complete despite being interrupt-preempted, and a PLIC priority-encoder
 that picked the lowest matching source ID instead of comparing
 priorities).
+
+## Verification
+
+```
+riscv-tests:             79 passed, 0 failed, 3 xfail   (make isa)
+co-simulation vs Spike:  82/82 traces match             (make cosim)
+formal:                  4 proved, 0 refuted            (make formal)
+CoreMark:                validates its own CRCs         (make coremark)
+```
+
+`make verify` runs the lot. `tests/README.md` has the details, including the
+**fifteen real bugs these layers found** — among them an MMU that never
+checked the PTE's `U` bit (so U-mode could read and execute supervisor pages,
+with the entire user/supervisor isolation boundary simply absent), `mcycle`
+and `minstret` driven from two `always` blocks at once (undefined in
+simulation, rejected by synthesis), an AMO permission-checked as a load (so
+it could write a read-only page), and `misa` failing to advertise the S and U
+modes this core actually has.
+
+Two of those layers exist specifically to catch what the others cannot.
+Co-simulation asks "did it execute the *same instructions* as Spike", not
+just "did the test pass" — a core can reach the right answer through a wrong
+sequence. Formal asks "does this hold for *every* input", which for the PLIC
+means about 2^30 priority/enable/pending/threshold combinations that no test
+suite is going to enumerate.
+
+Debug infrastructure — UART console, instruction tracer, and why there is no
+JTAG — is in `docs/DEBUG.md`.
 
 It does **not** implement superscalar issue or out-of-order execution —
 still single-issue, in-order. That's the natural next step, but it's a
