@@ -63,6 +63,17 @@ module csr_file (
     output wire         sstatus_sie_out,
     output wire [1:0]   current_priv_out,
 
+    // Performance counters. `time` is architecturally required to read the
+    // *same* wall-clock the CLINT's mtimecmp compares against, so it is wired
+    // straight from the CLINT rather than being a separate counter here -
+    // firmware that reads `time` and programs `mtimecmp` from it (which is
+    // exactly what an SBI timer implementation does) would otherwise be
+    // comparing two unrelated clocks.
+    input  wire [63:0]  mtime_in,
+    input  wire         instret_inc,   // an instruction completed this cycle
+    output wire [31:0]  mcounteren_out,
+    output wire [31:0]  scounteren_out,
+
     // satp, exposed directly for the data/instruction MMUs (which need it
     // every cycle, regardless of whether a CSR instruction is executing)
     output wire         satp_mode_out,
@@ -76,7 +87,13 @@ module csr_file (
 );
     localparam [1:0] PRIV_U = 2'b00, PRIV_S = 2'b01, PRIV_M = 2'b11;
 
-    localparam MISA    = 32'h4000_0100; // RV32I: MXL=1 (32-bit), extension bit 'I'
+    // MXL=1 (32-bit) in [31:30], plus one bit per implemented extension:
+    // A=bit 0, I=bit 8, M=bit 12. This previously advertised 'I' only, which
+    // was simply wrong - the core has implemented M and A for several
+    // revisions. It matters beyond tidiness: M-mode firmware (OpenSBI) and
+    // any OS read `misa` to decide what the hart can do, so under-reporting
+    // makes them disable features the hardware actually has.
+    localparam MISA    = 32'h4000_1101;
     localparam MHARTID = 32'h0000_0000;
 
     reg [1:0]  current_priv;
@@ -91,6 +108,26 @@ module csr_file (
     reg [31:0] medeleg_r, mideleg_r;
     reg        ssip_r, stip_r;
     reg [31:0] satp_r;
+
+    // ---- performance counters ----
+    // mcycle/minstret are the machine-level counters; cycle/instret are the
+    // read-only user-level *views* of the same registers (not separate
+    // storage), which is what the spec requires.
+    reg [63:0] mcycle_r, minstret_r;
+    reg [31:0] mcounteren_r, scounteren_r;
+
+    assign mcounteren_out = mcounteren_r;
+    assign scounteren_out = scounteren_r;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            mcycle_r   <= 64'b0;
+            minstret_r <= 64'b0;
+        end else begin
+            mcycle_r <= mcycle_r + 64'd1;
+            if (instret_inc) minstret_r <= minstret_r + 64'd1;
+        end
+    end
 
     // Legal delegation masks: causes this core can actually raise.
     // Exceptions {2,3,8,9,12,13,15} = illegal instr, ebreak, ECALL-from-U,
@@ -164,8 +201,22 @@ module csr_file (
             12'h142: rdata = scause_r;
             12'h143: rdata = stval_r;
             12'h144: rdata = mip_live & mideleg_r;
+            12'h106: rdata = scounteren_r;
             12'h180: rdata = satp_r;
             12'h300: rdata = mstatus_full;
+            12'h306: rdata = mcounteren_r;
+            // RV32 splits every 64-bit counter into a low half and an `h`
+            // high half at +0x80.
+            12'hB00: rdata = mcycle_r[31:0];
+            12'hB02: rdata = minstret_r[31:0];
+            12'hB80: rdata = mcycle_r[63:32];
+            12'hB82: rdata = minstret_r[63:32];
+            12'hC00: rdata = mcycle_r[31:0];      // cycle
+            12'hC01: rdata = mtime_in[31:0];      // time
+            12'hC02: rdata = minstret_r[31:0];    // instret
+            12'hC80: rdata = mcycle_r[63:32];     // cycleh
+            12'hC81: rdata = mtime_in[63:32];     // timeh
+            12'hC82: rdata = minstret_r[63:32];   // instreth
             12'h301: rdata = MISA;
             12'h302: rdata = medeleg_r;
             12'h303: rdata = mideleg_r;
@@ -207,6 +258,8 @@ module csr_file (
             ssip_r       <= 1'b0;
             stip_r       <= 1'b0;
             satp_r       <= 32'b0;
+            mcounteren_r <= 32'b0;
+            scounteren_r <= 32'b0;
         end else if (trap_en) begin
             if (trap_to_s) begin
                 sepc_r       <= trap_pc;
@@ -249,8 +302,14 @@ module csr_file (
                 12'h141: sepc_r     <= {wdata[31:1], 1'b0};
                 12'h142: scause_r   <= wdata;
                 12'h143: stval_r    <= wdata;
+                12'h106: scounteren_r <= wdata;
                 12'h144: ssip_r     <= wdata[1];
                 12'h180: satp_r     <= wdata;
+                12'h306: mcounteren_r <= wdata;
+                12'hB00: mcycle_r[31:0]    <= wdata;
+                12'hB02: minstret_r[31:0]  <= wdata;
+                12'hB80: mcycle_r[63:32]   <= wdata;
+                12'hB82: minstret_r[63:32] <= wdata;
                 12'h300: begin
                     mstatus_mie  <= wdata[3];
                     mstatus_mpie <= wdata[7];

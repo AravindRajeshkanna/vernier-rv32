@@ -330,11 +330,11 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   now has both, and actually boots off the SD card.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
   runtime) → U-Boot → Linux kernel → a root filesystem (often built with
-  Buildroot). The first link in that chain now exists — `software/soc/
-  bootrom.c` is a genuine first-stage loader — and OpenSBI's prerequisites
-  (real M/S-mode separation with trap delegation, an MMU, a device tree)
-  are all present. What's missing for OpenSBI specifically is somewhere to
-  put it: it wants considerably more RAM than 256 KB.
+  Buildroot). The first link exists — `software/soc/bootrom.c` is a genuine
+  first-stage loader — and **OpenSBI now builds for this core**
+  (`software/opensbi/`), with the platform features it depends on
+  implemented. It does not yet boot: it still needs a platform port and
+  more RAM than 256 KB. See `software/opensbi/README.md`.
 - Performance that isn't so slow it's unusable — this core is pipelined
   and now has a branch predictor, but it's still single-issue and
   in-order, with no cache; real Linux-capable FPGA cores typically add

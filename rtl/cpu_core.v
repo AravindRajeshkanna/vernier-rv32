@@ -123,7 +123,9 @@ module cpu_core #(
     input  wire         mtip,     // CLINT timer compare
     input  wire         msip_in,  // CLINT software interrupt
     input  wire         meip,     // PLIC: at least one claimable source pending
+    input  wire [63:0]  mtime_in, // CLINT mtime, for the `time` CSR
 
+    output wire         fence_i, // FENCE.I retired: any instruction buffer/cache must drop its contents
     output wire         trap   // pulses for one cycle when a trap/interrupt redirect is taken (EX)
 );
     localparam OPC_LOAD    = 7'b0000011;
@@ -225,7 +227,14 @@ module cpu_core #(
     wire is_lui     = (d_opcode == OPC_LUI);
     wire is_auipc   = (d_opcode == OPC_AUIPC);
     wire is_system  = (d_opcode == OPC_SYSTEM);
-    wire is_miscmem = (d_opcode == OPC_MISCMEM); // FENCE - treated as a legal no-op
+    wire is_miscmem = (d_opcode == OPC_MISCMEM); // FENCE / FENCE.I
+    // FENCE.I (funct3=001) is not a no-op here even though plain FENCE is.
+    // rtl/soc/cpu_wb.v keeps a one-entry fetch buffer, so a store that
+    // modifies an instruction at an address already sitting in that buffer
+    // would otherwise be invisible to the next fetch of it - exactly the
+    // hazard FENCE.I exists to close, and exactly what a bootloader copying
+    // a program into RAM and jumping to it does.
+    wire is_fence_i = is_miscmem && (d_funct3 == 3'b001);
 
     wire is_lr = is_amo && (d_funct5 == 5'b00010);
     wire is_sc = is_amo && (d_funct5 == 5'b00011);
@@ -257,9 +266,13 @@ module cpu_core #(
         input [11:0] a;
         begin
             case (a)
-                12'h100, 12'h104, 12'h105, 12'h140, 12'h141, 12'h142, 12'h143, 12'h144,
-                12'h180, 12'h300, 12'h301, 12'h302, 12'h303, 12'h304, 12'h305,
-                12'h340, 12'h341, 12'h342, 12'h343, 12'h344, 12'hF14: csr_addr_ok = 1'b1;
+                12'h100, 12'h104, 12'h105, 12'h106, 12'h140, 12'h141, 12'h142,
+                12'h143, 12'h144, 12'h180,
+                12'h300, 12'h301, 12'h302, 12'h303, 12'h304, 12'h305, 12'h306,
+                12'h340, 12'h341, 12'h342, 12'h343, 12'h344,
+                12'hB00, 12'hB02, 12'hB80, 12'hB82,
+                12'hC00, 12'hC01, 12'hC02, 12'hC80, 12'hC81, 12'hC82,
+                12'hF14: csr_addr_ok = 1'b1;
                 default: csr_addr_ok = 1'b0;
             endcase
         end
@@ -269,7 +282,10 @@ module cpu_core #(
         input [11:0] a;
         begin
             case (a)
-                12'h301, 12'hF14: csr_addr_ro = 1'b1;
+                // The user-level counter views are read-only; the machine-level
+                // originals (0xB00/0xB02/...) are writable.
+                12'h301, 12'hF14,
+                12'hC00, 12'hC01, 12'hC02, 12'hC80, 12'hC81, 12'hC82: csr_addr_ro = 1'b1;
                 default: csr_addr_ro = 1'b0;
             endcase
         end
@@ -279,7 +295,21 @@ module cpu_core #(
     // [9:8] (00=U, 01=S, 11=M) - this generalizes across every CSR here
     // with no per-address special-casing needed.
     wire csr_funct3_ok    = !is_csr || (d_funct3 != 3'b100); // 100 is reserved under SYSTEM/funct3!=0
-    wire csr_priv_illegal = is_csr && (current_priv < d_csr_addr[9:8]);
+
+    // The user-level counters (cycle/time/instret and their `h` halves) sit at
+    // 0xC0x/0xC8x, whose addr[9:8] is 00 - i.e. U-readable as far as the
+    // generic privilege check is concerned. The spec instead gates them
+    // per-counter through mcounteren/scounteren: a read below M needs the
+    // matching mcounteren bit, and a read from U additionally needs the
+    // scounteren bit. Without this an S-mode OS can't actually deny U-mode
+    // the cycle counter, which is a real (if mild) isolation property.
+    wire       is_ucounter = is_csr && (d_csr_addr[11:5] == 7'b1100_000); // 0xC00-0xC1F / 0xC80-0xC9F
+    wire [4:0] counter_idx = d_csr_addr[4:0];
+    wire counter_denied = is_ucounter &&
+        (((current_priv != PRIV_M) && !csr_mcounteren[counter_idx]) ||
+         ((current_priv == PRIV_U) && !csr_scounteren[counter_idx]));
+
+    wire csr_priv_illegal = is_csr && ((current_priv < d_csr_addr[9:8]) || counter_denied);
     wire csr_illegal      = is_csr && (!csr_funct3_ok || !csr_addr_ok(d_csr_addr) ||
                                        (csr_will_write && csr_addr_ro(d_csr_addr)) || csr_priv_illegal);
     wire priv_illegal     = is_priv && !(is_ecall || is_ebreak ||
@@ -424,7 +454,7 @@ module cpu_core #(
     reg [31:0] id_ex_zimm;
     reg        id_ex_is_trap_event, id_ex_is_mret, id_ex_is_sret;
     reg [31:0] id_ex_trap_cause, id_ex_trap_val;
-    reg        id_ex_is_muldiv, id_ex_is_sfence_vma;
+    reg        id_ex_is_muldiv, id_ex_is_sfence_vma, id_ex_is_fence_i;
     reg        id_ex_is_amo;
     reg [4:0]  id_ex_funct5;
     reg        id_ex_pred_taken;
@@ -532,10 +562,51 @@ module cpu_core #(
     // privilege boundary exists.
     wire [1:0] effective_priv_for_data = (current_priv == PRIV_M && csr_mstatus_mprv) ? csr_mstatus_mpp : current_priv;
     wire is_mem_op_now   = id_ex_valid && (id_ex_is_load || id_ex_is_store || id_ex_is_amo);
-    wire need_translate  = is_mem_op_now && satp_mode && (effective_priv_for_data != PRIV_M);
+
+    // ---- misaligned access detection ----
+    // This core has no misaligned-access support: rtl/soc/cpu_wb.v's byte-lane
+    // shifting assumes natural alignment, and rtl/dmem.v would do an unaligned
+    // word read. Previously such an access was silently mis-executed. Trapping
+    // is what the spec requires of an implementation that doesn't support them,
+    // and it's what lets M-mode firmware emulate the access instead - OpenSBI
+    // does exactly that, but only ever gets the chance if the hardware traps.
+    //
+    // Checked on the *virtual* address and before translation, per spec: a
+    // misaligned address faults as misaligned whether or not it would also
+    // have page-faulted, so there's no point starting a walk for one.
+    reg misaligned_sized;
+    always @(*) begin
+        case (id_ex_mem_size)
+            2'b01:   misaligned_sized = mem_addr_ex[0];       // halfword
+            2'b10:   misaligned_sized = |mem_addr_ex[1:0];    // word
+            default: misaligned_sized = 1'b0;                 // byte is always aligned
+        endcase
+    end
+    // AMO/LR/SC are word-only regardless of the funct3 size field.
+    //
+    // `!mmu_busy` is load-bearing, not belt-and-braces. `mem_addr_ex` is
+    // recomputed from *live forwarding* every cycle, and during a multi-cycle
+    // MMU walk the rest of the pipeline keeps draining underneath the stalled
+    // instruction, so its forwarded operands decay to stale values - the same
+    // hazard `store_data_latched` exists to defeat, and the reason mmu.v
+    // snapshots `va_r` on the walk's first cycle. Evaluating alignment against
+    // the decayed address mid-walk invents misalignment faults for perfectly
+    // aligned accesses. A misaligned access never starts a walk (it gates
+    // `need_translate` off below), so a walk in progress always implies the
+    // address was already judged aligned on cycle one - which makes
+    // "not mid-walk" exactly the right window to decide this in.
+    wire mem_misaligned = is_mem_op_now && !mmu_busy &&
+                          (id_ex_is_amo ? (|mem_addr_ex[1:0]) : misaligned_sized);
+    // Cause 4 = load address misaligned, 6 = store/AMO address misaligned.
+    wire [31:0] misaligned_cause = (id_ex_is_store || id_ex_is_amo) ? 32'd6 : 32'd4;
+
+    wire need_translate  = is_mem_op_now && !mem_misaligned &&
+                           satp_mode && (effective_priv_for_data != PRIV_M);
     wire mmu_resolved, mmu_fault, mmu_busy;
     wire [31:0] mmu_pa;
     wire sfence_en = id_ex_valid && id_ex_is_sfence_vma && !interrupt_taken && ex_commit;
+    wire fence_i_en = id_ex_valid && id_ex_is_fence_i && !interrupt_taken && ex_commit;
+    assign fence_i = fence_i_en;
 
     mmu MMU (
         .clk(clk), .rst(rst),
@@ -585,6 +656,7 @@ module cpu_core #(
     wire [31:0] csr_mtvec, csr_stvec, csr_mepc, csr_sepc;
     wire        csr_trap_to_s;
     wire [31:0] csr_mie, csr_mip, csr_mideleg;
+    wire [31:0] csr_mcounteren, csr_scounteren;
     wire        csr_mstatus_mie, csr_sstatus_sie;
     wire [1:0]  current_priv;
     wire        satp_mode;
@@ -648,12 +720,16 @@ module cpu_core #(
 
     wire interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall;
 
-    wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now;
+    wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now || mem_misaligned;
     wire take_trap = id_ex_valid && (interrupt_taken || synchronous_trap) && ex_commit;
+    // Misalignment outranks a page fault: it is detected on the virtual
+    // address before translation is even attempted (see above).
     wire [31:0] cause_for_csr = interrupt_taken ? interrupt_cause :
-                                 (mmu_fault_now  ? mmu_cause : id_ex_trap_cause);
+                                 (mem_misaligned ? misaligned_cause :
+                                 (mmu_fault_now  ? mmu_cause : id_ex_trap_cause));
     wire [31:0] val_for_csr   = interrupt_taken ? 32'b0 :
-                                 (mmu_fault_now  ? mem_addr_ex : id_ex_trap_val);
+                                 (mem_misaligned ? mem_addr_ex :
+                                 (mmu_fault_now  ? mem_addr_ex : id_ex_trap_val));
 
     // MRET/SRET's own privilege-restore side effect must be suppressed
     // the same way reg/mem/CSR writes already are: an interrupt-preempted
@@ -676,6 +752,8 @@ module cpu_core #(
         .mie_out(csr_mie), .mip_out(csr_mip), .mideleg_out(csr_mideleg),
         .mstatus_mie_out(csr_mstatus_mie), .sstatus_sie_out(csr_sstatus_sie),
         .current_priv_out(current_priv),
+        .mtime_in(mtime_in), .instret_inc(ex_mem_valid && !dbus_stall),
+        .mcounteren_out(csr_mcounteren), .scounteren_out(csr_scounteren),
         .satp_mode_out(satp_mode), .satp_ppn_out(satp_ppn),
         .mstatus_mprv_out(csr_mstatus_mprv), .mstatus_mpp_out(csr_mstatus_mpp)
     );
@@ -688,7 +766,7 @@ module cpu_core #(
 
     wire redirect_valid = id_ex_valid && ex_commit &&
                           (interrupt_taken || synchronous_trap || mispredict ||
-                           mret_en || sret_en);
+                           mret_en || sret_en || fence_i_en);
     reg [31:0] redirect_target;
     always @(*) begin
         if (interrupt_taken)        redirect_target = trap_redirect_target;
@@ -696,6 +774,7 @@ module cpu_core #(
         else if (mispredict)        redirect_target = mispredict_recovery_target;
         else if (mret_en)           redirect_target = csr_mepc;
         else if (sret_en)           redirect_target = csr_sepc;
+        else if (fence_i_en)        redirect_target = id_ex_pc + 32'd4;
         else                        redirect_target = id_ex_pc + 32'd4; // unreachable given redirect_valid's gating
     end
 
@@ -725,7 +804,7 @@ module cpu_core #(
     // discovered only once the walk resolves, well after id_ex_reg_we/
     // id_ex_mem_we were already latched true for what was, at decode
     // time, a legitimately-decoded access.
-    wire commit_ok = !interrupt_taken && !mmu_fault_now;
+    wire commit_ok = !interrupt_taken && !mmu_fault_now && !mem_misaligned;
 
     // =======================================================================
     // EX/MEM pipeline register
@@ -932,6 +1011,7 @@ module cpu_core #(
             id_ex_is_sret       <= is_sret;
             id_ex_is_muldiv     <= is_muldiv;
             id_ex_is_sfence_vma <= is_sfence_vma;
+            id_ex_is_fence_i    <= is_fence_i;
             id_ex_is_amo        <= is_amo;
             id_ex_funct5        <= d_funct5;
             id_ex_pred_taken    <= if_id_pred_taken;

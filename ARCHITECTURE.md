@@ -850,6 +850,59 @@ broken image, since `crt0_rom.S` has no ROM-to-RAM copy loop.
 decodes the UART line back into console text. Nothing is preloaded into
 RAM, so the output is real evidence the entire chain works.
 
+## 12b. Platform features for supervisor firmware
+
+Bringing OpenSBI into scope exposed a set of things this core either lacked
+or reported incorrectly. All are now implemented and covered by
+`make sim_soc`; `software/opensbi/README.md` has the firmware-side view.
+
+- **`misa` now advertises `I`+`M`+`A`** (`0x4000_1101`). It previously
+  claimed `I` alone, which was simply wrong - the M and A extensions have
+  been implemented for several revisions. It isn't cosmetic: firmware and
+  operating systems read `misa` to decide what the hart can do, so
+  under-reporting makes them disable working hardware.
+- **Counter CSRs.** `cycle`/`time`/`instret`, their RV32 `h` halves, the
+  machine-level `mcycle`/`minstret` they are views of, and
+  `mcounteren`/`scounteren` to gate access from lower privilege. `time` is
+  wired to the **CLINT's `mtime`** rather than being a private counter,
+  because SBI timer code reads `time` and programs `mtimecmp` from it - two
+  unrelated clocks there would produce timer interrupts at nonsense
+  intervals.
+- **Misaligned-access traps** (cause 4 load, cause 6 store/AMO, `mtval` =
+  the faulting address). This core has never supported misaligned accesses -
+  `cpu_wb.v`'s byte-lane shifting assumes natural alignment - but until now
+  it *silently mis-executed* them rather than trapping. Trapping is what the
+  spec requires of an implementation that doesn't support them, and it is
+  the mechanism by which M-mode firmware emulates them.
+- **`FENCE.I` is no longer a no-op.** `cpu_wb.v`'s one-entry fetch buffer is
+  not coherent with writes, so a loader that copies code into RAM and jumps
+  to it could fetch a stale word. `FENCE.I` now invalidates the buffer and
+  redirects to PC+4 so anything already fetched behind it is re-fetched.
+
+### The operand-drift trap, found again
+
+Adding the misalignment check reintroduced a bug this project had already
+met once, in a new place, and it is worth recording because the shape
+recurs.
+
+`mem_addr_ex` is `op1 + id_ex_imm`, and `op1` comes from *live forwarding*.
+During a multi-cycle MMU walk the rest of the pipeline keeps draining
+underneath the stalled instruction, so those forwarding sources go away and
+the computed address decays to a stale value. `mmu.v` is immune because it
+snapshots `va_r` on the walk's first cycle, and store data is immune because
+of `store_data_latched` - both existing defenses against exactly this.
+
+The new alignment check had no such defense, so several cycles into a walk
+it re-evaluated a decayed address and invented a misalignment fault for a
+perfectly aligned load. The regression caught it: a load that should have
+page-faulted (cause 13) instead reported cause 4 with an effective address
+of `1` while the register file plainly held `0x00800000`.
+
+The fix is `!mmu_busy` in the condition - a misaligned access never starts a
+walk, so a walk in progress always implies the address was already judged
+aligned on cycle one, making "not mid-walk" exactly the right window to
+decide this in.
+
 ## 13. Where this design stops (by design)
 
 - **Single-issue, in-order** — one instruction fetched per cycle, no

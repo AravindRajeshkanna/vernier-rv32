@@ -84,6 +84,8 @@ module soc_top #(
     wire        ibus_wait, dbus_wait;
     wire [31:0] ptw_addr, ptw_rdata, iptw_addr, iptw_rdata;
     wire        mtip, msip, meip;
+    wire [63:0] mtime;
+    wire        fence_i;
 
     // ---- Wishbone masters ----
     wire        iwb_cyc, iwb_stb, iwb_ack;
@@ -109,8 +111,8 @@ module soc_top #(
         .ibus_wait(ibus_wait), .dbus_wait(dbus_wait),
         .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata),
         .iptw_addr(iptw_addr), .iptw_rdata(iptw_rdata),
-        .mtip(mtip), .msip_in(msip), .meip(meip),
-        .trap(trap)
+        .mtip(mtip), .msip_in(msip), .meip(meip), .mtime_in(mtime),
+        .fence_i(fence_i), .trap(trap)
     );
 
     cpu_wb BUSADAPT (
@@ -119,6 +121,7 @@ module soc_top #(
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_is_amo(dmem_is_amo),
         .dmem_size(dmem_size), .dmem_rdata(dmem_rdata), .dbus_wait(dbus_wait),
+        .fence_i(fence_i),
         .iwb_cyc(iwb_cyc), .iwb_stb(iwb_stb), .iwb_adr(iwb_adr),
         .iwb_dat_r(iwb_dat_r), .iwb_ack(iwb_ack),
         .dwb_cyc(dwb_cyc), .dwb_stb(dwb_stb), .dwb_we(dwb_we),
@@ -171,7 +174,7 @@ module soc_top #(
     clint CLINT (
         .clk(clk), .rst(rst),
         .addr(clint_addr), .wdata(clint_wdata), .we(clint_we),
-        .rdata(clint_rdata), .mtip(mtip), .msip_out(msip)
+        .rdata(clint_rdata), .mtip(mtip), .msip_out(msip), .mtime_out(mtime)
     );
 
     // ---- PLIC behind a bridge ----

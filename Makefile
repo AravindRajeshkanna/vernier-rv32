@@ -40,7 +40,10 @@ SOFTWARE_CFLAGS = -march=rv32im -mabi=ilp32 -specs=nano.specs -ffreestanding \
 # SoC firmware: two separate images. The boot ROM is freestanding (no libc,
 # baked into the bitstream); the RAM program is a normal newlib-nano build
 # that gets loaded off SD at boot.
-SOC_CFLAGS_COMMON = -march=rv32im -mabi=ilp32 -ffreestanding -O2 -Wall \
+# zicsr/zifencei are needed explicitly: this firmware reads CSRs and issues
+# FENCE.I directly. They don't affect multilib selection (still rv32im/ilp32),
+# they just tell the assembler those opcodes are legal.
+SOC_CFLAGS_COMMON = -march=rv32im_zicsr_zifencei -mabi=ilp32 -ffreestanding -O2 -Wall \
                      -nostartfiles -Isoftware -Isoftware/soc
 BOOTROM_SRCS = software/soc/crt0_rom.S software/soc/bootrom.c
 SOCPROG_SRCS = software/soc/crt0_ram.S software/soc/main.c \

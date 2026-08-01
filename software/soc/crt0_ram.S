@@ -30,3 +30,36 @@ _start:
 
 halt:
     j halt
+
+/* Minimal M-mode trap handler.
+ *
+ * Records mcause/mtval and counts entries, then skips the faulting
+ * instruction and returns. Deliberately uses mscratch plus a fixed scratch
+ * word rather than pushing a stack frame: the tests that trigger it are
+ * checking memory behavior, and a handler that touched the stack could
+ * perturb what it is meant to be observing.
+ *
+ * Skipping by mepc+4 is only valid because every trap this handler is
+ * expected to see comes from a 4-byte instruction that should not be
+ * retried (a deliberately misaligned access).
+ */
+.section .text
+.align 4
+.global trap_vector
+trap_vector:
+    csrw  mscratch, t0
+    la    t0, trap_info
+    sw    t1, 12(t0)          /* stash t1 in the scratch area */
+    csrr  t1, mcause
+    sw    t1, 0(t0)
+    csrr  t1, mtval
+    sw    t1, 4(t0)
+    lw    t1, 8(t0)
+    addi  t1, t1, 1
+    sw    t1, 8(t0)           /* entry counter */
+    csrr  t1, mepc
+    addi  t1, t1, 4
+    csrw  mepc, t1
+    lw    t1, 12(t0)
+    csrr  t0, mscratch
+    mret

@@ -16,6 +16,13 @@
 
 static int failures = 0;
 
+/* Written by trap_vector in crt0_ram.S: {mcause, mtval, entry count, t1 scratch}. */
+volatile uint32_t trap_info[4];
+extern void trap_vector(void);
+
+#define CSRR(csr) ({ uint32_t v_; __asm__ volatile ("csrr %0, " csr : "=r"(v_)); v_; })
+
+
 static void check(const char *name, int ok) {
     printf("  %-28s %s\n", name, ok ? "ok" : "FAIL");
     if (!ok) failures++;
@@ -186,7 +193,82 @@ static int test_timer(void) {
     return t1 > t0;
 }
 
+/* misa must advertise every extension the hardware actually implements -
+ * firmware reads it to decide what the hart can do. This used to claim 'I'
+ * only, silently under-selling M and A. */
+static int test_misa(void) {
+    uint32_t misa = CSRR("misa");
+    if ((misa >> 30) != 1) return 0;            /* MXL=1 => 32-bit */
+    if (!(misa & (1u << 8)))  return 0;         /* I */
+    if (!(misa & (1u << 12))) return 0;         /* M */
+    if (!(misa & (1u << 0)))  return 0;         /* A */
+    return 1;
+}
+
+/* cycle/time/instret must exist and advance. `time` in particular has to be
+ * the same clock the CLINT compares mtimecmp against, since SBI timer code
+ * reads one and programs the other. */
+static int test_counters(void) {
+    uint32_t c0 = CSRR("cycle"), t0 = CSRR("time"), i0 = CSRR("instret");
+    for (volatile int i = 0; i < 50; i++) { }
+    if (CSRR("cycle")   <= c0) return 0;
+    if (CSRR("time")    <= t0) return 0;
+    if (CSRR("instret") <= i0) return 0;
+    /* `time` must track the CLINT's mtime, not a private counter. */
+    {
+        volatile uint32_t *mtime = (volatile uint32_t *)(uintptr_t)(CLINT_BASE + 0xBFF8u);
+        uint32_t via_csr = CSRR("time");
+        uint32_t via_mmio = *mtime;
+        if (via_mmio < via_csr || (via_mmio - via_csr) > 5000u) return 0;
+    }
+    return 1;
+}
+
+/* A misaligned access must trap rather than being silently mis-executed -
+ * that trap is what lets M-mode firmware emulate the access. */
+static int test_misaligned_trap(void) {
+    uint32_t base = trap_info[2];
+    uint32_t addr = TEST_REGION_BASE + 0x101u;   /* deliberately not word-aligned */
+    uint32_t dummy;
+
+    __asm__ volatile ("lw %0, 0(%1)" : "=r"(dummy) : "r"(addr) : "memory");
+    if (trap_info[2] != base + 1) return 0;
+    if (trap_info[0] != 4) return 0;             /* load address misaligned */
+    if (trap_info[1] != addr) return 0;          /* mtval = faulting address */
+
+    __asm__ volatile ("sw %0, 0(%1)" :: "r"(dummy), "r"(addr) : "memory");
+    if (trap_info[2] != base + 2) return 0;
+    if (trap_info[0] != 6) return 0;             /* store address misaligned */
+
+    /* An aligned access of the same size must still be fine. */
+    addr = TEST_REGION_BASE + 0x100u;
+    __asm__ volatile ("lw %0, 0(%1)" : "=r"(dummy) : "r"(addr) : "memory");
+    return trap_info[2] == base + 2;
+}
+
+/* FENCE.I must make freshly-written instructions visible. cpu_wb.v keeps a
+ * one-entry fetch buffer, so without the invalidation this returns the stale
+ * word - which is exactly how a bootloader that overwrites and re-runs code
+ * would break. */
+static int test_fence_i(void) {
+    /* Build a two-instruction function in RAM: `li a0, 0x5A; ret`. */
+    volatile uint32_t *code = (volatile uint32_t *)(uintptr_t)(TEST_REGION_BASE + 0x200);
+    int (*fn)(void) = (int (*)(void))(uintptr_t)code;
+
+    code[0] = 0x05A00513u;   /* addi a0, zero, 0x5A */
+    code[1] = 0x00008067u;   /* jalr zero, 0(ra)  == ret */
+    __asm__ volatile ("fence.i" ::: "memory");
+    if (fn() != 0x5A) return 0;
+
+    /* Rewrite it and prove the new value is seen only after another fence. */
+    code[0] = 0x02D00513u;   /* addi a0, zero, 0x2D */
+    __asm__ volatile ("fence.i" ::: "memory");
+    return fn() == 0x2D;
+}
+
 int main(void) {
+    __asm__ volatile ("csrw mtvec, %0" :: "r"((uintptr_t)trap_vector));
+
     printf("=== SoC acceptance test ===\n");
     printf("Running from RAM at %p, loaded from SD by the boot ROM.\n\n",
            (void *)(uintptr_t)PROGRAM_LOAD_ADDR);
@@ -199,6 +281,10 @@ int main(void) {
     check("LR/SC broken by store", test_lr_sc_failure());
     check("GPIO loopback",         test_gpio());
     check("CLINT mtime advances",  test_timer());
+    check("misa reports I+M+A",    test_misa());
+    check("cycle/time/instret",    test_counters());
+    check("misaligned access traps", test_misaligned_trap());
+    check("FENCE.I invalidates",   test_fence_i());
 
     printf("\n%d failure(s)\n", failures);
     printf(failures == 0 ? "SOC-TEST: PASS\n" : "SOC-TEST: FAIL\n");

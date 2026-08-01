@@ -42,6 +42,7 @@ module top #(
     wire [31:0] ptw_addr, ptw_rdata;
     wire [31:0] iptw_addr, iptw_rdata;
     wire        mtip, msip, meip;
+    wire [63:0] mtime;
 
     wire is_clint = (dmem_addr[31:16] == CLINT_BASE_HI);
     wire is_plic  = (dmem_addr[31:16] == PLIC_BASE_HI);
@@ -61,7 +62,8 @@ module top #(
         .ibus_wait(1'b0), .dbus_wait(1'b0),
         .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata),
         .iptw_addr(iptw_addr), .iptw_rdata(iptw_rdata),
-        .mtip(mtip), .msip_in(msip), .meip(meip),
+        .mtip(mtip), .msip_in(msip), .meip(meip), .mtime_in(mtime),
+        .fence_i(), // no instruction buffer on this top level - nothing to flush
         .trap(trap)
     );
 
@@ -80,7 +82,7 @@ module top #(
         .clk(clk), .rst(rst),
         .addr(dmem_addr), .wdata(dmem_wdata), .we(dmem_we && is_clint),
         .rdata(clint_rdata),
-        .mtip(mtip), .msip_out(msip)
+        .mtip(mtip), .msip_out(msip), .mtime_out(mtime)
     );
 
     plic #(.NUM_SOURCES(NUM_IRQ_SOURCES)) PLIC (

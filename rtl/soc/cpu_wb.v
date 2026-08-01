@@ -43,6 +43,12 @@ module cpu_wb (
     output wire [31:0] dmem_rdata,
     output wire        dbus_wait,
 
+    // FENCE.I: drop the cached fetch word. Without this the buffer can
+    // serve a stale instruction for an address that was just written -
+    // precisely the case a bootloader hits when it copies a program into
+    // RAM and jumps to it.
+    input  wire        fence_i,
+
     // ---- Wishbone master 0: instruction ----
     output wire        iwb_cyc,
     output wire        iwb_stb,
@@ -88,6 +94,8 @@ module cpu_wb (
             have_valid <= 1'b0;
             have_addr  <= 32'b0;
             have_dat   <= 32'b0;
+        end else if (fence_i) begin
+            have_valid <= 1'b0;
         end else if (iwb_ack) begin
             have_valid <= 1'b1;
             have_addr  <= imem_addr;

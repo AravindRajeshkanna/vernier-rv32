@@ -17,7 +17,10 @@ module clint (
     output reg  [31:0] rdata,
 
     output wire         mtip,
-    output wire         msip_out
+    output wire         msip_out,
+    // The architectural `time` CSR must read this same counter - see
+    // csr_file.v's mtime_in.
+    output wire [63:0]  mtime_out
 );
     localparam OFF_MSIP      = 16'h0000;
     localparam OFF_MTIMECMP_LO = 16'h4000;
@@ -30,6 +33,7 @@ module clint (
     reg        msip_bit;
 
     assign mtip     = (mtime >= mtimecmp);
+    assign mtime_out = mtime;
     assign msip_out = msip_bit;
 
     always @(*) begin
