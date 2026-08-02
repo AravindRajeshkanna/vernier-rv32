@@ -90,13 +90,16 @@ software/
     crt0_bench.S, link_bench.ld
 docs/
   DEBUG.md       UART, tracer, and an honest account of the missing JTAG
+  TOOLCHAIN.md   every tool and version this was built with, and which
+                 flow uses which
 dts/
   soc.dts        device tree describing the SoC (`make dtb`)
 fpga/
   top_fpga.v     board-agnostic FPGA top for the flat design
   soc_fpga.v     board-agnostic FPGA top for the SoC (UNVERIFIED - see below)
   constraints/   pin templates (.xdc/.lpf) - PLACEHOLDER pins
-  synth/         Vivado and yosys/nextpnr batch scripts (never executed)
+  synth/         yosys/nextpnr batch script (run end to end) and a Vivado
+                 one (never executed)
   README.md      what is and isn't known about the FPGA path
 Makefile
 ```
