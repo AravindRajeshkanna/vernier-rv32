@@ -1,7 +1,7 @@
 # FPGA integration — status and honest caveats
 
 **The design builds all the way to a bitstream on an ECP5, at a measured
-31 MHz. It has never been loaded onto hardware.** Those are different claims:
+30 MHz. It has never been loaded onto hardware.** Those are different claims:
 
 | Artifact | Status |
 |---|---|
@@ -9,14 +9,14 @@
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs, 2 min**, timing closes at 25 MHz |
 | Bitstream (`ecppack`) | ✅ **1.1 MB `soc_fpga.bit`** |
 | Resource usage | ✅ **measured** — 27% LUT, 62% block RAM of an LFE5U-45F |
-| Achievable Fmax | ✅ **30.64 MHz measured post-route** — see the critical path below |
+| Achievable Fmax | ✅ **30.38 MHz measured post-route** — see the critical path below |
 | `constraints/generic.lpf` | ❌ **Placeholder pins.** Timing was measured with I/O unconstrained |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ❌ no board |
 
 `fpga/synth/synth_ecp5.sh` runs the whole flow and has been executed end to
 end. What has no evidence is that it works against **real pins on a real
-board** — the pinout is still fictional, and 31 MHz is a number from a build
+board** — the pinout is still fictional, and 30 MHz is a number from a build
 where nextpnr could place I/O wherever it liked.
 
 ### Getting the toolchain
@@ -133,7 +133,7 @@ This section used to say 50-150 MHz was "plausible for a core this size".
 Place-and-route says otherwise:
 
 ```
-Max frequency for clock 'clk': 30.64 MHz   (post-route)
+Max frequency for clock 'clk': 30.38 MHz   (post-route)
 ```
 
 `fpga/constraints/timing_only.lpf` therefore constrains the clock to 25 MHz,
@@ -142,14 +142,14 @@ worth stating plainly rather than quietly editing the range downward - an
 untested estimate of a critical path is not evidence, and this is the whole
 reason for running the tool.
 
-Two numbers appear in nextpnr's log: 24.05 MHz after placement and 30.64 MHz
+Two numbers appear in nextpnr's log: 22.49 MHz after placement and 30.38 MHz
 after routing. The second is the real one; the first is an estimate made
 before the router has had a chance to fix anything.
 
 ### Utilization (LFE5U-45F, CABGA381, 64 KB RAM)
 
 ```
-LUT4          11977 / 43848    27%
+LUT4          12124 / 43848    27%
 DP16KD           67 /   108    62%    <- block RAM is the binding resource
 MULT18X18D        4 /    72     5%
 TRELLIS_IO       28 /   245    11%
@@ -190,7 +190,7 @@ state moved into the core, which deleted the duplicate state machine
 | TRELLIS_FF | 6,687 | 6,719 |
 
 (Those are the numbers from the run that measured this change. The current
-build reports 30.64 MHz - a later, logically unrelated edit moved it. See
+build reports 30.38 MHz - two later, logically unrelated edits moved it. See
 [Placement sensitivity](#placement-sensitivity-a-calibration) below, which is
 the more useful lesson of the two.)
 
@@ -209,50 +209,50 @@ simulation-only.
 
 ### The critical path now
 
-> **forwarding mux -> EX-stage address adder**
+> **PC -> instruction-fetch path -> PC**
 
-32.64 ns, of which **23.64 ns is routing and only 9.00 ns is logic**. Unlike
-every previous one this path starts at an ordinary flip-flop (0.52 ns
-clock-to-out, not a block RAM's 5.83), runs through `cpu_core.v`'s operand
-forwarding muxes at line 565 into the `op1 + id_ex_imm` effective-address
-adder at line 645, and spends 14 hops in that adder's carry chain.
+32.91 ns, of which **24.76 ns is routing and only 8.15 ns is logic**. It
+starts at an ordinary flip-flop (0.52 ns clock-to-out, not a block RAM's
+5.83) and runs through `cpu_core.v`'s IF stage from line 170.
 
-There is not much logic left to remove here: **72% of this path is wire**.
+There is very little logic left to remove here: **75% of this path is wire**.
 
 ### Placement sensitivity: a calibration
 
-Immediately after the AMO retiming the critical path was
-`block RAM read data -> MMU walk result -> PC` at 31.93 ns / 31.32 MHz. Then
-a four-bit change to which signals drive the status LEDs in
-`fpga/soc_fpga.v` - no change to the CPU, the bus, or any peripheral -
-produced:
+Three consecutive builds, each separated by a change that touched almost
+nothing, put the critical path in three completely different places:
 
-| | Before the LED edit | After |
-|---|---|---|
-| Fmax | 31.32 MHz | 30.64 MHz |
-| LUT4 | 11,977 | **11,977** |
-| TRELLIS_FF | 6,719 | **6,719** |
-| Critical path | RAM -> MMU walk -> PC | forwarding mux -> address adder |
+| Build | Fmax | Critical path | Routing | LUT4 | FF |
+|---|---|---|---|---|---|
+| After the AMO retiming | 31.32 MHz | RAM -> MMU walk -> PC | 61% | 11,977 | 6,719 |
+| After rewiring 4 status LEDs | 30.64 MHz | forwarding mux -> address adder | 72% | 11,977 | 6,719 |
+| After adding a 2-flop MISO synchronizer | 30.38 MHz | PC -> fetch -> PC | 75% | 12,124 | 6,721 |
 
-Identical logic area, a completely different critical path, and 0.68 MHz.
+The middle row is the striking one: **byte-identical LUT and flip-flop
+counts**, a completely different critical path, and 0.68 MHz. Nothing in the
+CPU, the bus or any peripheral changed - only which four signals drive the
+board LEDs.
 
-This is **not** run-to-run noise: nextpnr is deterministic for a given
-netlist, and the pre-AMO design was placed twice and reported 28.25 MHz both
-times. It is placement being a global optimization - perturb anything and
+This is **not** run-to-run noise. nextpnr is deterministic for a given
+netlist - the pre-AMO design was placed twice and reported 28.25 MHz both
+times. It is placement being a global optimization: perturb anything, and
 every path is re-diced.
 
-The practical consequence, and the reason this is written down: **do not read
-much into sub-MHz Fmax differences on this design, and do not attribute one
-to whatever you happened to be editing.** A change is only demonstrated to
-have helped timing if it also moves the critical path off the structure it
-targeted - which is what the AMO retiming did, and is the evidence that
-mattered there rather than the +3.07 MHz.
+Two things follow, and they are the reason this is written down:
+
+1. **Do not attribute a sub-MHz Fmax change to whatever you were editing.**
+   The noise floor for "I changed something unrelated" is comfortably several
+   tenths of a MHz on this design.
+2. **A timing change is only demonstrated when the critical path moves off
+   the structure it targeted.** That is what the AMO retiming did - the AMO
+   ALU vanished from the report - and it is the evidence that actually
+   mattered there, more than the +3.07 MHz headline.
 
 The reverted MMU experiment in the next section is the same lesson learned
 the expensive way: it was tried before the AMO path was found, and is a
 warning rather than a starting point - that rewrite was independently
 *incorrect*, and its correctness problem has nothing to do with whether it
-would help timing now. With routing at 72% of the path, logic-depth changes
+would help timing now. With routing at 75% of the path, logic-depth changes
 alone have limited headroom here.
 
 ### One optimization tried, and reverted
@@ -293,16 +293,18 @@ In order of expected benefit:
 
 1. ~~**Register the AMO result.**~~ Done - 28.25 -> 31.32 MHz, see above.
 2. **Floorplan, or move to a smaller device.** This is now first on merit
-   rather than last. The critical path is 72% wire and only 9 ns of logic;
-   the design occupies 27% of an LFE5U-45F and is spread across all of it.
-   Constraining related logic into neighbouring regions, or fitting a 25F at
-   `RAM_BYTES=32768`, attacks the part that is actually large.
-3. **Shorten the EX-stage address path**, which is what the critical path is
-   now: forwarding mux -> `op1 + id_ex_imm`. The forwarding muxes sit in
-   front of the adder, so the operand is late before the addition even
-   starts. Computing the address from a pre-forwarded operand, or splitting
-   the adder, are both plausible - but see the calibration above before
-   believing any single measurement of the result.
+   rather than last, and by a wide margin. The critical path is 75% wire and
+   only 8 ns of logic; the design occupies 27% of an LFE5U-45F and is spread
+   across all of it. Constraining related logic into neighbouring regions, or
+   fitting a 25F at `RAM_BYTES=32768`, attacks the part that is actually
+   large. The three-build table above is also the argument for this: the
+   critical path keeps relocating because *placement*, not logic depth, is
+   what decides it.
+3. **Shorten whichever pipeline path the tool currently names.** Recent
+   builds have landed on the EX-stage forwarding-mux-into-address-adder chain
+   and on the IF-stage PC loop. Both are plausible targets - but check the
+   calibration above before believing any single measurement of the result,
+   and confirm the path actually left the report.
 4. **Pipeline the bus response.** Address decode -> slave select -> response
    mux -> `ack` -> the CPU's stall logic is still a long chain, and it is
    what the second-longest paths run through.

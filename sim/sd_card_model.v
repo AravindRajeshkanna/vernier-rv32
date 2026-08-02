@@ -23,15 +23,35 @@
 //
 // Card contents come from a $readmemh image (one byte per line). See
 // software/soc/mkcard.py, which builds it.
+// ---- What this model does NOT let you get away with ----
+// A simulation model is only as useful as the things it refuses. This one
+// enforces the initialization clock rate, because that is a requirement a
+// real card imposes and a permissive model hides completely: the boot ROM ran
+// its whole init sequence at megahertz rates for as long as this model had no
+// opinion about timing, and would have met a card that simply never answered.
+// See MAX_INIT_SCK_HZ below.
 module sd_card_model #(
     parameter CARD_BYTES = 262144,
-    parameter INIT_FILE  = ""
+    parameter INIT_FILE  = "",
+
+    // Clock-rate ceiling for initialization, in Hz. The SD physical-layer
+    // spec puts SCK in the 100-400 kHz band from power-up until the card
+    // leaves the idle state; faster than this and a card may ignore the host.
+    // Checked between CMD0 and a successful ACMD41, after which the host is
+    // free to shift up.
+    //
+    // This is a real-time check, so the testbench's clock period has to mean
+    // what software thinks it means - sim/tb_soc.v's CLK_PERIOD is derived
+    // from the same CPU_HZ that software/soc/soc.h computes SD_INIT_DIV from.
+    parameter MAX_INIT_SCK_HZ = 400000
 )(
     input  wire sck,
     input  wire mosi,
     output wire miso,
     input  wire cs_n
 );
+    // Shortest legal SCK period during init, in timescale units (1 ns here).
+    localparam MIN_INIT_SCK_PERIOD = 1000000000 / MAX_INIT_SCK_HZ;
     reg [7:0] card [0:CARD_BYTES-1];
     integer i;
 
@@ -85,6 +105,9 @@ module sd_card_model #(
                 // that polls correctly works fine against an instant answer.
                 push(8'h00);
                 app_cmd = 0;
+                // Card is out of idle - the host may now clock as fast as it
+                // likes, so stop policing the rate.
+                init_done = 1;
             end else begin
                 case (cmd)
                     6'd0: begin push(8'h01); app_cmd = 0; end
@@ -136,6 +159,37 @@ module sd_card_model #(
             end
         end
     endtask
+
+    // ---- initialization clock-rate check ----
+    // Measured between consecutive SCK rising edges, so it sees the rate the
+    // host is actually driving rather than what it intended to. Only the
+    // pre-ACMD41 window is policed; `cs_n` gaps are ignored, since a long idle
+    // between bytes is not a slow clock.
+    reg        init_done   = 0;
+    time       last_rise   = 0;
+    reg        have_rise   = 0;
+
+    always @(posedge sck) begin
+        if (!cs_n && !init_done) begin
+            if (have_rise && ($time - last_rise) < MIN_INIT_SCK_PERIOD) begin
+                $display("");
+                $display("ERROR: SD initialization clock too fast.");
+                $display("  SCK period %0t, minimum %0t (%0d Hz ceiling)",
+                         $time - last_rise, MIN_INIT_SCK_PERIOD, MAX_INIT_SCK_HZ);
+                $display("  The SD spec requires 100-400 kHz from power-up until the");
+                $display("  card leaves idle. A real card may ignore the host entirely");
+                $display("  above that. Check SD_INIT_DIV and CPU_HZ in software/soc/soc.h.");
+                $display("");
+                $fatal(1);
+            end
+            last_rise = $time;
+            have_rise = 1;
+        end
+    end
+
+    // A deselect ends the current burst, so the next edge starts fresh rather
+    // than measuring across the gap.
+    always @(posedge cs_n) have_rise = 0;
 
     // Sample MOSI on the rising edge (mode 0).
     always @(posedge sck) begin

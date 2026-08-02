@@ -79,6 +79,38 @@
 #define SPI_CTRL_CS_ASSERT (1u << 0)
 #define SPI_CTRL_DIV(n)    (((n) & 0xFFu) << 8)
 
+/* System clock, in Hz. This MUST agree with fpga/soc_fpga.v's CLK_HZ - it is
+ * the same duplication hazard as RAM_SIZE vs RAM_BYTES above, and for the
+ * same reason: software cannot read a synthesis parameter.
+ *
+ * It is only used to derive the SD initialization clock below. If you get it
+ * wrong, get it wrong *high*: over-estimating makes SCK slower than intended,
+ * which is harmless, while under-estimating can push the init clock above the
+ * 400 kHz ceiling, which real cards reject.
+ *
+ * (fpga/soc_fpga.v's CLK_HZ default of 50 MHz is above the design's measured
+ * Fmax - see fpga/README.md. Both need setting to the board's real oscillator
+ * before a hardware build; they are kept equal here so they move together.)
+ */
+#define CPU_HZ 50000000u
+
+/* SCK = CPU_HZ / (2 * (div + 1)).
+ *
+ * SD_INIT_DIV: the SD physical-layer spec requires the clock to stay in the
+ * 100-400 kHz band from power-up until initialization completes (CMD0 through
+ * ACMD41). A card clocked faster than that during init is entitled to ignore
+ * the host entirely, and many do. This targets ~350 kHz, which stays inside
+ * the band for every plausible CPU_HZ rather than sitting on the ceiling.
+ *
+ * SD_FAST_DIV: full speed once the card is initialized. The floor is 2, not
+ * 0 - rtl/soc/wb_spi.v synchronizes MISO through two flops, so a half period
+ * shorter than that samples the previous bit. 3 leaves a cycle of margin for
+ * the card's own output delay. wb_spi.v fails the simulation outright if
+ * firmware ever programs a divider below 2.
+ */
+#define SD_INIT_DIV ((CPU_HZ) / 700000u)
+#define SD_FAST_DIV 3u
+
 /* ---- SD card image layout ----
  * Block 0 is a header written by software/soc/mkcard.py; the program image
  * itself starts at block 1. The boot ROM checks the magic and uses the

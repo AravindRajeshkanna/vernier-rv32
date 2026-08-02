@@ -50,10 +50,21 @@ static uint8_t spi_xfer(uint8_t v) {
     return (uint8_t)SPI_DATA;
 }
 
+/* Chip select, preserving the clock divider.
+ *
+ * This used to write SPI_CTRL_DIV(0) unconditionally, which meant every
+ * chip-select change silently reset SCK to its maximum. Read-modify-write
+ * instead - CTRL reads back - so the two settings are independent and no
+ * static state is needed to remember the current speed (this is a
+ * freestanding ROM with no .data). */
 static void spi_cs(int assert_cs) {
-    uint32_t ctrl = SPI_CTRL_DIV(0);
+    uint32_t ctrl = SPI_CTRL & ~SPI_CTRL_CS_ASSERT;
     if (assert_cs) ctrl |= SPI_CTRL_CS_ASSERT;
     SPI_CTRL = ctrl;
+}
+
+static void spi_set_div(uint32_t div) {
+    SPI_CTRL = (SPI_CTRL & SPI_CTRL_CS_ASSERT) | SPI_CTRL_DIV(div);
 }
 
 /* Send a command frame and return the R1 response byte.
@@ -80,9 +91,23 @@ static uint8_t sd_cmd(uint8_t cmd, uint32_t arg, uint8_t crc) {
     return 0xFF;
 }
 
+/* Bring the card up.
+ *
+ * The clock rate matters here and is not a performance question. The SD
+ * physical-layer spec requires SCK to stay within 100-400 kHz from power-up
+ * until initialization completes; a card clocked faster during this window is
+ * entitled to ignore the host, and real ones do. This code originally ran the
+ * whole sequence at the divider's maximum - f_clk/2, megahertz - and worked
+ * only because sim/sd_card_model.v has no timing requirements at all. That
+ * model now rejects an out-of-spec init clock, so this cannot silently
+ * regress.
+ *
+ * Slow for the handshake, fast for bulk transfer once the card is ready. */
 static int sd_init(void) {
     int i;
     uint8_t r;
+
+    spi_set_div(SD_INIT_DIV);
 
     /* At least 74 clocks with CS deasserted so the card can wake up. */
     spi_cs(0);
@@ -112,6 +137,11 @@ static int sd_init(void) {
     r = sd_cmd(58, 0x00000000u, 0xFD);
     if (r != 0x00) { uart_puts("  CMD58 failed\r\n"); return -1; }
     for (i = 0; i < 4; i++) spi_xfer(0xFF);
+
+    /* Initialized: the 400 kHz ceiling no longer applies, so shift up for the
+     * block reads that follow. Everything above this point is a few hundred
+     * bytes; everything below it is the whole program image. */
+    spi_set_div(SD_FAST_DIV);
 
     return 0;
 }

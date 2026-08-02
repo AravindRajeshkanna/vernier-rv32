@@ -74,6 +74,56 @@ module wb_spi (
     wire start      = data_write && !busy && !done_q;
     wire tick       = (div_cnt == clkdiv);
 
+    // ---- MISO synchronizer ----
+    // `spi_miso` is a pin driven by another device on its own clock, so it is
+    // asynchronous to this one. Sampling it straight into `rxreg` - which is
+    // what this module used to do - is a metastability hazard on every bit
+    // received, and the failure mode on hardware is intermittently corrupt
+    // data with no clean way to reproduce it. rtl/uart.v and rtl/soc/wb_gpio.v
+    // both already synchronize their asynchronous inputs; this is the same
+    // 2-flop treatment.
+    //
+    // Simulation cannot show the problem: sim/sd_card_model.v advances MISO on
+    // the SCK falling edge, so in a testbench it is always perfectly
+    // synchronous to the sampling point.
+    //
+    // Reset high because MISO idles high (the card's pull-up).
+    //
+    // **This costs two clocks of latency, which constrains `clkdiv`.** The
+    // shift register samples at the SCK rising edge, and the card drove that
+    // bit at the falling edge - one half period, or (clkdiv+1) system clocks,
+    // earlier. For the synchronized value to have caught up by then,
+    // clkdiv+1 must exceed the synchronizer's 2 cycles, so **clkdiv >= 2** is
+    // required and anything less samples the previous bit. See the check
+    // below, and SD_FAST_DIV in software/soc/soc.h.
+    reg miso_sync1, miso_sync2;
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            miso_sync1 <= 1'b1;
+            miso_sync2 <= 1'b1;
+        end else begin
+            miso_sync1 <= spi_miso;
+            miso_sync2 <= miso_sync1;
+        end
+    end
+    wire miso = miso_sync2;
+
+`ifndef SYNTHESIS
+    // The clkdiv >= 2 requirement above is a real constraint on firmware and
+    // there is no way for it to fail loudly on hardware - it just returns
+    // wrong bytes. So fail loudly here instead, at the moment a transfer is
+    // started with a divider that cannot work.
+    always @(posedge clk) begin
+        if (!rst && start && (clkdiv < 8'd2)) begin
+            $display("ERROR: %m started an SPI transfer with clkdiv=%0d.", clkdiv);
+            $display("       clkdiv must be >= 2 - the MISO synchronizer adds two");
+            $display("       cycles of latency, so a shorter half period samples the");
+            $display("       previous bit. See rtl/soc/wb_spi.v and soc.h's SD_FAST_DIV.");
+            $fatal(1);
+        end
+    end
+`endif
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             ctrl    <= 16'b0;
@@ -105,9 +155,11 @@ module wb_spi (
                     div_cnt <= 8'b0;
                     if (!sck_r) begin
                         // Rising edge: the slave has had a half period to set
-                        // up MISO, so sample it here (mode 0).
+                        // up MISO, so sample it here (mode 0). `miso` is the
+                        // synchronized copy, two clocks behind the pin - which
+                        // is why clkdiv >= 2 is required.
                         sck_r <= 1'b1;
-                        rxreg <= {rxreg[6:0], spi_miso};
+                        rxreg <= {rxreg[6:0], miso};
                     end else begin
                         // Falling edge: advance MOSI to the next bit.
                         sck_r  <= 1'b0;

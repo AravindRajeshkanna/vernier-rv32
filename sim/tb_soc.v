@@ -51,7 +51,13 @@ module tb_soc;
         .sck(spi_sck), .mosi(spi_mosi), .miso(spi_miso), .cs_n(spi_cs_n)
     );
 
-    always #5 clk = ~clk;   // 100 MHz virtual clock
+    // Clock period in ns. This is not arbitrary any more: sd_card_model.v
+    // checks the SD initialization clock against a real-time ceiling, and the
+    // divider producing that clock is computed by software from CPU_HZ in
+    // software/soc/soc.h. The two have to describe the same clock or the check
+    // is measuring a fiction, so this is CPU_HZ's period - 50 MHz, 20 ns.
+    localparam CLK_PERIOD = 20;
+    always #(CLK_PERIOD / 2) clk = ~clk;
 
     // ---- UART receiver: decode the TX line back into characters ----
     // Mirrors rtl/uart.v's transmitter - wait for the start bit, then sample
@@ -60,13 +66,13 @@ module tb_soc;
     reg [7:0] rx_byte;
     initial begin
         forever begin
-            @(negedge uart_tx);                       // start bit
-            #(5 * CLKS_PER_BIT * 10 / 10);            // align to mid-bit
+            @(negedge uart_tx);                          // start bit
+            #(CLK_PERIOD * CLKS_PER_BIT / 2);            // align to mid-bit
             for (i = 0; i < 8; i = i + 1) begin
-                #(10 * CLKS_PER_BIT);
+                #(CLK_PERIOD * CLKS_PER_BIT);
                 rx_byte[i] = uart_tx;
             end
-            #(10 * CLKS_PER_BIT);                     // stop bit
+            #(CLK_PERIOD * CLKS_PER_BIT);                // stop bit
             $write("%c", rx_byte);
             $fflush;
         end
@@ -105,9 +111,11 @@ module tb_soc;
     end
 
     // Safety timeout. Generous: the boot path shifts the whole program image
-    // in over SPI one bit at a time, which is genuinely slow in simulation.
+    // in over SPI one bit at a time, which is genuinely slow in simulation -
+    // and more so now that initialization runs at the ~350 kHz the SD spec
+    // requires rather than at the divider's maximum.
     initial begin
-        #80_000_000;
+        #400_000_000;
         $display("\n---------------------------------------------");
         $display("TIMEOUT - no result word was written");
         $display("last result word: 0x%08x", result_word);
