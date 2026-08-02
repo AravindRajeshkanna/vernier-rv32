@@ -47,7 +47,9 @@ top.v                          (simulation top level)
 ```
 
 `fpga/top_fpga.v` mirrors `top.v` but for real hardware — same modules,
-wired to physical clock/reset/LED pins instead of a testbench.
+wired to physical clock/reset/LED pins instead of a testbench. For the SoC
+the equivalent is `fpga/soc_fpga.v`, with `fpga/ulx3s_top.v` adapting it to
+one specific board's pin names, polarities and tie-offs.
 
 ### Architecture style: Harvard, not Von Neumann
 
@@ -1081,7 +1083,7 @@ is correctly still a read, which is also how Spike models it.
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
   no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
   take), no Ethernet. The design now builds to a **bitstream** on an
-  LFE5U-45F and closes timing at 25 MHz (30.38 MHz measured post-route), but
+  LFE5U-45F and closes timing at 25 MHz (29.37 MHz measured post-route on a real ULX3S pinout), but
   has never been loaded onto hardware and the pinout is still fictional —
   see `fpga/README.md`. The measured critical path is **75% routing** and
   only 8 ns of logic — the design is wire-bound rather than logic-bound, so

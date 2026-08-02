@@ -1,23 +1,66 @@
 # FPGA integration — status and honest caveats
 
-**The design builds all the way to a bitstream on an ECP5, at a measured
-30 MHz. It has never been loaded onto hardware.** Those are different claims:
+**The design builds to a ULX3S bitstream against that board's real pinout and
+closes timing at 25 MHz, with a measured Fmax of 29.37 MHz. It has never been
+loaded onto hardware.** Those are different claims:
 
 | Artifact | Status |
 |---|---|
 | Full SoC synthesis (`synth_ecp5`) | ✅ **runs, 54 s** |
-| Place-and-route (`nextpnr-ecp5`) | ✅ **runs, 2 min**, timing closes at 25 MHz |
-| Bitstream (`ecppack`) | ✅ **1.1 MB `soc_fpga.bit`** |
-| Resource usage | ✅ **measured** — 27% LUT, 62% block RAM of an LFE5U-45F |
-| Achievable Fmax | ✅ **30.38 MHz measured post-route** — see the critical path below |
-| `constraints/generic.lpf` | ❌ **Placeholder pins.** Timing was measured with I/O unconstrained |
+| Place-and-route (`nextpnr-ecp5`) | ✅ **runs, 2 min** |
+| Bitstream (`ecppack`) | ✅ **1.1 MB `ulx3s_top.bit`** |
+| Resource usage | ✅ **measured** — 26% LUT, 62% block RAM of an LFE5U-45F |
+| **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
+| **Fmax with I/O constrained** | ✅ **29.37 MHz**, PASS at the 25 MHz the board clocks at |
+| `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
-| Running on a board | ❌ no board |
+| Running on a board | ❌ **no board** |
 
-`fpga/synth/synth_ecp5.sh` runs the whole flow and has been executed end to
-end. What has no evidence is that it works against **real pins on a real
-board** — the pinout is still fictional, and 30 MHz is a number from a build
-where nextpnr could place I/O wherever it liked.
+The pinout is no longer fictional, which is a smaller claim than "this works"
+but a real one: the 29.37 MHz above comes from a build where every port is
+locked to the pin it will actually use, rather than one where nextpnr could
+place I/O wherever suited it. Constraining the I/O cost about 1 MHz
+(30.38 → 29.37), less than expected.
+
+**What is still unproven is everything that needs a board**: that the ESP32
+hold-off is sufficient in practice, that a real SD card answers the boot ROM,
+that the FTDI console is legible, that the design works at temperature. None
+of that is knowable from here.
+
+## Building for a ULX3S
+
+```bash
+make soc                                    # boot ROM image is a synthesis input
+BOARD=ulx3s ./fpga/synth/synth_ecp5.sh
+openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
+```
+
+**Check your board revision first.** The four SD pins used for SPI mode are
+wired differently on **v1.7** than on v2.0/v3.0, and `constraints/ulx3s.lpf`
+is for the latter:
+
+| | v2.0 / v3.0 | v1.7 |
+|---|---|---|
+| sck | H2 | J1 |
+| mosi | J1 | J3 |
+| miso | J3 | K2 |
+| cs_n | K2 | H1 |
+
+On a v1.7 board the design builds, loads, and fails to find the card, because
+all four signals land on the wrong pins.
+
+Three board details that `fpga/ulx3s_top.v` handles and that are easy to get
+wrong by hand: the buttons are **active high** (so reset is inverted, and
+`btn[0]` is the power button rather than a general one), `wifi_gpio0` must be
+**driven high** or the ESP32 can reset the board underneath a running design,
+and `sd_d[2:1]` are unused in SPI mode but must not float. `make verify`
+checks all three, plus GPIO bidirectionality — see `sim/tb_ulx3s.v`.
+
+Running at some other frequency needs `CLK_HZ` in `fpga/soc_fpga.v`, `CPU_HZ`
+in `software/soc/soc.h`, and `CLK_PERIOD` in `sim/tb_soc.v` changed together;
+nothing checks that they agree. The ULX3S needs no PLL because its 25 MHz
+oscillator is already below the design's Fmax. A faster board does:
+`ecppll -i <osc_mhz> -o 25 -n pll --file pll.v` generates one.
 
 ### Getting the toolchain
 
@@ -40,7 +83,7 @@ bundle described above. **Area, Fmax and timing closure are all measured.**
 
 The per-RAM-size table below predates the AMO retiming and so shows the
 older, higher LUT counts; the 64 KB row's current numbers are in
-[Utilization](#utilization-lfe5u-45f-cabga381-64-kb-ram). Only that one
+[Utilization](#utilization-lfe5u-45f-cabga381-64-kb-ram-ulx3s-pinout). Only that one
 configuration has been rebuilt since.
 
 Full `soc_fpga` (CPU + Wishbone interconnect + boot ROM + RAM + CLINT + PLIC
@@ -114,13 +157,25 @@ worth recording both because only the first was ever suspected:
 
 ## Before you run any of this
 
-1. **Replace every pin in the constraints file.** They are placeholders
-   copied from no board in particular. Your vendor publishes a master
-   constraints file; start from that.
-2. **Set `CLK_HZ` in `soc_fpga.v` to your board's actual oscillator.** The
-   UART divisor is derived from it. Getting this wrong produces a console
-   that emits garbage even when timing closes perfectly — and it looks like
-   a CPU bug, not a configuration one.
+On a ULX3S none of the first two apply — `constraints/ulx3s.lpf` has real
+pins and `fpga/ulx3s_top.v` is already set for a 25 MHz oscillator. **For any
+other board:**
+
+1. **Replace every pin in the constraints file.** `constraints/generic.lpf`
+   is still placeholders copied from no board in particular. Your vendor
+   publishes a master constraints file; start from that, and write a board
+   wrapper alongside `ulx3s_top.v` rather than editing it.
+2. **Set `CLK_HZ` in `soc_fpga.v` to your board's actual oscillator**, along
+   with `CPU_HZ` in `software/soc/soc.h` and `CLK_PERIOD` in
+   `sim/tb_soc.v` — nothing checks that the three agree. The UART divisor and
+   the SD initialization clock are both derived from them, and getting either
+   wrong produces a console emitting garbage, or a card that never answers,
+   even when timing closes perfectly. Both look like CPU bugs rather than
+   configuration ones. If the oscillator is faster than the design's Fmax you
+   also need a PLL — see the `ecppll` line above.
+
+Regardless of board:
+
 3. **Run `make soc` first.** `wb_rom.v` pulls `bootrom.hex` in with
    `$readmemh` at elaboration time, which makes it a *synthesis* input, not
    just a simulation one. Both scripts check for it and refuse to start
@@ -133,7 +188,7 @@ This section used to say 50-150 MHz was "plausible for a core this size".
 Place-and-route says otherwise:
 
 ```
-Max frequency for clock 'clk': 30.38 MHz   (post-route)
+Max frequency for clock 'clk_25mhz': 29.37 MHz   (post-route, real pins)
 ```
 
 `fpga/constraints/timing_only.lpf` therefore constrains the clock to 25 MHz,
@@ -142,17 +197,17 @@ worth stating plainly rather than quietly editing the range downward - an
 untested estimate of a critical path is not evidence, and this is the whole
 reason for running the tool.
 
-Two numbers appear in nextpnr's log: 22.49 MHz after placement and 30.38 MHz
+Two numbers appear in nextpnr's log: 22.46 MHz after placement and 29.37 MHz
 after routing. The second is the real one; the first is an estimate made
 before the router has had a chance to fix anything.
 
-### Utilization (LFE5U-45F, CABGA381, 64 KB RAM)
+### Utilization (LFE5U-45F, CABGA381, 64 KB RAM, ULX3S pinout)
 
 ```
-LUT4          12124 / 43848    27%
+LUT4          11837 / 43848    26%
 DP16KD           67 /   108    62%    <- block RAM is the binding resource
 MULT18X18D        4 /    72     5%
-TRELLIS_IO       28 /   245    11%
+TRELLIS_IO       54 /   245    22%
 DCCA              1 /    56     1%
 ```
 
@@ -227,6 +282,12 @@ nothing, put the critical path in three completely different places:
 | After the AMO retiming | 31.32 MHz | RAM -> MMU walk -> PC | 61% | 11,977 | 6,719 |
 | After rewiring 4 status LEDs | 30.64 MHz | forwarding mux -> address adder | 72% | 11,977 | 6,719 |
 | After adding a 2-flop MISO synchronizer | 30.38 MHz | PC -> fetch -> PC | 75% | 12,124 | 6,721 |
+| **With the real ULX3S pinout** | **29.37 MHz** | RAM -> MMU walk -> PC | 67% | 11,837 | 6,721 |
+
+The last row is the only one that constrains I/O, and is the number to
+believe for hardware. It is also the only change in the table with a
+*mechanism* behind its movement — real pins are a genuine constraint on
+placement, not a perturbation — and it still only cost 1 MHz.
 
 The middle row is the striking one: **byte-identical LUT and flip-flop
 counts**, a completely different critical path, and 0.68 MHz. Nothing in the

@@ -54,6 +54,7 @@ sim/
   tb_soc.v            boots the SoC from a simulated SD card
   tb_isa.v            runs the official RISC-V architectural tests on the SoC
   tb_bench.v          runs CoreMark, ends on the benchmark's own verdict
+  tb_ulx3s.v          board-wrapper wiring test (pin direction, polarity, tie-offs)
   tracer.v            retired-instruction tracer (drives the Spike co-simulation)
   sd_card_model.v     SD card in SPI mode (CMD0/8/55/58, ACMD41, CMD17)
   verilator_main.cpp  optional Verilator harness
@@ -98,8 +99,9 @@ dts/
   soc.dts        device tree describing the SoC (`make dtb`)
 fpga/
   top_fpga.v     board-agnostic FPGA top for the flat design
-  soc_fpga.v     board-agnostic FPGA top for the SoC (UNVERIFIED - see below)
-  constraints/   pin templates (.xdc/.lpf) - PLACEHOLDER pins
+  soc_fpga.v     board-agnostic FPGA top for the SoC
+  ulx3s_top.v    ULX3S board wrapper - real pins, builds to a bitstream
+  constraints/   ulx3s.lpf (real pins); generic.lpf/.xdc still placeholders
   synth/         yosys/nextpnr batch script (run end to end) and a Vivado
                  one (never executed)
   README.md      what is and isn't known about the FPGA path
@@ -132,7 +134,7 @@ co-simulation vs Spike:  82/82 traces match             (make cosim)
 formal:                  4 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 synthesis (ECP5):        fits an LFE5U-45F, 54 s         (fpga/README.md)
-place & route:           bitstream at 30.38 MHz          (fpga/synth/synth_ecp5.sh)
+place & route:           ULX3S bitstream at 29.37 MHz    (BOARD=ulx3s fpga/synth/synth_ecp5.sh)
 ```
 
 `make verify` runs the lot. `tests/README.md` has the details, including the

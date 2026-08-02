@@ -88,11 +88,10 @@
  * which is harmless, while under-estimating can push the init clock above the
  * 400 kHz ceiling, which real cards reject.
  *
- * (fpga/soc_fpga.v's CLK_HZ default of 50 MHz is above the design's measured
- * Fmax - see fpga/README.md. Both need setting to the board's real oscillator
- * before a hardware build; they are kept equal here so they move together.)
+ * 25 MHz is the ULX3S oscillator and is what fpga/soc_fpga.v's CLK_HZ
+ * defaults to. Change both together for another board.
  */
-#define CPU_HZ 50000000u
+#define CPU_HZ 25000000u
 
 /* SCK = CPU_HZ / (2 * (div + 1)).
  *

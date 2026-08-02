@@ -1,0 +1,128 @@
+// Board-wrapper test for fpga/ulx3s_top.v.
+//
+// This exists because of what happened to fpga/top_fpga.v: RTL that no build
+// exercises rots silently. That file sat in the tree with its page-table
+// walker ports unconnected - it still elaborated, it just could never have
+// worked - and nothing noticed, because nothing built it. `make verify` now
+// builds and runs this one so the same thing cannot happen twice.
+//
+// It checks the things a board wrapper can get wrong that the SoC underneath
+// cannot: pin direction, polarity, and which signal is tied to which. It does
+// *not* re-test the SoC - sim/tb_soc.v does that.
+//
+// The GPIO case is here because it caught a real bug. The wrapper originally
+// connected the header with `assign gp[13:0] = gpio[13:0];`, which is
+// one-directional: outputs reached the pins, and every input was silently
+// dropped, because a continuous assignment cannot carry a value backwards.
+// It compiled, linted, synthesized and produced a bitstream. Against the
+// broken version the four GPIO checks below read `x`.
+`timescale 1ns/1ps
+module tb_ulx3s;
+    reg clk = 0;
+    always #20 clk = ~clk;          // 25 MHz, the ULX3S oscillator
+
+    reg  [6:0] btn = 7'b0000010;    // btn[1] high = pressed = reset asserted
+    wire [7:0] led;
+    wire       ftdi_rxd, wifi_gpio0;
+    wire       sd_clk, sd_cmd;
+    wire [3:0] sd_d;
+
+    // External drivers on two header pins, one from each bank.
+    reg gp0_drive = 1'b0;
+    reg gn0_drive = 1'b0;
+    wire [13:0] gp, gn;
+    assign gp[0] = gp0_drive;
+    assign gn[0] = gn0_drive;
+
+    ulx3s_top DUT (
+        .clk_25mhz(clk),
+        .ftdi_rxd(ftdi_rxd), .ftdi_txd(1'b1),
+        .sd_clk(sd_clk), .sd_cmd(sd_cmd), .sd_d(sd_d), .sd_cdn(1'b0),
+        .btn(btn), .led(led), .wifi_gpio0(wifi_gpio0),
+        .gp(gp), .gn(gn)
+    );
+
+    // wb_gpio's synchronized view of the pins: gpio[0] <- gp[0],
+    // gpio[14] <- gn[0].
+    wire [15:0] gpio_seen = DUT.SOC.SOC.GPIO.in_sync2;
+
+    integer errors = 0;
+
+    task check(input [511:0] what, input got, input want);
+        begin
+            if (got !== want) begin
+                $display("  FAIL %0s: got %b, expected %b", what, got, want);
+                errors = errors + 1;
+            end else begin
+                $display("  ok   %0s", what);
+            end
+        end
+    endtask
+
+    task check16(input [511:0] what, input [15:0] got, input [15:0] want);
+        begin
+            if (got !== want) begin
+                $display("  FAIL %0s: got %b, expected %b", what, got, want);
+                errors = errors + 1;
+            end else begin
+                $display("  ok   %0s", what);
+            end
+        end
+    endtask
+
+    initial begin
+        $display("=== ULX3S board wrapper ===");
+
+        // ---- things that must be true while reset is asserted ----
+        repeat (4) @(posedge clk);
+        check("wifi_gpio0 driven high (ESP32 hold-off)", wifi_gpio0, 1'b1);
+        check("btn[1] pressed -> SoC held in reset", DUT.SOC.rst, 1'b1);
+
+        btn[1] = 1'b0;              // release
+        repeat (8) @(posedge clk);
+        check("btn[1] released -> SoC out of reset", DUT.SOC.rst, 1'b0);
+
+        // ---- SD lines, SPI mode ----
+        check("sd_d[2] parked high (unused in SPI mode)", sd_d[2], 1'b1);
+        check("sd_d[1] parked high (unused in SPI mode)", sd_d[1], 1'b1);
+        check("sd_d[0] not driven by the FPGA (it is MISO)", sd_d[0], 1'bz);
+        check("sd_cmd follows the SoC's MOSI", sd_cmd, DUT.spi_mosi);
+        check("sd_clk follows the SoC's SCK",  sd_clk, DUT.spi_sck);
+        check("sd_d[3] follows the SoC's chip select", sd_d[3], DUT.spi_cs_n);
+
+        // ---- GPIO must be bidirectional ----
+        // GPIO_DIR resets to all-inputs, so every header pin is an input.
+        gp0_drive = 1'b1; gn0_drive = 1'b0;
+        repeat (6) @(posedge clk);
+        check16("gp[0] driven high reaches gpio[0]",
+                gpio_seen & 16'h4001, 16'h0001);
+
+        gp0_drive = 1'b0; gn0_drive = 1'b1;
+        repeat (6) @(posedge clk);
+        check16("gn[0] driven high reaches gpio[14]",
+                gpio_seen & 16'h4001, 16'h4000);
+
+        gp0_drive = 1'b1; gn0_drive = 1'b1;
+        repeat (6) @(posedge clk);
+        check16("both header pins high", gpio_seen & 16'h4001, 16'h4001);
+
+        gp0_drive = 1'b0; gn0_drive = 1'b0;
+        repeat (6) @(posedge clk);
+        check16("both header pins low", gpio_seen & 16'h4001, 16'h0000);
+
+        $display("");
+        $display("---------------------------------------------");
+        if (errors == 0) $display("ULX3S WRAPPER TEST PASSED");
+        else             $display("ULX3S WRAPPER TEST FAILED (%0d)", errors);
+        $display("---------------------------------------------");
+        $finish;
+    end
+
+    // The wrapper only claims to be correct about wiring; if the CPU somehow
+    // never leaves reset this would spin forever without saying why.
+    initial begin
+        #2_000_000;
+        $display("TIMEOUT - the wrapper test never completed");
+        $finish;
+    end
+endmodule

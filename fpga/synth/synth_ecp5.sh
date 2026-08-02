@@ -36,16 +36,40 @@ ROOT="$PWD"
 # A 25F build works at RAM_BYTES=32768 - see fpga/README.md's table.
 DEVICE=${DEVICE:-45k}
 PACKAGE=${PACKAGE:-CABGA381}
-TOP=soc_fpga
 BUILD=fpga/build
 
-# Default to the timing-only constraints: they pin the clock and nothing else,
-# which is what produces an honest Fmax without inventing a board. Point LPF
-# at your board's real file for an actual build, and drop
-# --lpf-allow-unconstrained so an unplaced pin is an error rather than a
-# surprise.
-LPF=${LPF:-fpga/constraints/timing_only.lpf}
-PNR_EXTRA=${PNR_EXTRA:---lpf-allow-unconstrained}
+# Two ways to build this:
+#
+#   ./fpga/synth/synth_ecp5.sh                 board-agnostic, timing only
+#   BOARD=ulx3s ./fpga/synth/synth_ecp5.sh     a real ULX3S bitstream
+#
+# The default constrains the clock and nothing else, which produces an Fmax
+# without inventing a board - useful for tracking the design's own timing, but
+# optimistic, because nextpnr may place I/O wherever suits it.
+#
+# BOARD=ulx3s builds fpga/ulx3s_top.v against real pins and drops
+# --lpf-allow-unconstrained, so an unplaced pin becomes an error instead of a
+# silently invented placement. That is the number to trust for hardware.
+BOARD=${BOARD:-}
+
+case "$BOARD" in
+    ulx3s)
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v"
+        ;;
+    "")
+        TOP=${TOP:-soc_fpga}
+        LPF=${LPF:-fpga/constraints/timing_only.lpf}
+        PNR_EXTRA=${PNR_EXTRA:---lpf-allow-unconstrained}
+        BOARD_RTL=""
+        ;;
+    *)
+        echo "error: unknown BOARD='$BOARD' (known: ulx3s, or unset)" >&2
+        exit 1
+        ;;
+esac
 
 # -DSYNTHESIS drops the memories' zero-fill initial loops, which exist for
 # simulation only and which yosys unrolls into one assignment per word - the
@@ -57,7 +81,7 @@ RTL="rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
-     rtl/soc/wb_spi.v rtl/soc/soc_top.v fpga/soc_fpga.v"
+     rtl/soc/wb_spi.v rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
 
 if [ ! -f sim/bootrom.hex ]; then
     echo "error: sim/bootrom.hex missing - run 'make soc' first" >&2

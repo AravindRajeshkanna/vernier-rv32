@@ -55,8 +55,8 @@ module tb_soc;
     // checks the SD initialization clock against a real-time ceiling, and the
     // divider producing that clock is computed by software from CPU_HZ in
     // software/soc/soc.h. The two have to describe the same clock or the check
-    // is measuring a fiction, so this is CPU_HZ's period - 50 MHz, 20 ns.
-    localparam CLK_PERIOD = 20;
+    // is measuring a fiction, so this is CPU_HZ's period - 25 MHz, 40 ns.
+    localparam CLK_PERIOD = 40;
     always #(CLK_PERIOD / 2) clk = ~clk;
 
     // ---- UART receiver: decode the TX line back into characters ----

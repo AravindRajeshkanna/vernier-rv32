@@ -64,7 +64,7 @@ SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc dtb \
+.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc sim_ulx3s dtb \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
@@ -129,6 +129,18 @@ sim/card.hex: software/soc/socprog.elf software/soc/mkcard.py Makefile
 sim_soc: soc
 	$(IVERILOG) -g2012 -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
 	cd sim && $(VVP) sim_soc.out
+
+# ---- board wrapper ----
+# fpga/ulx3s_top.v is the one piece of RTL no simulation would otherwise
+# touch, and fpga/top_fpga.v is the cautionary tale: it sat in the tree for
+# months with unconnected page-table-walker ports because nothing built it.
+# This target checks the wiring the wrapper is responsible for - pin
+# direction, polarity, tie-offs - and is part of `make verify` so the file
+# cannot rot the same way. It does not re-test the SoC; sim_soc does that.
+sim_ulx3s: soc
+	$(IVERILOG) -g2012 -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
+	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v
+	cd sim && $(VVP) sim_ulx3s.out
 
 # =====================================================================
 # Device tree
@@ -214,7 +226,7 @@ coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
 # Everything that can gate a change, in rough order of how fast it fails.
-verify: sim sim_software sim_soc isa cosim formal
+verify: sim sim_software sim_soc sim_ulx3s isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \

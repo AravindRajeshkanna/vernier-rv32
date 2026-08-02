@@ -1,14 +1,18 @@
 // FPGA top level for the SoC (rtl/soc/soc_top.v).
 //
-// !! NEVER RUN ON HARDWARE !!  This now builds all the way through: yosys,
-// nextpnr-ecp5 and ecppack all complete and produce a bitstream for an
-// LFE5U-45F, at a measured 31.32 MHz post-route. What has *not* happened is
-// any of it running on a board, because there is no board - and the pinout
-// in fpga/constraints/generic.lpf is still placeholders, so the timing
-// number comes from a build where nextpnr could place I/O wherever it liked.
+// !! NEVER RUN ON HARDWARE !!  This builds all the way through - yosys,
+// nextpnr-ecp5 and ecppack all complete - and via fpga/ulx3s_top.v it does so
+// against a **real pinout**, closing timing at 25 MHz with a measured Fmax of
+// 29.37 MHz on an LFE5U-45F. What has *not* happened is any of it running on
+// a board, because there is no board.
 //
-// Synthesized, placed, routed and timed: yes. Executed: no. See
-// fpga/README.md for exactly which claims have evidence behind them.
+// Synthesized, placed, routed and timed against real pins: yes. Executed: no.
+// See fpga/README.md for exactly which claims have evidence behind them.
+//
+// This file stays board-agnostic on purpose: it asks for a clock, an
+// active-low reset, a UART pair, four SPI wires, GPIO and four LEDs, and
+// knows nothing about what they are called on any particular board. That
+// mapping lives in a wrapper - fpga/ulx3s_top.v is the worked example.
 //
 // Differences from fpga/top_fpga.v (which wraps the older flat, pre-bus
 // rtl/top.v and is left alone): this instantiates the full Wishbone SoC, so
@@ -22,10 +26,24 @@
 //   - tristate drivers on the GPIO pins, since simulation used separate
 //     in/out/dir vectors but a physical pin is bidirectional
 module soc_fpga #(
-    // CLK_HZ MUST be changed to your board's actual oscillator frequency -
-    // it is what the UART bit period is derived from, so getting it wrong
-    // produces a console that emits pure garbage. See fpga/README.md.
-    parameter CLK_HZ    = 50_000_000,
+    // CLK_HZ MUST match the clock actually arriving on `clk` - it is what the
+    // UART bit period is derived from, so getting it wrong produces a console
+    // that emits pure garbage even when timing closes. See fpga/README.md.
+    //
+    // Two things to keep in step with this:
+    //   - software/soc/soc.h's CPU_HZ, which derives the SD initialization
+    //     clock from it. Nothing checks the two agree.
+    //   - the design's measured Fmax, currently ~30 MHz. This default used to
+    //     be 50 MHz, which is a clock this design cannot run at - a build that
+    //     took it at face value would miss timing and misbehave rather than
+    //     fail cleanly. 25 MHz is both achievable with margin and the ULX3S
+    //     oscillator frequency, so it needs no PLL there.
+    //
+    // A board whose oscillator is faster than about 30 MHz needs a PLL to
+    // divide it down; there is deliberately none here, because the target
+    // board does not need one. `ecppll -i <osc> -o 25 -n pll --file pll.v`
+    // generates one for the ECP5 if yours does.
+    parameter CLK_HZ    = 25_000_000,
     parameter BAUD_RATE = 115_200,
     parameter GPIO_WIDTH = 16,
 
@@ -109,7 +127,7 @@ module soc_fpga #(
     // knows, because those fail in different ways:
     //
     //   led[3] trap_seen   sticky - the CPU has taken a trap at least once
-    //   led[2] heartbeat   ~1.5 Hz at 50 MHz. Driven from a free-running
+    //   led[2] heartbeat   ~0.75 Hz at 25 MHz. Driven from a free-running
     //                      counter, so it keeps blinking even if the CPU is
     //                      wedged: it proves the clock arrived, the
     //                      bitstream loaded and the fabric is alive, and it
