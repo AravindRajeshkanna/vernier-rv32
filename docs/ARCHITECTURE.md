@@ -1081,11 +1081,15 @@ is correctly still a read, which is also how Spike models it.
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
   no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
   take), no Ethernet. The design now builds to a **bitstream** on an
-  LFE5U-45F and closes timing at 25 MHz (31.32 MHz measured post-route), but
+  LFE5U-45F and closes timing at 25 MHz (30.64 MHz measured post-route), but
   has never been loaded onto hardware and the pinout is still fictional —
-  see `fpga/README.md`. The measured critical path runs from a block RAM's
-  read port through the MMU's walk result to the PC; it is 61% routing, which
-  bounds how much further logic restructuring can help.
+  see `fpga/README.md`. The measured critical path runs from the EX-stage
+  operand forwarding muxes into the effective-address adder, and is **72%
+  routing** — the design is wire-bound rather than logic-bound, so
+  floorplanning is now worth more than shortening logic. `fpga/README.md`
+  also records how much the critical path moves in response to edits that
+  change no logic at all, which is worth reading before attributing any
+  Fmax change to anything.
 - **No caches.** Every fetch and every load goes to the bus. With a
   shared-bus interconnect that also means a load or store costs the fetch
   behind it a cycle.

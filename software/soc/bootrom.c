@@ -13,6 +13,12 @@
  * own stack and the image it is loading. That keeps the ROM small and means
  * the loader can't be broken by a program image that hasn't been copied in
  * yet.
+ *
+ * Every failure below prints a reason and then stops. On a bench with no
+ * serial cable that is invisible, so each step also publishes a two-bit
+ * stage code through BOOT_STAGE_SET, which fpga/soc_fpga.v shows on
+ * led[1:0]. Whatever is left displayed is the step that did not finish. See
+ * soc.h for the codes.
  */
 #include <stdint.h>
 #include "soc.h"
@@ -141,9 +147,12 @@ void main(void) {
     uint32_t magic, length, blocks, i;
     void (*entry)(void);
 
+    BOOT_STAGE_SET(BOOT_STAGE_EARLY);
+
     uart_puts("\r\n=== RV32IMA SoC boot ROM ===\r\n");
     uart_puts("SPI/SD init...\r\n");
 
+    BOOT_STAGE_SET(BOOT_STAGE_SDINIT);
     if (sd_init() != 0) {
         uart_puts("BOOT FAILED: no SD card\r\n");
         for (;;) { }
@@ -152,6 +161,7 @@ void main(void) {
 
     /* Block 0 is the image header. Read it into the load area as scratch -
      * it is about to be overwritten by the image itself anyway. */
+    BOOT_STAGE_SET(BOOT_STAGE_HEADER);
     if (sd_read_block(SDIMG_HDR_BLOCK, hdr) != 0) {
         uart_puts("BOOT FAILED: header read error\r\n");
         for (;;) { }
@@ -176,6 +186,7 @@ void main(void) {
     uart_puthex(PROGRAM_LOAD_ADDR);
     uart_puts("\r\n");
 
+    BOOT_STAGE_SET(BOOT_STAGE_LOAD);
     dst = (uint8_t *)(uintptr_t)PROGRAM_LOAD_ADDR;
     for (i = 0; i < blocks; i++) {
         if (sd_read_block(SDIMG_DATA_BLOCK + i, dst + i * SD_BLOCK_SIZE) != 0) {

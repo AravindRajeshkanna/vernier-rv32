@@ -50,6 +50,28 @@
 #define GPIO_IE  REG32(GPIO_BASE + 0x0C)
 #define GPIO_IP  REG32(GPIO_BASE + 0x10)
 
+/* Boot-stage code, shown on led[1:0] of fpga/soc_fpga.v. Every failure path
+ * in the boot ROM prints to the UART and then stops, so with no serial cable
+ * attached a failed boot and a good one look identical - both just sit there
+ * with the heartbeat blinking. These two bits say which step was in progress
+ * when things stopped.
+ *
+ * fpga/soc_fpga.v mirrors GPIO_OUT[1:0] onto the LEDs regardless of
+ * GPIO_DIR, so this needs no pin configuration - just the write. On real
+ * hardware GPIO pins 1:0 mirror the same two bits, which is harmless.
+ *
+ * These are *stages*, not error codes: the value left showing is the step
+ * that did not finish.
+ */
+#define BOOT_STAGE_MASK   0x3u
+#define BOOT_STAGE_EARLY  0u  /* ROM entered, console up                  */
+#define BOOT_STAGE_SDINIT 1u  /* bringing up the SD card over SPI         */
+#define BOOT_STAGE_HEADER 2u  /* reading and validating the image header  */
+#define BOOT_STAGE_LOAD   3u  /* copying the image into RAM               */
+
+#define BOOT_STAGE_SET(s) \
+    (GPIO_OUT = (GPIO_OUT & ~BOOT_STAGE_MASK) | ((s) & BOOT_STAGE_MASK))
+
 /* ---- SPI (rtl/soc/wb_spi.v) ---- */
 #define SPI_CTRL   REG32(SPI_BASE + 0x00)
 #define SPI_DATA   REG32(SPI_BASE + 0x04)

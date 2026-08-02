@@ -1,11 +1,14 @@
 // FPGA top level for the SoC (rtl/soc/soc_top.v).
 //
-// !! NOT VERIFIED ON HARDWARE !!  No synthesis toolchain was available in
-// the environment this was written in (no yosys/nextpnr, no Vivado, no
-// Quartus) and no board was attached, so this file has been elaborated and
-// linted but never synthesized, placed, routed, timed, or run. Treat it as a
-// careful starting point, not a known-good design. See fpga/README.md for
-// what specifically still needs proving.
+// !! NEVER RUN ON HARDWARE !!  This now builds all the way through: yosys,
+// nextpnr-ecp5 and ecppack all complete and produce a bitstream for an
+// LFE5U-45F, at a measured 31.32 MHz post-route. What has *not* happened is
+// any of it running on a board, because there is no board - and the pinout
+// in fpga/constraints/generic.lpf is still placeholders, so the timing
+// number comes from a build where nextpnr could place I/O wherever it liked.
+//
+// Synthesized, placed, routed and timed: yes. Executed: no. See
+// fpga/README.md for exactly which claims have evidence behind them.
 //
 // Differences from fpga/top_fpga.v (which wraps the older flat, pre-bus
 // rtl/top.v and is left alone): this instantiates the full Wishbone SoC, so
@@ -101,9 +104,31 @@ module soc_fpga #(
         .trap(trap)
     );
 
-    // Cheap liveness indicator: a heartbeat plus the trap line, so a board
-    // with no serial cable attached still shows whether the CPU is running
-    // and whether it is taking traps.
+    // ---- board-level status LEDs ----
+    // Four bits, split between what the fabric knows and what the firmware
+    // knows, because those fail in different ways:
+    //
+    //   led[3] trap_seen   sticky - the CPU has taken a trap at least once
+    //   led[2] heartbeat   ~1.5 Hz at 50 MHz. Driven from a free-running
+    //                      counter, so it keeps blinking even if the CPU is
+    //                      wedged: it proves the clock arrived, the
+    //                      bitstream loaded and the fabric is alive, and it
+    //                      says nothing at all about software.
+    //   led[1:0]           boot stage, driven by firmware through GPIO_OUT's
+    //                      low two bits. See software/soc/bootrom.c's
+    //                      BOOT_STAGE_* codes.
+    //
+    // The firmware bits are mirrored from `gpio_out` rather than given their
+    // own peripheral, so no new hardware was needed for them. They read back
+    // regardless of `gpio_dir` - firmware writes GPIO_OUT and the LEDs
+    // follow, without having to configure the pins as outputs first - and
+    // GPIO pins 1:0 happen to mirror the same two bits, which is harmless.
+    //
+    // Why this exists: every failure path in the boot ROM prints to the UART
+    // and then stops. With no serial cable attached, a board that failed to
+    // find its SD card and a board that booted perfectly look identical -
+    // both just sit there with the heartbeat blinking. These two bits are
+    // what makes first bring-up diagnosable before the serial side works.
     reg [24:0] heartbeat;
     always @(posedge clk or posedge rst) begin
         if (rst) heartbeat <= 25'b0;
@@ -116,5 +141,5 @@ module soc_fpga #(
         else if (trap) trap_seen <= 1'b1;
     end
 
-    assign led = {trap_seen, heartbeat[24], heartbeat[23], heartbeat[22]};
+    assign led = {trap_seen, heartbeat[24], gpio_out[1:0]};
 endmodule
