@@ -1,8 +1,9 @@
-# ARCHITECTURE.md — How This CPU Works
+# Vernier-RV32 — Architecture
 
 This document explains the Verilog source in `rtl/`, module by module, and
-how they fit together into a complete RV32I CPU. For setup and simulation
-instructions, see `README.md` instead — this file is about the design
+how it fits together into a complete RV32IMA CPU and the Wishbone SoC around
+it. For setup and simulation instructions see `README.md`; for what has been
+verified and how, see `tests/README.md`. This file is about the design
 itself.
 
 ## 1. Big picture

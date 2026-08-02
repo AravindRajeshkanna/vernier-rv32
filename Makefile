@@ -1,4 +1,4 @@
-# Simulation Makefile.
+# Vernier-RV32 - build, simulation and verification entry point.
 #
 # macOS setup (one-time):
 #   brew install icarus-verilog surfer

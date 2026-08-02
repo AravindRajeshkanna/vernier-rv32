@@ -1,18 +1,27 @@
-# RV32IMA Pipelined CPU (Verilog)
+# Vernier-RV32
 
-A small, working RISC-V (RV32IMA + Zicsr) 5-stage pipelined CPU core, with
-full M/S/U privilege modes and trap delegation, timer/software/external
-interrupts (a real prioritized/claimable PLIC), a Sv32 MMU covering both
-data and instruction fetch, a BTB branch predictor, a UART, a
-self-checking simulation testbench for macOS, a real
-`riscv64-unknown-elf-gcc` build flow so it runs actual compiled C (not
-just hand-assembled hex), and — new — a complete **Wishbone SoC** around
-it: boot ROM, RAM, GPIO, SPI/SD storage, a device tree, and a first-stage
-loader that boots a program off an SD card into RAM and runs it.
+**An RV32IMA SoC that measures itself.**
 
-**Read the "Can this run Linux?" section before you get too attached to that
-plan** — the honest answer is not with this core, and I explain why and what
-the realistic path looks like.
+A small, working RISC-V core — 5-stage pipeline, RV32IMA + Zicsr, full M/S/U
+privilege with trap delegation, a Sv32 MMU covering both data and instruction
+fetch, a BTB branch predictor — inside a complete Wishbone SoC: boot ROM,
+RAM, CLINT, PLIC, UART, GPIO, SPI/SD storage, a device tree, and a
+first-stage loader that pulls a program off an SD card into RAM and runs it.
+Compiled C runs on it through a real `riscv64-unknown-elf-gcc` flow, not
+hand-assembled hex. It synthesizes, places, routes and packs to an ECP5
+bitstream.
+
+A vernier is the auxiliary scale on a caliper — the part that gives you the
+extra digit. The name is a claim about method rather than about the
+microarchitecture: everything here is measured, and where something is
+unmeasured or unproven this repo says so rather than rounding in its own
+favour. See **Verification** below for the numbers, and `fpga/README.md` for
+a worked example of the tool disagreeing with the prediction.
+
+It has never run on hardware — there is no board, and the pinout is still
+placeholders. **Read the "Can this run Linux?" section before you get too
+attached to that plan**: the honest answer is not with this core, and it
+explains why and what the realistic path looks like.
 
 ## What's here
 
@@ -154,7 +163,7 @@ brew install icarus-verilog surfer
 # optional, for the faster/alternate simulator:
 brew install verilator
 
-cd riscv-fpga-cpu
+cd vernier-rv32
 make sim
 ```
 
@@ -162,7 +171,7 @@ Expected output ends with:
 ```
 mem[0..3] (expect 15,0,0,0): 15 0 0 0
 fail word (expect 0 = PASS): 0x00000000
-BTB mispredict_count (expect 54): 54
+BTB mispredict_count (expect 53): 53
 TEST PASSED
 ```
 
