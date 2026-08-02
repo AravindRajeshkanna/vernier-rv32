@@ -85,6 +85,14 @@ module cpu_core #(
                                     // just happens to be on the bus"
     output wire [1:0]   dmem_size,
     input  wire [31:0] dmem_rdata,
+    // `dmem_rdata` this cycle is the answer to the read that was asked for,
+    // rather than whatever the port happens to be showing. The MEM stage's
+    // AMO read/write phases key off this: the read value is captured the
+    // cycle this is high, and the write is issued the cycle after. A
+    // zero-latency memory answers immediately and ties this high
+    // (rtl/top.v); a bus adapter drives it from the read acknowledgement
+    // (rtl/soc/cpu_wb.v).
+    input  wire         dmem_rvalid,
     output wire         dmem_is_amo, // this MEM access is an AMO/LR/SC - a bus
                                       // adapter needs to know, since an AMO is a
                                       // read-modify-write that takes two bus
@@ -739,7 +747,14 @@ module cpu_core #(
     // sampled, all of which this signal already does) - but EX/MEM must
     // *hold* rather than bubble for it, so its own register block special-
     // cases `dbus_stall` ahead of `ex_busy_stall`.
-    wire dbus_stall = dbus_wait;
+    // An AMO holding MEM for its second phase stalls exactly like an
+    // unacknowledged bus access does, so it folds in here rather than
+    // becoming a fourth stall shape: `dbus_stall` is what makes EX/MEM and
+    // MEM/WB *hold* instead of bubble, and both of those are as necessary
+    // between an AMO's two phases as they are across a bus wait. Driven in
+    // the MEM stage, where the phase state lives.
+    wire amo_stall;
+    wire dbus_stall = dbus_wait || amo_stall;
     // Whether the instruction in EX may take architectural effect this
     // cycle. Under `dbus_stall` it may not: ID/EX is being held and will
     // re-present the same instruction next cycle, so letting it redirect,
@@ -989,33 +1004,84 @@ module cpu_core #(
     wire ex_mem_is_sc      = ex_mem_is_amo && (ex_mem_funct5 == 5'b00011);
     wire ex_mem_is_amo_rmw = ex_mem_is_amo && !ex_mem_is_lr && !ex_mem_is_sc;
 
-    // dmem.v is combinational-read/synchronous-write, so an AMO's
-    // read-modify-write completes in a single MEM-stage cycle: the old
-    // value is visible combinationally (exactly like a load) before the
-    // write's non-blocking assignment takes effect at this same edge, so
-    // computing the new value from that same-cycle read and driving
-    // dmem_we/dmem_wdata off it is an ordinary RMW, not a combinational
-    // loop.
+    // ---- AMO read and write phases ----
+    // An AMO is a read-modify-write. Doing it in one cycle - read the old
+    // value combinationally, compute, write at that same edge - is
+    // functionally an ordinary RMW rather than a combinational loop, and is
+    // what this stage used to do. To *static timing* it is something worse:
+    // one combinational chain running from the memory's read port, through
+    // the AMO ALU, into the memory's write-data port. That chain was this
+    // design's critical path on an ECP5 - a block RAM's 5.83 ns
+    // clock-to-out followed by twelve hops of the signed and unsigned
+    // comparators below, 35.4 ns end to end for 28.25 MHz. It is not a path
+    // any tool can be told to ignore, either: the write is disabled during
+    // the cycle the chain is live, but nothing in the netlist says so.
+    //
+    // So the read and the write get a register between them. `amo_rdata_q`
+    // captures the old value; the ALU that consumes it runs in the
+    // following cycle. Both ends of the ALU are now bounded by flops and
+    // neither reaches memory combinationally.
+    //
+    // The phase state lives here, not in the bus adapter, because the core
+    // is the only place that knows what an AMO is. rtl/soc/cpu_wb.v used to
+    // run its own copy of this state machine to drive the bus write-enable;
+    // it now just passes `dmem_we` through and reports `dmem_rvalid` back.
+    //
+    // Cycle cost: none on the SoC, which already spent a cycle between the
+    // read acknowledgement and issuing the write - the register slots into
+    // a gap that was there anyway. On rtl/top.v's zero-latency memory an
+    // AMO now holds MEM for two cycles instead of one, because there was no
+    // such gap to reuse.
+    reg        amo_wr_phase;
+    reg [31:0] amo_rdata_q;
+
     wire sc_match   = reservation_valid && (reservation_addr == ex_mem_mem_addr);
     wire sc_success = ex_mem_is_sc && sc_match;
+
+    wire amo_active = ex_mem_valid && ex_mem_is_amo;
+    // Whether this AMO writes at all. An LR never does; an SC does only
+    // while its reservation holds. Neither depends on the value just read,
+    // so this is known in the read phase - which is what lets both of them
+    // finish there and skip the write phase entirely.
+    wire amo_writes = ex_mem_is_amo_rmw || sc_success;
+    wire amo_done   = amo_active && (amo_wr_phase ? !dbus_wait
+                                                  : (dmem_rvalid && !amo_writes));
+    assign amo_stall = amo_active && !amo_done;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)                          amo_wr_phase <= 1'b0;
+        // Cleared on completion rather than on `!amo_active` alone, so that
+        // an AMO immediately followed by another AMO starts in the read
+        // phase instead of inheriting this one's write phase.
+        else if (!amo_active || amo_done) amo_wr_phase <= 1'b0;
+        else if (!amo_wr_phase && dmem_rvalid && amo_writes)
+                                          amo_wr_phase <= 1'b1;
+    end
+
+    always @(posedge clk) begin
+        if (amo_active && !amo_wr_phase && dmem_rvalid)
+            amo_rdata_q <= dmem_rdata;
+    end
 
     reg [31:0] amo_new_value;
     always @(*) begin
         case (ex_mem_funct5)
-            5'b00000: amo_new_value = dmem_rdata + ex_mem_mem_wdata;                                          // AMOADD
-            5'b00001: amo_new_value = ex_mem_mem_wdata;                                                        // AMOSWAP
-            5'b00100: amo_new_value = dmem_rdata ^ ex_mem_mem_wdata;                                           // AMOXOR
-            5'b01100: amo_new_value = dmem_rdata & ex_mem_mem_wdata;                                           // AMOAND
-            5'b01000: amo_new_value = dmem_rdata | ex_mem_mem_wdata;                                           // AMOOR
-            5'b10000: amo_new_value = ($signed(dmem_rdata) < $signed(ex_mem_mem_wdata)) ? dmem_rdata : ex_mem_mem_wdata; // AMOMIN
-            5'b10100: amo_new_value = ($signed(dmem_rdata) > $signed(ex_mem_mem_wdata)) ? dmem_rdata : ex_mem_mem_wdata; // AMOMAX
-            5'b11000: amo_new_value = (dmem_rdata < ex_mem_mem_wdata) ? dmem_rdata : ex_mem_mem_wdata;         // AMOMINU
-            5'b11100: amo_new_value = (dmem_rdata > ex_mem_mem_wdata) ? dmem_rdata : ex_mem_mem_wdata;         // AMOMAXU
-            default:  amo_new_value = dmem_rdata;
+            5'b00000: amo_new_value = amo_rdata_q + ex_mem_mem_wdata;                                          // AMOADD
+            5'b00001: amo_new_value = ex_mem_mem_wdata;                                                         // AMOSWAP
+            5'b00100: amo_new_value = amo_rdata_q ^ ex_mem_mem_wdata;                                           // AMOXOR
+            5'b01100: amo_new_value = amo_rdata_q & ex_mem_mem_wdata;                                           // AMOAND
+            5'b01000: amo_new_value = amo_rdata_q | ex_mem_mem_wdata;                                           // AMOOR
+            5'b10000: amo_new_value = ($signed(amo_rdata_q) < $signed(ex_mem_mem_wdata)) ? amo_rdata_q : ex_mem_mem_wdata; // AMOMIN
+            5'b10100: amo_new_value = ($signed(amo_rdata_q) > $signed(ex_mem_mem_wdata)) ? amo_rdata_q : ex_mem_mem_wdata; // AMOMAX
+            5'b11000: amo_new_value = (amo_rdata_q < ex_mem_mem_wdata) ? amo_rdata_q : ex_mem_mem_wdata;         // AMOMINU
+            5'b11100: amo_new_value = (amo_rdata_q > ex_mem_mem_wdata) ? amo_rdata_q : ex_mem_mem_wdata;         // AMOMAXU
+            default:  amo_new_value = amo_rdata_q;
         endcase
     end
 
-    wire        dmem_we_amo    = ex_mem_valid && ex_mem_is_amo && (ex_mem_is_amo_rmw || sc_success);
+    // The write phase is only ever entered when `amo_writes` was true, so it
+    // already carries "this AMO writes" and there is nothing to re-test.
+    wire        dmem_we_amo    = amo_active && amo_wr_phase;
     wire [31:0] dmem_wdata_amo = ex_mem_is_sc ? ex_mem_mem_wdata : amo_new_value;
 
     assign dmem_addr  = ex_mem_mem_addr;
@@ -1075,8 +1141,16 @@ module cpu_core #(
                 3'b101:  mem_result = {16'b0, dmem_rdata[15:0]};                 // LHU
                 default: mem_result = dmem_rdata;
             endcase
-        end else if (ex_mem_is_lr || ex_mem_is_amo_rmw) begin
-            mem_result = dmem_rdata; // old value, word-only, no sign extension
+        end else if (ex_mem_is_lr) begin
+            mem_result = dmem_rdata; // old value, word-only, no sign extension.
+                                      // An LR finishes in the read phase, so
+                                      // this is the read data itself
+        end else if (ex_mem_is_amo_rmw) begin
+            mem_result = amo_rdata_q; // ...whereas an RMW finishes in the write
+                                       // phase, by which point the memory's read
+                                       // port is no longer the place to look for
+                                       // the old value. This is the copy taken
+                                       // before the write was issued
         end else if (ex_mem_is_sc) begin
             mem_result = sc_success ? 32'd0 : 32'd1;
         end else begin

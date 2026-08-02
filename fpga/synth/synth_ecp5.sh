@@ -90,7 +90,8 @@ echo
 echo "bitstream: $BUILD/$TOP.bit"
 echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit"
 echo
-echo "Check nextpnr's reported Fmax against your target clock. If it comes"
-echo "in under, the usual first suspects in this design are the combinational"
-echo "paths through wb_interconnect.v's address decode and response mux, and"
-echo "cpu_core.v's EX stage - see fpga/README.md."
+echo "Check nextpnr's reported Fmax against your target clock. If it comes in"
+echo "under, read the critical path out of the log above rather than guessing"
+echo "- twice now the guess has been wrong. The last measured one runs from a"
+echo "block RAM read port through the MMU walk result to the PC, and is mostly"
+echo "routing. See fpga/README.md."

@@ -59,7 +59,11 @@ module top #(
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),
         .dmem_is_amo(), // only a bus adapter needs this (see rtl/soc/cpu_wb.v)
-        // This top level's memories are zero-latency, so the core never waits.
+        // This top level's memories are zero-latency, so the core never waits
+        // and the read data is valid in the cycle the address is presented.
+        // An AMO still takes two MEM cycles here (read, then write) - see
+        // cpu_core.v's AMO phase comment.
+        .dmem_rvalid(1'b1),
         .ibus_wait(1'b0), .dbus_wait(1'b0),
         .ptw_req(ptw_req), .ptw_addr(ptw_addr),
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata),

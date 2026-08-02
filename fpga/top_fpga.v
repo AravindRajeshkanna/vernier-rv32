@@ -54,6 +54,7 @@ module top_fpga (
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),
         .dmem_is_amo(),
+        .dmem_rvalid(1'b1), // zero-latency memory, as in rtl/top.v
         .ibus_wait(1'b0), .dbus_wait(1'b0),
         .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata),
         .iptw_addr(iptw_addr), .iptw_rdata(iptw_rdata),

@@ -1,22 +1,22 @@
 # FPGA integration — status and honest caveats
 
 **The design builds all the way to a bitstream on an ECP5, at a measured
-28 MHz. It has never been loaded onto hardware.** Those are different claims:
+31 MHz. It has never been loaded onto hardware.** Those are different claims:
 
 | Artifact | Status |
 |---|---|
 | Full SoC synthesis (`synth_ecp5`) | ✅ **runs, 54 s** |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs, 2 min**, timing closes at 25 MHz |
 | Bitstream (`ecppack`) | ✅ **1.1 MB `soc_fpga.bit`** |
-| Resource usage | ✅ **measured** — 31% LUT, 62% block RAM of an LFE5U-45F |
-| Achievable Fmax | ✅ **28.25 MHz measured post-route** — see the critical path below |
+| Resource usage | ✅ **measured** — 27% LUT, 62% block RAM of an LFE5U-45F |
+| Achievable Fmax | ✅ **31.32 MHz measured post-route** — see the critical path below |
 | `constraints/generic.lpf` | ❌ **Placeholder pins.** Timing was measured with I/O unconstrained |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ❌ no board |
 
 `fpga/synth/synth_ecp5.sh` runs the whole flow and has been executed end to
 end. What has no evidence is that it works against **real pins on a real
-board** — the pinout is still fictional, and 28 MHz is a number from a build
+board** — the pinout is still fictional, and 31 MHz is a number from a build
 where nextpnr could place I/O wherever it liked.
 
 ### Getting the toolchain
@@ -34,10 +34,14 @@ export PATH=~/tools/oss-cad-suite/bin:$PATH
 
 ## Measured: the SoC synthesizes, and fits an ECP5
 
-Yosys 0.67 is installed, so everything below is a real synthesis run rather
-than an estimate. Place-and-route is still not: `nextpnr-ecp5` needs the
-oss-cad-suite bundle and Homebrew ships `nextpnr-ice40` only. **So area is
-measured; Fmax and timing closure are not.**
+Everything below is a real synthesis run rather than an estimate, and so is
+the timing further down — place-and-route runs too, from the oss-cad-suite
+bundle described above. **Area, Fmax and timing closure are all measured.**
+
+The per-RAM-size table below predates the AMO retiming and so shows the
+older, higher LUT counts; the 64 KB row's current numbers are in
+[Utilization](#utilization-lfe5u-45f-cabga381-64-kb-ram). Only that one
+configuration has been rebuilt since.
 
 Full `soc_fpga` (CPU + Wishbone interconnect + boot ROM + RAM + CLINT + PLIC
 + UART + GPIO + SPI), `synth_ecp5`, by on-chip RAM size:
@@ -129,7 +133,7 @@ This section used to say 50-150 MHz was "plausible for a core this size".
 Place-and-route says otherwise:
 
 ```
-Max frequency for clock 'clk': 28.25 MHz   (post-route)
+Max frequency for clock 'clk': 31.32 MHz   (post-route)
 ```
 
 `fpga/constraints/timing_only.lpf` therefore constrains the clock to 25 MHz,
@@ -138,39 +142,82 @@ worth stating plainly rather than quietly editing the range downward - an
 untested estimate of a critical path is not evidence, and this is the whole
 reason for running the tool.
 
-Two numbers appear in nextpnr's log: 22.88 MHz after placement and 28.25 MHz
+Two numbers appear in nextpnr's log: 24.67 MHz after placement and 31.32 MHz
 after routing. The second is the real one; the first is an estimate made
 before the router has had a chance to fix anything.
 
 ### Utilization (LFE5U-45F, CABGA381, 64 KB RAM)
 
 ```
-LUT4          13837 / 43848    31%
+LUT4          11977 / 43848    27%
 DP16KD           67 /   108    62%    <- block RAM is the binding resource
 MULT18X18D        4 /    72     5%
 TRELLIS_IO       28 /   245    11%
 DCCA              1 /    56     1%
 ```
 
-### The critical path
+### The critical path, and the AMO chain that used to be it
 
-Not the interconnect, and not the multiplier - both of which this file
-previously named as prime suspects. It is:
+The first place-and-route run put the critical path here:
 
 > **block RAM read data -> the AMO ALU -> bus write data**
 
-starting at a DP16KD's 5.83 ns clock-to-out and running through
-`cpu_core.v`'s `amo_new_value` mux, which accounts for 12 of the path's
-hops. That mux contains the AMOMIN/AMOMAX signed and unsigned 32-bit
-comparators, and it is fed combinationally from `dmem_rdata` - which on an
-ack cycle is combinationally the RAM's output - and drives `dwb_dat_w`
-straight back out to the bus.
+It started at a DP16KD's 5.83 ns clock-to-out and ran through
+`cpu_core.v`'s `amo_new_value` mux, which accounted for 12 of the path's
+hops - the AMOMIN/AMOMAX signed and unsigned 32-bit comparators. The mux was
+fed combinationally from `dmem_rdata`, which on an ack cycle is
+combinationally the RAM's output, and drove `dwb_dat_w` straight back out to
+the bus. An atomic's read-modify-write was, to static timing, one
+combinational chain from memory back to memory: 35.40 ns, 28.25 MHz.
 
-So an atomic's read-modify-write is, as far as static timing is concerned,
-one enormous combinational loop from memory back to memory. The fix is to
-register the AMO result between the read and write phases: `cpu_wb.v`
-already latches the read data in `rdata_q`, so the machinery is half there,
-and an AMO taking one extra cycle costs nothing measurable.
+Note that the chain is *functionally* dead in the cycle it is live - the bus
+write-enable is low during an AMO's read phase, so that value is never
+written. Static timing has no way to know that, and there is no clean way to
+declare it a false path, which is exactly why it had to be fixed structurally
+rather than annotated away.
+
+**Fixed.** `cpu_core.v` now captures the read value in `amo_rdata_q` and runs
+the ALU off *that* in the following cycle, so both ends of the comparators
+are bounded by flops and neither reaches memory combinationally. The phase
+state moved into the core, which deleted the duplicate state machine
+`cpu_wb.v` was running to sequence the same two bus phases. Measured:
+
+| | Before | After |
+|---|---|---|
+| Fmax (post-route) | 28.25 MHz | **31.32 MHz** |
+| Critical path | 35.40 ns | **31.93 ns** |
+| LUT4 | 13,837 (31%) | **11,977 (27%)** |
+| TRELLIS_FF | 6,687 | 6,719 |
+
+The **+32 flip-flops are exactly `amo_rdata_q`** - the core's new phase bit
+replaces the one deleted from `cpu_wb.v`, netting zero. The 1,860-LUT drop
+was not predicted and is the larger surprise: feeding the comparators from a
+plain register instead of from the shifted, muxed `dmem_rdata` net evidently
+lets yosys share a great deal more logic.
+
+**It cost no cycles.** All 82 riscv-tests run identical cycle counts before
+and after, because the SoC already spent a cycle between the read
+acknowledgement and issuing the write - the register slots into a gap that
+was there anyway. `rtl/top.v`'s zero-latency memory has no such gap, so an
+AMO there now occupies MEM for two cycles instead of one. That path is
+simulation-only.
+
+### The critical path now
+
+> **block RAM read data -> MMU walk result -> PC**
+
+31.93 ns, of which **19.41 ns is routing and 12.52 ns is logic**. It starts
+at the same 5.83 ns DP16KD clock-to-out, but on port B - the page-table
+walkers' shared read port - and runs through `mmu.v`'s `walk_pa` and
+`cpu_core.v`'s redirect-target logic into the PC register.
+
+This is essentially the chain described in the next section, which was tried
+and reverted before the AMO path was found. It is now genuinely the binding
+constraint rather than a plausible-looking suspect - but the reverted attempt
+is a warning, not a starting point: that rewrite was independently
+*incorrect*, and its correctness problem has nothing to do with whether it
+would help timing now. With routing at 61% of the path, logic-depth changes
+alone have limited headroom here.
 
 ### One optimization tried, and reverted
 
@@ -184,7 +231,9 @@ It was reverted, for two independent reasons:
 
 1. **It measured no faster** - 28.25 MHz before, 26.61 MHz after, which is
    placement noise either side of the same number. The AMO path was the real
-   constraint all along.
+   constraint all along. (It is not any more, so this chain is now worth
+   revisiting - but see the correctness problem below, which stands
+   regardless.)
 2. **It was wrong.** The TLB is looked up with the *live* virtual address,
    and for a data access that address is `op1 + imm` recomputed from
    forwarding every cycle; across a multi-cycle walk the pipeline drains
@@ -201,13 +250,21 @@ reports is the one to fix, not the one that looks worst by inspection.
 
 In order of expected benefit:
 
-1. **Register the AMO result** (above). Directly targets the measured path.
-2. **Pipeline the bus response.** Address decode -> slave select -> response
+1. ~~**Register the AMO result.**~~ Done - 28.25 -> 31.32 MHz, see above.
+2. **Break the walk-result -> PC chain**, which is what the critical path is
+   now. The obvious version of this was tried and was wrong (above), so it
+   needs a different cut - most likely registering the walk result before it
+   reaches the redirect logic, rather than re-routing it through the TLB.
+3. **Pipeline the bus response.** Address decode -> slave select -> response
    mux -> `ack` -> the CPU's stall logic is still a long chain, and it is
    what the second-longest paths run through.
-3. **Pipeline the multiplier.** Three 32x32->64 products resolve in one EX
+4. **Pipeline the multiplier.** Three 32x32->64 products resolve in one EX
    stage. They map to DSPs on ECP5 so they are not currently critical, but
    they would be on a device without them.
+
+Worth setting expectations: the current path is 61% routing, and the design
+sits at 27% LUT occupancy while sprawling across the die. Past some point the
+answer is floorplanning or a smaller device, not shorter logic.
 
 ## What is genuinely missing for "boots on hardware"
 

@@ -79,7 +79,7 @@ module soc_top #(
     // ---- CPU native ports ----
     wire [31:0] imem_addr, imem_rdata;
     wire [31:0] dmem_addr, dmem_wdata, dmem_rdata;
-    wire        dmem_we, dmem_re, dmem_is_amo;
+    wire        dmem_we, dmem_re, dmem_is_amo, dmem_rvalid;
     wire [1:0]  dmem_size;
     wire        ibus_wait, dbus_wait;
     wire        ptw_req, ptw_gnt, iptw_req, iptw_gnt;
@@ -108,7 +108,7 @@ module soc_top #(
         .imem_addr(imem_addr), .imem_rdata(imem_rdata),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size),
-        .dmem_rdata(dmem_rdata), .dmem_is_amo(dmem_is_amo),
+        .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid), .dmem_is_amo(dmem_is_amo),
         .ibus_wait(ibus_wait), .dbus_wait(dbus_wait),
         .ptw_req(ptw_req), .ptw_addr(ptw_addr),
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata),
@@ -123,7 +123,8 @@ module soc_top #(
         .imem_addr(imem_addr), .imem_rdata(imem_rdata), .ibus_wait(ibus_wait),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_is_amo(dmem_is_amo),
-        .dmem_size(dmem_size), .dmem_rdata(dmem_rdata), .dbus_wait(dbus_wait),
+        .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),
+        .dmem_rvalid(dmem_rvalid), .dbus_wait(dbus_wait),
         .fence_i(fence_i),
         .iwb_cyc(iwb_cyc), .iwb_stb(iwb_stb), .iwb_adr(iwb_adr),
         .iwb_dat_r(iwb_dat_r), .iwb_ack(iwb_ack),

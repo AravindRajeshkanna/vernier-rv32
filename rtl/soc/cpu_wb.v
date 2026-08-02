@@ -40,6 +40,7 @@ module cpu_wb (
     input  wire        dmem_is_amo,
     input  wire [1:0]  dmem_size,
     output wire [31:0] dmem_rdata,
+    output wire        dmem_rvalid,
     output wire        dbus_wait,
 
     // FENCE.I: drop the cached fetch word. Without this the buffer can
@@ -151,15 +152,18 @@ module cpu_wb (
     // =====================================================================
     // Data bus
     // =====================================================================
-    // An AMO is a read-modify-write and needs two bus phases. `dmem_re` is
-    // *not* asserted for AMO/LR/SC (the core doesn't classify them as
-    // loads), so `dmem_is_amo` is what tells us a read is needed at all.
+    // An AMO is a read-modify-write and needs two bus phases, but this
+    // adapter no longer sequences them - cpu_core.v does, because it had to
+    // grow that state anyway to keep the AMO ALU off the memory's read port
+    // (see the AMO phase comment in its MEM stage). What arrives here is
+    // already phased: `dmem_we` low for the read, high for the write. All
+    // this side has to do is report, via `dmem_rvalid`, which acknowledgement
+    // carried read data.
+    //
+    // `dmem_re` is *not* asserted for AMO/LR/SC (the core doesn't classify
+    // them as loads), and during an AMO's read phase `dmem_we` is low too -
+    // so `dmem_is_amo` is what tells us there is a request here at all.
     wire req = dmem_re || dmem_we || dmem_is_amo;
-
-    // Phase tracking for the AMO read-modify-write. `amo_wr_phase` only ever
-    // goes high after the read has been acknowledged and the core has
-    // decided it wants to write.
-    reg amo_wr_phase;
 
     wire [1:0] byte_off = dmem_addr[1:0];
 
@@ -178,47 +182,37 @@ module cpu_wb (
     wire [31:0] wdata_shifted = dmem_wdata << (8 * byte_off);
 
     // AMOs are word-only and word-aligned, so their data never needs
-    // shifting - and during the write phase it must come from the *latched*
-    // read value, because the core recomputes `dmem_wdata` combinationally
-    // from whatever `dmem_rdata` currently shows.
+    // shifting. The write phase's data comes out of a register in the core,
+    // which is the whole point of the split: nothing on this net traces back
+    // combinationally to `dwb_dat_r`.
     assign dwb_cyc   = req;
     assign dwb_stb   = req;
-    assign dwb_we    = dmem_is_amo ? amo_wr_phase : dmem_we;
+    assign dwb_we    = dmem_we;
     assign dwb_adr   = {dmem_addr[31:2], 2'b00};
     assign dwb_sel   = dmem_is_amo ? 4'b1111 : sel_from_size;
     assign dwb_dat_w = dmem_is_amo ? dmem_wdata : wdata_shifted;
 
-    // Read data latched at ack, so it stays stable for the AMO write phase
-    // (the core's AMO ALU reads it to build the new value) and for the final
-    // cycle when MEM/WB samples it.
+    wire read_ack = dwb_ack && !dwb_we;
+
+    // Read data latched at ack so it stays stable past the ack cycle. The
+    // core samples `dmem_rdata` in the cycle `dmem_rvalid` is high, which is
+    // the ack cycle itself and is served by the bypass below - but an AMO's
+    // read phase is followed by a write phase during which the core is still
+    // in MEM, and holding the value costs one register.
     reg [31:0] rdata_q;
     always @(posedge clk or posedge rst) begin
         if (rst) rdata_q <= 32'b0;
-        else if (dwb_ack && !dwb_we) rdata_q <= dwb_dat_r;
+        else if (read_ack) rdata_q <= dwb_dat_r;
     end
 
-    wire [31:0] read_word = (dwb_ack && !dwb_we) ? dwb_dat_r : rdata_q;
+    wire [31:0] read_word = read_ack ? dwb_dat_r : rdata_q;
     // Shift the addressed lane back down to where the core expects it. AMOs
     // are word accesses so this is a no-op for them.
-    assign dmem_rdata = read_word >> (8 * byte_off);
+    assign dmem_rdata  = read_word >> (8 * byte_off);
+    assign dmem_rvalid = read_ack;
 
-    // Completion. A plain access finishes on its single ack. An AMO finishes
-    // on the read ack if the core decided not to write (a failed SC, or an
-    // LR, which never writes), otherwise on the write ack.
-    wire read_ack  = dwb_ack && !dwb_we;
-    wire write_ack = dwb_ack &&  dwb_we;
-
-    wire amo_needs_write = dmem_is_amo && dmem_we;
-    wire done = dmem_is_amo ? (amo_wr_phase ? write_ack
-                                             : (read_ack && !amo_needs_write))
-                             : dwb_ack;
-
-    always @(posedge clk or posedge rst) begin
-        if (rst) amo_wr_phase <= 1'b0;
-        else if (!req) amo_wr_phase <= 1'b0;
-        else if (!amo_wr_phase && read_ack && amo_needs_write) amo_wr_phase <= 1'b1;
-        else if (amo_wr_phase && write_ack) amo_wr_phase <= 1'b0;
-    end
-
-    assign dbus_wait = req && !done;
+    // Every phase is a single Wishbone transfer now, so completion is just
+    // the acknowledgement. An AMO's two phases are two separate waits, and
+    // the core holds itself in MEM across the gap between them.
+    assign dbus_wait = req && !dwb_ack;
 endmodule

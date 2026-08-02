@@ -260,15 +260,30 @@ read-modify-write happens one stage later, in MEM (see 2e).
 ### 2e. MEM and WB
 
 `dmem_addr/wdata/we/size` are driven from `ex_mem` for an ordinary
-load/store exactly as before. **AMO/LR/SC now add a second write path
-computed combinationally in MEM itself**: because `dmem.v`'s port is
-combinational-read/synchronous-write, an AMO's read-modify-write completes
-in a single MEM-stage cycle — `dmem_rdata` (the *old* value, visible
-combinationally before this cycle's write takes effect at the edge, just
-like an ordinary load) feeds both `rd` (via `mem_result`, the same path a
-load's sign-extended value already uses) and a combinational ALU
+load/store exactly as before. **AMO/LR/SC add a second write path in MEM
+itself, split across two phases.** In the read phase the old value is
+captured into `amo_rdata_q`; in the write phase an ALU
 (`amoswap`/`amoadd`/`amoxor`/`amoand`/`amoor`/`amomin(u)`/`amomax(u)`)
-whose result becomes `dmem_wdata` for the RMW ops. `LR.W` sets a
+computes from that register and its result becomes `dmem_wdata`. The old
+value also reaches `rd` via `mem_result` — from `dmem_rdata` directly for
+`LR.W`, which finishes in the read phase, and from `amo_rdata_q` for an RMW,
+which finishes in the write phase and by then can no longer read it off
+memory.
+
+The split is a timing fix, not a functional necessity. Doing the whole
+read-modify-write in one cycle works — `dmem.v`'s port is
+combinational-read/synchronous-write, so the old value is visible before the
+edge, exactly like an ordinary load — and that is what this stage used to do.
+But it puts the memory's read port, the AMO comparators and the memory's
+write-data port on one combinational chain, and that chain measured as the
+whole design's critical path on an ECP5. `fpga/README.md` has the numbers.
+The core owns the phase state (`amo_wr_phase`) because it is the only place
+that knows what an AMO is; `rtl/soc/cpu_wb.v` used to run a second copy of
+the same state machine and no longer does. A memory system reports back
+through `dmem_rvalid` which cycle carried read data — tied high for
+zero-latency memory, driven from the read acknowledgement on the bus.
+
+`LR.W` sets a
 `reservation_valid`/`reservation_addr` pair; `SC.W`'s success check and
 write-enable are resolved **in MEM, not EX** — for back-to-back `LR;SC`,
 `SC` reaches EX the very cycle `LR` is in MEM, and `LR`'s reservation
@@ -1066,10 +1081,11 @@ is correctly still a read, which is also how Spike models it.
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
   no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
   take), no Ethernet. The design now builds to a **bitstream** on an
-  LFE5U-45F and closes timing at 25 MHz (28.25 MHz measured post-route), but
+  LFE5U-45F and closes timing at 25 MHz (31.32 MHz measured post-route), but
   has never been loaded onto hardware and the pinout is still fictional —
-  see `fpga/README.md`. The measured critical path is the AMO ALU's
-  combinational chain from RAM read data back to RAM write data.
+  see `fpga/README.md`. The measured critical path runs from a block RAM's
+  read port through the MMU's walk result to the PC; it is 61% routing, which
+  bounds how much further logic restructuring can help.
 - **No caches.** Every fetch and every load goes to the bus. With a
   shared-bus interconnect that also means a load or store costs the fetch
   behind it a cycle.
