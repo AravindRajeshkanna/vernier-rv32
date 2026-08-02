@@ -1,23 +1,36 @@
 # FPGA integration — status and honest caveats
 
-**The design synthesizes and fits an ECP5. It has never been placed, routed,
-timed, or run on hardware.** Those are different claims and the difference
-matters, so:
+**The design builds all the way to a bitstream on an ECP5, at a measured
+28 MHz. It has never been loaded onto hardware.** Those are different claims:
 
 | Artifact | Status |
 |---|---|
-| Full SoC synthesis (`synth_ecp5`) | ✅ **runs, 54 s** — numbers below |
-| Resource usage | ✅ **measured** — fits an LFE5U-45F at 64 KB RAM |
-| `soc_fpga.v`, `top_fpga.v` | Elaborate (Icarus), lint clean (Verilator `-Wall`) |
-| Place-and-route | ❌ never run — `nextpnr-ecp5` needs oss-cad-suite, Homebrew ships ice40 only |
-| Achievable Fmax | ❌ **unknown**, and it stays unknown until PnR runs |
-| `constraints/*.xdc`, `*.lpf` | ❌ **Placeholder pins.** Never parsed by any tool |
+| Full SoC synthesis (`synth_ecp5`) | ✅ **runs, 54 s** |
+| Place-and-route (`nextpnr-ecp5`) | ✅ **runs, 2 min**, timing closes at 25 MHz |
+| Bitstream (`ecppack`) | ✅ **1.1 MB `soc_fpga.bit`** |
+| Resource usage | ✅ **measured** — 31% LUT, 62% block RAM of an LFE5U-45F |
+| Achievable Fmax | ✅ **28.25 MHz measured post-route** — see the critical path below |
+| `constraints/generic.lpf` | ❌ **Placeholder pins.** Timing was measured with I/O unconstrained |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ❌ no board |
 
-So: the logic is thoroughly simulated (`make verify`), and the design is now
-known to map to real primitives in a real device's budget. What still has no
-evidence is that it *meets timing* or works against real pins.
+`fpga/synth/synth_ecp5.sh` runs the whole flow and has been executed end to
+end. What has no evidence is that it works against **real pins on a real
+board** — the pinout is still fictional, and 28 MHz is a number from a build
+where nextpnr could place I/O wherever it liked.
+
+### Getting the toolchain
+
+There is no Homebrew cask for oss-cad-suite and no `nextpnr` formula.
+(`prjtrellis` is a formula and provides the ECP5 database plus `ecppack`, but
+not `nextpnr-ecp5`, which is the piece that matters.) Use YosysHQ's bundle:
+
+```bash
+curl -L -o oss-cad-suite.tgz \
+  https://github.com/YosysHQ/oss-cad-suite-build/releases/latest/download/oss-cad-suite-darwin-arm64-<date>.tgz
+tar xzf oss-cad-suite.tgz -C ~/tools
+export PATH=~/tools/oss-cad-suite/bin:$PATH
+```
 
 ## Measured: the SoC synthesizes, and fits an ECP5
 
@@ -110,34 +123,91 @@ worth recording both because only the first was ever suspected:
    without it, because the failure mode otherwise is a board that comes up
    and does nothing.
 
-## What to expect on timing
+## Timing: measured, and the prediction was wrong
 
-The target you mentioned, 50–150 MHz, is plausible for a core this size but
-genuinely untested here. If it doesn't close, these are the paths to look at
-first, in rough order of suspicion:
+This section used to say 50-150 MHz was "plausible for a core this size".
+Place-and-route says otherwise:
 
-- **`wb_interconnect.v`'s combinational path.** Address decode → slave
-  select → response mux → `ack` back to the master, all in one cycle, and
-  then `ack` feeds the CPU's stall logic. This is the longest new path the
-  SoC introduces. The standard fix is to register the response and go to a
-  1-wait-state bus, which costs a cycle per access but breaks the path
-  cleanly.
-- **`cpu_core.v`'s EX stage.** The ALU, the branch comparator, the
-  forwarding muxes, the CSR read/modify path and the trap-priority mux all
-  resolve in one stage, and the multiplier (`mul_ss`/`mul_uu`/`mul_su`,
-  three 64-bit products) sits in there too. On a small FPGA the multiplier
-  is very often the critical path; pipelining it over two cycles behind the
-  existing `ex_busy_stall` mechanism would be the natural fix, and that
-  mechanism already exists for the divider.
-- **`wb_ram.v`'s asynchronous read.** Already confirmed to be a blocker —
-  see the measured section above. This has to be fixed before any full-SoC
-  synthesis run will even terminate.
+```
+Max frequency for clock 'clk': 28.25 MHz   (post-route)
+```
 
-That last one was the most likely thing to bite, and it did. It is a design
-decision this project deliberately deferred rather than an oversight:
-asynchronous read is what let the whole SoC stay zero-wait-state and keep
-the pipeline timing identical to the pre-bus design, which is exactly what
-made the simulation results comparable.
+`fpga/constraints/timing_only.lpf` therefore constrains the clock to 25 MHz,
+which closes. The design is roughly **2-5x slower than the guess**, which is
+worth stating plainly rather than quietly editing the range downward - an
+untested estimate of a critical path is not evidence, and this is the whole
+reason for running the tool.
+
+Two numbers appear in nextpnr's log: 22.88 MHz after placement and 28.25 MHz
+after routing. The second is the real one; the first is an estimate made
+before the router has had a chance to fix anything.
+
+### Utilization (LFE5U-45F, CABGA381, 64 KB RAM)
+
+```
+LUT4          13837 / 43848    31%
+DP16KD           67 /   108    62%    <- block RAM is the binding resource
+MULT18X18D        4 /    72     5%
+TRELLIS_IO       28 /   245    11%
+DCCA              1 /    56     1%
+```
+
+### The critical path
+
+Not the interconnect, and not the multiplier - both of which this file
+previously named as prime suspects. It is:
+
+> **block RAM read data -> the AMO ALU -> bus write data**
+
+starting at a DP16KD's 5.83 ns clock-to-out and running through
+`cpu_core.v`'s `amo_new_value` mux, which accounts for 12 of the path's
+hops. That mux contains the AMOMIN/AMOMAX signed and unsigned 32-bit
+comparators, and it is fed combinationally from `dmem_rdata` - which on an
+ack cycle is combinationally the RAM's output - and drives `dwb_dat_w`
+straight back out to the bus.
+
+So an atomic's read-modify-write is, as far as static timing is concerned,
+one enormous combinational loop from memory back to memory. The fix is to
+register the AMO result between the read and write phases: `cpu_wb.v`
+already latches the read data in `rdata_q`, so the machinery is half there,
+and an AMO taking one extra cycle costs nothing measurable.
+
+### One optimization tried, and reverted
+
+Before finding the AMO path, the obvious-looking target was the *other* long
+chain the report shows: RAM output -> MMU walk result -> physical address ->
+bus address decode. Making a completed page-table walk answer through the
+TLB it had just filled (instead of combinationally from the walk result)
+should have cut that chain at its source.
+
+It was reverted, for two independent reasons:
+
+1. **It measured no faster** - 28.25 MHz before, 26.61 MHz after, which is
+   placement noise either side of the same number. The AMO path was the real
+   constraint all along.
+2. **It was wrong.** The TLB is looked up with the *live* virtual address,
+   and for a data access that address is `op1 + imm` recomputed from
+   forwarding every cycle; across a multi-cycle walk the pipeline drains
+   underneath it and the value decays. The walk result used the latched
+   `va_r` and was immune. This is the same operand-drift hazard as the
+   misaligned-address bug in ARCHITECTURE.md section 12b, and the Spike
+   co-simulation caught it within one run - `rv32si-p-dirty` taking a load
+   page fault the reference model never takes.
+
+Worth recording because the lesson generalizes: the critical path the tool
+reports is the one to fix, not the one that looks worst by inspection.
+
+### What would actually raise Fmax
+
+In order of expected benefit:
+
+1. **Register the AMO result** (above). Directly targets the measured path.
+2. **Pipeline the bus response.** Address decode -> slave select -> response
+   mux -> `ack` -> the CPU's stall logic is still a long chain, and it is
+   what the second-longest paths run through.
+3. **Pipeline the multiplier.** Three 32x32->64 products resolve in one EX
+   stage. They map to DSPs on ECP5 so they are not currently critical, but
+   they would be on a device without them.
 
 ## What is genuinely missing for "boots on hardware"
 

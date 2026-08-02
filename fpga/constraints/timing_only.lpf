@@ -1,0 +1,22 @@
+# Timing-measurement constraints for fpga/soc_fpga.v.
+#
+# This file exists to answer one question - what Fmax does this design
+# actually achieve - without inventing a board. It constrains *only* the
+# clock, and is meant to be used with nextpnr's --lpf-allow-unconstrained so
+# every I/O is placed wherever the router likes.
+#
+# Why not use generic.lpf: every pin in it is a placeholder. Pinning I/O to
+# fictional sites does not make a timing result more real, it makes it less -
+# the router would be optimizing against a board that does not exist, and on
+# a package where some of those sites may not even be I/O.
+#
+# What this measures: the internal logic's maximum frequency. What it does
+# not: I/O timing, or the routing pressure a real pinout imposes. For a
+# design whose critical path is the CPU-plus-bus (it is - see fpga/README.md),
+# that is the number that matters, but it is an upper bound on a real board
+# rather than a promise.
+#
+# 100 MHz is asked for deliberately: nextpnr optimizes against the requested
+# frequency and then reports what it actually achieved, so requesting more
+# than the design can do is how you find out what it can do.
+FREQUENCY PORT "clk" 25 MHZ;

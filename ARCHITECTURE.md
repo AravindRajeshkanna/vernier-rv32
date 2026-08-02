@@ -1064,9 +1064,11 @@ is correctly still a read, which is also how Spike models it.
   on-chip RAM in the FPGA configuration (256 KB in simulation), no external
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
   no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
-  take), no Ethernet. The design now *synthesizes* and fits an LFE5U-45F,
-  but it has never been placed, routed or timed, so Fmax is unknown — see
-  `fpga/README.md`, which is explicit about that split.
+  take), no Ethernet. The design now builds to a **bitstream** on an
+  LFE5U-45F and closes timing at 25 MHz (28.25 MHz measured post-route), but
+  has never been loaded onto hardware and the pinout is still fictional —
+  see `fpga/README.md`. The measured critical path is the AMO ALU's
+  combinational chain from RAM read data back to RAM write data.
 - **No caches.** Every fetch and every load goes to the bus. With a
   shared-bus interconnect that also means a load or store costs the fetch
   behind it a cycle.

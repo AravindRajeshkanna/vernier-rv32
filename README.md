@@ -118,6 +118,7 @@ co-simulation vs Spike:  82/82 traces match             (make cosim)
 formal:                  4 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 synthesis (ECP5):        fits an LFE5U-45F, 54 s         (fpga/README.md)
+place & route:           bitstream at 28.25 MHz          (fpga/synth/synth_ecp5.sh)
 ```
 
 `make verify` runs the lot. `tests/README.md` has the details, including the

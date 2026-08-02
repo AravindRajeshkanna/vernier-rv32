@@ -190,6 +190,19 @@ module mmu (
                                             : walk_pa_normal_wide[31:0];
 
     assign busy     = (state != S_IDLE);
+
+    // A completed walk answers directly from `walk_pa`, which is derived from
+    // the *latched* `va_r`, not from the TLB entry it just installed.
+    //
+    // Answering via the TLB instead was tried, to shorten the critical path
+    // (see fpga/README.md - PnR reports this module on it). It is wrong: the
+    // TLB is looked up with the *live* `va`, and `va` for a data access is
+    // `op1 + imm` recomputed from forwarding every cycle. Across a
+    // multi-cycle walk the pipeline drains underneath and that value decays -
+    // the same operand-drift hazard that produced the misaligned-address bug
+    // in ARCHITECTURE.md section 12b. The co-simulation caught it as
+    // rv32si-p-dirty taking a load page fault Spike never takes. It also
+    // measured no faster, so the trade was losing anyway.
     assign resolved = (state == S_IDLE) ? (req && tlb_hit) : (state == S_L2W);
     assign fault    = (state == S_IDLE) ? !perm_ok_hit : walk_fault;
     assign pa       = (state == S_IDLE) ? pa_hit : walk_pa;

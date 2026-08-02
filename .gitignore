@@ -36,3 +36,6 @@ sim/sim_isa.out
 sim/sim_bench.out
 sim/coremark.hex
 formal/build/
+
+# FPGA build products (bitstream, PnR logs, synthesis JSON)
+fpga/build/
