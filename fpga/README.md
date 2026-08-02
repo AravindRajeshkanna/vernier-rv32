@@ -29,11 +29,24 @@ of that is knowable from here.
 
 ## Building for a ULX3S
 
+**Get the 45F.** The ULX3S ships with four FPGA options and two of them do not
+fit this design: at the default 64 KB of on-chip RAM the 12F and 25F are over
+their block-RAM budget by 19% and fail to place. The 85F fits and has plenty
+of headroom, but measures *slower* than the 45F on the same netlist. Details
+and the measured numbers are in [Which ECP5 this
+fits on](#which-ecp5-this-fits-on).
+
+The board's **32 MB of SDRAM is external to the FPGA and present on every
+variant**, so it neither helps nor hurts this choice — and nothing here can
+reach it yet, because there is no memory controller.
+
 ```bash
 make soc                                    # boot ROM image is a synthesis input
 BOARD=ulx3s ./fpga/synth/synth_ecp5.sh
 openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
 ```
+
+`DEVICE=85k` builds for the larger part; the pinout and wrapper are unchanged.
 
 **Check your board revision first.** The four SD pins used for SPI mode are
 wired differently on **v1.7** than on v2.0/v3.0, and `constraints/ulx3s.lpf`
@@ -96,14 +109,47 @@ Full `soc_fpga` (CPU + Wishbone interconnect + boot ROM + RAM + CLINT + PLIC
 | 128 KB | 12,591 | 6,691 | 126 | 4 |
 | 256 KB | 12,512 | 6,695 | 244 | 4 |
 
-Against the parts:
+### Which ECP5 this fits on
 
-| Device | LUTs | EBRs | Verdict |
-|---|---|---|---|
-| LFE5U-25F | 24,288 | 56 | fits **at 32 KB RAM** (51% LUT, 68% EBR) |
-| LFE5U-45F | 44,000 | 108 | fits **at 64 KB RAM** (28% LUT, 62% EBR) |
-| LFE5U-85F | 208,000 | 208 | fits **at 128 KB RAM** |
-| any ECP5 | — | ≤208 | **256 KB does not fit** — 244 EBRs needed |
+Device capacities below are **as reported by nextpnr itself**, not transcribed
+from a datasheet — an earlier version of this table claimed the 85F had
+208,000 LUTs, which was its block-RAM count in the wrong column. Verdicts are
+from actually attempting the build at `RAM_BYTES=65536`.
+
+| Device | LUT4 | EBR | MULT18X18D | I/O | Verdict at 64 KB RAM |
+|---|---|---|---|---|---|
+| LFE5U-12F | 24,288 † | 56 | 28 | 197 | ❌ **needs 67 EBR — 119%** |
+| LFE5U-25F | 24,288 | 56 | 28 | 197 | ❌ **needs 67 EBR — 119%** |
+| LFE5U-45F | 43,848 | 108 | 72 | 245 | ✅ 27% LUT, 62% EBR, **29.37 MHz** |
+| LFE5U-85F | 83,640 | 208 | 156 | 365 | ✅ 14% LUT, 32% EBR, **27.91 MHz** |
+
+† **nextpnr targets the 25F resource database for `--12k`** — the two are the
+same silicon, with the 12F sold as a reduced-capacity part. So a design that
+"fits `--12k`" may still exceed what Lattice specifies for a 12F. Treat the
+12F row as no better than the 25F row, and do not rely on the surplus.
+
+Both smaller parts fail the same way and it is worth quoting, because it is
+unambiguous about which resource is binding:
+
+```
+ERROR: Unable to place cell 'SOC.SOC.RAM.mem.1.7',
+       no BELs remaining to implement cell type 'DP16KD'
+```
+
+Halving to `RAM_BYTES=32768` does fit the 25F die — 38/56 EBR, 12,380 LUTs,
+27.70 MHz — but at ~51% LUT occupancy on a part marketed as having 12K LUTs,
+with the SDRAM controller and caches that any larger goal needs still to come.
+
+**The 85F is not faster.** 27.91 MHz against the 45F's 29.37, from the same
+netlist: a bigger die means longer routes, and this design is already 67-75%
+routing (see the calibration below). Pick the 85F for headroom, not speed.
+
+Recommendation: **LFE5U-45F**. It is what `fpga/constraints/ulx3s.lpf` and
+`fpga/ulx3s_top.v` are measured against, it has room for a memory controller
+and caches, and it is the fastest of the four here.
+
+The 256 KB simulation default fits **no ECP5** — 244 EBRs against the 85F's
+208.
 
 `fpga/soc_fpga.v`'s `RAM_BYTES` parameter defaults to 64 KB, and
 `software/soc/soc.h` and `link_ram.ld` are built to match, so the firmware
