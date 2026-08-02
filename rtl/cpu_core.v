@@ -61,7 +61,7 @@
 // `csr_trap_to_s`.
 //
 // This is an educational core, not a performance-tuned design. See
-// ARCHITECTURE.md for the full design writeup and README.md for what
+// docs/ARCHITECTURE.md for the full design writeup and README.md for what
 // would actually be required to run Linux.
 // ---------------------------------------------------------------------------
 module cpu_core #(

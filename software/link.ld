@@ -1,7 +1,7 @@
 /* Two-region Harvard linker script: ROM (this core's imem, fetch-only)
  * and RAM (dmem) are both based at address 0, matching the two separate
  * physical arrays imem.v/dmem.v actually are - not a runtime mux, a
- * static fact of the hardware (see ARCHITECTURE.md). LENGTH must match
+ * static fact of the hardware (see docs/ARCHITECTURE.md). LENGTH must match
  * rtl/top.v's IMEM_WORDS*4 / DMEM_BYTES defaults (32K/32K).
  *
  * Read-only data (.rodata) has to live in RAM, not ROM: this CPU's imem

@@ -3,7 +3,7 @@
 // (CSRRW/S/C and immediate forms), M-mode and S-mode interrupt-enable/
 // pending views, `satp` (Sv32 root page-table pointer, shared by both the
 // data and instruction MMUs), and `current_priv` (the hart's current
-// privilege level) - see ARCHITECTURE.md.
+// privilege level) - see docs/ARCHITECTURE.md.
 //
 // Legality of a CSR address (implemented vs. not, read-only vs. RW,
 // minimum privilege) is checked outside this module, in cpu_core.v's

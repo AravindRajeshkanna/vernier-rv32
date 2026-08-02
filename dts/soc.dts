@@ -71,7 +71,7 @@
         device_type = "memory";
         /* 256 KB of on-chip block RAM. This is the node that would grow to
          * the DRAM size if wb_ram.v were swapped for a real memory
-         * controller - see ARCHITECTURE.md's SoC section. */
+         * controller - see docs/ARCHITECTURE.md's SoC section. */
         reg = <0x80000000 0x00040000>;
     };
 

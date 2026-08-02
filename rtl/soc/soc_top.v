@@ -24,7 +24,7 @@
 //
 // ---- Harvard split, resolved ----
 // The old two-address-spaces-both-based-at-zero arrangement (documented as a
-// wart in ARCHITECTURE.md) is gone here: there is a single physical address
+// wart in docs/ARCHITECTURE.md) is gone here: there is a single physical address
 // space, instructions and data are just different regions of it, and a PTE's
 // PPN now means one unambiguous thing. Instruction fetch and data access are
 // separate *bus masters*, not separate address spaces.

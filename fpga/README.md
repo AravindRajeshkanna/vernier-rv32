@@ -239,7 +239,7 @@ It was reverted, for two independent reasons:
    forwarding every cycle; across a multi-cycle walk the pipeline drains
    underneath it and the value decays. The walk result used the latched
    `va_r` and was immune. This is the same operand-drift hazard as the
-   misaligned-address bug in ARCHITECTURE.md section 12b, and the Spike
+   misaligned-address bug in docs/ARCHITECTURE.md section 12b, and the Spike
    co-simulation caught it within one run - `rv32si-p-dirty` taking a load
    page fault the reference model never takes.
 

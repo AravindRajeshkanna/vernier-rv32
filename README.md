@@ -89,6 +89,8 @@ software/
     core_portme.c/.h   the port layer: cycle-counter timer, printf over UART
     crt0_bench.S, link_bench.ld
 docs/
+  ARCHITECTURE.md  the full design writeup - pipeline, hazards, privilege,
+                   MMU, SoC, and every bug worth recording
   DEBUG.md       UART, tracer, and an honest account of the missing JTAG
   TOOLCHAIN.md   every tool and version this was built with, and which
                  flow uses which
@@ -114,7 +116,7 @@ external interrupts (the external source now a real **PLIC** — multiple
 prioritized, claimable sources, not one wire), a **Sv32 MMU that covers
 both data accesses and instruction fetch** (two independent TLBs/walkers
 sharing one page-table structure), and a **BTB + 2-bit saturating-counter
-branch predictor** — see `ARCHITECTURE.md` for the full pipeline/hazard/
+branch predictor** — see `docs/ARCHITECTURE.md` for the full pipeline/hazard/
 privilege/interrupt/MMU design, including several real bugs found and
 fixed along the way (a couple of pipeline hazards from an earlier update,
 a page fault that could still commit its write, an MRET/SRET that could
@@ -246,7 +248,7 @@ Two things that weren't obvious going in, in case you extend
 full newlib `printf` is ~69KB for even a trivial program against this
 core's 4KB-by-default `imem` — `-specs=nano.specs` gets the same real
 `printf` down to ~9KB, which is why `IMEM_WORDS` defaults to 8192 now.
-See `ARCHITECTURE.md` section 12 for the full story, including a second
+See `docs/ARCHITECTURE.md` section 12 for the full story, including a second
 linker-script gotcha (Harvard regions both based at address 0 confuse the
 linker's *load*-address overlap check, which doesn't know they're
 different physical memories).
@@ -310,7 +312,7 @@ level). It also surfaced a genuine latent bug: an `SC` both reads and clears
 the reservation, and with zero-latency memory those happened in the same
 cycle so the order never mattered — over a multi-cycle bus, clearing it
 first pulled the success check out from under the write phase. See
-`ARCHITECTURE.md` section 12a.
+`docs/ARCHITECTURE.md` section 12a.
 
 ## 4. Getting it onto an actual FPGA
 
