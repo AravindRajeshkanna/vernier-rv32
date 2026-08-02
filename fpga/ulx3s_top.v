@@ -1,4 +1,10 @@
-// Board wrapper for the ULX3S (Radiona/emard), LFE5U-45F, CABGA381.
+// Board wrapper for the ULX3S (Radiona/emard), CABGA381.
+//
+// Works unchanged on the LFE5U-45F and LFE5U-85F - same board, same pinout,
+// only the chip differs. Pick with `BOARD=ulx3s` or `BOARD=ulx3s85`; the
+// bitstream is device-specific and will not load on the other. The 12F and
+// 25F variants of this board do *not* fit the design at the default 64 KB of
+// on-chip RAM - see fpga/README.md's device table for the measured failure.
 //
 // fpga/soc_fpga.v is deliberately board-agnostic - it asks for `clk`, an
 // active-low `rst_n`, a UART pair, four SPI wires, GPIO and four LEDs. This
@@ -109,8 +115,11 @@ module ulx3s_top #(
         .CLK_HZ(CLK_HZ),
         .BAUD_RATE(115_200),
         .GPIO_WIDTH(GPIO_WIDTH),
-        // 64 KB fits an LFE5U-45F at 62% block RAM. See fpga/README.md's table
-        // before changing this - it is what decides which ECP5 the design fits.
+        // 64 KB costs 67 block RAMs: 62% of an LFE5U-45F, 32% of an 85F.
+        // See fpga/README.md's device table before changing this - it is what
+        // decides which ECP5 the design fits on at all. Raising it also means
+        // changing RAM_SIZE in software/soc/soc.h and link_ram.ld to match;
+        // nothing checks that the three agree.
         .RAM_BYTES(65536)
     ) SOC (
         .clk(clk_25mhz),

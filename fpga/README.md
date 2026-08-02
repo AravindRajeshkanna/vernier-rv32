@@ -8,8 +8,8 @@ loaded onto hardware.** Those are different claims:
 |---|---|
 | Full SoC synthesis (`synth_ecp5`) | ✅ **runs, 54 s** |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs, 2 min** |
-| Bitstream (`ecppack`) | ✅ **1.1 MB `ulx3s_top.bit`** |
-| Resource usage | ✅ **measured** — 26% LUT, 62% block RAM of an LFE5U-45F |
+| Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
+| Resource usage | ✅ **measured** — 27% LUT / 62% EBR on a 45F, 14% / 32% on an 85F |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
 | **Fmax with I/O constrained** | ✅ **29.37 MHz**, PASS at the 25 MHz the board clocks at |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
@@ -29,11 +29,11 @@ of that is knowable from here.
 
 ## Building for a ULX3S
 
-**Get the 45F.** The ULX3S ships with four FPGA options and two of them do not
-fit this design: at the default 64 KB of on-chip RAM the 12F and 25F are over
-their block-RAM budget by 19% and fail to place. The 85F fits and has plenty
-of headroom, but measures *slower* than the 45F on the same netlist. Details
-and the measured numbers are in [Which ECP5 this
+**The 45F and the 85F both work; the 12F and 25F do not.** The ULX3S ships
+with four FPGA options, and at the default 64 KB of on-chip RAM the two
+smaller ones are over their block-RAM budget by 19% and fail to place. Both
+supported parts have their own build target below, and both close timing.
+Measured numbers for all four are in [Which ECP5 this
 fits on](#which-ecp5-this-fits-on).
 
 The board's **32 MB of SDRAM is external to the FPGA and present on every
@@ -41,12 +41,28 @@ variant**, so it neither helps nor hurts this choice — and nothing here can
 reach it yet, because there is no memory controller.
 
 ```bash
-make soc                                    # boot ROM image is a synthesis input
-BOARD=ulx3s ./fpga/synth/synth_ecp5.sh
+make soc                                     # boot ROM image is a synthesis input
+BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh     # LFE5U-85F
+# or:  BOARD=ulx3s ./fpga/synth/synth_ecp5.sh   for the 45F
 openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
 ```
 
-`DEVICE=85k` builds for the larger part; the pinout and wrapper are unchanged.
+**The FPGA variant is part of the board target, not a separate knob.** A
+bitstream is device-specific and will not load on a different ECP5, the four
+ULX3S variants are indistinguishable in a photo, and a stale `DEVICE=`
+default would fail in a way that looks like a broken design rather than a
+wrong command line. Both targets share the same pinout, wrapper and LPF and
+differ only in the chip. The build prints its target up front and again on
+the bitstream line.
+
+| Target | Device | Fmax | LUT | EBR |
+|---|---|---|---|---|
+| `BOARD=ulx3s` | LFE5U-45F | **29.37 MHz** | 27% | 62% |
+| `BOARD=ulx3s85` | LFE5U-85F | 27.91 MHz | 14% | 32% |
+
+The 85F is slightly *slower* — bigger die, longer routes, on a design already
+mostly routing — and has roughly four times the headroom. Both close
+comfortably at the board's 25 MHz.
 
 **Check your board revision first.** The four SD pins used for SPI mode are
 wired differently on **v1.7** than on v2.0/v3.0, and `constraints/ulx3s.lpf`
@@ -144,9 +160,11 @@ with the SDRAM controller and caches that any larger goal needs still to come.
 netlist: a bigger die means longer routes, and this design is already 67-75%
 routing (see the calibration below). Pick the 85F for headroom, not speed.
 
-Recommendation: **LFE5U-45F**. It is what `fpga/constraints/ulx3s.lpf` and
-`fpga/ulx3s_top.v` are measured against, it has room for a memory controller
-and caches, and it is the fastest of the four here.
+Either supported part is a reasonable choice. The **45F** is the fastest of
+the four and has ample room for a memory controller and caches. The **85F**
+costs ~1.5 MHz and buys roughly four times the headroom, which matters if
+external DRAM and a cache hierarchy are the plan. Both are measured above and
+both have a build target.
 
 The 256 KB simulation default fits **no ECP5** — 244 EBRs against the 85F's
 208.

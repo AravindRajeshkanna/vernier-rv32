@@ -1,4 +1,7 @@
-## ULX3S (Radiona/emard) - LFE5U-45F, CABGA381, board revision v2.0 / v3.0
+## ULX3S (Radiona/emard) - CABGA381, board revision v2.0 / v3.0
+##
+## Applies to the LFE5U-45F and LFE5U-85F alike: same board, same pins, and
+## the package is what fixes the pinout rather than the die.
 ##
 ## Real pins, unlike constraints/generic.lpf. Taken from the official
 ## ulx3s_v20.lpf and cross-checked against litex-boards' radiona_ulx3s.py,

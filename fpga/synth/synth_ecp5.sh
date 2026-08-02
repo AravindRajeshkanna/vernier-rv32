@@ -32,41 +32,58 @@ set -eu
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 
-# 45k, because 64 KB of on-chip RAM needs 67 block RAMs and a 25F has 56.
-# A 25F build works at RAM_BYTES=32768 - see fpga/README.md's table.
-DEVICE=${DEVICE:-45k}
 PACKAGE=${PACKAGE:-CABGA381}
 BUILD=fpga/build
 
-# Two ways to build this:
+# Three ways to build this:
 #
-#   ./fpga/synth/synth_ecp5.sh                 board-agnostic, timing only
-#   BOARD=ulx3s ./fpga/synth/synth_ecp5.sh     a real ULX3S bitstream
+#   ./fpga/synth/synth_ecp5.sh                   board-agnostic, timing only
+#   BOARD=ulx3s   ./fpga/synth/synth_ecp5.sh     ULX3S with an LFE5U-45F
+#   BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh     ULX3S with an LFE5U-85F
 #
 # The default constrains the clock and nothing else, which produces an Fmax
 # without inventing a board - useful for tracking the design's own timing, but
 # optimistic, because nextpnr may place I/O wherever suits it.
 #
-# BOARD=ulx3s builds fpga/ulx3s_top.v against real pins and drops
+# The BOARD= targets build fpga/ulx3s_top.v against real pins and drop
 # --lpf-allow-unconstrained, so an unplaced pin becomes an error instead of a
-# silently invented placement. That is the number to trust for hardware.
+# silently invented placement. Those are the numbers to trust for hardware.
+#
+# **The FPGA variant is part of the board target, not a separate knob.** A
+# bitstream is device-specific and will not load on a different one, and the
+# ULX3S ships with four FPGA options that are indistinguishable in a photo.
+# Pairing them here means the device cannot be left at a stale default -
+# which it silently would be, since 45F and 85F share this board, this
+# pinout and this wrapper, and differ only in the chip. DEVICE= still
+# overrides for anything not listed.
 BOARD=${BOARD:-}
 
 case "$BOARD" in
     ulx3s)
+        DEVICE=${DEVICE:-45k}
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v"
+        ;;
+    ulx3s85)
+        DEVICE=${DEVICE:-85k}
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
         BOARD_RTL="fpga/ulx3s_top.v"
         ;;
     "")
+        # 45k, because 64 KB of on-chip RAM needs 67 block RAMs and a 25F
+        # has 56. See fpga/README.md's device table.
+        DEVICE=${DEVICE:-45k}
         TOP=${TOP:-soc_fpga}
         LPF=${LPF:-fpga/constraints/timing_only.lpf}
         PNR_EXTRA=${PNR_EXTRA:---lpf-allow-unconstrained}
         BOARD_RTL=""
         ;;
     *)
-        echo "error: unknown BOARD='$BOARD' (known: ulx3s, or unset)" >&2
+        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, or unset)" >&2
         exit 1
         ;;
 esac
@@ -97,6 +114,10 @@ mkdir -p "$BUILD"
 # produces "file not found" from inside a yosys command line.
 cp sim/bootrom.hex "$BUILD/bootrom.hex"
 
+# Stated up front and again at the end: a bitstream is device-specific, and
+# loading one built for the wrong ECP5 fails in ways that look like a broken
+# design rather than a broken command line.
+echo "=== target: ${BOARD:-generic}, LFE5U-${DEVICE%k}F, $PACKAGE ==="
 echo "=== yosys ==="
 ( cd "$BUILD" && yosys -p "read_verilog $YOSYS_DEFINES $(echo "$RTL" | sed "s|[^ ][^ ]*|$ROOT/&|g"); \
     synth_ecp5 -top $TOP -json $TOP.json" )
@@ -111,8 +132,11 @@ echo "=== ecppack ==="
 ecppack "$BUILD/$TOP.config" "$BUILD/$TOP.bit"
 
 echo
-echo "bitstream: $BUILD/$TOP.bit"
-echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit"
+echo "bitstream: $BUILD/$TOP.bit  (LFE5U-${DEVICE%k}F - will not load on any other ECP5)"
+case "$BOARD" in
+    ulx3s|ulx3s85) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
+    *)             echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
+esac
 echo
 echo "Check nextpnr's reported Fmax against your target clock. If it comes in"
 echo "under, read the critical path out of the log above rather than guessing"
