@@ -22,6 +22,12 @@
 IVERILOG      = iverilog
 VVP           = vvp
 VERILATOR     = verilator
+# The $$readmemh image rules below list `Makefile` as a prerequisite on
+# purpose: the word/byte layout of every image is decided by the bin2hex
+# flags *in this file*, not by anything in software/. Without it, changing a
+# memory's organization leaves a stale image that loads silently and wrong -
+# which cost real debugging time when wb_ram.v went from byte- to
+# word-organized.
 RISCV_CC      = riscv64-unknown-elf-gcc
 RISCV_OBJCOPY = riscv64-unknown-elf-objcopy
 
@@ -89,11 +95,11 @@ software: sim/firmware_imem.hex sim/firmware_dmem.hex
 software/firmware.elf: $(SOFTWARE_SRCS) software/link.ld
 	$(RISCV_CC) $(SOFTWARE_CFLAGS) -o $@ $(SOFTWARE_SRCS)
 
-sim/firmware_imem.hex: software/firmware.elf software/bin2hex.py
+sim/firmware_imem.hex: software/firmware.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary --only-section=.text software/firmware.elf software/firmware_text.bin
 	python3 software/bin2hex.py --word-size=4 software/firmware_text.bin > sim/firmware_imem.hex
 
-sim/firmware_dmem.hex: software/firmware.elf software/bin2hex.py
+sim/firmware_dmem.hex: software/firmware.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary --only-section=.data software/firmware.elf software/firmware_data.bin
 	python3 software/bin2hex.py --word-size=1 software/firmware_data.bin > sim/firmware_dmem.hex
 
@@ -109,14 +115,14 @@ soc: sim/bootrom.hex sim/card.hex
 software/soc/bootrom.elf: $(BOOTROM_SRCS) software/soc/link_rom.ld software/soc/soc.h
 	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_rom.ld -o $@ $(BOOTROM_SRCS)
 
-sim/bootrom.hex: software/soc/bootrom.elf software/bin2hex.py
+sim/bootrom.hex: software/soc/bootrom.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/soc/bootrom.elf software/soc/bootrom.bin
 	python3 software/bin2hex.py --word-size=4 software/soc/bootrom.bin > $@
 
 software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld software/soc/soc.h
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld -o $@ $(SOCPROG_SRCS)
 
-sim/card.hex: software/soc/socprog.elf software/soc/mkcard.py
+sim/card.hex: software/soc/socprog.elf software/soc/mkcard.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/soc/socprog.elf software/soc/socprog.bin
 	python3 software/soc/mkcard.py software/soc/socprog.bin $(SD_BLOCKS) > $@
 
@@ -197,9 +203,9 @@ software/bench/coremark.elf: $(COREMARK_PORT) software/bench/link_bench.ld \
 	    { echo "coremark not fetched - run 'make coremark-fetch'"; exit 1; }
 	$(RISCV_CC) $(COREMARK_CFLAGS) -o $@ $(COREMARK_PORT) $(COREMARK_SRCS)
 
-sim/coremark.hex: software/bench/coremark.elf software/bin2hex.py
+sim/coremark.hex: software/bench/coremark.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/bench/coremark.elf software/bench/coremark.bin
-	python3 software/bin2hex.py --word-size=1 software/bench/coremark.bin > $@
+	python3 software/bin2hex.py --word-size=4 software/bench/coremark.bin > $@
 
 sim/sim_bench.out: $(BENCH_TB) $(SOC_RTL)
 	$(IVERILOG) -g2012 -o $@ $(BENCH_TB) $(SOC_RTL)

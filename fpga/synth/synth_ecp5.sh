@@ -1,10 +1,11 @@
 #!/bin/sh
 # Open-source synthesis + place-and-route for the SoC on a Lattice ECP5.
 #
-# !! NEVER EXECUTED !!  No yosys, nextpnr, or Trellis installation was
-# available in the environment this was written in, so this script has not
-# been run even once. It is written from the standard flow, but expect to
-# debug it. See fpga/README.md.
+# Status: the **yosys** half of this has been run and the design synthesizes
+# cleanly (measured numbers in fpga/README.md). The **nextpnr/Trellis** half
+# has still never been executed - Homebrew ships nextpnr-ice40 only, and ECP5
+# place-and-route needs the oss-cad-suite bundle. So area is measured; timing
+# and Fmax are not.
 #
 # Prerequisites (macOS):
 #   brew install --cask oss-cad-suite      # yosys + nextpnr + Trellis + openFPGALoader
@@ -26,6 +27,12 @@ PACKAGE=${PACKAGE:-CABGA381}
 TOP=soc_fpga
 BUILD=fpga/build
 
+# -DSYNTHESIS drops the memories' zero-fill initial loops, which exist for
+# simulation only and which yosys unrolls into one assignment per word - the
+# single thing that used to make this script appear to hang. See
+# rtl/soc/wb_ram.v.
+YOSYS_DEFINES="-DSYNTHESIS"
+
 RTL="rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
@@ -44,7 +51,7 @@ mkdir -p "$BUILD"
 cp sim/bootrom.hex "$BUILD/bootrom.hex"
 
 echo "=== yosys ==="
-( cd "$BUILD" && yosys -p "read_verilog $(echo "$RTL" | sed 's|[^ ]*|../../&|g'); \
+( cd "$BUILD" && yosys -p "read_verilog $YOSYS_DEFINES $(echo "$RTL" | sed 's|[^ ]*|../../&|g'); \
     synth_ecp5 -top $TOP -json $TOP.json" )
 
 echo "=== nextpnr-ecp5 ==="

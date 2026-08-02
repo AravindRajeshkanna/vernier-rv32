@@ -17,7 +17,13 @@
 #define GPIO_BASE   0x05000000u
 #define SPI_BASE    0x06000000u
 #define RAM_BASE    0x80000000u
-#define RAM_SIZE    0x00040000u   /* 256 KB - must match soc_top.v RAM_BYTES */
+/* 64 KB. This is the size the *firmware* is built for, and it is
+ * deliberately smaller than soc_top.v's 256 KB simulation default: 256 KB of
+ * on-chip RAM costs 244 ECP5 block RAMs, more than the largest ECP5 has, so a
+ * firmware that assumed it could never run on hardware. At 64 KB the whole
+ * SoC fits an LFE5U-45F with room to spare. See fpga/README.md for the
+ * measured block-RAM cost at each size. */
+#define RAM_SIZE    0x00010000u
 
 /* Low 4 KB of RAM is reserved for the boot ROM: its stack, and a result word
  * the testbench reads back directly. The loaded program starts above it. */

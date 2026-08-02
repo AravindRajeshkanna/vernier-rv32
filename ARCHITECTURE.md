@@ -740,11 +740,10 @@ an ITLB-miss stall already had.
   neither of which writes a CSR or redirects. Under `dbus_wait` the
   instruction in EX can be anything.
 
-The page-table walkers deliberately stayed *off* the bus, on dedicated read
-ports into `wb_ram.v`. Page tables were already documented as living in
-plain RAM, so bussing them would have bought nothing and cost a stall path
-inside `mmu.v`, whose FSM latches PTE data assuming it arrives
-combinationally.
+The page-table walkers deliberately stayed *off* the bus, on a dedicated
+read port into `wb_ram.v`. Page tables were already documented as living in
+plain RAM, so bussing them would have bought nothing and cost bus
+arbitration on top of the read-port arbitration they need anyway.
 
 ### The interconnect
 
@@ -754,21 +753,40 @@ decoded per slave. A load or store therefore costs the fetch behind it a
 cycle — the classic single-port-memory tradeoff, taken deliberately for a
 much smaller and more obviously-correct interconnect.
 
-Arbitration is combinational fixed priority, data over instruction, with no
-sticky grant. Two consequences are load-bearing:
+Arbitration is fixed priority, data over instruction — combinational while
+the bus is idle, and **latched for the duration of a transfer**. Both halves
+matter:
 
-- **Atomics are safe for free.** `cpu_wb.v` holds `cyc` across both phases
-  of an AMO's read-modify-write; since the data master is top priority,
-  holding `cyc` means it keeps winning, so nothing can slip a write in
-  between the read and the write-back. That is the Wishbone locked-cycle
-  idiom, implemented by priority alone. A *sticky* grant was the other way
-  to get this, and it turned out to be worse: stickiness plus
-  combinational re-arbitration on `ack` is a combinational loop
-  (`ack` → grant → `stb` → `ack`).
-- **The instruction master must only reach zero-wait-state slaves.**
-  Without stickiness, master 0 can lose the bus mid-transfer. That is
-  harmless only because its transfers complete in the cycle they are
-  granted, which holds while it only reaches ROM and RAM.
+- **Combinational when idle** means starting a transfer costs nothing. A
+  registered "go to GRANT state" arbiter would add a cycle to every access,
+  fetches included.
+- **Latched once under way** is what makes a multi-cycle slave safe. The
+  memories are now synchronous block RAMs with a wait state (below), so a
+  purely combinational grant would let the data master take the bus in the
+  middle of the fetch master's read — and then the RAM's `ack`, which
+  belongs to the fetch master's address, would be delivered to the data
+  master along with the fetch master's data. Silent corruption, not a hang.
+
+An earlier version of this design argued the lock was unimplementable
+because stickiness plus combinational re-arbitration on `ack` forms a
+combinational loop (`ack` → grant → `stb` → `ack`). That is true only if the
+lock itself is combinational. **Registering it breaks the loop**: the grant
+depends on `lock`, a flip-flop, and `lock`'s next value depends on `ack`, so
+nothing goes round without passing through the register.
+
+Atomics were previously safe purely because the data master always wins, and
+still are — `cpu_wb.v` holds `cyc` across both phases of an AMO's
+read-modify-write, so priority alone keeps anything else out of the gap. The
+lock does not weaken it: when the read phase's ack releases the lock,
+`m1_cyc` is still asserted, so the data master immediately wins
+re-arbitration for the write phase.
+
+One requirement the arbiter now depends on: **both masters must tie `stb` to
+`cyc`.** It grants on `cyc` alone, so a master asserting `cyc` without `stb`
+— legal Wishbone, a master holding the bus between transfers — would take
+the bus and never strobe. `cpu_wb.v` drives each pair from one expression, so
+this holds by construction, and `formal/fv_interconnect.v` assumes it
+explicitly rather than leaving it as folklore.
 
 Starvation isn't possible despite the fetch master always losing: a data
 access is one transaction that then completes, and while it is outstanding
@@ -778,14 +796,57 @@ An access decoding to no slave is acked immediately with zero data rather
 than left hanging — a bus that never acks would wedge the CPU permanently,
 turning a stray pointer into a silent hang.
 
+### The memories, and why they take a wait state
+
+`wb_ram.v` and `wb_rom.v` are **synchronous, word-organized** memories: the
+address goes in one cycle and the data comes out the next. This is not a
+performance choice, it is what a block RAM is, and it is what makes the
+design synthesizable at all — see `fpga/README.md` for the measurements. The
+previous version was a byte array with *asynchronous* reads on three separate
+ports, which is a fine simulation model and an impossible piece of hardware:
+yosys cannot map an async read to a block RAM, so it built the array out of
+flip-flops instead and full-SoC synthesis never terminated.
+
+Three consequences ripple outward from that one change, and they are the
+reason it was not a five-line edit:
+
+1. **One wait state on every RAM and ROM access**, absorbed by the
+   `ibus_wait`/`dbus_wait` machinery that already existed.
+2. **The bus arbiter needed the lock** described above.
+3. **`mmu.v`'s walker had to become a handshake.** It previously read a PTE
+   combinationally and assumed the data was simply there. It now asserts
+   `ptw_req` with an address, waits for `ptw_gnt`, and reads `ptw_rdata` in
+   the following cycle — which also handles the fact that the two walkers now
+   *share* one physical read port (block RAMs have two ports, and the bus
+   takes one), arbitrated fixed-priority with the data walker first.
+   `satp` is latched with the request for the same reason `va` always was: a
+   walk now spans more cycles, and the instruction that writes `satp`
+   executes in EX while a fetch-side walk may be in flight. An `SFENCE.VMA`
+   during a walk now abandons it rather than installing an entry derived from
+   page tables the fence has just declared stale.
+
+The walk costs two extra cycles as a result. Walks only happen on a TLB miss,
+so this is a good trade for main memory that can exist.
+
 ### `cpu_wb.v` — the adapter
 
-Requests are issued *combinationally* rather than out of a state register,
-so against a zero-wait-state slave a transfer completes in the cycle it
-starts and memory costs what it did before the bus existed; a registered
-"go to REQUEST state" FSM would have doubled the cost of every access.
+Requests are issued *combinationally* rather than out of a state register, so
+a transfer starts in the cycle it is requested; a registered "go to REQUEST
+state" FSM would have added a cycle on top of the one the memories now cost.
 
-Two pieces of real work happen here:
+**The fetch address is frozen for the duration of a transfer.** This became
+necessary with the wait state: a branch resolving in EX asserts
+`redirect_valid`, which overrides the PC freeze that `ibus_wait` would
+otherwise hold, so `imem_addr` can change *underneath an in-flight fetch*.
+The slave has already latched the old address, so its ack carries the old
+word. `f_busy`/`f_addr` hold the bus address steady and tag the fetch buffer
+with the address that was actually requested; `ack_for_current` is what stops
+the core consuming a word that answers a question it is no longer asking. A
+`FENCE.I` landing mid-fetch additionally poisons the in-flight result, so a
+word that predates the writes the fence exists to publish is never cached
+under a valid tag.
+
+Two more pieces of real work happen here:
 
 - **Byte lanes.** The core's native convention puts sub-word data in the
   *low* lanes with the exact byte address on the bus (what `dmem.v`
@@ -999,12 +1060,13 @@ is correctly still a read, which is also how Spike models it.
   (`tselect`/`tdata`). These are the only two features the RISC-V
   architectural test suite fails this core on — see
   `tests/expected-failures.txt`.
-- **The SoC is memory-limited and has never run on hardware.** 256 KB of
-  on-chip RAM, no external DRAM controller (`wb_ram.v`'s header marks the
-  seam where one would go), no JTAG debug module (`docs/DEBUG.md` sets out
-  exactly what one would take), no Ethernet. And nothing
-  in `fpga/` has been synthesized, placed, routed or timed — see
-  `fpga/README.md`, which is explicit about what is and isn't known.
+- **The SoC is memory-limited and has never run on hardware.** 64 KB of
+  on-chip RAM in the FPGA configuration (256 KB in simulation), no external
+  DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
+  no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
+  take), no Ethernet. The design now *synthesizes* and fits an LFE5U-45F,
+  but it has never been placed, routed or timed, so Fmax is unknown — see
+  `fpga/README.md`, which is explicit about that split.
 - **No caches.** Every fetch and every load goes to the bus. With a
   shared-bus interconnect that also means a load or store costs the fetch
   behind it a cycle.

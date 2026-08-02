@@ -2,14 +2,19 @@
 // size: 2'b00 = byte, 2'b01 = halfword, 2'b10 = word.
 // Sign/zero extension of loads is handled in the CPU core, not here.
 //
-// Has two extra read-only, word-only combinational ports (addr2/rdata2
-// and addr3/rdata3) so the data and instruction MMUs' page-table walkers
-// can each read PTEs without contending with the MEM stage's own
-// load/store port or with each other - page tables for both code and
-// data mappings live in this same array, populated by ordinary `sw`
-// instructions through the main port before paging is enabled. Real
-// block RAMs commonly support this (true/simple multi-port); this is the
-// same "just add another read" trick real FPGA memories use.
+// Has two extra read-only, word-only ports (req2/addr2/gnt2/rdata2 and
+// req3/addr3/gnt3/rdata3) so the data and instruction MMUs' page-table
+// walkers can each read PTEs without contending with the MEM stage's own
+// load/store port or with each other - page tables for both code and data
+// mappings live in this same array, populated by ordinary `sw` instructions
+// through the main port before paging is enabled.
+//
+// Those two ports speak mmu.v's request/grant protocol, with the read
+// registered so the timing matches rtl/soc/wb_ram.v exactly. Here each
+// walker has a port to itself so the grant is unconditional - but keeping
+// one contract for both memories means mmu.v has a single behavior to be
+// correct about, rather than one that silently depends on which top level it
+// was instantiated under.
 //
 // INIT_FILE, if non-empty, preloads the array from a $readmemh file after
 // the zero-fill below - used to preload a compiled program's .rodata/
@@ -31,18 +36,36 @@ module dmem #(
     input  wire [1:0]  size,
     output wire [31:0] rdata,
 
+    input  wire        req2,
     input  wire [31:0] addr2,
-    output wire [31:0] rdata2,
+    output wire        gnt2,
+    output reg  [31:0] rdata2,
 
+    input  wire        req3,
     input  wire [31:0] addr3,
-    output wire [31:0] rdata3
+    output wire        gnt3,
+    output reg  [31:0] rdata3
 );
     reg [7:0] mem [0:MEM_BYTES-1];
     integer i;
 
+    // The zero-fill is guarded because it is astonishingly expensive to
+    // elaborate: yosys unrolls the loop into one assignment per word, which
+    // measured at ~43 seconds for a 1024-word array and does not finish in
+    // any useful time at 65536. That single loop - not the memory structure -
+    // is what made full-SoC synthesis appear to hang. With it guarded out the
+    // same 32 KB array elaborates and maps to block RAM in 1.3 seconds.
+    //
+    // Simulation still needs it: Verilog leaves an unwritten array X, and
+    // several testbenches load an image far smaller than the memory and
+    // expect the remainder to read as zero. $readmemh itself is cheap either
+    // way - yosys turns it straight into a memory init attribute - so only
+    // the loop is conditional.
     initial begin
+`ifndef SYNTHESIS
         for (i = 0; i < MEM_BYTES; i = i + 1)
             mem[i] = 8'b0;
+`endif
         if (INIT_FILE != "")
             $readmemh(INIT_FILE, mem);
     end
@@ -53,11 +76,17 @@ module dmem #(
     // relevant byte/halfword and sign/zero-extends as needed.
     assign rdata = {mem[a+3], mem[a+2], mem[a+1], mem[a]};
 
+    // Dedicated ports, so a request is always accepted; the data lands the
+    // cycle after, as wb_ram.v's shared port does.
     wire [31:0] a2 = addr2;
-    assign rdata2 = {mem[a2+3], mem[a2+2], mem[a2+1], mem[a2]};
-
     wire [31:0] a3 = addr3;
-    assign rdata3 = {mem[a3+3], mem[a3+2], mem[a3+1], mem[a3]};
+    assign gnt2 = req2;
+    assign gnt3 = req3;
+
+    always @(posedge clk) begin
+        rdata2 <= {mem[a2+3], mem[a2+2], mem[a2+1], mem[a2]};
+        rdata3 <= {mem[a3+3], mem[a3+2], mem[a3+1], mem[a3]};
+    end
 
     always @(posedge clk) begin
         if (we) begin

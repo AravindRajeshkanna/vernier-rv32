@@ -9,31 +9,47 @@
 // single-port-memory SoC tradeoff, taken deliberately here for a much
 // smaller and more obviously-correct interconnect.
 //
-// Arbitration is pure combinational fixed priority - master 1 (data) always
-// outranks master 0 (instruction), with no sticky grant. Two consequences
-// worth being explicit about, because both are load-bearing:
+// Arbitration is fixed priority - master 1 (data) always outranks master 0
+// (instruction) - and is *combinational while the bus is idle but latched for
+// the duration of a transfer*. Both halves of that matter:
 //
-//  - **Atomics are safe for free.** cpu_wb.v holds `cyc` asserted across
-//    both phases of an AMO's read-modify-write. Since the data master is
-//    top priority, holding `cyc` means it simply keeps winning, so no other
-//    master can slip a write into the gap between the read and the write
-//    back. That is the Wishbone locked-cycle idiom, and here it needs no
-//    lock signal at all - priority alone implements it. (A *sticky* grant
-//    would have been the other way to get this, but stickiness combined
-//    with combinational re-arbitration on `ack` creates a combinational
-//    loop: ack -> grant -> stb -> ack.)
-//  - **The instruction master must only reach zero-wait-state slaves.**
-//    Because there is no stickiness, master 0 can lose the bus mid-transfer
-//    if master 1 requests. That is harmless only if master 0's transfers
-//    complete in the cycle they are granted, which holds as long as it just
-//    reaches ROM and RAM (both ack combinationally). Don't map a
-//    multi-cycle slave where instructions get fetched from.
+//  - **Combinational when idle** means starting a transfer costs nothing. A
+//    registered "go to GRANT state" arbiter would add a cycle to every single
+//    bus access, fetches included.
+//  - **Latched once a transfer is under way** is what makes a multi-cycle
+//    slave safe. Now that the memories are synchronous block RAMs with a wait
+//    state (see wb_ram.v), a purely combinational grant would let master 1
+//    take the bus in the middle of master 0's read - and then the RAM's ack,
+//    which belongs to master 0's address, would be delivered to master 1
+//    along with master 0's data. Silent corruption, not a hang.
+//
+// An earlier version of this file argued that stickiness was unimplementable
+// because "stickiness combined with combinational re-arbitration on `ack`
+// creates a combinational loop: ack -> grant -> stb -> ack". That is only
+// true if the lock is combinational. Registering it breaks the loop: the
+// grant depends on `lock`, which is a flip-flop, and `lock`'s next value
+// depends on `ack`. Nothing goes round without passing through the register.
+//
+// **Atomics** were previously safe purely because the data master always
+// wins, and they still are - cpu_wb.v holds `cyc` across both phases of an
+// AMO's read-modify-write, so priority alone keeps any other master out of
+// the gap. The lock does not weaken that: when the read phase's ack releases
+// the lock, `m1_cyc` is still asserted, so master 1 immediately wins
+// re-arbitration for the write phase.
 //
 // It also can't starve the fetch path despite always losing: a data access
 // is one transaction that then completes, and while it is outstanding
 // cpu_wb.v freezes the whole pipeline, so nothing can queue behind it. The
 // CPU can only make progress by fetching, so the data master necessarily
 // goes idle.
+//
+// **Both masters must tie `stb` to `cyc`.** Arbitration grants on `cyc`
+// alone, so a master that asserted `cyc` without `stb` - legal Wishbone, a
+// master holding the bus between transfers - would take the bus and never
+// strobe, blocking the other master until it let go. cpu_wb.v drives each
+// pair from a single expression, so this holds by construction; the formal
+// properties in formal/fv_interconnect.v assume it explicitly rather than
+// leaving it as folklore.
 //
 // An access that decodes to no slave is acknowledged immediately with zero
 // data rather than left hanging. A bus that never acks would wedge the CPU
@@ -42,6 +58,9 @@
 module wb_interconnect #(
     parameter NUM_SLAVES = 7
 )(
+    input  wire        clk,
+    input  wire        rst,
+
     // ---- master 0: instruction fetch ----
     input  wire        m0_cyc,
     input  wire        m0_stb,
@@ -78,9 +97,15 @@ module wb_interconnect #(
     // space can't silently claim an interrupt or eat a received byte.
     output wire                      s_data_master
 );
-    // ---- arbitration: combinational fixed priority, data over fetch ----
-    wire sel_m1 = m1_cyc;
-    wire sel_m0 = m0_cyc && !m1_cyc;
+    // ---- arbitration: fixed priority, data over fetch, locked per transfer ----
+    reg  lock;      // a transfer is in flight and owns the bus
+    reg  lock_m1;   // which master owns it
+
+    wire want_m1 = m1_cyc;
+    wire want_m0 = m0_cyc && !m1_cyc;
+
+    wire sel_m1 = lock ?  lock_m1 : want_m1;
+    wire sel_m0 = lock ? !lock_m1 : want_m0;
 
     assign s_data_master = sel_m1;
 
@@ -126,4 +151,22 @@ module wb_interconnect #(
     assign m1_dat_r = fin_dat;
     assign m0_ack   = sel_m0 && fin_ack;
     assign m1_ack   = sel_m1 && fin_ack;
+
+    // Take the lock only when a transfer actually starts and does *not*
+    // complete in its first cycle, so zero-wait-state slaves (the peripheral
+    // bridges, and an unmapped address) behave exactly as they did before
+    // this existed and never touch the lock at all.
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            lock    <= 1'b0;
+            lock_m1 <= 1'b0;
+        end else if (!lock) begin
+            if (cur_stb && !fin_ack) begin
+                lock    <= 1'b1;
+                lock_m1 <= sel_m1;
+            end
+        end else if (fin_ack) begin
+            lock <= 1'b0;
+        end
+    end
 endmodule

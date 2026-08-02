@@ -73,9 +73,9 @@ module tb_soc;
     end
 
     // ---- result ----
-    // Byte 0..3 of RAM is TEST_RESULT_ADDR (0x8000_0000).
-    wire [31:0] result_word = {DUT.RAM.mem[3], DUT.RAM.mem[2],
-                                DUT.RAM.mem[1], DUT.RAM.mem[0]};
+    // Word 0 of RAM is TEST_RESULT_ADDR (0x8000_0000). wb_ram is a 32-bit
+    // word array, so this is one entry rather than four bytes reassembled.
+    wire [31:0] result_word = DUT.RAM.mem[0];
     localparam [31:0] RESULT_PASS = 32'h50415353;  // "PASS"
     localparam [31:0] RESULT_FAIL = 32'h4641494C;  // "FAIL"
 

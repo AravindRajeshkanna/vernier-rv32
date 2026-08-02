@@ -14,7 +14,7 @@ whether they match:
 ```
 2K performance run parameters for coremark.
 CoreMark Size    : 666
-Total ticks      : 368079
+Total ticks      : 724750
 Iterations       : 1
 Compiler version : GCC15.1.0
 Compiler flags   : -O2 -march=rv32im
@@ -33,35 +33,46 @@ machine, CRCs, all compiled at `-O2` — and it checks its own arithmetic. A
 core that got a multiply, a shift, a signed comparison or a memory access
 subtly wrong would fail the CRCs rather than quietly producing a number.
 
-**368,008 cycles per iteration**, measured over a 4-iteration run
-(1,472,032 total). A single-iteration run reports 368,079, so fixed overhead
-is not distorting it and the per-iteration figure is stable to about 0.02%.
+**724,750 cycles per iteration.**
+
+That is 1.97x the 368,008 cycles this took before the memories became
+synchronous block RAMs, and the regression is real, expected, and worth
+stating plainly: with no caches, every instruction fetch and every load or
+store now costs two cycles instead of one. The old number came from a memory
+that could not be synthesized at all (see `fpga/README.md`), so the honest
+comparison is not "it got slower" but "this is what the workload costs on
+hardware that can exist".
+
+The fix is a cache, or a fetch that presents its address a cycle early so the
+block RAM's latency is hidden by the pipeline rather than exposed as a stall.
+Neither exists yet; both are the obvious next performance work.
 
 ## What that number is, and is not
 
-Working it through: at any clock rate *f*, one iteration takes 368,008 / *f*
-seconds, so iterations/sec is *f* / 368,008 and
+Working it through: at any clock rate *f*, one iteration takes 724,750 / *f*
+seconds, so iterations/sec is *f* / 724,750 and
 
-> **≈ 2.7 CoreMark/MHz**
+> **~1.4 CoreMark/MHz**
 
-That is in the expected band for a 5-stage in-order RV32IM with single-cycle
-memory and no caches — comparable to VexRiscv and Rocket, below a Cortex-M4's
-~3.4. It is a plausible number rather than a suspicious one, which is worth
-saying because a benchmark result that comes out *too* good usually means the
-harness is measuring the wrong thing.
+That is a believable figure for a 5-stage in-order RV32IM with **no caches
+and a one-wait-state memory** - every fetch stalls a cycle. For reference,
+the same core against the old zero-wait memory scored ~2.7, and cached
+designs like VexRiscv and Rocket land in the 2-3 range. The gap between 1.4
+and 2.7 is precisely the cost of having no instruction cache, and it is the
+clearest argument for adding one.
 
 **It is not a submittable CoreMark score.** EEMBC's reporting rules require a
-run of at least 10 seconds, and this is 3.7 ms of simulated time. Reporting
-it as a score would be a rules violation regardless of whether the number is
-right. Two further caveats:
+run of at least 10 seconds, and this is 7 ms of simulated time at 100 MHz.
+Reporting it as a score would be a rules violation regardless of whether the
+number is right. Two further caveats:
 
-- It is a **simulated** figure. Real silicon adds memory latency this SoC's
-  zero-wait-state RAM does not model, and the achievable clock is unknown —
-  this design does not currently fit the FPGA target at all (`fpga/README.md`).
-  Cycles/iteration is a property of the microarchitecture; CoreMark/MHz on
-  hardware would be lower once real memory is in the loop.
-- Compiler flags are `-O2 -march=rv32im`, not the aggressive
-  per-benchmark flag sets vendors typically report with.
+- It is a **simulated** figure. The memory model is now realistic (a
+  synchronous block RAM with one wait state, which is what the design
+  actually synthesizes to), but the achievable clock is still unknown - the
+  design fits an LFE5U-45F but has never been placed, routed or timed. See
+  `fpga/README.md`.
+- Compiler flags are `-O2 -march=rv32im`, not the aggressive per-benchmark
+  flag sets vendors typically report with.
 
 The honest use of this number is as a **regression baseline**: it is
 directly comparable between two versions of this RTL, and that is what it is
@@ -69,9 +80,8 @@ here for.
 
 ## Runtime
 
-One iteration is about 50 seconds of wall clock under Icarus (~460k
-simulated cycles at roughly 9k cycles/sec). `COREMARK_ITERS=4 make coremark`
-takes about three minutes. Verilator would be substantially faster, but its
+One iteration is about 100 seconds of wall clock under Icarus (~868k
+simulated cycles at roughly 9k cycles/sec). Verilator would be substantially faster, but its
 harness here is wired to the flat `rtl/top.v` rather than the SoC, so the
 Icarus path is what this uses.
 
@@ -100,7 +110,8 @@ unmodified, fetched at a pinned commit by `fetch-coremark.sh`.
   SD card. Shifting the ~22 KB image through the bit-banged SPI path costs
   around a million cycles before the first benchmark instruction runs, which
   would swamp the measurement. The boot path is still covered by
-  `make sim_soc`.
+  `make sim_soc`. The image is one 32-bit word per line, matching
+  `wb_ram.v`'s word-organized array.
 
 `sim/tb_bench.v` ends the run on CoreMark's own verdict string rather than a
 cycle budget, so the pass/fail is the benchmark's conclusion and not a second

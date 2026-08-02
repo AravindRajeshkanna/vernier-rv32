@@ -110,13 +110,19 @@ module cpu_core #(
     input  wire         ibus_wait,
     input  wire         dbus_wait,
 
-    // data-MMU page-table-walker's dedicated read-only physical memory port
+    // Data-MMU page-table-walker's read port. Request/grant rather than a
+    // plain address, because main memory is a synchronous block RAM and the
+    // two walkers share one physical read port - see mmu.v for the contract.
+    output wire        ptw_req,
     output wire [31:0] ptw_addr,
+    input  wire        ptw_gnt,
     input  wire [31:0] ptw_rdata,
 
-    // instruction-MMU page-table-walker's own dedicated read-only port
+    // instruction-MMU page-table-walker's own port
     // (independent TLB and walker from the data MMU - see mmu.v)
+    output wire        iptw_req,
     output wire [31:0] iptw_addr,
+    input  wire        iptw_gnt,
     input  wire [31:0] iptw_rdata,
 
     // interrupt sources
@@ -171,7 +177,8 @@ module cpu_core #(
         .is_user(current_priv == PRIV_U), .sum(1'b0), .mxr(1'b0),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(itlb_resolved), .fault(itlb_fault), .pa(itlb_pa), .busy(itlb_busy),
-        .ptw_addr(iptw_addr), .ptw_rdata(iptw_rdata)
+        .ptw_req(iptw_req), .ptw_addr(iptw_addr),
+        .ptw_gnt(iptw_gnt), .ptw_rdata(iptw_rdata)
     );
 
     wire itlb_wait_stall = itlb_req && !itlb_resolved;
@@ -718,7 +725,8 @@ module cpu_core #(
         .sum(csr_mstatus_sum), .mxr(csr_mstatus_mxr),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(mmu_resolved), .fault(mmu_fault), .pa(mmu_pa), .busy(mmu_busy),
-        .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata)
+        .ptw_req(ptw_req), .ptw_addr(ptw_addr),
+        .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata)
     );
 
     wire mmu_wait_stall = need_translate && !mmu_resolved;

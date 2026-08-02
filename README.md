@@ -117,6 +117,7 @@ riscv-tests:             79 passed, 0 failed, 3 xfail   (make isa)
 co-simulation vs Spike:  82/82 traces match             (make cosim)
 formal:                  4 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
+synthesis (ECP5):        fits an LFE5U-45F, 54 s         (fpga/README.md)
 ```
 
 `make verify` runs the lot. `tests/README.md` has the details, including the
@@ -373,7 +374,8 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
 - **A real memory controller** driving actual DRAM — Linux plus a minimal
   root filesystem needs tens of megabytes at least; FPGA block RAM alone
   (tens of KB–a few MB) isn't enough. **This is now the single biggest
-  gap.** The SoC has 256 KB of on-chip RAM behind a Wishbone slave; the
+  gap.** The SoC has 64 KB of on-chip RAM behind a Wishbone slave (256 KB
+  in simulation, which does not fit any ECP5 — see `fpga/README.md`); the
   seam where a LiteDRAM controller would go is marked in `wb_ram.v`, but
   wiring one up needs LiteX and a board with DDR.
 - **A UART** (for a console) and **SPI/SD or similar storage** — the SoC

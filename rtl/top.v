@@ -39,6 +39,7 @@ module top #(
     wire [1:0]  dmem_size;
     wire        trap;
 
+    wire        ptw_req, ptw_gnt, iptw_req, iptw_gnt;
     wire [31:0] ptw_addr, ptw_rdata;
     wire [31:0] iptw_addr, iptw_rdata;
     wire        mtip, msip, meip;
@@ -60,8 +61,10 @@ module top #(
         .dmem_is_amo(), // only a bus adapter needs this (see rtl/soc/cpu_wb.v)
         // This top level's memories are zero-latency, so the core never waits.
         .ibus_wait(1'b0), .dbus_wait(1'b0),
-        .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata),
-        .iptw_addr(iptw_addr), .iptw_rdata(iptw_rdata),
+        .ptw_req(ptw_req), .ptw_addr(ptw_addr),
+        .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata),
+        .iptw_req(iptw_req), .iptw_addr(iptw_addr),
+        .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata),
         .mtip(mtip), .msip_in(msip), .meip(meip), .mtime_in(mtime),
         .fence_i(), // no instruction buffer on this top level - nothing to flush
         .trap(trap)
@@ -74,8 +77,8 @@ module top #(
     dmem #(.MEM_BYTES(DMEM_BYTES), .INIT_FILE(DMEM_INIT_FILE)) DMEM (
         .clk(clk), .addr(dmem_addr), .wdata(dmem_wdata),
         .we(dmem_we && !is_clint && !is_plic && !is_uart), .size(dmem_size), .rdata(dmem_rdata_raw),
-        .addr2(ptw_addr), .rdata2(ptw_rdata),
-        .addr3(iptw_addr), .rdata3(iptw_rdata)
+        .req2(ptw_req),  .addr2(ptw_addr),  .gnt2(ptw_gnt),  .rdata2(ptw_rdata),
+        .req3(iptw_req), .addr3(iptw_addr), .gnt3(iptw_gnt), .rdata3(iptw_rdata)
     );
 
     clint CLINT (

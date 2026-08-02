@@ -63,7 +63,10 @@ for suite in $SUITES; do
         # sections are 4 KB aligned, so the binary carries the padding too and
         # every byte lands at (address - 0x80000000) in the RAM array.
         $OBJCOPY -O binary "$OUT/$name.elf" "$OUT/$name.bin"
-        python3 "$ROOT/software/bin2hex.py" --word-size=1 "$OUT/$name.bin" \
+        # word-size=4: rtl/soc/wb_ram.v is a 32-bit word array (it has to be,
+        # to be a block RAM), so its $readmemh image is one little-endian
+        # word per line rather than one byte.
+        python3 "$ROOT/software/bin2hex.py" --word-size=4 "$OUT/$name.bin" \
             > "$OUT/$name.hex"
         rm -f "$OUT/$name.bin"
 
@@ -73,9 +76,9 @@ for suite in $SUITES; do
             echo "$name NO_TOHOST" >> "$OUT/manifest.txt"
             continue
         fi
-        # The testbench indexes the RAM byte array, so it wants the offset
-        # from the RAM base, not the absolute address.
-        offset="$(printf '%08x' $(( 0x$tohost - 0x80000000 )))"
+        # The testbench indexes the RAM word array, so it wants a *word*
+        # index from the RAM base, not the absolute byte address.
+        offset="$(printf '%08x' $(( (0x$tohost - 0x80000000) / 4 )))"
         echo "$name $offset" >> "$OUT/manifest.txt"
         count=$((count + 1))
     done

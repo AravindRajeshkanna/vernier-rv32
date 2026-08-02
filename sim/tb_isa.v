@@ -67,11 +67,11 @@ module tb_isa;
     reg [31:0]   maxcycles;
 
     // ---- the tohost word, read straight out of the RAM array ----
-    // wb_ram stores bytes, so this reassembles the little-endian word. Only
-    // the low 32 bits matter: riscv-tests' verdict encoding fits there, and
-    // the environment explicitly zeroes the high word.
-    wire [31:0] tohost = {DUT.RAM.mem[tohost_off + 3], DUT.RAM.mem[tohost_off + 2],
-                          DUT.RAM.mem[tohost_off + 1], DUT.RAM.mem[tohost_off]};
+    // wb_ram is a 32-bit word array, so `tohost_off` is a word index (see
+    // tests/build.sh). Only the low 32 bits matter: riscv-tests' verdict
+    // encoding fits there, and the environment explicitly zeroes the high
+    // word.
+    wire [31:0] tohost = DUT.RAM.mem[tohost_off];
 
     integer cycles = 0;
     always @(posedge clk) if (!rst) cycles = cycles + 1;

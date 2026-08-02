@@ -82,6 +82,7 @@ module soc_top #(
     wire        dmem_we, dmem_re, dmem_is_amo;
     wire [1:0]  dmem_size;
     wire        ibus_wait, dbus_wait;
+    wire        ptw_req, ptw_gnt, iptw_req, iptw_gnt;
     wire [31:0] ptw_addr, ptw_rdata, iptw_addr, iptw_rdata;
     wire        mtip, msip, meip;
     wire [63:0] mtime;
@@ -109,8 +110,10 @@ module soc_top #(
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size),
         .dmem_rdata(dmem_rdata), .dmem_is_amo(dmem_is_amo),
         .ibus_wait(ibus_wait), .dbus_wait(dbus_wait),
-        .ptw_addr(ptw_addr), .ptw_rdata(ptw_rdata),
-        .iptw_addr(iptw_addr), .iptw_rdata(iptw_rdata),
+        .ptw_req(ptw_req), .ptw_addr(ptw_addr),
+        .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata),
+        .iptw_req(iptw_req), .iptw_addr(iptw_addr),
+        .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata),
         .mtip(mtip), .msip_in(msip), .meip(meip), .mtime_in(mtime),
         .fence_i(fence_i), .trap(trap)
     );
@@ -130,6 +133,7 @@ module soc_top #(
     );
 
     wb_interconnect #(.NUM_SLAVES(NUM_SLAVES)) BUS (
+        .clk(clk), .rst(rst),
         .m0_cyc(iwb_cyc), .m0_stb(iwb_stb), .m0_adr(iwb_adr),
         .m0_dat_r(iwb_dat_r), .m0_ack(iwb_ack),
         .m1_cyc(dwb_cyc), .m1_stb(dwb_stb), .m1_we(dwb_we), .m1_adr(dwb_adr),
@@ -156,8 +160,10 @@ module soc_top #(
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_RAM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
         .wb_dat_r(s_dat_r[32*S_RAM +: 32]), .wb_ack(s_ack[S_RAM]),
-        .ptw_addr(ptw_addr),   .ptw_rdata(ptw_rdata),
-        .iptw_addr(iptw_addr), .iptw_rdata(iptw_rdata)
+        .ptw_req(ptw_req),   .ptw_addr(ptw_addr),
+        .ptw_gnt(ptw_gnt),   .ptw_rdata(ptw_rdata),
+        .iptw_req(iptw_req), .iptw_addr(iptw_addr),
+        .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata)
     );
 
     // ---- CLINT behind a bridge ----

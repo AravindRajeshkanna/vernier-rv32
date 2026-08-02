@@ -24,7 +24,14 @@ module soc_fpga #(
     // produces a console that emits pure garbage. See fpga/README.md.
     parameter CLK_HZ    = 50_000_000,
     parameter BAUD_RATE = 115_200,
-    parameter GPIO_WIDTH = 16
+    parameter GPIO_WIDTH = 16,
+
+    // On-chip RAM size. This is the parameter that decides which FPGA the
+    // design fits on, so it is exposed here rather than buried in the
+    // soc_top instantiation - see fpga/README.md for measured block-RAM cost
+    // per size. It is *not* a free knob: the software's linker scripts and
+    // software/soc/soc.h's RAM_SIZE have to agree with it.
+    parameter RAM_BYTES  = 65536
 )(
     input  wire clk,        // board oscillator
     input  wire rst_n,      // active-low reset button (invert if yours is active-high)
@@ -81,7 +88,7 @@ module soc_fpga #(
 
     soc_top #(
         .ROM_WORDS(4096),
-        .RAM_BYTES(262144),
+        .RAM_BYTES(RAM_BYTES),
         .ROM_INIT_FILE("bootrom.hex"),
         .UART_CLKS_PER_BIT(UART_CLKS_PER_BIT),
         .GPIO_WIDTH(GPIO_WIDTH)

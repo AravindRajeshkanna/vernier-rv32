@@ -4,17 +4,16 @@
 // acknowledged.
 //
 // The core's page-table walker ports are deliberately *not* brought onto the
-// bus - they stay wired straight to extra read ports on the RAM (see
-// wb_ram.v). Page tables are already documented as living in plain RAM
-// rather than MMIO, so putting the walkers on the bus would buy nothing and
-// would cost a stall path inside mmu.v, whose FSM latches PTE data assuming
-// it arrives combinationally.
+// bus - they stay wired to the RAM's second port (see wb_ram.v). Page tables
+// are already documented as living in plain RAM rather than MMIO, so putting
+// the walkers on the bus would buy nothing and would cost bus arbitration on
+// top of the read-port arbitration they already need.
 //
 // Requests are issued *combinationally*: `cyc`/`stb` come straight off the
 // core's request signals rather than out of a state register, so against a
-// zero-wait-state slave a transfer completes in the cycle it starts and
-// memory costs exactly what it did before the bus existed. A registered
-// "go to REQUEST state" FSM would have doubled the cost of every access.
+// zero-wait-state slave a transfer completes in the cycle it starts. A
+// registered "go to REQUEST state" FSM would have added a cycle to every
+// access, on top of the one the synchronous memories already cost.
 //
 // Endian/lane note: the core's native convention is that sub-word data sits
 // in the *low* lanes with the exact byte address on the bus (that is what
@@ -89,6 +88,49 @@ module cpu_wb (
 
     wire fetch_hit = have_valid && (have_addr == imem_addr);
 
+    // ---- the fetch currently on the bus ----
+    // Now that memory takes a wait state, a fetch spans more than one cycle,
+    // and `imem_addr` can change underneath it: a branch resolving in EX
+    // asserts `redirect_valid`, which overrides the PC freeze that
+    // `ibus_wait` would otherwise hold. Wishbone requires the address to be
+    // stable for the duration of a transfer, and more concretely, the slave
+    // has already latched the *old* address - so its ack carries the old
+    // word. Freezing the bus address here is what keeps the two in step.
+    reg        f_busy;
+    reg [31:0] f_addr;
+    reg        f_poison;
+
+    wire [31:0] bus_addr = f_busy ? f_addr : imem_addr;
+
+    assign iwb_cyc = f_busy || !fetch_hit;
+    assign iwb_stb = iwb_cyc;
+    assign iwb_adr = {bus_addr[31:2], 2'b00};
+
+    // The ack only answers the core's *current* question if the transfer it
+    // completes was for the address the core is asking about now. After a
+    // redirect it is not, and the core has to wait for the next one.
+    wire ack_for_current = iwb_ack && (bus_addr[31:2] == imem_addr[31:2]);
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            f_busy   <= 1'b0;
+            f_addr   <= 32'b0;
+            f_poison <= 1'b0;
+        end else if (iwb_ack) begin
+            f_busy   <= 1'b0;
+            f_poison <= 1'b0;
+        end else if (iwb_cyc) begin
+            f_busy <= 1'b1;
+            f_addr <= bus_addr;
+            // A FENCE.I retiring while a fetch is in flight poisons that
+            // fetch: it was issued before the fence, so its data may predate
+            // the writes the fence exists to publish. Dropping the result
+            // rather than buffering it keeps a stale word from being cached
+            // under a valid tag.
+            if (fence_i) f_poison <= 1'b1;
+        end
+    end
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             have_valid <= 1'b0;
@@ -96,19 +138,15 @@ module cpu_wb (
             have_dat   <= 32'b0;
         end else if (fence_i) begin
             have_valid <= 1'b0;
-        end else if (iwb_ack) begin
+        end else if (iwb_ack && !f_poison) begin
             have_valid <= 1'b1;
-            have_addr  <= imem_addr;
+            have_addr  <= bus_addr;
             have_dat   <= iwb_dat_r;
         end
     end
 
-    assign iwb_cyc = !fetch_hit;
-    assign iwb_stb = !fetch_hit;
-    assign iwb_adr = {imem_addr[31:2], 2'b00};
-
     assign imem_rdata = fetch_hit ? have_dat : iwb_dat_r;
-    assign ibus_wait  = !fetch_hit && !iwb_ack;
+    assign ibus_wait  = !fetch_hit && !ack_for_current;
 
     // =====================================================================
     // Data bus

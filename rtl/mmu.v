@@ -24,10 +24,23 @@
 //    that contract is honored. The U bit is cached alongside them, so the
 //    user/supervisor check below applies identically on a hit and on a walk.
 //
-// The walker reads PTEs through its own read-only port (`ptw_addr`/
-// `ptw_rdata`) so it never contends with the MEM stage's own load/store
-// access (or, for the instruction-MMU instance, with the data MMU's own
-// walker).
+// The walker reads PTEs through a request/grant port (`ptw_req`/`ptw_addr`/
+// `ptw_gnt`/`ptw_rdata`) rather than the MEM stage's load/store path, so a
+// walk never contends with the instruction it is stalling.
+//
+// The port is a handshake rather than a combinational read because main
+// memory is a *synchronous* block RAM (see rtl/soc/wb_ram.v): read data
+// arrives the cycle after the address is accepted, and the two walkers share
+// one physical read port, so a request can also be refused for a cycle. The
+// contract is:
+//
+//   - assert `ptw_req` with `ptw_addr` and hold both until `ptw_gnt`;
+//   - `ptw_rdata` is valid in the cycle *after* the one where `ptw_gnt` was
+//     asserted, and only in that cycle.
+//
+// That is what costs the walk two extra cycles versus the old
+// combinational-read version - a fair price for main memory that can
+// actually be a block RAM instead of two million flip-flops.
 module mmu (
     input  wire        clk,
     input  wire        rst,
@@ -47,11 +60,16 @@ module mmu (
     output wire [31:0]  pa,        // valid when resolved && !fault
     output wire         busy,      // mid-walk (drives the pipeline stall)
 
+    output wire         ptw_req,
     output wire [31:0]  ptw_addr,
+    input  wire         ptw_gnt,
     input  wire [31:0]  ptw_rdata
 );
-    localparam S_IDLE = 2'd0, S_L1 = 2'd1, S_L2 = 2'd2;
-    reg [1:0]  state;
+    // S_L1/S_L2 issue a read and wait for the grant; S_L1W/S_L2W are the
+    // cycle in which that read's data is on ptw_rdata.
+    localparam S_IDLE = 3'd0, S_L1 = 3'd1, S_L1W = 3'd2,
+               S_L2   = 3'd3, S_L2W = 3'd4;
+    reg [2:0]  state;
     reg [31:0] va_r;
     reg        store_r;
     reg        fetch_r;
@@ -62,6 +80,11 @@ module mmu (
     // access is permitted.
     reg        user_r;
     reg        sum_r, mxr_r;
+    // satp is latched with the request for the same reason. A walk now spans
+    // several cycles, and the instruction that changes satp executes in EX
+    // while a fetch-side walk may be in flight - reading it live would let an
+    // unrelated later instruction redirect a walk already under way.
+    reg [21:0] satp_ppn_r;
     reg [31:0] pte1_r;
 
     // ---- TLB ----
@@ -128,7 +151,7 @@ module mmu (
     // ---- walker ----
     wire [9:0]  vpn1 = va_r[31:22];
     wire [9:0]  vpn0 = va_r[21:12];
-    wire [33:0] l1_table_pa = {satp_ppn, 12'b0};
+    wire [33:0] l1_table_pa = {satp_ppn_r, 12'b0};
     wire [33:0] l1_sum      = l1_table_pa + {22'b0, vpn1, 2'b00};
     wire [31:0] l1_addr     = l1_sum[31:0];
 
@@ -142,8 +165,9 @@ module mmu (
     wire [33:0] l2_sum      = l2_table_pa + {22'b0, vpn0, 2'b00};
     wire [31:0] l2_addr     = l2_sum[31:0];
 
+    assign ptw_req  = (state == S_L1) || (state == S_L2);
     assign ptw_addr = (state == S_L1) ? l1_addr : l2_addr;
-    wire [31:0] pte2 = ptw_rdata; // only meaningful while in S_L2 and pte1 was a pointer
+    wire [31:0] pte2 = ptw_rdata; // only meaningful in S_L2W, and only if pte1 was a pointer
 
     wire v2 = pte2[0], r2 = pte2[1], w2 = pte2[2], x2 = pte2[3];
     wire u2 = pte2[4], a2 = pte2[6], d2 = pte2[7];
@@ -166,7 +190,7 @@ module mmu (
                                             : walk_pa_normal_wide[31:0];
 
     assign busy     = (state != S_IDLE);
-    assign resolved = (state == S_IDLE) ? (req && tlb_hit) : (state == S_L2);
+    assign resolved = (state == S_IDLE) ? (req && tlb_hit) : (state == S_L2W);
     assign fault    = (state == S_IDLE) ? !perm_ok_hit : walk_fault;
     assign pa       = (state == S_IDLE) ? pa_hit : walk_pa;
 
@@ -177,24 +201,32 @@ module mmu (
             for (i = 0; i < 8; i = i + 1) tlb_valid[i] <= 1'b0;
         end else if (sfence) begin
             for (i = 0; i < 8; i = i + 1) tlb_valid[i] <= 1'b0;
+            // Abandon any walk in progress. Its result was derived from page
+            // tables the SFENCE.VMA has just declared stale, so installing it
+            // would put back exactly the entry the flush was meant to remove.
+            // The stalled access simply re-requests and walks again.
+            state <= S_IDLE;
         end else begin
             case (state)
                 S_IDLE: begin
                     if (req && !tlb_hit) begin
-                        va_r    <= va;
-                        store_r <= is_store;
-                        fetch_r <= is_fetch;
-                        user_r  <= is_user;
-                        sum_r   <= sum;
-                        mxr_r   <= mxr;
-                        state   <= S_L1;
+                        va_r       <= va;
+                        store_r    <= is_store;
+                        fetch_r    <= is_fetch;
+                        user_r     <= is_user;
+                        sum_r      <= sum;
+                        mxr_r      <= mxr;
+                        satp_ppn_r <= satp_ppn;
+                        state      <= S_L1;
                     end
                 end
-                S_L1: begin
-                    pte1_r <= ptw_rdata; // l1_addr has been on ptw_addr this whole cycle
+                S_L1:  if (ptw_gnt) state <= S_L1W;   // read accepted
+                S_L1W: begin
+                    pte1_r <= ptw_rdata;              // data valid this cycle only
                     state  <= S_L2;
                 end
-                S_L2: begin
+                S_L2:  if (ptw_gnt) state <= S_L2W;
+                S_L2W: begin
                     if (!walk_fault) begin
                         tlb_valid[repl_ptr] <= 1'b1;
                         tlb_vpn[repl_ptr]   <= va_r[31:12];

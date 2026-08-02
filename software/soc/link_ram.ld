@@ -16,7 +16,7 @@ MEMORY
 {
     /* 0x8000_0000..0x8000_0FFF is reserved for the boot ROM (its stack and
      * the testbench result word), so this starts at +0x1000. */
-    RAM (rwx) : ORIGIN = 0x80001000, LENGTH = 252K
+    RAM (rwx) : ORIGIN = 0x80001000, LENGTH = 60K
 }
 
 SECTIONS
@@ -46,6 +46,11 @@ SECTIONS
     PROVIDE(__global_pointer$ = _bss_start + 0x800);
 
     /* Stack grows down from the top of RAM, well clear of .bss and of the
-     * region the memory tests hammer. */
-    _stack_top = 0x80040000;
+     * region the memory tests hammer (which runs to RAM_BASE+0x9000).
+     *
+     * 64 KB, not the 256 KB soc_top.v provides in simulation: see
+     * software/soc/soc.h's RAM_SIZE for why the firmware targets the smaller
+     * size. Simulation is unaffected - the firmware simply uses the low 64 KB
+     * of a larger memory. */
+    _stack_top = 0x80010000;
 }
