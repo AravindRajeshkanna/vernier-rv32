@@ -712,12 +712,41 @@ because `sim/tb_top.v`'s hand-assembled regression test runs against
 | `0x0400_0000` | UART |
 | `0x0500_0000` | GPIO |
 | `0x0600_0000` | SPI |
+| `0x0700_0000` | Framebuffer |
 | `0x8000_0000` | Main RAM |
 
 Decoded on `addr[31:24]`. CLINT/PLIC/UART keep the bases they already had,
 so the drivers in `software/` work unchanged; RAM sits at `0x8000_0000`
 where essentially every real RISC-V platform puts it, which is also what
 makes `dts/soc.dts` look like an ordinary device tree.
+
+### The framebuffer
+
+`rtl/soc/wb_framebuffer.v` is a 320x240, 8-bit-per-pixel buffer in block RAM,
+scanned out in raster order by `rtl/soc/video_timing.v`. A pixel is one byte
+in **RRRGGGBB** direct colour, so there is no palette to program and no second
+memory; the buffer is linear, so `(x,y)` is at `FB_BASE + y*320 + x` and a
+single pixel is a plain `sb`.
+
+It is a **display controller, not a GPU**: the CPU draws, this reads out.
+There is no blitter and no second core. That matters for the bus - scan-out
+uses the block RAM's *second port*, so the framebuffer adds no bus master and
+the interconnect's two-master arbitration (section 11) is untouched.
+
+Two details worth knowing:
+
+- **The pixel path is two registers deep**, not one: raster position to
+  address is combinational, the block RAM read costs a register, and the
+  colour expansion costs another. The syncs are delayed to match. Getting
+  that wrong shifts the whole image one pixel against the syncs, which is
+  invisible on a monitor and was caught only because `sim/tb_video.v`
+  compares captured pixels against what was written.
+- **Nothing drives a display yet.** Scan-out runs in the CPU's own clock
+  domain, so there is no clock-domain crossing anywhere in the video path.
+  A real monitor needs a 25.175 MHz pixel clock from a PLL and a TMDS
+  serializer above this; until then the video outputs leave `soc_fpga.v`
+  unconnected and synthesis strips the scan-out logic, leaving only the
+  buffer's block RAM. See `fpga/README.md`.
 
 **This retires the Harvard wart.** Section 6 documented an awkward
 consequence of `imem`/`dmem` being separate arrays both based at zero: a

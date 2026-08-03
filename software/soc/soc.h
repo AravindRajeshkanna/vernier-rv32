@@ -16,6 +16,7 @@
 #define UART_BASE_A 0x04000000u
 #define GPIO_BASE   0x05000000u
 #define SPI_BASE    0x06000000u
+#define FB_BASE     0x07000000u
 #define RAM_BASE    0x80000000u
 /* 64 KB. This is the size the *firmware* is built for, and it is
  * deliberately smaller than soc_top.v's 256 KB simulation default: 256 KB of
@@ -109,6 +110,26 @@
  */
 #define SD_INIT_DIV ((CPU_HZ) / 700000u)
 #define SD_FAST_DIV 3u
+
+/* ---- Framebuffer (rtl/soc/wb_framebuffer.v) ----
+ * 320x240, 8 bits per pixel, RRRGGGBB direct colour - no palette to program.
+ * Pixel-doubled to a 640x480 raster on the way out.
+ *
+ * A pixel is one byte, so a plain store writes one; the buffer is linear with
+ * no padding, so the address of (x,y) is FB_BASE + y*FB_WIDTH + x.
+ *
+ * These must agree with soc_top.v's FB_WIDTH/FB_HEIGHT parameters. Nothing
+ * checks that they do - the same hazard as RAM_SIZE vs RAM_BYTES.
+ */
+#define FB_WIDTH   320u
+#define FB_HEIGHT  240u
+#define FB_PIXEL(x, y) (*(volatile uint8_t *)(uintptr_t)(FB_BASE + (y)*FB_WIDTH + (x)))
+
+/* RRRGGGBB from 8-bit components, so callers can think in RGB rather than in
+ * bit positions. The low bits of each component are discarded, which is what
+ * 8bpp costs. */
+#define FB_RGB(r, g, b) \
+    ((uint8_t)((((r) & 0xE0u)) | (((g) & 0xE0u) >> 3) | (((b) & 0xC0u) >> 6)))
 
 /* ---- SD card image layout ----
  * Block 0 is a header written by software/soc/mkcard.py; the program image

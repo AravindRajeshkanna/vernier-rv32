@@ -148,5 +148,30 @@
                 voltage-ranges = <3300 3300>;
             };
         };
+
+        /* Framebuffer (rtl/soc/wb_framebuffer.v).
+         *
+         * 320x240, 8 bits per pixel, RRRGGGBB direct colour, pixel-doubled
+         * to a 640x480 raster on scan-out. `simple-framebuffer` is the
+         * generic binding for exactly this - a buffer somebody else has
+         * already configured, which the OS only has to draw into.
+         *
+         * The `format` property has no standard code for RGB332, so this
+         * declares the geometry and stride and leaves the format out rather
+         * than claiming one that would be wrong. A driver reading this
+         * should consult wb_framebuffer.v for the pixel encoding.
+         *
+         * `status` is "disabled" because nothing drives a display yet: the
+         * pixel stream leaves soc_fpga.v unconnected pending a PLL and a
+         * TMDS serializer. The buffer itself is readable and writable now.
+         */
+        framebuffer0: framebuffer@7000000 {
+            compatible = "simple-framebuffer";
+            reg = <0x07000000 0x00012C00>;   /* 320 * 240 bytes */
+            width = <320>;
+            height = <240>;
+            stride = <320>;
+            status = "disabled";
+        };
     };
 };

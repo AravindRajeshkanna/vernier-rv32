@@ -98,7 +98,8 @@ RTL="rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
-     rtl/soc/wb_spi.v rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
+     rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
+     rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
 
 if [ ! -f sim/bootrom.hex ]; then
     echo "error: sim/bootrom.hex missing - run 'make soc' first" >&2

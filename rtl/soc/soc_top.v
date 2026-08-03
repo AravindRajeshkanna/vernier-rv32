@@ -15,6 +15,7 @@
 //   0x0400_0000  UART       (txdata / rxdata / status)
 //   0x0500_0000  GPIO       (out / in / dir / ie / ip)
 //   0x0600_0000  SPI        (ctrl / data / status)
+//   0x0700_0000  Framebuffer (320x240, 8bpp RRRGGGBB - see wb_framebuffer.v)
 //   0x8000_0000  Main RAM   (the conventional RISC-V DRAM base)
 //
 // The CLINT/PLIC/UART bases are inherited unchanged from rtl/top.v so the
@@ -40,7 +41,13 @@ module soc_top #(
     parameter RAM_INIT_FILE   = "",
     parameter UART_CLKS_PER_BIT = 4,
     parameter GPIO_WIDTH      = 16,
-    parameter RESET_PC        = 32'h0000_0000
+    parameter RESET_PC        = 32'h0000_0000,
+
+    // Framebuffer geometry. This is what decides the block-RAM cost of the
+    // video subsystem, and therefore which ECP5 the whole design still fits
+    // on - see fpga/README.md's device table.
+    parameter FB_WIDTH        = 320,
+    parameter FB_HEIGHT       = 240
 )(
     input  wire clk,
     input  wire rst,
@@ -57,17 +64,30 @@ module soc_top #(
     input  wire spi_miso,
     output wire spi_cs_n,
 
+    // ---- video scan-out ----
+    // A pixel stream, not a display interface: syncs, data-enable and RGB888,
+    // all in this module's own clock domain. Driving a real monitor means
+    // adding a pixel-clock PLL and a TMDS serializer above this, which is
+    // deliberately not here yet - see rtl/soc/video_timing.v.
+    output wire [7:0]  vid_r,
+    output wire [7:0]  vid_g,
+    output wire [7:0]  vid_b,
+    output wire        vid_de,
+    output wire        vid_hsync,
+    output wire        vid_vsync,
+
     output wire trap
 );
-    localparam NUM_SLAVES = 7;
+    localparam NUM_SLAVES = 8;
 
     // Slave index assignment (also the bit position in the vectors below).
     localparam S_ROM = 0, S_CLINT = 1, S_PLIC = 2, S_UART = 3,
-               S_GPIO = 4, S_SPI = 5, S_RAM = 6;
+               S_GPIO = 4, S_SPI = 5, S_FB = 6, S_RAM = 7;
 
     // addr[31:24] each slave answers to, packed 8 bits per slave.
     wire [NUM_SLAVES*8-1:0] s_base = {
         8'h80, // S_RAM
+        8'h07, // S_FB
         8'h06, // S_SPI
         8'h05, // S_GPIO
         8'h04, // S_UART
@@ -231,6 +251,31 @@ module soc_top #(
         .wb_dat_r(s_dat_r[32*S_GPIO +: 32]), .wb_ack(s_ack[S_GPIO]),
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .irq(gpio_irq)
+    );
+
+    // ---- framebuffer + raster timing ----
+    wire [11:0] raster_x, raster_y;
+    wire        raster_de, raster_hsync, raster_vsync, raster_frame_start;
+
+    video_timing VTIMING (
+        .clk(clk), .rst(rst),
+        .x(raster_x), .y(raster_y), .de(raster_de),
+        .hsync(raster_hsync), .vsync(raster_vsync),
+        .frame_start(raster_frame_start)
+    );
+
+    wb_framebuffer #(
+        .FB_WIDTH(FB_WIDTH), .FB_HEIGHT(FB_HEIGHT), .PIXEL_DOUBLE(1)
+    ) FB (
+        .clk(clk), .rst(rst),
+        .wb_cyc(s_cyc), .wb_stb(s_stb[S_FB]), .wb_we(s_we), .wb_adr(s_adr),
+        .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        .wb_dat_r(s_dat_r[32*S_FB +: 32]), .wb_ack(s_ack[S_FB]),
+        .vid_x(raster_x), .vid_y(raster_y), .vid_de(raster_de),
+        .vid_hsync(raster_hsync), .vid_vsync(raster_vsync),
+        .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
+        .vid_de_out(vid_de),
+        .vid_hsync_out(vid_hsync), .vid_vsync_out(vid_vsync)
     );
 
     wb_spi SPI (

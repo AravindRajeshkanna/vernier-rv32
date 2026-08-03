@@ -250,6 +250,51 @@ static int test_misaligned_trap(void) {
  * one-entry fetch buffer, so without the invalidation this returns the stale
  * word - which is exactly how a bootloader that overwrites and re-runs code
  * would break. */
+/* Framebuffer: byte writes, word writes, and readback.
+ *
+ * This proves the *CPU's* path to the framebuffer - address decode, byte
+ * lanes, wait states. It says nothing about scan-out, which has no CPU-visible
+ * effect and is verified separately by sim/tb_video.v. Both halves are needed:
+ * this one would pass on a buffer nothing ever displays. */
+static int test_framebuffer(void) {
+    unsigned x, y;
+
+    /* Byte writes at the corners: catches a decode that drops high address
+     * bits, and byte-lane selection at both ends of a word. */
+    FB_PIXEL(0, 0)                          = 0xE0;   /* red    */
+    FB_PIXEL(FB_WIDTH - 1, 0)               = 0x1C;   /* green  */
+    FB_PIXEL(0, FB_HEIGHT - 1)              = 0x03;   /* blue   */
+    FB_PIXEL(FB_WIDTH - 1, FB_HEIGHT - 1)   = 0xFF;   /* white  */
+
+    if (FB_PIXEL(0, 0)                        != 0xE0) return 0;
+    if (FB_PIXEL(FB_WIDTH - 1, 0)             != 0x1C) return 0;
+    if (FB_PIXEL(0, FB_HEIGHT - 1)            != 0x03) return 0;
+    if (FB_PIXEL(FB_WIDTH - 1, FB_HEIGHT - 1) != 0xFF) return 0;
+
+    /* Each byte lane of one word, written individually and read back
+     * together - a lane that lands in the wrong position shows here. */
+    for (x = 0; x < 4; x++)
+        FB_PIXEL(x, 1) = (uint8_t)(0x11u * (x + 1));
+    for (x = 0; x < 4; x++)
+        if (FB_PIXEL(x, 1) != (uint8_t)(0x11u * (x + 1))) return 0;
+
+    /* A word write, read back as bytes: 4 pixels at once is the fast path
+     * any drawing code will use. */
+    *(volatile uint32_t *)(uintptr_t)(FB_BASE + 2 * FB_WIDTH) = 0x44332211u;
+    if (FB_PIXEL(0, 2) != 0x11 || FB_PIXEL(1, 2) != 0x22 ||
+        FB_PIXEL(2, 2) != 0x33 || FB_PIXEL(3, 2) != 0x44) return 0;
+
+    /* Leave something on screen rather than debris: a colour ramp, so a
+     * board with a display attached later shows an obviously-correct image
+     * instead of an ambiguous one. */
+    for (y = 0; y < FB_HEIGHT; y++)
+        for (x = 0; x < FB_WIDTH; x++)
+            FB_PIXEL(x, y) = FB_RGB(x * 255u / FB_WIDTH,
+                                    y * 255u / FB_HEIGHT,
+                                    128u);
+    return 1;
+}
+
 static int test_fence_i(void) {
     /* Build a two-instruction function in RAM: `li a0, 0x5A; ret`. */
     volatile uint32_t *code = (volatile uint32_t *)(uintptr_t)(TEST_REGION_BASE + 0x200);
@@ -280,6 +325,7 @@ int main(void) {
     check("LR/SC success",         test_lr_sc_success());
     check("LR/SC broken by store", test_lr_sc_failure());
     check("GPIO loopback",         test_gpio());
+    check("framebuffer read/write", test_framebuffer());
     check("CLINT mtime advances",  test_timer());
     check("misa reports I+M+A",    test_misa());
     check("cycle/time/instret",    test_counters());

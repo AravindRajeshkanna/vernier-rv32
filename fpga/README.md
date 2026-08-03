@@ -57,12 +57,13 @@ the bitstream line.
 
 | Target | Device | Fmax | LUT | EBR |
 |---|---|---|---|---|
-| `BOARD=ulx3s` | LFE5U-45F | **29.37 MHz** | 27% | 62% |
-| `BOARD=ulx3s85` | LFE5U-85F | 27.91 MHz | 14% | 32% |
+| `BOARD=ulx3s` | LFE5U-45F | 28.78 MHz | 29% | **105/108 — 97%** |
+| `BOARD=ulx3s85` | LFE5U-85F | **30.77 MHz** | 15% | 105/208 — 50% |
 
-The 85F is slightly *slower* — bigger die, longer routes, on a design already
-mostly routing — and has roughly four times the headroom. Both close
-comfortably at the board's 25 MHz.
+Both close comfortably at the board's 25 MHz, but they are no longer
+equivalent: **the 45F is now at 97% block RAM** and has room for essentially
+nothing else, while the 85F is at half. That gap is the framebuffer, which
+costs 38 EBR — see [Framebuffer cost](#framebuffer-cost).
 
 **Check your board revision first.** The four SD pins used for SPI mode are
 wired differently on **v1.7** than on v2.0/v3.0, and `constraints/ulx3s.lpf`
@@ -124,6 +125,29 @@ Full `soc_fpga` (CPU + Wishbone interconnect + boot ROM + RAM + CLINT + PLIC
 | 64 KB | 12,363 | 6,687 | 67 | 4 |
 | 128 KB | 12,591 | 6,691 | 126 | 4 |
 | 256 KB | 12,512 | 6,695 | 244 | 4 |
+
+### Framebuffer cost
+
+`rtl/soc/wb_framebuffer.v` adds a 320x240 8bpp buffer (75 KB) and its
+scan-out. Measured on the 85F, before and after:
+
+| | Before | After | Δ |
+|---|---|---|---|
+| DP16KD | 67 | 105 | **+38** |
+| LUT4 | 11,837 | 12,758 | +921 |
+| TRELLIS_FF | 6,721 | 6,723 | +2 |
+
+38 block RAMs for 75 KB is about 0.5 EBR/KB - near the theoretical minimum,
+and notably *better* than `wb_ram.v`'s 0.95 EBR/KB for the same organization.
+That was not predicted and is not fully explained; it is recorded as measured.
+
+`FB_WIDTH`/`FB_HEIGHT` are parameters on `soc_top.v` precisely because this is
+what decides which parts still fit. At the default the design fits both
+supported ULX3S variants, but only just on the 45F.
+
+Fmax also moved, 27.91 -> 30.77 MHz on the 85F. **That is not the framebuffer
+making the design faster** - it is the placement sensitivity documented below,
+re-rolled by adding ~900 LUTs. Do not read a speedup into it.
 
 ### Which ECP5 this fits on
 

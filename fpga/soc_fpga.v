@@ -68,6 +68,20 @@ module soc_fpga #(
 
     inout  wire [GPIO_WIDTH-1:0] gpio,
 
+    // ---- video scan-out ----
+    // Brought out so a board wrapper can route it, but nothing does yet: a
+    // real display needs a 25.175 MHz pixel clock from a PLL and a TMDS
+    // serializer, neither of which exists. Left unconnected, synthesis
+    // strips the scan-out path and the framebuffer costs only its block RAM
+    // - which is the intent for a first bring-up bitstream. See
+    // fpga/README.md.
+    output wire [7:0] vid_r,
+    output wire [7:0] vid_g,
+    output wire [7:0] vid_b,
+    output wire       vid_de,
+    output wire       vid_hsync,
+    output wire       vid_vsync,
+
     output wire [3:0] led
 );
     localparam UART_CLKS_PER_BIT = CLK_HZ / BAUD_RATE;
@@ -119,6 +133,8 @@ module soc_fpga #(
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
+        .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
+        .vid_de(vid_de), .vid_hsync(vid_hsync), .vid_vsync(vid_vsync),
         .trap(trap)
     );
 

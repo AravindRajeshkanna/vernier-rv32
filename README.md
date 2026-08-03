@@ -48,6 +48,8 @@ rtl/
     wb_periph_bridge.v adapts clint/plic/uart onto the bus unchanged
     wb_gpio.v          GPIO with per-pin interrupts
     wb_spi.v           SPI master (the one slave with real wait states)
+    video_timing.v     640x480@60 raster timing generator
+    wb_framebuffer.v   320x240 8bpp framebuffer + scan-out (0x0700_0000)
 sim/
   tb_top.v            self-checking testbench (hand-assembled program.hex)
   tb_software.v       runs the real compiled firmware, decodes UART to the console
@@ -55,6 +57,7 @@ sim/
   tb_isa.v            runs the official RISC-V architectural tests on the SoC
   tb_bench.v          runs CoreMark, ends on the benchmark's own verdict
   tb_ulx3s.v          board-wrapper wiring test (pin direction, polarity, tie-offs)
+  tb_video.v          draws a pattern, captures a frame, compares it back
   tracer.v            retired-instruction tracer (drives the Spike co-simulation)
   sd_card_model.v     SD card in SPI mode (CMD0/8/55/58, ACMD41, CMD17)
   verilator_main.cpp  optional Verilator harness

@@ -41,7 +41,8 @@ SOC_RTL = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
           rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
           rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
-          rtl/soc/wb_spi.v rtl/soc/soc_top.v
+          rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
+          rtl/soc/soc_top.v
 SOC_TB  = sim/tb_soc.v sim/sd_card_model.v
 
 SOFTWARE_SRCS = software/crt0.S software/syscalls.c software/uart.c software/main.c
@@ -64,7 +65,7 @@ SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc sim_ulx3s dtb \
+.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc sim_video sim_ulx3s dtb \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
@@ -129,6 +130,16 @@ sim/card.hex: software/soc/socprog.elf software/soc/mkcard.py Makefile
 sim_soc: soc
 	$(IVERILOG) -g2012 -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
 	cd sim && $(VVP) sim_soc.out
+
+# ---- video ----
+# The framebuffer's only proof while no display is attached: draw a known
+# pattern through the bus, capture a frame off the scan-out, and compare.
+# Also drops sim/frame.ppm for a human to look at - but the verdict is the
+# readback, not the image.
+sim_video:
+	$(IVERILOG) -g2012 -o sim/sim_video.out sim/tb_video.v \
+	    rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v
+	cd sim && $(VVP) sim_video.out
 
 # ---- board wrapper ----
 # fpga/ulx3s_top.v is the one piece of RTL no simulation would otherwise
@@ -226,7 +237,7 @@ coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
 # Everything that can gate a change, in rough order of how fast it fails.
-verify: sim sim_software sim_soc sim_ulx3s isa cosim formal
+verify: sim sim_software sim_soc sim_video sim_ulx3s isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
