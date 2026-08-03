@@ -18,9 +18,10 @@ unmeasured or unproven this repo says so rather than rounding in its own
 favour. See **Verification** below for the numbers, and `fpga/README.md` for
 a worked example of the tool disagreeing with the prediction.
 
-It has never run on hardware — there is no board, and the pinout is still
-placeholders. **Read the "Can this run Linux?" section before you get too
-attached to that plan**: the honest answer is not with this core, and it
+It has never run on hardware. The pinout is real — `fpga/constraints/ulx3s.lpf`
+targets a ULX3S and every pin is placed — but no board has been attached, so
+everything that needs one is still unproven. **Read the "Can this run Linux?"
+section before you get too attached to that plan**: the honest answer is not with this core, and it
 explains why and what the realistic path looks like.
 
 ## What's here
@@ -138,8 +139,8 @@ riscv-tests:             79 passed, 0 failed, 3 xfail   (make isa)
 co-simulation vs Spike:  82/82 traces match             (make cosim)
 formal:                  4 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
-synthesis (ECP5):        fits an LFE5U-45F, 54 s         (fpga/README.md)
-place & route:           ULX3S bitstream at 29.37 MHz    (BOARD=ulx3s fpga/synth/synth_ecp5.sh)
+ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (BOARD=ulx3s   ...synth_ecp5.sh)
+ULX3S 85F bitstream:     30.77 MHz, 15% LUT, 50% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
 ```
 
 `make verify` runs the lot. `tests/README.md` has the details, including the
@@ -329,10 +330,25 @@ built, so those files are elaborated and lint-clean but otherwise unproven.
 `fpga/README.md` is explicit about exactly what is and isn't known, and
 about which paths are the likely suspects if timing doesn't close.
 
-What's there to start from: `fpga/soc_fpga.v` (the SoC with a reset
-synchronizer and tristate GPIO), constraints templates with **placeholder
-pins** for Xilinx and ECP5, and batch scripts for both Vivado and the
-open-source yosys/nextpnr flow.
+**On a ULX3S there is nothing to fill in.** `fpga/constraints/ulx3s.lpf` has
+real pins, `fpga/ulx3s_top.v` handles the board's quirks, and both FPGA
+variants that fit have a build target:
+
+```bash
+make soc                                     # boot ROM is a synthesis input
+BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh     # LFE5U-85F
+BOARD=ulx3s   ./fpga/synth/synth_ecp5.sh     # LFE5U-45F
+openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
+```
+
+The 12F and 25F variants of that board do **not** fit — they are over their
+block-RAM budget and fail to place. See `fpga/README.md`.
+
+What's there to start from on any *other* board: `fpga/soc_fpga.v` (the SoC
+with a reset synchronizer and tristate GPIO, board-agnostic on purpose),
+`generic.xdc`/`generic.lpf` which are still **placeholder pins**, and batch
+scripts for both Vivado and the open-source yosys/nextpnr flow. Use
+`ulx3s_top.v` as the worked example of what a board wrapper has to do.
 
 The rest is genuinely board-dependent:
 
@@ -346,13 +362,16 @@ The rest is genuinely board-dependent:
      `symbiflow` flow instead)
    - Intel/Altera (e.g. DE10) → Quartus (also not native macOS)
 2. **Fill in real pins** in `fpga/constraints/generic.xdc` (Xilinx) or
-   `generic.lpf` (ECP5). Every pin in those files today is a placeholder
-   copied from no board in particular — start from your vendor's master
-   constraints file.
-3. **Set `CLK_HZ` in `fpga/soc_fpga.v`** to your board's actual oscillator.
-   The UART divisor is derived from it, so getting this wrong produces a
-   console emitting garbage even when timing closes — and it looks like a
-   CPU bug rather than a configuration one.
+   `generic.lpf` (ECP5) — those two are still placeholders copied from no
+   board in particular. Start from your vendor's master constraints file, and
+   write a wrapper alongside `ulx3s_top.v` rather than editing it.
+3. **Set `CLK_HZ` in `fpga/soc_fpga.v`** to your board's actual oscillator,
+   along with `CPU_HZ` in `software/soc/soc.h` and `CLK_PERIOD` in
+   `sim/tb_soc.v` — nothing checks the three agree. The UART divisor and the
+   SD initialization clock are both derived from them, so getting either
+   wrong produces a garbled console or a card that never answers, even when
+   timing closes. Both look like CPU bugs rather than configuration ones. An
+   oscillator faster than ~30 MHz also needs a PLL; the design has none.
 4. **Run `make soc` first**, then synthesize. The boot ROM image is pulled
    in with `$readmemh` at elaboration time, which makes it a *synthesis*
    input, not just a simulation one. Both scripts refuse to start without
@@ -360,13 +379,13 @@ The rest is genuinely board-dependent:
 5. **Synthesize, place & route, and flash:**
    ```bash
    make soc
-   DEVICE=25k PACKAGE=CABGA381 ./fpga/synth/synth_ecp5.sh   # open-source flow
+   DEVICE=85k PACKAGE=CABGA381 ./fpga/synth/synth_ecp5.sh   # open-source flow
    # or:
    vivado -mode batch -source fpga/synth/vivado.tcl -tclargs xc7a35ticsg324-1L
    ```
-
-Tell me your specific board (model number is fine) and I'll write you the
-actual constraints file and exact toolchain commands.
+   Pick a device that actually fits: at the default 64 KB of RAM plus the
+   framebuffer the design needs **105 block RAMs**, which rules out the ECP5
+   25F and 12F. `fpga/README.md` has the measured table.
 
 ## 5. "Then install Linux and test CPU performance" — the honest picture
 
@@ -443,11 +462,13 @@ Linux path which is a much longer undertaking.
 
 That's also a great learning path, just with different, more achievable
 milestones — happy to help with any of these next:
-- **Actually get a bitstream onto a board.** Everything in `fpga/` is
-  written but unproven — no toolchain or hardware was available here. This
-  is the highest-value next step by a distance, because it's the one thing
-  simulation fundamentally can't substitute for, and it's what turns the
-  timing/resource numbers from unknown into measured.
+- **Actually get the bitstream onto a board.** This is still the
+  highest-value next step by a distance, but for a narrower reason than it
+  used to be: the bitstream exists, targets a real pinout and closes timing
+  with margin, so what's left is precisely the set of things simulation
+  cannot substitute for — that a real SD card answers the boot ROM, that the
+  console is legible, that the ESP32 hold-off works in practice, that it runs
+  at temperature.
 - **External DRAM**, which unblocks essentially everything else on this
   list (OpenSBI, FreeRTOS/Zephyr with any real workload, and eventually
   Linux). LiteDRAM via LiteX is the well-trodden path.

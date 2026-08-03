@@ -1,26 +1,26 @@
 # FPGA integration — status and honest caveats
 
 **The design builds to a ULX3S bitstream against that board's real pinout and
-closes timing at 25 MHz, with a measured Fmax of 29.37 MHz. It has never been
-loaded onto hardware.** Those are different claims:
+closes timing at 25 MHz — 30.77 MHz on an 85F, 28.78 MHz on a 45F. It has
+never been loaded onto hardware.** Those are different claims:
 
 | Artifact | Status |
 |---|---|
-| Full SoC synthesis (`synth_ecp5`) | ✅ **runs, 54 s** |
-| Place-and-route (`nextpnr-ecp5`) | ✅ **runs, 2 min** |
+| Full SoC synthesis (yosys) | ✅ **runs, ~19 s** |
+| Place-and-route (`nextpnr-ecp5`) | ✅ **runs** — 4 min on an 85F, 11 min on a 45F |
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
 | Resource usage | ✅ **measured** — 27% LUT / 62% EBR on a 45F, 14% / 32% on an 85F |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ✅ **29.37 MHz**, PASS at the 25 MHz the board clocks at |
+| **Fmax with I/O constrained** | ✅ **30.77 MHz** (85F) / **28.78 MHz** (45F), PASS at the board's 25 MHz |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ❌ **no board** |
 
 The pinout is no longer fictional, which is a smaller claim than "this works"
-but a real one: the 29.37 MHz above comes from a build where every port is
-locked to the pin it will actually use, rather than one where nextpnr could
-place I/O wherever suited it. Constraining the I/O cost about 1 MHz
-(30.38 → 29.37), less than expected.
+but a real one: the numbers above come from builds where every port is locked
+to the pin it will actually use, rather than ones where nextpnr could place
+I/O wherever suited it. When that constraint was first applied it cost about
+1 MHz (30.38 → 29.37 on a 45F), less than expected.
 
 **What is still unproven is everything that needs a board**: that the ESP32
 hold-off is sufficient in practice, that a real SD card answers the boot ROM,
@@ -160,8 +160,8 @@ from actually attempting the build at `RAM_BYTES=65536`.
 |---|---|---|---|---|---|
 | LFE5U-12F | 24,288 † | 56 | 28 | 197 | ❌ **needs 67 EBR — 119%** |
 | LFE5U-25F | 24,288 | 56 | 28 | 197 | ❌ **needs 67 EBR — 119%** |
-| LFE5U-45F | 43,848 | 108 | 72 | 245 | ✅ 27% LUT, 62% EBR, **29.37 MHz** |
-| LFE5U-85F | 83,640 | 208 | 156 | 365 | ✅ 14% LUT, 32% EBR, **27.91 MHz** |
+| LFE5U-45F | 43,848 | 108 | 72 | 245 | ✅ 29% LUT, **97% EBR**, 28.78 MHz |
+| LFE5U-85F | 83,640 | 208 | 156 | 365 | ✅ 15% LUT, 50% EBR, **30.77 MHz** |
 
 † **nextpnr targets the 25F resource database for `--12k`** — the two are the
 same silicon, with the 12F sold as a reduced-capacity part. So a design that
@@ -180,9 +180,16 @@ Halving to `RAM_BYTES=32768` does fit the 25F die — 38/56 EBR, 12,380 LUTs,
 27.70 MHz — but at ~51% LUT occupancy on a part marketed as having 12K LUTs,
 with the SDRAM controller and caches that any larger goal needs still to come.
 
-**The 85F is not faster.** 27.91 MHz against the 45F's 29.37, from the same
-netlist: a bigger die means longer routes, and this design is already 67-75%
-routing (see the calibration below). Pick the 85F for headroom, not speed.
+**Which part is faster has flipped, and that is the lesson.** Before the
+framebuffer the 85F measured *slower* than the 45F (27.91 vs 29.37) and this
+file said so, reasoning that a bigger die means longer routes. After the
+framebuffer the order reverses: 30.77 on the 85F against 28.78 on the 45F.
+
+Nothing about either die changed. What changed is that the 45F is now at 97%
+block RAM, and a nearly-full device gives the placer far less freedom - which
+also shows in the build time, 11 minutes against the 85F's 4. Treat "bigger is
+slower" as the guess it was; the reason to pick the 85F is headroom, and on
+this design headroom is now buying speed too.
 
 Either supported part is a reasonable choice. The **45F** is the fastest of
 the four and has ample room for a memory controller and caches. The **85F**
@@ -276,7 +283,7 @@ This section used to say 50-150 MHz was "plausible for a core this size".
 Place-and-route says otherwise:
 
 ```
-Max frequency for clock 'clk_25mhz': 29.37 MHz   (post-route, real pins)
+Max frequency for clock 'clk_25mhz': 30.77 MHz   (post-route, real pins, 85F)
 ```
 
 `fpga/constraints/timing_only.lpf` therefore constrains the clock to 25 MHz,
@@ -285,7 +292,7 @@ worth stating plainly rather than quietly editing the range downward - an
 untested estimate of a critical path is not evidence, and this is the whole
 reason for running the tool.
 
-Two numbers appear in nextpnr's log: 22.46 MHz after placement and 29.37 MHz
+Two numbers appear in nextpnr's log: 22.99 MHz after placement and 30.77 MHz
 after routing. The second is the real one; the first is an estimate made
 before the router has had a chance to fix anything.
 
@@ -370,7 +377,13 @@ nothing, put the critical path in three completely different places:
 | After the AMO retiming | 31.32 MHz | RAM -> MMU walk -> PC | 61% | 11,977 | 6,719 |
 | After rewiring 4 status LEDs | 30.64 MHz | forwarding mux -> address adder | 72% | 11,977 | 6,719 |
 | After adding a 2-flop MISO synchronizer | 30.38 MHz | PC -> fetch -> PC | 75% | 12,124 | 6,721 |
-| **With the real ULX3S pinout** | **29.37 MHz** | RAM -> MMU walk -> PC | 67% | 11,837 | 6,721 |
+| With the real ULX3S pinout (45F) | 29.37 MHz | RAM -> MMU walk -> PC | 67% | 11,837 | 6,721 |
+| **Adding the framebuffer (85F)** | **30.77 MHz** | — | — | 12,758 | 6,723 |
+| The same netlist on a 45F | 28.78 MHz | — | — | 12,758 | 6,723 |
+
+The last two rows are the same netlist on two dies, 2 MHz apart - and the
+*larger* one is faster, because the smaller is at 97% block RAM and the placer
+has nowhere to put things.
 
 The last row is the only one that constrains I/O, and is the number to
 believe for hardware. It is also the only change in the table with a

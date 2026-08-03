@@ -1117,9 +1117,10 @@ is correctly still a read, which is also how Spike models it.
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
   no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
   take), no Ethernet. The design now builds to a **bitstream** on an
-  LFE5U-45F and closes timing at 25 MHz (29.37 MHz measured post-route on a real ULX3S pinout), but
-  has never been loaded onto hardware and the pinout is still fictional —
-  see `fpga/README.md`. The measured critical path is **75% routing** and
+  ULX3S and closes timing at 25 MHz against that board's real pinout —
+  30.77 MHz measured post-route on an LFE5U-85F, 28.78 MHz on a 45F — but
+  has never been loaded onto hardware, so everything that needs a board is
+  still unproven. See `fpga/README.md`. The measured critical path is **75% routing** and
   only 8 ns of logic — the design is wire-bound rather than logic-bound, so
   floorplanning is worth more than shortening logic. Where exactly that path
   lands moves from build to build: `fpga/README.md` records three consecutive
