@@ -95,6 +95,8 @@ software/
 docs/
   ARCHITECTURE.md  the full design writeup - pipeline, hazards, privilege,
                    MMU, SoC, and every bug worth recording
+  SOC.md         component and register reference: what each block is,
+                 its registers, and what bites you when programming it
   DEBUG.md       UART, tracer, and an honest account of the missing JTAG
   TOOLCHAIN.md   every tool and version this was built with, and which
                  flow uses which

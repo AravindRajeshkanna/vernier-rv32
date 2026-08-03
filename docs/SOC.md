@@ -1,0 +1,315 @@
+# The SoC — components and register reference
+
+What blocks exist, where they live, what registers they have, and what to
+watch out for when programming them.
+
+This is the **reference**; `ARCHITECTURE.md` is the **rationale**. Where a
+design decision needs explaining rather than stating, this file links there
+rather than repeating it. If you are writing firmware or adding a peripheral,
+start here. If you want to know *why* the interconnect arbitrates the way it
+does, start at `ARCHITECTURE.md` section 12a.
+
+Everything below describes `rtl/soc/soc_top.v`, the Wishbone system.
+`rtl/top.v` is a different, older, flat wiring of the same CPU kept for
+`sim/tb_top.v`'s regression — it has no bus, no boot ROM and no storage, and
+none of this applies to it.
+
+---
+
+## 1. Block diagram
+
+```
+                  ┌───────────────┐
+                  │   cpu_core    │  RV32IMA, M/S/U, Sv32 MMU, BTB
+                  └───┬───────┬───┘
+           imem port  │       │  dmem port        ptw / iptw ports
+                  ┌───▼───────▼───┐                     │
+                  │    cpu_wb     │  native -> Wishbone │
+                  └───┬───────┬───┘                     │
+        master 0 ─────┘       └───── master 1           │
+         (fetch)                      (data)            │
+                  ┌────────▼──────────────┐             │
+                  │   wb_interconnect     │  2 masters, 8 slaves
+                  └───┬──┬──┬──┬──┬──┬──┬─┘             │
+        ┌─────────────┘  │  │  │  │  │  └──────────┐    │
+        │        ┌───────┘  │  │  │  └────────┐    │    │
+     ┌──▼───┐ ┌──▼───┐ ┌────▼┐ ┌▼────┐ ┌──────▼┐ ┌─▼────▼─┐
+     │wb_rom│ │bridge│ │ SPI │ │GPIO │ │  FB   │ │ wb_ram │
+     └──────┘ └──┬───┘ └─────┘ └─────┘ └───┬───┘ └────────┘
+                 │                          │      port B feeds
+          ┌──────┼──────┐              ┌────▼─────┐ the two MMU
+       ┌──▼──┐┌──▼──┐┌──▼──┐           │  video   │ walkers
+       │CLINT││PLIC ││UART │           │  timing  │
+       └─────┘└──┬──┘└─────┘           └──────────┘
+                 │ eip -> CPU
+```
+
+Two things this diagram is making a point about:
+
+- **`wb_ram` has a second port that never touches the bus.** The MMU's two
+  page-table walkers read PTEs through it directly. Page tables live in
+  ordinary RAM, so putting the walkers on the bus would buy nothing and cost
+  arbitration.
+- **The framebuffer's scan-out is also off-bus**, on its own block RAM's
+  second port. That is why adding video introduced no third bus master.
+
+---
+
+## 2. Address map
+
+Decoded on `addr[31:24]` only, so every slave owns a 16 MB window regardless
+of how little of it it uses.
+
+| Base | Slave | Size used | Wait states |
+|---|---|---|---|
+| `0x0000_0000` | Boot ROM | 16 KB | 1 |
+| `0x0200_0000` | CLINT | 48 KB span | 0 |
+| `0x0300_0000` | PLIC | 16 KB span | 0 |
+| `0x0400_0000` | UART | 12 B | 0 |
+| `0x0500_0000` | GPIO | 20 B | 0 |
+| `0x0600_0000` | SPI | 12 B | 0 → many |
+| `0x0700_0000` | Framebuffer | 75 KB | 1 |
+| `0x8000_0000` | Main RAM | 64 KB (FPGA) / 256 KB (sim) | 1 |
+
+`software/soc/soc.h` is the single source of truth for software and **must be
+kept in step by hand** with `soc_top.v`'s `s_base` table, `dts/soc.dts`, and
+the linker scripts. Nothing generates or checks this.
+
+An access that decodes to no slave still acks, returning zero. A bus that
+never acked would wedge the CPU permanently — its pipeline freezes waiting —
+turning a stray pointer into a silent hang instead of something the running
+program can survive.
+
+---
+
+## 3. Components
+
+### `wb_rom` — boot ROM, `0x0000_0000`
+
+16 KB (`ROM_WORDS = 4096`), read-only, one wait state. Loaded at elaboration
+by `$readmemh` from `bootrom.hex`, which makes that file a **synthesis
+input** — the build scripts refuse to start without it, because the failure
+mode otherwise is a board that comes up and does nothing.
+
+`RESET_PC` is `0x0000_0000`, so the CPU starts here.
+
+### `wb_ram` — main memory, `0x8000_0000`
+
+64 KB on the FPGA, 256 KB in simulation. Word-organized with byte write
+enables, synchronous read, **one wait state** — that is what a block RAM
+costs, and the pipeline's `dbus_wait` absorbs it.
+
+Port B is shared by the data and instruction MMU walkers through a
+fixed-priority arbiter (data first). No starvation: a walk is a finite number
+of reads, and while the data walker is walking the pipeline is frozen anyway.
+
+This is the marked seam for external DRAM. Everything above it speaks
+Wishbone and knows only a base address and a size.
+
+### `clint` — timer and software interrupts, `0x0200_0000`
+
+| Offset | Register | Notes |
+|---|---|---|
+| `0x0000` | `msip` | bit 0 only; writing 1 raises a software interrupt |
+| `0x4000` | `mtimecmp` low 32 | |
+| `0x4004` | `mtimecmp` high 32 | |
+| `0xBFF8` | `mtime` low 32 | free-running, +1 per clock |
+| `0xBFFC` | `mtime` high 32 | |
+
+Offsets match a real CLINT so ordinary RISC-V code works unchanged. `mtime`
+increments **every clock**, not at a fixed wall-clock rate — there is no
+divider. Firmware computing a delay must scale by `CPU_HZ`.
+
+The `time` CSR reads *this* counter rather than a private one, because SBI
+timer code reads `time` and programs `mtimecmp` from it; those two have to be
+the same clock or every timeout is wrong.
+
+### `plic` — external interrupts, `0x0300_0000`
+
+8 sources, numbered **1..8** — source 0 does not exist, matching the real
+PLIC convention. 3-bit priorities.
+
+| Offset | Register | Notes |
+|---|---|---|
+| `0x0000 + 4*id` | priority for source `id` | 3 bits |
+| `0x1000` | pending bitmap | read-only |
+| `0x2000` | enable bitmap | bit `id` enables source `id` |
+| `0x3000` | threshold | only sources with priority **>** this are delivered |
+| `0x3004` | claim / complete | read claims, write completes |
+
+Source assignment in `soc_top.v`:
+
+| Source | Device |
+|---|---|
+| 1 | UART — **wired but unused**, the UART is polled |
+| 2 | GPIO rising edge |
+| 3–8 | spare, tied low |
+
+Reading `claim` has a **side effect** — it claims the interrupt and marks it
+in service. The bridge below gates the read strobe on the data master, so a
+stray *instruction fetch* into PLIC space cannot silently claim an interrupt.
+
+### `uart` — console, `0x0400_0000`
+
+| Offset | Register | Access | Notes |
+|---|---|---|---|
+| `0x00` | TXDATA | W | writing a byte starts transmission |
+| `0x04` | RXDATA | R | last received byte; **reading clears `rx_valid`** |
+| `0x08` | STATUS | RO | bit 0 = `tx_busy`, bit 1 = `rx_valid` |
+
+Polled, not interrupt-driven. The bit period is the `CLKS_PER_BIT` module
+parameter, derived from `CLK_HZ / BAUD_RATE` in `fpga/soc_fpga.v` — **not a
+runtime baud register**. Getting `CLK_HZ` wrong produces a console emitting
+garbage while everything else works, which reads as a CPU bug rather than a
+configuration one.
+
+RXDATA's read side effect is why the bridge distinguishes the data master
+from the fetch master.
+
+### `wb_gpio` — 16 bidirectional pins, `0x0500_0000`
+
+| Offset | Register | Access | Notes |
+|---|---|---|---|
+| `0x00` | OUT | RW | value driven on pins configured as outputs |
+| `0x04` | IN | RO | synchronized pin state |
+| `0x08` | DIR | RW | 1 = drive; **resets to all-inputs** |
+| `0x0C` | IE | RW | per-pin interrupt enable |
+| `0x10` | IP | RW | rising-edge pending, **write 1 to clear** |
+
+Zero wait states. Inputs pass through a 2-flop synchronizer before anything
+looks at them — these are genuinely asynchronous pins, and feeding a raw pin
+into the edge detector would let metastability set a spurious interrupt.
+
+**`OUT[1:0]` is mirrored onto the board LEDs** by `fpga/soc_fpga.v`, regardless of
+`DIR`. That is how the boot ROM reports its progress without a serial cable;
+see `BOOT_STAGE_*` in `soc.h`.
+
+### `wb_spi` — SPI master, `0x0600_0000`
+
+Mode 0 (CPOL=0, CPHA=0), 8 bits, MSB first. Enough to talk to an SD card.
+
+| Offset | Register | Access | Notes |
+|---|---|---|---|
+| `0x00` | CTRL | RW | bit 0 = assert CS; bits 15:8 = clock divider |
+| `0x04` | DATA | RW | write shifts out and in; read returns last byte |
+| `0x08` | STATUS | RO | bit 0 = busy |
+
+`SCK = CPU_HZ / (2 * (div + 1))`.
+
+Two things will bite you:
+
+- **A DATA write is a blocking bus access.** The slave withholds `ack` until
+  all 8 bits have shifted, so the CPU sits in MEM for the whole transfer —
+  no polling loop needed, but the fetch master is starved meanwhile. This is
+  the only slave with real multi-cycle wait states, and therefore the only
+  thing that exercises `dbus_wait` end to end.
+- **`div` must be ≥ 2.** MISO is synchronized through two flops, so a
+  shorter half-period samples the *previous* bit. `wb_spi.v` fails the
+  simulation outright if firmware programs anything lower.
+
+For SD cards specifically: initialization must run at 100–400 kHz until the
+card leaves idle. `SD_INIT_DIV` in `soc.h` targets ~350 kHz;
+`sim/sd_card_model.v` rejects anything faster, so this cannot regress.
+
+### `wb_framebuffer` + `video_timing` — display, `0x0700_0000`
+
+320×240, 8 bits per pixel, **RRRGGGBB** direct colour. No palette. Linear, so
+`(x,y)` is at `FB_BASE + y*320 + x` and one pixel is a plain `sb`. One wait
+state.
+
+Scanned out at 640×480@60 with pixel doubling. Scan-out uses the block RAM's
+second port, so this adds **no bus master**.
+
+**Nothing drives a display yet.** Scan-out runs in the CPU's clock domain —
+there is no clock-domain crossing in the video path — and the pixel stream
+leaves `fpga/soc_fpga.v` unconnected, where synthesis strips it. A real monitor
+needs a 25.175 MHz pixel clock from a PLL and a TMDS serializer.
+
+See `soc.h` for `FB_PIXEL(x,y)` and `FB_RGB(r,g,b)`.
+
+### `wb_periph_bridge`
+
+Adapts CLINT, PLIC and UART — which predate the bus and use a flat
+address/read/write interface — onto Wishbone unchanged. It also forwards
+`s_data_master`, which is what lets the PLIC and UART tell a genuine load
+from an instruction fetch that happened to land in their window.
+
+---
+
+## 4. The bus
+
+Wishbone B4 classic. Two masters, eight slaves, shared.
+
+**Arbitration is fixed priority, data over fetch, locked per transfer.** Data
+wins because a stalled load blocks the pipeline while a stalled fetch does
+not; the lock is what keeps a multi-cycle slave from having the bus pulled
+out from under it mid-transfer.
+
+Requests are issued **combinationally** — `cyc`/`stb` come straight off the
+core's request signals rather than out of a state register — so a
+zero-wait-state slave completes in the cycle it starts. A registered
+"go to REQUEST state" FSM would have added a cycle to every access.
+
+`cpu_wb.v` adapts the core's two native ports to two Wishbone masters. It
+also holds a **one-entry fetch buffer**: on a hit it stops driving the bus
+entirely, which keeps the fetch master from re-requesting the same word every
+cycle while the pipeline is held up. That buffer is not coherent with writes
+— RISC-V requires `FENCE.I` before executing freshly-written code, and
+`fence_i` invalidates it.
+
+Endianness note: the core's native convention puts sub-word data in the low
+lanes with the exact byte address; Wishbone wants a word-aligned address plus
+`sel` lanes. `cpu_wb.v` shifts on the way out and back on the way in, which
+assumes naturally-aligned accesses. This core traps misaligned accesses
+anyway, so that holds — but it is an assumption.
+
+---
+
+## 5. Boot flow
+
+1. CPU resets to `0x0000_0000`, in the boot ROM.
+2. `bootrom.c` brings up the UART and prints a banner.
+3. SPI/SD init at ~350 kHz: CMD0, CMD8, ACMD41, CMD58. Then full speed.
+4. Read block 0, check the `SOC1` magic, take the image length.
+5. Copy the image to `0x8000_1000` and jump to it.
+
+Progress is published on `GPIO_OUT[1:0]` → `led[1:0]` at each step, so a hang
+says which step did not finish even with no serial attached. Every failure
+path prints a reason and stops.
+
+`sim/tb_soc.v` runs the whole chain against `sim/sd_card_model.v` with
+**nothing preloaded into RAM**, so a passing run is real evidence the entire
+boot path works.
+
+---
+
+## 6. Adding a peripheral
+
+1. Write it as a Wishbone B4 classic slave. Ack combinationally if you can;
+   if you need wait states, hold `ack` low and the CPU will wait.
+2. In `soc_top.v`: bump `NUM_SLAVES`, add an `S_*` index, add its
+   `addr[31:24]` to the `s_base` concatenation **in the right position** —
+   slave `i` occupies bits `[8*i +: 8]`, and the concatenation lists the
+   highest index first.
+3. Instantiate it, wiring `s_stb[S_YOURS]` and `s_dat_r[32*S_YOURS +: 32]`.
+4. Add it to `software/soc/soc.h`, `dts/soc.dts`, and the `SOC_RTL` list in
+   the `Makefile` and `fpga/synth/synth_ecp5.sh`.
+5. If it has a read side effect, gate the read strobe on `s_data_master`.
+6. Add a case to `software/soc/main.c`'s acceptance test.
+
+Step 4 is the one that bites — five places, none of which check each other.
+
+---
+
+## 7. What is not here
+
+- **No caches.** Every fetch and every load goes to the bus, so a load costs
+  the fetch behind it a cycle.
+- **No DMA, no second bus master** beyond fetch and data.
+- **No external DRAM.** The board has 32 MB of SDRAM; there is no controller,
+  so it is unreachable.
+- **No PMP**, no debug module, no JTAG. See `docs/DEBUG.md`.
+- **The UART interrupt is wired to the PLIC but unused** — the driver polls.
+
+`ARCHITECTURE.md` section 13 covers what these mean for running larger
+software, and `README.md` covers what they mean for Linux specifically.

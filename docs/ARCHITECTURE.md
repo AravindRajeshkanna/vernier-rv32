@@ -695,6 +695,11 @@ preloaded content is already known, by construction, to start at address
 
 ## 12a. `rtl/soc/` — the Wishbone SoC
 
+> For a **reference** rather than a rationale — every block's register map,
+> the address map, and the traps waiting for firmware — see `docs/SOC.md`.
+> This section explains why the SoC is shaped the way it is; that one
+> explains how to use it.
+
 `rtl/top.v` (section 10) is a flat address decoder in front of two
 zero-latency memories. `rtl/soc/soc_top.v` is the same CPU wired as an
 actual system-on-chip: one unified address space, a real bus, a boot ROM
