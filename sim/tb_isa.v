@@ -95,6 +95,29 @@ module tb_isa;
         #1;
         $readmemh(hexfile, DUT.RAM.mem);
 
+        // Prove the image actually arrived before starting the clock.
+        //
+        // This exists because of a failure that has been seen twice and never
+        // reproduced: a handful of otherwise-reliable tests reporting
+        // ISA-TIMEOUT at the full 2,000,000 cycles, when they normally finish
+        // in about a thousand. Running 2000x long means the core was executing
+        // something that never reaches `tohost` - and an unloaded RAM is zeros,
+        // which decodes as an illegal instruction and traps forever.
+        //
+        // `$readmemh` reports a failed open on stderr, and tests/run.sh filters
+        // vvp's output down to the ISA- verdict line, so that diagnosis was
+        // being thrown away. Checking here converts a silent 2,000,000-cycle
+        // timeout into a one-line statement of what went wrong.
+        //
+        // RESET_PC is 0x8000_0000, the base of RAM, so word 0 is the entry
+        // point. Every riscv-tests image starts with a jump there; zero or X
+        // means nothing was loaded.
+        if (DUT.RAM.mem[0] === 32'h0000_0000 || ^DUT.RAM.mem[0] === 1'bx) begin
+            $display("ISA-LOADFAIL first word of %0s is 0x%08x - image not loaded",
+                     hexfile, DUT.RAM.mem[0]);
+            $finish;
+        end
+
         repeat (4) @(posedge clk);
         rst = 0;
 

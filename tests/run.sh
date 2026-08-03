@@ -45,12 +45,37 @@ while read -r name tohost; do
 
     # $readmemh warns about the unfilled tail of the RAM array on every run;
     # that is expected (the image is far smaller than the memory) and would
-    # otherwise bury the actual verdict.
-    line="$(cd "$ROOT/sim" && vvp "$SIM" \
-              +hex="$OUT/$name.hex" +tohost="$tohost" 2>&1 \
-            | grep -E '^ISA-(PASS|FAIL|TIMEOUT)' | head -1)"
+    # otherwise bury the actual verdict. The full output is kept, though, so
+    # that anything the filter does not recognize can still be shown - a
+    # verdict this script cannot parse used to be indistinguishable from a
+    # test that simply failed, which cost real time chasing an intermittent
+    # ISA-TIMEOUT whose actual cause was never printed.
+    full="$(cd "$ROOT/sim" && vvp "$SIM" \
+              +hex="$OUT/$name.hex" +tohost="$tohost" 2>&1)"
+    line="$(echo "$full" | grep -E '^ISA-(PASS|FAIL|TIMEOUT|LOADFAIL)' | head -1)"
+
+    # No recognizable verdict at all: the simulator died, or said something
+    # new. Either way, print what it actually said rather than silently
+    # counting it as an ordinary failure.
+    if [ -z "$line" ]; then
+        printf '  %-28s ERROR (no verdict - simulator output follows)\n' "$name"
+        echo "$full" | tail -8 | sed 's/^/      /'
+        echo "$name ERROR" >> "$results"
+        fail=$((fail + 1))
+        failed_names="$failed_names $name"
+        continue
+    fi
 
     case "$line" in
+        ISA-LOADFAIL*)
+            # The image never made it into RAM, so whatever the core did
+            # afterwards says nothing about the core. Never an expected
+            # failure - this is a harness fault, not a CPU one.
+            printf '  %-28s ERROR (%s)\n' "$name" "$line"
+            echo "$name LOADFAIL" >> "$results"
+            fail=$((fail + 1))
+            failed_names="$failed_names $name"
+            ;;
         ISA-PASS*)
             if is_expected_failure "$name"; then
                 printf '  %-28s XPASS (listed as expected-fail but passed)\n' "$name"
