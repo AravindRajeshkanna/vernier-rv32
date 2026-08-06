@@ -65,7 +65,7 @@ SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave wave_soc verilator software sim_software soc sim_soc sim_video sim_ulx3s dtb \
+.PHONY: all sim wave wave_soc verilator software sim_software soc card sim_soc sim_video sim_ulx3s dtb \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
@@ -126,6 +126,23 @@ software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld software/soc/
 sim/card.hex: software/soc/socprog.elf software/soc/mkcard.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/soc/socprog.elf software/soc/socprog.bin
 	python3 software/soc/mkcard.py software/soc/socprog.bin $(SD_BLOCKS) > $@
+
+# ---- SD card image for real hardware ----
+# sim/card.hex is ASCII for $readmemh and cannot be written to a card. This is
+# the raw form, unpadded, to go at the front of a real card:
+#
+#   make card
+#   diskutil unmountDisk /dev/diskN        # macOS; umount on Linux
+#   sudo dd if=sim/card.img of=/dev/rdiskN bs=1m
+#
+# It overwrites the card's first blocks, including any partition table. That
+# is intended - the boot ROM reads raw blocks and knows nothing about
+# filesystems - but it does mean the card stops looking like a normal one.
+card: sim/card.img
+
+sim/card.img: software/soc/socprog.elf software/soc/mkcard.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/socprog.elf software/soc/socprog.bin
+	python3 software/soc/mkcard.py --binary software/soc/socprog.bin $(SD_BLOCKS) $@
 
 sim_soc: soc
 	$(IVERILOG) -g2012 -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
