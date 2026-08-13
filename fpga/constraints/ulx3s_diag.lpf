@@ -1,0 +1,70 @@
+## ULX3S SD-path diagnostic (fpga/ulx3s_diag.v) - v2.0 / v3.0
+##
+## A cut-down ulx3s.lpf carrying only the pins that module declares. The full
+## file constrains gp/gn and the FTDI pair, which this design does not have,
+## and nextpnr rejects a constraint on a port that does not exist.
+##
+## Pin sites are copied verbatim from constraints/ulx3s.lpf - if one is wrong
+## there it is wrong here, which is the point: this build tests the same
+## mapping the SoC uses.
+##
+## Build:  BOARD=ulx3s-diag ./fpga/synth/synth_ecp5.sh
+
+## clock, so the Fmax it produces is the honest one for this board rather than
+## ---- clock ----
+LOCATE COMP "clk_25mhz" SITE "G2";
+IOBUF  PORT "clk_25mhz" PULLMODE=NONE IO_TYPE=LVCMOS33;
+FREQUENCY PORT "clk_25mhz" 25 MHZ;
+## ---- microSD, used in SPI mode ----
+## sd_d[0] is MISO and sd_d[3] is chip select; sd_d[2:1] are unused in SPI
+LOCATE COMP "sd_clk"  SITE "H2";
+LOCATE COMP "sd_cmd"  SITE "J1";
+LOCATE COMP "sd_d[0]" SITE "J3";
+LOCATE COMP "sd_d[1]" SITE "H1";
+LOCATE COMP "sd_d[2]" SITE "K1";
+LOCATE COMP "sd_d[3]" SITE "K2";
+LOCATE COMP "sd_cdn"  SITE "N5";
+IOBUF  PORT "sd_clk"  PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "sd_cmd"  PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "sd_d[0]" PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "sd_d[1]" PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "sd_d[2]" PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "sd_d[3]" PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "sd_cdn"  PULLMODE=UP IO_TYPE=LVCMOS33;
+## ---- buttons ----
+## btn[0] is the power button (pulled up); btn[1..6] are pulled down and so
+LOCATE COMP "btn[0]" SITE "D6";
+LOCATE COMP "btn[1]" SITE "R1";
+LOCATE COMP "btn[2]" SITE "T1";
+LOCATE COMP "btn[3]" SITE "R18";
+LOCATE COMP "btn[4]" SITE "V1";
+LOCATE COMP "btn[5]" SITE "U1";
+LOCATE COMP "btn[6]" SITE "H16";
+IOBUF  PORT "btn[0]" PULLMODE=UP   IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "btn[1]" PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "btn[2]" PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "btn[3]" PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "btn[4]" PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "btn[5]" PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "btn[6]" PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+## ---- LEDs ----
+## led[3:0] carry soc_fpga.v's status: trap, heartbeat, and the two-bit boot
+LOCATE COMP "led[0]" SITE "B2";
+LOCATE COMP "led[1]" SITE "C2";
+LOCATE COMP "led[2]" SITE "C1";
+LOCATE COMP "led[3]" SITE "D2";
+LOCATE COMP "led[4]" SITE "D1";
+LOCATE COMP "led[5]" SITE "E2";
+LOCATE COMP "led[6]" SITE "E1";
+LOCATE COMP "led[7]" SITE "H3";
+IOBUF  PORT "led[0]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "led[1]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "led[2]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "led[3]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "led[4]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "led[5]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "led[6]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF  PORT "led[7]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+## ---- ESP32 boot-mode hold-off ----
+LOCATE COMP "wifi_gpio0" SITE "L2";
+IOBUF  PORT "wifi_gpio0" PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;

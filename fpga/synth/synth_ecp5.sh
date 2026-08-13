@@ -57,6 +57,7 @@ BUILD=fpga/build
 # pinout and this wrapper, and differ only in the chip. DEVICE= still
 # overrides for anything not listed.
 BOARD=${BOARD:-}
+DIAG_ONLY=0
 
 case "$BOARD" in
     ulx3s)
@@ -65,6 +66,17 @@ case "$BOARD" in
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
         BOARD_RTL="fpga/ulx3s_top.v"
+        ;;
+    ulx3s-diag)
+        # SD-path hardware diagnostic: no CPU, no SoC. Builds only
+        # fpga/ulx3s_diag.v against a cut-down LPF. 85F because that is the
+        # board in hand; DEVICE=45k works too, the design is tiny either way.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_diag}
+        LPF=${LPF:-fpga/constraints/ulx3s_diag.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_diag.v"
+        DIAG_ONLY=1
         ;;
     ulx3s85)
         DEVICE=${DEVICE:-85k}
@@ -83,7 +95,7 @@ case "$BOARD" in
         BOARD_RTL=""
         ;;
     *)
-        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, or unset)" >&2
+        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s-diag, or unset)" >&2
         exit 1
         ;;
 esac
@@ -94,14 +106,18 @@ esac
 # rtl/soc/wb_ram.v.
 YOSYS_DEFINES="-DSYNTHESIS"
 
+if [ "$DIAG_ONLY" = "1" ]; then
+  RTL="$BOARD_RTL"
+else
 RTL="rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
      rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
      rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
+fi
 
-if [ ! -f sim/bootrom.hex ]; then
+if [ "$DIAG_ONLY" != "1" ] && [ ! -f sim/bootrom.hex ]; then
     echo "error: sim/bootrom.hex missing - run 'make soc' first" >&2
     exit 1
 fi
@@ -113,7 +129,7 @@ mkdir -p "$BUILD"
 # $BUILD where a copy of it lives - and the RTL paths are made absolute
 # rather than counted out in ../.., which is easy to get wrong and silently
 # produces "file not found" from inside a yosys command line.
-cp sim/bootrom.hex "$BUILD/bootrom.hex"
+[ "$DIAG_ONLY" = "1" ] || cp sim/bootrom.hex "$BUILD/bootrom.hex"
 
 # Stated up front and again at the end: a bitstream is device-specific, and
 # loading one built for the wrong ECP5 fails in ways that look like a broken
@@ -135,7 +151,7 @@ ecppack "$BUILD/$TOP.config" "$BUILD/$TOP.bit"
 echo
 echo "bitstream: $BUILD/$TOP.bit  (LFE5U-${DEVICE%k}F - will not load on any other ECP5)"
 case "$BOARD" in
-    ulx3s|ulx3s85) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
+    ulx3s|ulx3s85|ulx3s-diag) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
     *)             echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
 esac
 echo
