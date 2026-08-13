@@ -20,6 +20,7 @@ sim/wave_soc.vcd
 sim/bootrom.hex
 sim/card.hex
 sim/card.img
+sim/ramimage.hex
 software/soc/*.elf
 software/soc/*.bin
 dts/*.dtb

@@ -121,10 +121,23 @@ module soc_fpga #(
         end
     endgenerate
 
+    // Preloading RAM from the bitstream removes the SD card from the boot
+    // path entirely: the boot ROM notices a program is already there and
+    // jumps straight to it. That is a bring-up aid, not the normal flow -
+    // it lets everything downstream of the card be tested on hardware while
+    // the card itself is still unproven. Selected with -DPRELOAD_RAM, which
+    // `BOARD=ulx3s85-ram` passes.
+`ifdef PRELOAD_RAM
+    localparam RAM_INIT = "ramimage.hex";
+`else
+    localparam RAM_INIT = "";
+`endif
+
     soc_top #(
         .ROM_WORDS(4096),
         .RAM_BYTES(RAM_BYTES),
         .ROM_INIT_FILE("bootrom.hex"),
+        .RAM_INIT_FILE(RAM_INIT),
         .UART_CLKS_PER_BIT(UART_CLKS_PER_BIT),
         .GPIO_WIDTH(GPIO_WIDTH)
     ) SOC (

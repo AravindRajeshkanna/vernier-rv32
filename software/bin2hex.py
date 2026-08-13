@@ -9,6 +9,11 @@
 # for the .text segment, imem being fetch-only and word-addressed).
 # --word-size=1 matches rtl/dmem.v's byte array (used for the
 # .rodata/.data segment, dmem being byte-addressable).
+#
+# --skip-words N emits N zero entries first, so the payload lands at a
+# non-zero offset in the target array. That is how a program linked to run
+# part-way into RAM gets preloaded into a bitstream: rtl/soc/wb_ram.v's
+# $readmemh always starts at index 0, so the offset has to be in the file.
 import argparse
 import struct
 
@@ -17,10 +22,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("--word-size", type=int, default=4, choices=(1, 4))
+    ap.add_argument("--skip-words", type=int, default=0,
+                    help="emit this many zero entries before the payload")
     args = ap.parse_args()
 
     with open(args.input, "rb") as f:
         data = f.read()
+
+    for _ in range(args.skip_words):
+        print("00" if args.word_size == 1 else "00000000")
 
     if args.word_size == 1:
         for b in data:

@@ -205,6 +205,37 @@ void main(void) {
     BOOT_STAGE_SET(BOOT_STAGE_EARLY);
 
     uart_puts("\r\n=== RV32IMA SoC boot ROM ===\r\n");
+
+    /* If RAM already holds a program, run it and skip the card entirely.
+     *
+     * This exists for hardware bring-up. The SD path is the last unproven
+     * part of the system, and until it works it blocks testing everything
+     * that comes after it - RAM, atomics, traps, timers, GPIO, the
+     * framebuffer. Preloading the image into the bitstream (see
+     * RAM_INIT_FILE / PRELOAD_RAM in fpga/soc_fpga.v) removes the card from
+     * the picture so the rest can be exercised on real silicon.
+     *
+     * The test is simply whether the first word is a plausible instruction.
+     * Block RAM with no init data comes up all zeros, and 0x00000000 is not
+     * a legal RISC-V instruction, so zero means "nothing preloaded" and
+     * anything else means somebody put a program there. 0xFFFFFFFF is
+     * rejected too - it is not legal either, and it is what uninitialized or
+     * failed-to-load memory tends to read as.
+     *
+     * On a normal build nothing is preloaded, this reads zero, and the SD
+     * path runs exactly as before. */
+    {
+        uint32_t first = *(volatile uint32_t *)(uintptr_t)PROGRAM_LOAD_ADDR;
+        if (first != 0x00000000u && first != 0xFFFFFFFFu) {
+            uart_puts("RAM already holds a program (first word ");
+            uart_puthex(first);
+            uart_puts(")\r\n  skipping SD, starting it\r\n\r\n");
+            entry = (void (*)(void))(uintptr_t)PROGRAM_LOAD_ADDR;
+            entry();
+            for (;;) { }
+        }
+    }
+
     uart_puts("SPI/SD init...\r\n");
 
     BOOT_STAGE_SET(BOOT_STAGE_SDINIT);

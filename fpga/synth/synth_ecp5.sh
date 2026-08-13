@@ -58,6 +58,7 @@ BUILD=fpga/build
 # overrides for anything not listed.
 BOARD=${BOARD:-}
 DIAG_ONLY=0
+PRELOAD_RAM=0
 
 case "$BOARD" in
     ulx3s)
@@ -89,6 +90,17 @@ case "$BOARD" in
         BOARD_RTL="fpga/ulx3s_cmd0.v"
         DIAG_ONLY=1
         ;;
+    ulx3s85-ram)
+        # 85F with the acceptance-test program preloaded into RAM, so the
+        # boot ROM skips the SD card. For testing the SoC when the card path
+        # is not yet working.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v"
+        PRELOAD_RAM=1
+        ;;
     ulx3s85)
         DEVICE=${DEVICE:-85k}
         TOP=${TOP:-ulx3s_top}
@@ -106,7 +118,7 @@ case "$BOARD" in
         BOARD_RTL=""
         ;;
     *)
-        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s-diag, ulx3s-cmd0, or unset)" >&2
+        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s85-ram, ulx3s-diag, ulx3s-cmd0, or unset)" >&2
         exit 1
         ;;
 esac
@@ -116,6 +128,13 @@ esac
 # single thing that used to make this script appear to hang. See
 # rtl/soc/wb_ram.v.
 YOSYS_DEFINES="-DSYNTHESIS"
+if [ "$PRELOAD_RAM" = "1" ]; then
+    YOSYS_DEFINES="$YOSYS_DEFINES -DPRELOAD_RAM"
+    if [ ! -f sim/ramimage.hex ]; then
+        echo "error: sim/ramimage.hex missing - run 'make ramimage' first" >&2
+        exit 1
+    fi
+fi
 
 if [ "$DIAG_ONLY" = "1" ]; then
   RTL="$BOARD_RTL"
@@ -141,6 +160,7 @@ mkdir -p "$BUILD"
 # rather than counted out in ../.., which is easy to get wrong and silently
 # produces "file not found" from inside a yosys command line.
 [ "$DIAG_ONLY" = "1" ] || cp sim/bootrom.hex "$BUILD/bootrom.hex"
+[ "$PRELOAD_RAM" = "1" ] && cp sim/ramimage.hex "$BUILD/ramimage.hex"
 
 # Stated up front and again at the end: a bitstream is device-specific, and
 # loading one built for the wrong ECP5 fails in ways that look like a broken
@@ -162,7 +182,7 @@ ecppack "$BUILD/$TOP.config" "$BUILD/$TOP.bit"
 echo
 echo "bitstream: $BUILD/$TOP.bit  (LFE5U-${DEVICE%k}F - will not load on any other ECP5)"
 case "$BOARD" in
-    ulx3s|ulx3s85|ulx3s-diag|ulx3s-cmd0) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
+    ulx3s|ulx3s85|ulx3s85-ram|ulx3s-diag|ulx3s-cmd0) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
     *)             echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
 esac
 echo

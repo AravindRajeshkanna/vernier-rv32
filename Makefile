@@ -65,7 +65,7 @@ SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave wave_soc verilator software sim_software soc card sim_soc sim_video sim_ulx3s sim_cmd0 dtb \
+.PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage sim_soc sim_video sim_ulx3s sim_cmd0 dtb \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
@@ -143,6 +143,19 @@ card: sim/card.img
 sim/card.img: software/soc/socprog.elf software/soc/mkcard.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/soc/socprog.elf software/soc/socprog.bin
 	python3 software/soc/mkcard.py --binary software/soc/socprog.bin $(SD_BLOCKS) $@
+
+# ---- RAM preload image ----
+# The acceptance-test program, positioned for wb_ram's $readmemh so it lands
+# at PROGRAM_LOAD_ADDR. That is RAM_BASE + 0x1000, and $readmemh always
+# starts at index 0, so the 0x1000-byte offset has to be 1024 zero words at
+# the front of the file. Lets `BOARD=ulx3s85-ram` build a bitstream that
+# boots without an SD card at all.
+ramimage: sim/ramimage.hex
+
+sim/ramimage.hex: software/soc/socprog.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/socprog.elf software/soc/socprog.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/socprog.bin > $@
 
 sim_soc: soc
 	$(IVERILOG) -g2012 -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
