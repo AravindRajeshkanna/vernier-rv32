@@ -109,15 +109,40 @@ static int sd_init(void) {
 
     spi_set_div(SD_INIT_DIV);
 
-    /* At least 74 clocks with CS deasserted so the card can wake up. */
+    /* Wake-up clocks with CS deasserted. The spec minimum is 74; this sends
+     * 128, because real cards are happier with more and the cost is
+     * microseconds. Simulation never cared - sim/sd_card_model.v has no
+     * power-up state to come out of - which is exactly why the original 80
+     * went unquestioned. */
     spi_cs(0);
-    for (i = 0; i < 10; i++) spi_xfer(0xFF);
+    for (i = 0; i < 16; i++) spi_xfer(0xFF);
 
     spi_cs(1);
 
-    /* CMD0 needs a real CRC7 - it's sent before CRC checking is turned off. */
-    r = sd_cmd(0, 0x00000000u, 0x95);
-    if (r != 0x01) { uart_puts("  CMD0 failed: "); uart_puthex(r); uart_puts("\r\n"); return -1; }
+    /* CMD0, retried. A real card frequently ignores the first one or two
+     * after power-up, and a host that gives up after one attempt reports "no
+     * card" for a card that is present and about to be perfectly fine. The
+     * model answers immediately, so one attempt always sufficed in
+     * simulation. CMD0 needs a real CRC7 - it is sent before CRC checking is
+     * turned off.
+     *
+     * 0xFF back means the card did not respond at all (MISO idles high
+     * through its pull-up); 0x01 is the idle state we want. Anything else is
+     * a card that answered but is unhappy. */
+    for (i = 0; i < 10; i++) {
+        r = sd_cmd(0, 0x00000000u, 0x95);
+        if (r == 0x01) break;
+        /* A few more clocks between attempts; some cards need the idle time. */
+        spi_xfer(0xFF);
+    }
+    if (r != 0x01) {
+        uart_puts("  CMD0 failed after 10 tries: ");
+        uart_puthex(r);
+        uart_puts(r == 0xFF ? "  (no response at all - card absent,\r\n"
+                              "     not seated, or not SPI-capable)\r\n"
+                            : "  (card answered but not idle)\r\n");
+        return -1;
+    }
 
     /* CMD8: 2.7-3.6V, check pattern 0xAA. Response is R7 - R1 plus 4 bytes. */
     r = sd_cmd(8, 0x000001AAu, 0x87);
