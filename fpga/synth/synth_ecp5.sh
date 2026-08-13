@@ -78,6 +78,17 @@ case "$BOARD" in
         BOARD_RTL="fpga/ulx3s_diag.v"
         DIAG_ONLY=1
         ;;
+    ulx3s-cmd0)
+        # Hardware CMD0 probe: sends the SD reset command and shows the
+        # reply on the LEDs. Same port set as the diagnostic, so it shares
+        # that LPF.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_cmd0}
+        LPF=${LPF:-fpga/constraints/ulx3s_diag.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_cmd0.v"
+        DIAG_ONLY=1
+        ;;
     ulx3s85)
         DEVICE=${DEVICE:-85k}
         TOP=${TOP:-ulx3s_top}
@@ -95,7 +106,7 @@ case "$BOARD" in
         BOARD_RTL=""
         ;;
     *)
-        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s-diag, or unset)" >&2
+        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s-diag, ulx3s-cmd0, or unset)" >&2
         exit 1
         ;;
 esac
@@ -151,7 +162,7 @@ ecppack "$BUILD/$TOP.config" "$BUILD/$TOP.bit"
 echo
 echo "bitstream: $BUILD/$TOP.bit  (LFE5U-${DEVICE%k}F - will not load on any other ECP5)"
 case "$BOARD" in
-    ulx3s|ulx3s85|ulx3s-diag) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
+    ulx3s|ulx3s85|ulx3s-diag|ulx3s-cmd0) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
     *)             echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
 esac
 echo

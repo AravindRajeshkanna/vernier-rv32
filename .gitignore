@@ -14,6 +14,7 @@ software/firmware_data.bin
 sim/sim_soc.out
 sim/sim_ulx3s.out
 sim/sim_video.out
+sim/sim_cmd0.out
 sim/frame.ppm
 sim/wave_soc.vcd
 sim/bootrom.hex

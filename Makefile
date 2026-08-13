@@ -65,7 +65,7 @@ SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave wave_soc verilator software sim_software soc card sim_soc sim_video sim_ulx3s dtb \
+.PHONY: all sim wave wave_soc verilator software sim_software soc card sim_soc sim_video sim_ulx3s sim_cmd0 dtb \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
@@ -157,6 +157,16 @@ sim_video:
 	$(IVERILOG) -g2012 -o sim/sim_video.out sim/tb_video.v \
 	    rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v
 	cd sim && $(VVP) sim_video.out
+
+# ---- hardware CMD0 probe ----
+# fpga/ulx3s_cmd0.v goes on a board to answer "does the card reply to CMD0",
+# so a bug in it would send someone hunting for hardware faults that are not
+# there. This proves it against the card model first: 0xFF with no card, 0x01
+# when one is inserted mid-run, 0xFF again when removed.
+sim_cmd0:
+	$(IVERILOG) -g2012 -o sim/sim_cmd0.out sim/tb_cmd0.v \
+	    sim/sd_card_model.v fpga/ulx3s_cmd0.v
+	cd sim && $(VVP) sim_cmd0.out
 
 # ---- board wrapper ----
 # fpga/ulx3s_top.v is the one piece of RTL no simulation would otherwise
@@ -254,7 +264,7 @@ coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
 # Everything that can gate a change, in rough order of how fast it fails.
-verify: sim sim_software sim_soc sim_video sim_ulx3s isa cosim formal
+verify: sim sim_software sim_soc sim_video sim_ulx3s sim_cmd0 isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
