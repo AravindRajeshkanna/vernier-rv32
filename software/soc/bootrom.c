@@ -196,6 +196,47 @@ static int sd_read_block(uint32_t block, uint8_t *dst) {
     return 0;
 }
 
+/* Point mtvec at the ROM's handler, so a fault in the loaded program is
+ * reported rather than silently restarting the machine. The program is free
+ * to install its own vector afterwards - software/soc/main.c does - and this
+ * only covers the window before it does. */
+extern void rom_trap_vector(void);
+static void install_rom_trap_vector(void) {
+    __asm__ volatile ("csrw mtvec, %0" :: "r"((uintptr_t)&rom_trap_vector));
+}
+
+/* Reached from rom_trap_vector when the loaded program faults before it has
+ * installed its own handler. Prints what happened and stops - there is
+ * nothing sensible to resume. */
+void rom_trap_report(void);
+void rom_trap_report(void) {
+    uint32_t mcause, mepc, mtval;
+    __asm__ volatile ("csrr %0, mcause" : "=r"(mcause));
+    __asm__ volatile ("csrr %0, mepc"   : "=r"(mepc));
+    __asm__ volatile ("csrr %0, mtval"  : "=r"(mtval));
+
+    uart_puts("\r\n*** TRAP in the loaded program ***\r\n");
+    uart_puts("  mcause "); uart_puthex(mcause);
+    /* The causes this is most likely to see, spelled out - looking them up
+     * is a detour when you are stood at a bench. */
+    switch (mcause) {
+        case 0:  uart_puts("  instruction address misaligned"); break;
+        case 1:  uart_puts("  instruction access fault");       break;
+        case 2:  uart_puts("  ILLEGAL INSTRUCTION");            break;
+        case 4:  uart_puts("  load address misaligned");        break;
+        case 5:  uart_puts("  load access fault");              break;
+        case 6:  uart_puts("  store/AMO address misaligned");   break;
+        case 7:  uart_puts("  store/AMO access fault");         break;
+        case 11: uart_puts("  environment call from M-mode");   break;
+        default: break;
+    }
+    uart_puts("\r\n  mepc   "); uart_puthex(mepc);
+    uart_puts("   <- the faulting instruction\r\n");
+    uart_puts("  mtval  "); uart_puthex(mtval);
+    uart_puts("   <- faulting address, or the instruction word\r\n");
+    for (;;) { }
+}
+
 void main(void) {
     uint8_t *hdr = (uint8_t *)(uintptr_t)PROGRAM_LOAD_ADDR;  /* scratch */
     uint8_t *dst;
@@ -230,6 +271,7 @@ void main(void) {
             uart_puts("RAM already holds a program (first word ");
             uart_puthex(first);
             uart_puts(")\r\n  skipping SD, starting it\r\n\r\n");
+            install_rom_trap_vector();
             entry = (void (*)(void))(uintptr_t)PROGRAM_LOAD_ADDR;
             entry();
             for (;;) { }

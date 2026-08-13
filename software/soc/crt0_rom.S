@@ -29,3 +29,24 @@ _start:
 
 halt:
     j halt
+
+/* Trap vector for the *loaded program*.
+ *
+ * The boot ROM points mtvec here before jumping, because until the program
+ * installs its own handler a fault has nowhere to go: mtvec still holds its
+ * reset value, so the hart jumps to address 0 and quietly restarts the boot
+ * ROM - or wanders off. On a board that presents as a program that produced
+ * no output, with a lit trap LED and nothing else to go on. This turns that
+ * into a printed cause, PC and faulting address.
+ *
+ * It never returns, so nothing is saved. The stack is reset to the ROM's own
+ * rather than trusting whatever the faulting program left in sp - if the
+ * fault *was* a wild sp, borrowing it to report the fault would hang instead.
+ */
+.section .text
+.align 4
+.global rom_trap_vector
+rom_trap_vector:
+    la sp, _boot_stack_top
+    call rom_trap_report
+1:  j 1b
