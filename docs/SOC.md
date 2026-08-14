@@ -290,6 +290,53 @@ path prints a reason and stops.
 **nothing preloaded into RAM**, so a passing run is real evidence the entire
 boot path works.
 
+There is a second entry to step 5 that skips 3 and 4 entirely: if the first
+word at `0x8000_1000` is already a plausible instruction (not `0` and not
+`0xFFFF_FFFF`), the ROM announces it and jumps straight there. That is how
+the preloading bitstreams boot — `PRELOAD_RAM` in `fpga/soc_fpga.v` hands
+`wb_ram` an init file — and it is what makes the SoC testable on silicon
+while the card path is still unproven. `sim/tb_ramboot.v` covers that path,
+at the 64 KB the board actually has rather than `tb_soc.v`'s 256 KB.
+
+### A program here can run more than once over the same memory
+
+Block RAM is initialised when the FPGA is **configured**, not when the CPU is
+reset. So pressing reset — or anything else that restarts the hart — re-enters
+`_start` with RAM exactly as the previous run left it. On the SD path the
+loader copies the whole image again and the question does not arise; on a
+preloaded bitstream it very much does.
+
+`software/soc/crt0_ram.S` therefore rebuilds *both* halves of its writable
+state on every startup: `.bss` zeroed, and `.data` copied from a pristine load
+image that `link_ram.ld` keeps at a separate address. Anything you add that
+needs an initial value must go through the same path — a static that is
+written once and assumed to survive is a bug that will only appear on the
+second run.
+
+This is not hypothetical. `.data` was not copied until it was found the hard
+way: newlib's `__sinit` skips initialisation when its `__cleanup` guard is set
+and *sets* that guard itself, so from run 2 onward `stdout` was never usable
+and every `printf` returned −1 silently. `make sim_rerun` is the regression
+test; `fpga/README.md` has the full account.
+
+### Traps in the RAM program
+
+`software/soc/crt0_ram.S` installs a handler that **halts on any trap nobody
+asked for**, printing `mcause` (named, not just numbered), `mepc`, `mtval`,
+`ra` and `sp`, and then alternating `led[1:0]` — a pattern no boot stage
+produces. Code that wants a trap calls `trap_arm(n)` first; only an armed
+trap is resumed, and it is resumed at `mepc + 4`, which is correct only
+because the traps anyone arms here come from 4-byte instructions that must not
+be retried.
+
+This replaced a handler that resumed from everything, which made an illegal
+instruction or a stray misaligned access indistinguishable from a passing
+test. `make trapcheck` provokes four faults whose reports are known in advance
+and checks the text that comes out, because a diagnostic that silently does
+nothing is worse than none. The fourth is a trap raised while the reporter is
+already running: that path deliberately emits a single `!` straight at the
+UART and stops, because anything more could fault a third time.
+
 ---
 
 ## 6. Adding a peripheral
@@ -302,7 +349,9 @@ boot path works.
    highest index first.
 3. Instantiate it, wiring `s_stb[S_YOURS]` and `s_dat_r[32*S_YOURS +: 32]`.
 4. Add it to `software/soc/soc.h`, `dts/soc.dts`, and the `SOC_RTL` list in
-   the `Makefile` and `fpga/synth/synth_ecp5.sh`.
+   the `Makefile` and `fpga/synth/synth_ecp5.sh`. Note that the decode is on
+   `addr[31:24]` alone, so your slave answers to a whole 16 MB window and
+   anything past the end of it aliases back rather than faulting.
 5. If it has a read side effect, gate the read strobe on `s_data_master`.
 6. Add a case to `software/soc/main.c`'s acceptance test.
 

@@ -78,6 +78,131 @@ card has been tried. `BOARD=ulx3s-cmd0` answers it in seconds when one is.
 Nothing about temperature, long-run stability or the video pins is known
 either.
 
+## Why newlib died on this board: `.data` was never re-initialised
+
+**Found, fixed, and regression-tested.** It was not newlib, the heap, or the
+trap handler. `crt0_ram.S` never restored `.data`, and block RAM is
+initialised when the FPGA is *configured*, not when the CPU is reset — so
+tapping the reset button re-ran the program over memory the previous run had
+already written. `_start` zeroed `.bss`; nothing rebuilt `.data`.
+
+What that broke was newlib's stdio and nothing else. `__sinit` returns early
+when `_impure_data.__cleanup` is non-NULL, and `__sinit` *sets* `__cleanup` on
+success — so run 2 saw its own guard from run 1, skipped initialising stdout,
+and left it with no `__SWR` bit. Every subsequent `printf` returned −1 and
+printed nothing.
+
+Which is why this looked like "printf hangs". It never hung. The program ran
+straight past it — but `printf` was the only output channel at the time, so
+"produced nothing" and "stopped" were the same observation. And because the
+usual bring-up gesture is *flash, open a terminal, tap reset to catch the
+banner*, essentially every run anyone ever watched was run two.
+
+The SD path was never affected: there the loader copies the whole image,
+`.data` included, on every boot. Only a preloaded bitstream re-runs stale
+memory — and `make sim_ramboot` passed because it ran the program exactly
+once.
+
+The evidence chain, each link checked independently:
+
+| Step | Finding |
+|---|---|
+| image says | `__cleanup` = `0x00000000` |
+| board read at entry | `0x80002890` |
+| `nm` says that is | `cleanup_stdio` — a value only `__sinit` ever stores |
+| checksum arithmetic | that word is the **only** one of 4,834 that differed |
+| consequence | `__sinit` skipped; `stdout` `_flags 0x40` = `__SERR`, no `__SWR` |
+
+**The fix** is the standard embedded one this project never had.
+`software/soc/link_ram.ld` now splits RAM into a `LOAD` region (`.text`,
+`.rodata`, and `.data`'s initial values — never written) and a `RUN` region
+(`.data` and `.bss` as the program uses them), and `crt0_ram.S` copies one to
+the other at every startup. The image on the wire is unchanged: `.data`'s load
+address still follows `.text` contiguously, so `objcopy -O binary` still emits
+one flat blob.
+
+The 4 KB hole between the two regions at `0x8000_8000` is deliberate — it is
+the region the acceptance test's memory checks hammer, so the linker now fails
+the build if the program grows into it instead of letting a memory test
+overwrite live state.
+
+**`make sim_rerun`** is the regression test: the program runs, the testbench
+pulses reset *without* touching RAM, and it runs again. Both runs must pass.
+It is in `make verify`. It uses the probe rather than the acceptance test on
+purpose — the acceptance test keeps its state in `.bss`, which `_start` has
+always zeroed, so it passes twice either way and would never have caught this.
+
+## The instrument that found it
+
+Neither of the two original candidates was right — the heap was fine (RAM
+measures the full 64 KB, `_sbrk` and `malloc` both work) and nothing faulted
+at all (`traps taken: 0`). But the handler was worth fixing on its own, and
+without it none of the runs above would have been readable.
+
+`crt0_ram.S`'s handler advanced `mepc` by 4 and returned from
+**every** trap. That is correct for the one fault the acceptance test provokes
+on purpose, and silently wrong for all the others: an illegal instruction, a
+stray misaligned access, a jump into nothing were each stepped over, and the
+program carried on with an instruction's effect simply missing. Nothing
+downstream could tell that had happened — which also means the evidence for
+diagnosing the printf failure was being destroyed as it was produced.
+
+So the handler is now **loud**. A trap nobody armed prints `mcause` (spelled
+out, not just numbered), `mepc`, `mtval`, `ra`, `sp` and the trap count, then
+halts with `led[1:0]` alternating — a pattern no boot stage produces, so a
+board with no serial cable still says "trapped" rather than sitting there the
+way a successful run also does. Code that wants a trap arms one first
+(`trap_arm()` in `software/soc/trap.h`), and only an armed trap is resumed.
+
+Three bitstreams come out of this, all preloading their program into RAM
+rather than booting off the card:
+
+```bash
+make ramimage    && BOARD=ulx3s85-ram       ./fpga/synth/synth_ecp5.sh   # acceptance test
+make probeimage  && BOARD=ulx3s85-probe     ./fpga/synth/synth_ecp5.sh   # the newlib probe
+make sim/trapimage.hex TRAPCHECK=1 && \
+                    BOARD=ulx3s85-trapcheck ./fpga/synth/synth_ecp5.sh   # the handler itself
+```
+
+**Flash the third one first.** The probe's most likely outcome is a clean run
+with no trap report, and that only means something if a trap report is known
+to come out when there is one. `ulx3s85-trapcheck` provokes a deliberate fault
+and must print the report:
+
+| `TRAPCHECK=` | Fault | What it proves |
+|---|---|---|
+| `1` | unarmed misaligned load | the handler halts instead of stepping over |
+| `2` | illegal instruction | the case the old handler silently skipped |
+| `3` | the same, with `sp` already wrecked | the reporter's private stack works |
+| `4` | a trap *during* the report | one `!`, then a halt — no report loop |
+
+All four are checked in simulation by `make trapcheck`, which is part of `make
+verify`; the board run is confirming that the silicon agrees. Case 4 exists
+because that path is what runs when everything else has already failed, which
+is the worst thing to leave unexecuted.
+
+The probe (`software/soc/newlibprobe.c`) is a ladder. Each rung prints one
+character *before* it runs, so a run that stops tells you where even if the
+line never finished, and consecutive rungs differ by a single dependency:
+RAM under the heap window → `_sbrk` → the memory `_sbrk` returned → `malloc`
+→ `snprintf` (the formatter alone) → `puts` (stdio setup and `_write`) →
+`printf`. It also measures where RAM actually wraps rather than trusting
+`RAM_SIZE`, which is the first hypothesis answered outright.
+
+It found the bug in three board runs, and each run narrowed it because the
+rungs differ by one dependency: run 1 showed `printf` returning normally with
+its output missing (so not a hang); run 2 showed `stdout` with no `__SWR` bit
+and `_write` working when called directly (so not the driver); run 3 caught
+`__cleanup` already set at entry, with checksum arithmetic proving it was the
+only word in the image that differed.
+
+Two of the probe's own readings were wrong before they were right, both caught
+by keeping a simulation baseline to disagree with: it labelled `_flags 0x40`
+as "fully buffered" when `0x40` is `__SERR`, and it sampled `__cleanup` *after*
+stdio had run, where a healthy system also reads non-NULL. A diagnostic that
+returns a confident wrong answer is worse than none, which is why
+`make trapcheck` and the simulation baseline exist at all.
+
 ## Building for a ULX3S
 
 **The 45F and the 85F both work; the 12F and 25F do not.** The ULX3S ships
@@ -115,6 +240,24 @@ Both close comfortably at the board's 25 MHz, but they are no longer
 equivalent: **the 45F is now at 97% block RAM** and has room for essentially
 nothing else, while the 85F is at half. That gap is the framebuffer, which
 costs 38 EBR — see [Framebuffer cost](#framebuffer-cost).
+
+Four more targets exist and are not general-purpose builds. Three bake a
+program into the bitstream so the SoC can be exercised without a working card
+(same RTL, same pinout, different `RAM_INIT_FILE`); one drops the CPU
+entirely:
+
+| Target | What it runs | Build the image first |
+|---|---|---|
+| `BOARD=ulx3s85-ram` | the acceptance test | `make ramimage` |
+| `BOARD=ulx3s85-probe` | the newlib probe | `make probeimage` |
+| `BOARD=ulx3s85-trapcheck` | one deliberate fault, to prove the trap report | `make sim/trapimage.hex TRAPCHECK=1` |
+| `BOARD=ulx3s-cmd0` | SD CMD0, in ~60 flip-flops, no CPU | — |
+
+The build refuses to start if the image is missing, and refuses again if the
+image is older than the ELF it came from — a stale preload otherwise sails
+through and bakes yesterday's program in with nothing in the log to say so,
+which has already cost one full synthesize-and-flash cycle here. It prints
+which image it took.
 
 **Check your board revision first.** The four SD pins used for SPI mode are
 wired differently on **v1.7** than on v2.0/v3.0, and `constraints/ulx3s.lpf`

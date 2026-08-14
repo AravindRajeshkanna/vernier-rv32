@@ -96,6 +96,11 @@ software/
     soc.h        SoC memory map, shared by the boot ROM and the RAM program
     bootrom.c    first-stage loader: SPI/SD init, load image, jump
     main.c       acceptance test: RAM, atomics, GPIO, timer
+    console.c/.h libc-free UART output, so a test can't fail inside libc
+    trap.c/.h    the loud trap handler's C half: report an unarmed trap, halt
+    newlibprobe.c  why does newlib die on hardware? a one-dependency-per-rung
+                   ladder: heap RAM -> _sbrk -> malloc -> snprintf -> printf
+    trapcheck.c  provokes known faults, so the handler is calibrated not assumed
     crt0_rom.S / crt0_ram.S, link_rom.ld / link_ram.ld
     mkcard.py    builds the SD card image (header block + program)
   bench/
@@ -329,6 +334,47 @@ hand-assembled regression test are untouched, so `make sim` still proves
 exactly what it always did — including reporting the same BTB mispredict
 count, which is a usefully sensitive canary for accidental timing changes
 in the core.
+
+### The board's boot path, and a trap handler that says something
+
+`make sim_soc` boots off the card with 256 KB of RAM. The bitstream that has
+actually run on hardware does neither: the program is baked in
+(`BOARD=ulx3s85-ram`), and the RAM is 64 KB, because 256 KB costs 244 ECP5
+block RAMs and fits no ECP5 there is. Both differences matter — the bus
+decodes on `addr[31:24]` alone, so running off the end of RAM *aliases* back
+to the start instead of faulting, and at 256 KB that wrap point sits four
+times higher than the board's. `make sim_ramboot` is that path at that size,
+and it is part of `make verify`.
+
+`make trapcheck` is the other half. The RAM program's trap handler used to
+advance `mepc` by 4 and return from every trap — right for the one fault the
+acceptance test provokes deliberately, and silently wrong for every other, so
+an illegal instruction or a stray misaligned access was stepped over and the
+program carried on with an instruction's effect missing. It is now loud: code
+that wants a trap arms one first, and an unarmed trap prints
+`mcause`/`mepc`/`mtval`/`ra`/`sp` and halts. Since the whole value of that is
+in the report, `make trapcheck` provokes three faults whose reports are known
+in advance and scores the text that comes out.
+
+`make sim_rerun` is the third: it runs the program, pulses reset **without
+touching RAM**, and runs it again. That is what a board does every time you
+flash a bitstream, open a terminal and tap reset to catch the banner — and it
+is not the same as a fresh start, because block RAM is initialised when the
+FPGA is *configured*, not when the CPU is reset.
+
+That test exists because it found a real bug. `crt0_ram.S` zeroed `.bss` but
+never restored `.data`, so run 2 inherited run 1's writes. What it broke was
+newlib's stdio and nothing else: `__sinit` returns early when its `__cleanup`
+guard is non-NULL, and `__sinit` *sets* that guard on success, so the second
+run skipped initialising `stdout` and every `printf` after it returned −1 and
+printed nothing. That is what "printf hangs on hardware" actually was — it
+never hung, it just had no other output channel to be heard on. `.data` is now
+copied from a pristine load address at every startup. Full account, including
+the evidence, in `fpga/README.md`.
+
+`make sim_probe` runs `software/soc/newlibprobe.c`, the ladder that found it —
+one dependency per rung, from RAM under the heap through `_sbrk`, `malloc` and
+`snprintf` to `printf`.
 
 Adding a bus meant teaching the pipeline to wait on it, which is a real
 change to `cpu_core.v` (two new stall inputs, both tied low by the old top
