@@ -91,5 +91,5 @@ Full list and detail in [tests/README.md](tests/README.md).
 
 ## Supported versions
 
-`master` only. This project does not maintain release branches; fixes land on
-`master` and there is no backporting.
+`main` only. This project does not maintain release branches; fixes land on
+`main` and there is no backporting.
