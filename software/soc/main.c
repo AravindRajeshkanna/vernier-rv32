@@ -1,16 +1,21 @@
 /* The program the boot ROM loads off SD into RAM and jumps to.
  *
  * This is the SoC's actual acceptance test. It runs entirely from RAM,
- * across the Wishbone bus, using real compiled C with newlib-nano printf
- * over the UART - so simply reaching its first line of output already proves
- * the interconnect, boot ROM, SPI/SD stack and RAM all work together.
+ * across the Wishbone bus - so simply reaching its first line of output
+ * already proves the interconnect, boot ROM, storage path and RAM all work
+ * together.
+ *
+ * Output goes straight to the UART's TX register rather than through
+ * newlib's printf. That is not stylistic: on hardware this program reached
+ * main and then stopped dead on its first printf, while direct writes came
+ * out fine. An acceptance test should exercise the SoC, not the C library,
+ * and a libc fault should not be able to look like a hardware failure.
  *
  * Result is reported two ways: printed for a human, and written as a magic
  * word to a fixed address the testbench reads back, so `make sim_soc` can
  * pass or fail automatically rather than relying on someone eyeballing the
  * console.
  */
-#include <stdio.h>
 #include <stdint.h>
 #include "soc.h"
 
@@ -23,8 +28,67 @@ extern void trap_vector(void);
 #define CSRR(csr) ({ uint32_t v_; __asm__ volatile ("csrr %0, " csr : "=r"(v_)); v_; })
 
 
+/* ---- output, without libc ----
+ *
+ * This test used newlib's printf until it was run on hardware, where it
+ * reached main and then stopped dead on the first printf. Progress markers
+ * written straight to the UART came out; printf did not. So the peripheral,
+ * the bus, the CPU and every line of this project's own code were working,
+ * and the failure was inside newlib - which pulls in malloc, _sbrk and a
+ * reentrancy structure, none of which a test that prints thirteen fixed
+ * lines has any need for.
+ *
+ * Rather than debug someone else's allocator on a bring-up board, the output
+ * is now these four functions, which touch nothing but the TX register. That
+ * is also the right dependency for an acceptance test: it should exercise
+ * the SoC, not the C library, and a libc fault should not be able to
+ * masquerade as a hardware failure.
+ *
+ * printf still works in simulation, and software/main.c still uses it - this
+ * is a change to what the *hardware* test depends on, not a claim that
+ * newlib is broken everywhere. */
+static void mark(char c) {
+    while (UART_STATUS & UART_TX_BUSY) { }
+    UART_TXDATA = (uint32_t)(unsigned char)c;
+}
+
+static void put_str(const char *s) {
+    while (*s) {
+        if (*s == '\n') mark('\r');
+        mark(*s++);
+    }
+}
+
+/* Left-justified in `width` columns, so the ok/FAIL column lines up the way
+ * the printf format string used to make it. */
+static void put_pad(const char *s, int width) {
+    int n = 0;
+    while (s[n]) n++;
+    put_str(s);
+    while (n++ < width) mark(' ');
+}
+
+static void put_dec(int v) {
+    char buf[12];
+    int i = 0;
+    if (v < 0) { mark('-'); v = -v; }
+    if (v == 0) { mark('0'); return; }
+    while (v > 0) { buf[i++] = (char)('0' + (v % 10)); v /= 10; }
+    while (i > 0) mark(buf[--i]);
+}
+
+static void put_hex(uint32_t v) {
+    static const char digits[] = "0123456789ABCDEF";
+    int i;
+    put_str("0x");
+    for (i = 28; i >= 0; i -= 4) mark(digits[(v >> i) & 0xF]);
+}
+
+
 static void check(const char *name, int ok) {
-    printf("  %-28s %s\n", name, ok ? "ok" : "FAIL");
+    put_str("  ");
+    put_pad(name, 28);
+    put_str(ok ? " ok\n" : " FAIL\n");
     if (!ok) failures++;
 }
 
@@ -311,19 +375,6 @@ static int test_fence_i(void) {
     return fn() == 0x2D;
 }
 
-/* Raw UART write - no libc, no buffering, no heap, nothing that can fail
- * except the peripheral itself. Used for the progress markers below.
- *
- * These exist because on hardware this program reached main and then went
- * quiet, and there was no way to tell whether it had crashed on entry, in
- * the trap-vector install, or somewhere inside newlib's printf. printf pulls
- * in malloc, _sbrk and a reentrancy structure; a poke at the TX register
- * pulls in nothing. When the two disagree, that difference is the finding. */
-static void mark(char c) {
-    while (UART_STATUS & UART_TX_BUSY) { }
-    UART_TXDATA = (uint32_t)(unsigned char)c;
-}
-
 int main(void) {
     mark('M');          /* reached main at all */
 
@@ -332,12 +383,10 @@ int main(void) {
     mark('V');          /* installed our own trap vector */
     mark('\r'); mark('\n');
 
-    mark('P');          /* about to use printf, i.e. newlib, for the first time */
-    mark('\r'); mark('\n');
-
-    printf("=== SoC acceptance test ===\n");
-    printf("Running from RAM at %p, loaded from SD by the boot ROM.\n\n",
-           (void *)(uintptr_t)PROGRAM_LOAD_ADDR);
+    put_str("\n=== SoC acceptance test ===\n");
+    put_str("Running from RAM at ");
+    put_hex((uint32_t)(uintptr_t)main);
+    put_str("\n\n");
 
     check("RAM walking ones",      test_walking_ones());
     check("RAM address uniqueness", test_address_uniqueness());
@@ -353,8 +402,10 @@ int main(void) {
     check("misaligned access traps", test_misaligned_trap());
     check("FENCE.I invalidates",   test_fence_i());
 
-    printf("\n%d failure(s)\n", failures);
-    printf(failures == 0 ? "SOC-TEST: PASS\n" : "SOC-TEST: FAIL\n");
+    put_str("\n");
+    put_dec(failures);
+    put_str(" failure(s)\n");
+    put_str(failures == 0 ? "SOC-TEST: PASS\n" : "SOC-TEST: FAIL\n");
 
     REG32(TEST_RESULT_ADDR) = failures == 0 ? TEST_RESULT_PASS : TEST_RESULT_FAIL;
 
