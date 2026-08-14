@@ -311,8 +311,29 @@ static int test_fence_i(void) {
     return fn() == 0x2D;
 }
 
+/* Raw UART write - no libc, no buffering, no heap, nothing that can fail
+ * except the peripheral itself. Used for the progress markers below.
+ *
+ * These exist because on hardware this program reached main and then went
+ * quiet, and there was no way to tell whether it had crashed on entry, in
+ * the trap-vector install, or somewhere inside newlib's printf. printf pulls
+ * in malloc, _sbrk and a reentrancy structure; a poke at the TX register
+ * pulls in nothing. When the two disagree, that difference is the finding. */
+static void mark(char c) {
+    while (UART_STATUS & UART_TX_BUSY) { }
+    UART_TXDATA = (uint32_t)(unsigned char)c;
+}
+
 int main(void) {
+    mark('M');          /* reached main at all */
+
     __asm__ volatile ("csrw mtvec, %0" :: "r"((uintptr_t)trap_vector));
+
+    mark('V');          /* installed our own trap vector */
+    mark('\r'); mark('\n');
+
+    mark('P');          /* about to use printf, i.e. newlib, for the first time */
+    mark('\r'); mark('\n');
 
     printf("=== SoC acceptance test ===\n");
     printf("Running from RAM at %p, loaded from SD by the boot ROM.\n\n",
