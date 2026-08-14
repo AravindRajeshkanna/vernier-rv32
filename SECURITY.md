@@ -18,7 +18,7 @@ real invariants, and it has already had a real failure — see below.
 
 Use **GitHub's private vulnerability reporting** on this repository:
 Security → Report a vulnerability, or
-<https://github.com/aravindrajeshkanna/vernier-rv32/security/advisories/new>.
+<https://github.com/AravindRajeshkanna/vernier-rv32/security/advisories/new>.
 
 That is the only reporting channel, deliberately — it keeps the report
 private until there is a fix, gives it a tracking number, and does not depend

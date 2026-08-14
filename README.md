@@ -1,6 +1,6 @@
 # Vernier-RV32
 
-[![CI](https://github.com/aravindrajeshkanna/vernier-rv32/actions/workflows/ci.yml/badge.svg)](https://github.com/aravindrajeshkanna/vernier-rv32/actions/workflows/ci.yml)
+[![CI](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml/badge.svg)](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml)
 [![License: Apache-2.0 WITH SHL-2.1](https://img.shields.io/badge/license-Apache--2.0%20WITH%20SHL--2.1-blue.svg)](LICENSE)
 [![riscv-tests](https://img.shields.io/badge/riscv--tests-79%20passed%2C%200%20failed%2C%203%20xfail-brightgreen.svg)](tests/README.md)
 [![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-82%2F82%20traces%20match-brightgreen.svg)](tests/README.md)

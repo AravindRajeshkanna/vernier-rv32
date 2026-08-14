@@ -59,7 +59,7 @@ verbatim. Post-route Fmax if you ran synthesis.
 - [ ] Anything I added is reached by something in `make verify` (§14)
 - [ ] Numbers quoted are measured, not estimated
 - [ ] Docs updated if behaviour or the register map changed
-- [ ] I have read [CONTRIBUTING.md](https://github.com/aravindrajeshkanna/vernier-rv32/blob/main/CONTRIBUTING.md)
+- [ ] I have read [CONTRIBUTING.md](https://github.com/AravindRajeshkanna/vernier-rv32/blob/main/CONTRIBUTING.md)
 
 ## AI assistance
 

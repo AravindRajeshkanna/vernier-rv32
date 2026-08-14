@@ -10,8 +10,8 @@ type: software
 authors:
   - given-names: Aravind
     family-names: Rajesh Kanna
-    alias: aravindrajeshkanna
-repository-code: 'https://github.com/aravindrajeshkanna/vernier-rv32'
+    alias: AravindRajeshkanna
+repository-code: 'https://github.com/AravindRajeshkanna/vernier-rv32'
 abstract: >-
   Vernier-RV32 is a five-stage pipelined RISC-V RV32IMA
   implementation with machine, supervisor and user modes, an Sv32
