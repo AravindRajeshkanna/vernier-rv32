@@ -21,13 +21,20 @@ sim/bootrom.hex
 sim/card.hex
 sim/card.img
 sim/ramimage.hex
+sim/probeimage.hex
+sim/trapimage.hex
+sim/sim_ramboot.out
+sim/sim_probe.out
+sim/sim_trap.out
+sim/wave_ramboot.vcd
+sim/trapcheck.log
 software/soc/*.elf
 software/soc/*.bin
 dts/*.dtb
 fpga/build/
 
 # Local tool config (not shared)
-.claude/settings.local.json
+.claude/
 
 # OS cruft
 .DS_Store
@@ -45,3 +52,5 @@ formal/build/
 
 # FPGA build products (bitstream, PnR logs, synthesis JSON)
 fpga/build/
+sim/sim_rerun.out
+sim/rerun.log

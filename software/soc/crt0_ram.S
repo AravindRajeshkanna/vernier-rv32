@@ -1,13 +1,20 @@
-/* Startup for the RAM program.
+/* Startup and trap entry for the RAM program.
  *
  * The boot ROM jumps to the very first byte of the loaded image, so this
  * must be linked first - hence the dedicated `.text.start` section, matched
  * by link_ram.ld.
  *
- * .bss is not carried in the SD image (it's NOLOAD), so zeroing it here
- * isn't an optimization - the image would otherwise start with whatever the
- * loader happened to leave in RAM.
+ * Both loops below exist for the same reason: **this code can run more than
+ * once over the same memory.** Block RAM is initialised when the FPGA is
+ * configured, not when the CPU is reset, so pressing reset re-enters here with
+ * RAM exactly as the previous run left it. Neither .bss nor .data can be
+ * assumed to hold anything.
+ *
+ * .bss is also not carried in the image at all (it's NOLOAD), so on a first
+ * run it holds whatever the loader left behind.
  */
+#include "trap.h"
+
 .section .text.start
 .global _start
 _start:
@@ -18,30 +25,68 @@ _start:
 
     la sp, _stack_top
 
-    la a0, _bss_start
-    la a1, _bss_end
+    /* Copy .data from its load image to where it runs.
+     *
+     * Without this the program works exactly once per FPGA configuration.
+     * Everything with an initial value - newlib's reentrancy structure above
+     * all - keeps whatever the previous run wrote, and the failures that
+     * follows are silent and bizarre: stdout that reports errors and prints
+     * nothing, because __sinit found its own "already initialised" guard still
+     * set from last time. See link_ram.ld for the full account.
+     *
+     * Word-at-a-time; link_ram.ld aligns both ends of .data to make that
+     * legal. */
+    la a0, _sidata
+    la a1, _sdata
+    la a2, _edata
 1:
-    bge a0, a1, 2f
-    sw zero, 0(a0)
+    bge a1, a2, 2f
+    lw a3, 0(a0)
+    sw a3, 0(a1)
     addi a0, a0, 4
+    addi a1, a1, 4
     j 1b
 2:
+
+    la a0, _bss_start
+    la a1, _bss_end
+3:
+    bge a0, a1, 4f
+    sw zero, 0(a0)
+    addi a0, a0, 4
+    j 3b
+4:
     call main
 
 halt:
     j halt
 
-/* Minimal M-mode trap handler.
+/* Minimal M-mode trap entry.
  *
- * Records mcause/mtval and counts entries, then skips the faulting
- * instruction and returns. Deliberately uses mscratch plus a fixed scratch
- * word rather than pushing a stack frame: the tests that trigger it are
- * checking memory behavior, and a handler that touched the stack could
- * perturb what it is meant to be observing.
+ * Records the trap in trap_info, then takes one of two paths depending on
+ * whether anyone armed it.
  *
- * Skipping by mepc+4 is only valid because every trap this handler is
- * expected to see comes from a 4-byte instruction that should not be
- * retried (a deliberately misaligned access).
+ * **Armed** (trap_info's expect count is non-zero): consume one arming, skip
+ * the faulting instruction, return. This is the path the acceptance test's
+ * deliberate misaligned access takes, and skipping by mepc+4 is only valid
+ * because that is a 4-byte instruction which must not be retried.
+ *
+ * **Unarmed**: nobody asked for this trap, so it is a defect. Hand off to
+ * trap_report, which prints the record and stops the machine.
+ *
+ * That split is the whole point of this file. The handler used to take the
+ * first path unconditionally, which made every unexpected fault - an illegal
+ * instruction, a misaligned access inside library code, a jump into nothing -
+ * indistinguishable from a successful test: mepc += 4, resume, corrupt
+ * whatever depended on the instruction that never ran. A trap nobody expected
+ * now stops the machine and says so.
+ *
+ * Registers: the armed path may only touch t0 (parked in mscratch) and t1
+ * (parked in trap_info), because it has to return to code that owns every
+ * other register - and it deliberately does not build a stack frame, since
+ * the tests that provoke it are watching memory that a frame would disturb.
+ * The unarmed path never returns, so it is free with registers, and it
+ * switches to its own stack before calling C.
  */
 .section .text
 .align 4
@@ -49,17 +94,62 @@ halt:
 trap_vector:
     csrw  mscratch, t0
     la    t0, trap_info
-    sw    t1, 12(t0)          /* stash t1 in the scratch area */
+    sw    t1, TRAP_O_SCRATCH(t0)
+
     csrr  t1, mcause
-    sw    t1, 0(t0)
+    sw    t1, TRAP_O_MCAUSE(t0)
     csrr  t1, mtval
-    sw    t1, 4(t0)
-    lw    t1, 8(t0)
+    sw    t1, TRAP_O_MTVAL(t0)
+    csrr  t1, mepc
+    sw    t1, TRAP_O_MEPC(t0)
+    sw    sp, TRAP_O_SP(t0)
+    sw    ra, TRAP_O_RA(t0)
+
+    lw    t1, TRAP_O_COUNT(t0)
     addi  t1, t1, 1
-    sw    t1, 8(t0)           /* entry counter */
+    sw    t1, TRAP_O_COUNT(t0)
+
+    lw    t1, TRAP_O_EXPECT(t0)
+    beqz  t1, .Lunexpected
+
+    /* Armed: consume one, step over the faulting instruction, resume. */
+    addi  t1, t1, -1
+    sw    t1, TRAP_O_EXPECT(t0)
     csrr  t1, mepc
     addi  t1, t1, 4
     csrw  mepc, t1
-    lw    t1, 12(t0)
+    lw    t1, TRAP_O_SCRATCH(t0)
     csrr  t0, mscratch
     mret
+
+.Lunexpected:
+    /* A second trap while reporting the first means the reporter itself
+     * faulted, and going round again would produce an endless stream of
+     * half-printed reports instead of one readable one. */
+    lw    t1, TRAP_O_FATAL(t0)
+    bnez  t1, .Ldouble_fault
+    li    t1, 1
+    sw    t1, TRAP_O_FATAL(t0)
+
+    /* A private stack, so the report still comes out when what faulted was
+     * the stack pointer itself. The original sp is already in the record. */
+    la    sp, _trap_stack_top
+    call  trap_report               /* does not return */
+
+.Ldouble_fault:
+    /* Last resort: one byte, straight at the UART, then stop. Anything that
+     * involved a call or a memory structure could fault a third time.
+     *
+     * 0x04000000 is UART_BASE_A and +0x08 is its status register, with
+     * UART_TX_BUSY in bit 0 - see software/soc/soc.h, which cannot be
+     * included here because its register macros are C. Nothing checks that
+     * these agree; the cost of them not agreeing is that this prints nothing,
+     * which is the situation it already exists to improve on.
+     */
+    li    t0, 0x04000000
+1:  lw    t1, 8(t0)
+    andi  t1, t1, 1
+    bnez  t1, 1b
+    li    t1, '!'
+    sw    t1, 0(t0)
+2:  j     2b

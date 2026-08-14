@@ -18,12 +18,10 @@
  */
 #include <stdint.h>
 #include "soc.h"
+#include "console.h"
+#include "trap.h"
 
 static int failures = 0;
-
-/* Written by trap_vector in crt0_ram.S: {mcause, mtval, entry count, t1 scratch}. */
-volatile uint32_t trap_info[4];
-extern void trap_vector(void);
 
 #define CSRR(csr) ({ uint32_t v_; __asm__ volatile ("csrr %0, " csr : "=r"(v_)); v_; })
 
@@ -39,51 +37,19 @@ extern void trap_vector(void);
  * lines has any need for.
  *
  * Rather than debug someone else's allocator on a bring-up board, the output
- * is now these four functions, which touch nothing but the TX register. That
- * is also the right dependency for an acceptance test: it should exercise
- * the SoC, not the C library, and a libc fault should not be able to
- * masquerade as a hardware failure.
+ * is console.c: functions that touch nothing but the TX register. That is
+ * also the right dependency for an acceptance test - it should exercise the
+ * SoC, not the C library, and a libc fault should not be able to masquerade
+ * as a hardware failure.
  *
  * printf still works in simulation, and software/main.c still uses it - this
- * is a change to what the *hardware* test depends on, not a claim that
- * newlib is broken everywhere. */
-static void mark(char c) {
-    while (UART_STATUS & UART_TX_BUSY) { }
-    UART_TXDATA = (uint32_t)(unsigned char)c;
-}
-
-static void put_str(const char *s) {
-    while (*s) {
-        if (*s == '\n') mark('\r');
-        mark(*s++);
-    }
-}
-
-/* Left-justified in `width` columns, so the ok/FAIL column lines up the way
- * the printf format string used to make it. */
-static void put_pad(const char *s, int width) {
-    int n = 0;
-    while (s[n]) n++;
-    put_str(s);
-    while (n++ < width) mark(' ');
-}
-
-static void put_dec(int v) {
-    char buf[12];
-    int i = 0;
-    if (v < 0) { mark('-'); v = -v; }
-    if (v == 0) { mark('0'); return; }
-    while (v > 0) { buf[i++] = (char)('0' + (v % 10)); v /= 10; }
-    while (i > 0) mark(buf[--i]);
-}
-
-static void put_hex(uint32_t v) {
-    static const char digits[] = "0123456789ABCDEF";
-    int i;
-    put_str("0x");
-    for (i = 28; i >= 0; i -= 4) mark(digits[(v >> i) & 0xF]);
-}
-
+ * is a change to what the *hardware* test depends on, not a claim that newlib
+ * is broken everywhere.
+ *
+ * Why it died on the board is a separate question, and routing around it was
+ * never an answer to it. software/soc/newlibprobe.c is where that gets asked
+ * properly, now that the trap handler no longer swallows the evidence.
+ */
 
 static void check(const char *name, int ok) {
     put_str("  ");
@@ -96,7 +62,14 @@ static void check(const char *name, int ok) {
  * Memory tests
  * ------------------------------------------------------------------- */
 
-/* Region to hammer: above this program's own image, below the stack. */
+/* Region to hammer.
+ *
+ * This is not merely "somewhere above the program" any more: link_ram.ld
+ * leaves 0x8000_8000..0x8000_9000 as a deliberate hole between the region
+ * holding code and .data's initial values, and the region holding .data and
+ * .bss at runtime. So these 4 KB belong to nothing, and the linker fails the
+ * build if the program grows into them rather than letting a memory test
+ * quietly overwrite live state. */
 #define TEST_REGION_BASE (RAM_BASE + 0x8000u)
 #define TEST_REGION_WORDS 1024u
 
@@ -330,25 +303,38 @@ static int test_counters(void) {
 }
 
 /* A misaligned access must trap rather than being silently mis-executed -
- * that trap is what lets M-mode firmware emulate the access. */
+ * that trap is what lets M-mode firmware emulate the access.
+ *
+ * These are the only traps this program is supposed to take, so each one is
+ * armed immediately before it is provoked (see trap.h). Arming is not
+ * bookkeeping: an unarmed trap halts the machine, so this also proves the
+ * fault arrives exactly once and from the instruction that was meant to raise
+ * it. A misaligned access that failed to trap now leaves the arming unspent,
+ * which the check below catches. */
 static int test_misaligned_trap(void) {
-    uint32_t base = trap_info[2];
+    uint32_t base = TRAP_COUNT;
     uint32_t addr = TEST_REGION_BASE + 0x101u;   /* deliberately not word-aligned */
     uint32_t dummy;
 
+    trap_arm(1);
     __asm__ volatile ("lw %0, 0(%1)" : "=r"(dummy) : "r"(addr) : "memory");
-    if (trap_info[2] != base + 1) return 0;
-    if (trap_info[0] != 4) return 0;             /* load address misaligned */
-    if (trap_info[1] != addr) return 0;          /* mtval = faulting address */
+    if (TRAP_EXPECT != 0) return 0;              /* the load did not trap */
+    if (TRAP_COUNT != base + 1) return 0;
+    if (TRAP_MCAUSE != 4) return 0;              /* load address misaligned */
+    if (TRAP_MTVAL != addr) return 0;            /* mtval = faulting address */
 
+    trap_arm(1);
     __asm__ volatile ("sw %0, 0(%1)" :: "r"(dummy), "r"(addr) : "memory");
-    if (trap_info[2] != base + 2) return 0;
-    if (trap_info[0] != 6) return 0;             /* store address misaligned */
+    if (TRAP_EXPECT != 0) return 0;              /* the store did not trap */
+    if (TRAP_COUNT != base + 2) return 0;
+    if (TRAP_MCAUSE != 6) return 0;              /* store address misaligned */
 
-    /* An aligned access of the same size must still be fine. */
+    /* An aligned access of the same size must still be fine. Nothing is armed
+     * now, so if this one traps the machine halts with a report rather than
+     * quietly returning a failure. */
     addr = TEST_REGION_BASE + 0x100u;
     __asm__ volatile ("lw %0, 0(%1)" : "=r"(dummy) : "r"(addr) : "memory");
-    return trap_info[2] == base + 2;
+    return TRAP_COUNT == base + 2;
 }
 
 /* FENCE.I must make freshly-written instructions visible. cpu_wb.v keeps a
@@ -417,12 +403,12 @@ static int test_fence_i(void) {
 }
 
 int main(void) {
-    mark('M');          /* reached main at all */
+    put_char('M');      /* reached main at all */
 
-    __asm__ volatile ("csrw mtvec, %0" :: "r"((uintptr_t)trap_vector));
+    trap_install();
 
-    mark('V');          /* installed our own trap vector */
-    mark('\r'); mark('\n');
+    put_char('V');      /* installed our own trap vector */
+    put_char('\r'); put_char('\n');
 
     put_str("\n=== SoC acceptance test ===\n");
     put_str("Running from RAM at ");

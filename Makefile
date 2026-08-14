@@ -18,6 +18,16 @@
 #   make software     -> compile software/ with riscv64-unknown-elf-gcc
 #   make sim_software -> build software/ and run it, showing real UART output
 #   make clean
+#
+# The SoC in simulation, three ways. sim_soc is the finished boot path - off
+# the card, 256 KB of RAM. The other two are the path a *board* takes, which
+# is neither: the program preloaded into the bitstream, and 64 KB.
+#
+#   make sim_soc      -> boot off the SD card model, run the acceptance test
+#   make sim_ramboot  -> same test, preloaded into 64 KB, as the board runs it
+#   make sim_rerun    -> run it twice with a reset between, as a board does
+#   make sim_probe    -> the newlib probe: which rung of libc actually fails
+#   make trapcheck    -> provoke known faults, check the trap reports come out
 
 IVERILOG      = iverilog
 VVP           = vvp
@@ -58,14 +68,29 @@ SOFTWARE_CFLAGS = -march=rv32im -mabi=ilp32 -specs=nano.specs -ffreestanding \
 SOC_CFLAGS_COMMON = -march=rv32im_zicsr_zifencei -mabi=ilp32 -ffreestanding -O2 -Wall \
                      -nostartfiles -Isoftware -Isoftware/soc
 BOOTROM_SRCS = software/soc/crt0_rom.S software/soc/bootrom.c
-SOCPROG_SRCS = software/soc/crt0_ram.S software/soc/main.c \
+# crt0_ram.S, console.c and trap.c are the RAM-program runtime: startup, the
+# libc-free console, and the loud trap handler. Every program that runs out of
+# RAM wants all three.
+SOCRT_SRCS   = software/soc/crt0_ram.S software/soc/console.c software/soc/trap.c
+SOCPROG_SRCS = $(SOCRT_SRCS) software/soc/main.c \
                 software/syscalls.c software/uart.c
+# The newlib probe: same runtime, but its whole purpose is to call into libc.
+PROBE_SRCS   = $(SOCRT_SRCS) software/soc/newlibprobe.c \
+                software/syscalls.c software/uart.c
+# The handler's own calibration. No libc at all - it must not be able to fail
+# for a reason the thing it is testing isn't responsible for.
+TRAPCHK_SRCS = $(SOCRT_SRCS) software/soc/trapcheck.c
+# Which deliberate fault trapcheck.c provokes. sim/trapcheck.sh sets this per
+# case; on its own the default just gives you a runnable program.
+TRAPCHECK   ?= 1
 SOCPROG_CFLAGS = $(SOC_CFLAGS_COMMON) -specs=nano.specs
+SOC_HDRS = software/soc/soc.h software/soc/console.h software/soc/trap.h
 
 # Card size in 512-byte blocks; must match sim/tb_soc.v's CARD_BYTES (64 KB).
 SD_BLOCKS = 128
 
-.PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage sim_soc sim_video sim_ulx3s sim_cmd0 dtb \
+.PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
+        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
@@ -120,8 +145,15 @@ sim/bootrom.hex: software/soc/bootrom.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/soc/bootrom.elf software/soc/bootrom.bin
 	python3 software/bin2hex.py --word-size=4 software/soc/bootrom.bin > $@
 
-software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld software/soc/soc.h
+software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld -o $@ $(SOCPROG_SRCS)
+
+software/soc/newlibprobe.elf: $(PROBE_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld -o $@ $(PROBE_SRCS)
+
+software/soc/trapcheck.elf: $(TRAPCHK_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -DTRAPCHECK=$(TRAPCHECK) \
+	    -T software/soc/link_ram.ld -o $@ $(TRAPCHK_SRCS)
 
 sim/card.hex: software/soc/socprog.elf software/soc/mkcard.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/soc/socprog.elf software/soc/socprog.bin
@@ -157,9 +189,78 @@ sim/ramimage.hex: software/soc/socprog.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/socprog.bin > $@
 
+# The newlib probe, positioned the same way. See software/soc/newlibprobe.c:
+# it is the ladder that says *which* rung of libc fails, run under a trap
+# handler that no longer swallows the evidence.
+probeimage: sim/probeimage.hex
+
+sim/probeimage.hex: software/soc/newlibprobe.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/newlibprobe.elf software/soc/newlibprobe.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/newlibprobe.bin > $@
+
 sim_soc: soc
 	$(IVERILOG) -g2012 -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
 	cd sim && $(VVP) sim_soc.out
+
+# ---- the preloaded-RAM boot path, in simulation ----
+# sim_soc boots off the SD card model with 256 KB of RAM. The board that
+# `BOARD=ulx3s85-ram` builds does neither: the program is baked into the
+# bitstream and the RAM is 64 KB. Those are the two things that differed
+# between "passes in simulation" and "dies on hardware", and until now nothing
+# simulated them - so this testbench is that path, at that size.
+sim/sim_ramboot.out: sim/tb_ramboot.v $(SOC_RTL)
+	$(IVERILOG) -g2012 -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+
+sim_ramboot: sim/bootrom.hex sim/ramimage.hex sim/sim_ramboot.out
+	cd sim && $(VVP) sim_ramboot.out
+
+sim/sim_probe.out: sim/tb_ramboot.v $(SOC_RTL)
+	$(IVERILOG) -g2012 -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+
+sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
+	cd sim && $(VVP) sim_probe.out
+
+# ---- does the program survive a reset? ----
+# Block RAM is initialised when the FPGA is *configured*, not when the CPU is
+# reset, so tapping the reset button re-runs the program over memory the
+# previous run already wrote. Every simulation before this one ran the program
+# exactly once and so could not see it.
+#
+# What it missed: .data was loaded once and never restored, so run 2 inherited
+# run 1's writes. newlib's __sinit found its own "already initialised" guard
+# still set, skipped setting up stdout, and every printf for the rest of that
+# run returned -1 and printed nothing - which is what "printf hangs on
+# hardware" actually was, for months. crt0_ram.S now rebuilds .data on every
+# startup; this is the test that says so.
+#
+# The probe rather than the acceptance test, deliberately: the acceptance test
+# keeps its state in .bss, which _start has always zeroed, so it passes twice
+# either way and would not have caught this.
+sim/sim_rerun.out: sim/tb_ramboot.v $(SOC_RTL)
+	$(IVERILOG) -g2012 -DRAM_IMAGE='"probeimage.hex"' -DRERUN \
+	    -o $@ sim/tb_ramboot.v $(SOC_RTL)
+
+sim_rerun: sim/bootrom.hex sim/probeimage.hex sim/sim_rerun.out
+	@cd sim && $(VVP) sim_rerun.out 2>&1 | tee rerun.log
+	@grep -q "RERUN TEST PASSED" sim/rerun.log || \
+	    { echo "sim_rerun FAILED: the program does not survive a reset"; exit 1; }
+
+# ---- the trap handler's own calibration ----
+# The handler is a measuring instrument: everything it is meant to find, it
+# finds by halting and printing. So it gets provoked with faults whose reports
+# are known in advance, and the run is scored on the text that comes out. See
+# sim/trapcheck.sh - it drives all three cases through this one binary.
+sim/trapimage.hex: software/soc/trapcheck.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/trapcheck.elf software/soc/trapcheck.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/trapcheck.bin > $@
+
+sim/sim_trap.out: sim/tb_ramboot.v $(SOC_RTL)
+	$(IVERILOG) -g2012 -DRAM_IMAGE='"trapimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+
+trapcheck: sim/bootrom.hex sim/sim_trap.out
+	./sim/trapcheck.sh
 
 # ---- video ----
 # The framebuffer's only proof while no display is attached: draw a known
@@ -277,15 +378,19 @@ coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
 # Everything that can gate a change, in rough order of how fast it fails.
-verify: sim sim_software sim_soc sim_video sim_ulx3s sim_cmd0 isa cosim formal
+verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \
 	       software/firmware.elf software/firmware_text.bin software/firmware_data.bin \
 	       sim/sim_soc.out sim/wave_soc.vcd sim/bootrom.hex sim/card.hex \
+	       sim/sim_ramboot.out sim/sim_probe.out sim/sim_rerun.out \
+	       sim/wave_ramboot.vcd sim/rerun.log \
+	       sim/ramimage.hex sim/probeimage.hex \
 	       software/soc/bootrom.elf software/soc/bootrom.bin \
 	       software/soc/socprog.elf software/soc/socprog.bin \
+	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc.dtb \
 	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \
 	       software/bench/coremark.elf software/bench/coremark.bin \
