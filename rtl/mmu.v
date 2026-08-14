@@ -3,7 +3,7 @@
 // instruction MMU (translating fetch addresses in IF), each with its own
 // TLB and its own dedicated read-only walker port into `dmem` (page
 // tables for *both* code and data mappings live in ordinary `dmem` RAM -
-// see docs/ARCHITECTURE.md's note on why that's safe despite this core's
+// see docs/architecture.md's note on why that's safe despite this core's
 // Harvard imem/dmem split). An 8-entry fully-associative TLB sits in
 // front of a 2-level page-table walker. Deliberately simplified vs. the
 // real spec:
@@ -200,7 +200,7 @@ module mmu (
     // `op1 + imm` recomputed from forwarding every cycle. Across a
     // multi-cycle walk the pipeline drains underneath and that value decays -
     // the same operand-drift hazard that produced the misaligned-address bug
-    // in docs/ARCHITECTURE.md section 12b. The co-simulation caught it as
+    // in docs/architecture.md section 12b. The co-simulation caught it as
     // rv32si-p-dirty taking a load page fault Spike never takes. It also
     // measured no faster, so the trade was losing anyway.
     assign resolved = (state == S_IDLE) ? (req && tlb_hit) : (state == S_L2W);

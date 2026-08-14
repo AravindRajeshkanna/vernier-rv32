@@ -8,6 +8,6 @@ contact_links:
   - name: Question about the design
     url: https://github.com/aravindrajeshkanna/vernier-rv32/discussions
     about: >-
-      Not a bug? docs/ARCHITECTURE.md covers the pipeline, hazards, privilege
-      and MMU in detail, and docs/SOC.md is the register reference - but ask
+      Not a bug? docs/architecture.md covers the pipeline, hazards, privilege
+      and MMU in detail, and docs/soc.md is the register reference - but ask
       here if it is not answered there.

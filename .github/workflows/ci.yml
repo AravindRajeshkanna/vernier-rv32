@@ -13,7 +13,7 @@
 #           place-and-route is 4-11 minutes on an ECP5. Timing numbers are
 #           recorded by hand in fpga/README.md from a real run.
 #
-# See docs/PRACTICES.md for what these layers are each meant to catch.
+# See docs/practices.md for what these layers are each meant to catch.
 name: CI
 
 on:
@@ -152,13 +152,13 @@ jobs:
         run: grep -q "SOC TEST PASSED" soc.log
 
       # The board's own configuration: program preloaded, 64 KB of RAM.
-      # PRACTICES.md §4 - sim_soc runs a machine no board has.
+      # practices.md §4 - sim_soc runs a machine no board has.
       - name: SoC on the board's preloaded path (64 KB)
         run: make sim_ramboot | tee ramboot.log
       - name: Check preloaded-path verdict
         run: grep -q "RAMBOOT TEST PASSED" ramboot.log
 
-      # PRACTICES.md §5 - reset is not a fresh start. This is the regression
+      # practices.md §5 - reset is not a fresh start. This is the regression
       # test for the .data initialisation bug.
       - name: Survives a reset (run twice, RAM untouched)
         run: make sim_rerun

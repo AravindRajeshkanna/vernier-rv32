@@ -1,6 +1,6 @@
 <!--
 Thanks for contributing. The checklist below is the same standard the project
-applies to its own commits - see docs/PRACTICES.md, which explains why each
+applies to its own commits - see docs/practices.md, which explains why each
 item is there and names the incident that put it there.
 
 Delete any section that genuinely does not apply, and say why.
@@ -36,7 +36,7 @@ say which and why. "Did not run" is fine; silence is not.
 <!--
 Name it, and say what it prints when the fix is reverted. If you could not make
 it go red, say so - sometimes a bug is only reachable on hardware, and that is
-useful to know. PRACTICES.md §1: a test that cannot fail is testing the
+useful to know. practices.md §1: a test that cannot fail is testing the
 testbench.
 -->
 
@@ -59,7 +59,7 @@ verbatim. Post-route Fmax if you ran synthesis.
 - [ ] Anything I added is reached by something in `make verify` (§14)
 - [ ] Numbers quoted are measured, not estimated
 - [ ] Docs updated if behaviour or the register map changed
-- [ ] I have read [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)
+- [ ] I have read [CONTRIBUTING.md](https://github.com/aravindrajeshkanna/vernier-rv32/blob/main/CONTRIBUTING.md)
 
 ## AI assistance
 

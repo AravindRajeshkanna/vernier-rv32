@@ -7,10 +7,10 @@ to test.
 
 Two documents are worth reading before a substantial change:
 
-- **[docs/PRACTICES.md](docs/PRACTICES.md)** — the working rules, each one
+- **[docs/practices.md](docs/practices.md)** — the working rules, each one
   attached to the incident that produced it. It is short, and it explains why
   reviews here ask the questions they ask.
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the full design writeup:
+- **[docs/architecture.md](docs/architecture.md)** — the full design writeup:
   pipeline, hazards, privilege, MMU, SoC, and every bug worth recording.
 
 ## Getting set up
@@ -29,7 +29,7 @@ make verify       # everything that gates a change
 `make isa-fetch` and `make coremark-fetch` pull the upstream suites (not
 vendored, pinned to a commit). The ECP5 flow needs YosysHQ's `oss-cad-suite`
 bundle on `PATH` — Homebrew has yosys but no `nextpnr-ecp5`. See
-[docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
+[docs/toolchain.md](docs/toolchain.md).
 
 ## Before you open a pull request
 
@@ -99,7 +99,7 @@ the verbatim output, and — for hardware — the board, the FPGA variant, and t
 If it is on hardware and the machine has stopped, note what the LEDs are
 doing: `led[1:0]` carry the boot stage, `led[2]` is a heartbeat, `led[3]` is a
 sticky "a trap happened", and an alternating `led[1:0]` pattern means the trap
-handler halted and there is a report on the UART. `docs/SOC.md` has the codes.
+handler halted and there is a report on the UART. `docs/soc.md` has the codes.
 
 Security-relevant bugs — the privilege boundary, the MMU, trap delegation —
 go through [SECURITY.md](SECURITY.md) instead.

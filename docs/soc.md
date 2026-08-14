@@ -3,11 +3,11 @@
 What blocks exist, where they live, what registers they have, and what to
 watch out for when programming them.
 
-This is the **reference**; `ARCHITECTURE.md` is the **rationale**. Where a
+This is the **reference**; `architecture.md` is the **rationale**. Where a
 design decision needs explaining rather than stating, this file links there
 rather than repeating it. If you are writing firmware or adding a peripheral,
 start here. If you want to know *why* the interconnect arbitrates the way it
-does, start at `ARCHITECTURE.md` section 12a.
+does, start at `architecture.md` section 12a.
 
 Everything below describes `rtl/soc/soc_top.v`, the Wishbone system.
 `rtl/top.v` is a different, older, flat wiring of the same CPU kept for
@@ -366,8 +366,8 @@ Step 4 is the one that bites — five places, none of which check each other.
 - **No DMA, no second bus master** beyond fetch and data.
 - **No external DRAM.** The board has 32 MB of SDRAM; there is no controller,
   so it is unreachable.
-- **No PMP**, no debug module, no JTAG. See `docs/DEBUG.md`.
+- **No PMP**, no debug module, no JTAG. See `docs/debug.md`.
 - **The UART interrupt is wired to the PLIC but unused** — the driver polls.
 
-`ARCHITECTURE.md` section 13 covers what these mean for running larger
+`architecture.md` section 13 covers what these mean for running larger
 software, and `README.md` covers what they mean for Linux specifically.

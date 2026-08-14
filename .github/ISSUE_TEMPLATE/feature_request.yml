@@ -63,4 +63,4 @@ body:
       label: Would you like to implement it?
       options:
         - label: I am offering to write this
-        - label: I have read CONTRIBUTING.md and docs/PRACTICES.md
+        - label: I have read CONTRIBUTING.md and docs/practices.md

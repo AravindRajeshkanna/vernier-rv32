@@ -696,7 +696,7 @@ preloaded content is already known, by construction, to start at address
 ## 12a. `rtl/soc/` — the Wishbone SoC
 
 > For a **reference** rather than a rationale — every block's register map,
-> the address map, and the traps waiting for firmware — see `docs/SOC.md`.
+> the address map, and the traps waiting for firmware — see `docs/soc.md`.
 > This section explains why the SoC is shaped the way it is; that one
 > explains how to use it.
 
@@ -1115,7 +1115,7 @@ is correctly still a read, which is also how Spike models it.
 - **The SoC is memory-limited.** 64 KB of
   on-chip RAM in the FPGA configuration (256 KB in simulation), no external
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
-  no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
+  no JTAG debug module (`docs/debug.md` sets out exactly what one would
   take), no Ethernet. The design builds to a **bitstream** on an
   ULX3S, closes timing at 25 MHz against that board's real pinout —
   30.77 MHz measured post-route on an LFE5U-85F, 28.78 MHz on a 45F — and

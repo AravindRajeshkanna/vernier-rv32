@@ -208,7 +208,7 @@ over-estimating makes SCK slower than intended (harmless) while
 under-estimating pushes the SD init clock above the 400 kHz ceiling, which
 real cards reject. `RAM_SIZE` vs `RAM_BYTES`, `soc.h` vs `soc_top.v`'s
 `s_base` table vs `dts/soc.dts` vs the linker scripts are the same hazard.
-`docs/SOC.md` names all five places a new peripheral must be registered and
+`docs/soc.md` names all five places a new peripheral must be registered and
 says outright that none of them check each other.
 
 Where a check *is* possible, it exists: `fpga/synth/synth_ecp5.sh` refuses to

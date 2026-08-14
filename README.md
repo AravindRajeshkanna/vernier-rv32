@@ -114,14 +114,14 @@ software/
     core_portme.c/.h   the port layer: cycle-counter timer, printf over UART
     crt0_bench.S, link_bench.ld
 docs/
-  ARCHITECTURE.md  the full design writeup - pipeline, hazards, privilege,
+  architecture.md  the full design writeup - pipeline, hazards, privilege,
                    MMU, SoC, and every bug worth recording
-  SOC.md         component and register reference: what each block is,
+  soc.md         component and register reference: what each block is,
                  its registers, and what bites you when programming it
-  PRACTICES.md   the working rules, each attached to the incident that
+  practices.md   the working rules, each attached to the incident that
                  produced it - start here before changing anything
-  DEBUG.md       UART, tracer, and an honest account of the missing JTAG
-  TOOLCHAIN.md   every tool and version this was built with, and which
+  debug.md       UART, tracer, and an honest account of the missing JTAG
+  toolchain.md   every tool and version this was built with, and which
                  flow uses which
 dts/
   soc.dts        device tree describing the SoC (`make dtb`)
@@ -146,7 +146,7 @@ external interrupts (the external source now a real **PLIC** — multiple
 prioritized, claimable sources, not one wire), a **Sv32 MMU that covers
 both data accesses and instruction fetch** (two independent TLBs/walkers
 sharing one page-table structure), and a **BTB + 2-bit saturating-counter
-branch predictor** — see `docs/ARCHITECTURE.md` for the full pipeline/hazard/
+branch predictor** — see `docs/architecture.md` for the full pipeline/hazard/
 privilege/interrupt/MMU design, including several real bugs found and
 fixed along the way (a couple of pipeline hazards from an earlier update,
 a page fault that could still commit its write, an MRET/SRET that could
@@ -182,7 +182,7 @@ means about 2^30 priority/enable/pending/threshold combinations that no test
 suite is going to enumerate.
 
 Debug infrastructure — UART console, instruction tracer, and why there is no
-JTAG — is in `docs/DEBUG.md`.
+JTAG — is in `docs/debug.md`.
 
 It does **not** implement superscalar issue or out-of-order execution —
 still single-issue, in-order. That's the natural next step, but it's a
@@ -278,7 +278,7 @@ Two things that weren't obvious going in, in case you extend
 full newlib `printf` is ~69KB for even a trivial program against this
 core's 4KB-by-default `imem` — `-specs=nano.specs` gets the same real
 `printf` down to ~9KB, which is why `IMEM_WORDS` defaults to 8192 now.
-See `docs/ARCHITECTURE.md` section 12 for the full story, including a second
+See `docs/architecture.md` section 12 for the full story, including a second
 linker-script gotcha (Harvard regions both based at address 0 confuse the
 linker's *load*-address overlap check, which doesn't know they're
 different physical memories).
@@ -390,7 +390,7 @@ level). It also surfaced a genuine latent bug: an `SC` both reads and clears
 the reservation, and with zero-latency memory those happened in the same
 cycle so the order never mattered — over a multi-cycle bus, clearing it
 first pulled the success check out from under the write phase. See
-`docs/ARCHITECTURE.md` section 12a.
+`docs/architecture.md` section 12a.
 
 ## 4. Getting it onto an actual FPGA
 
@@ -408,7 +408,7 @@ openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
 
 Synthesis needs oss-cad-suite on `PATH` (`export
 PATH=~/tools/oss-cad-suite/bin:$PATH`); `make verify` does not. See
-`docs/TOOLCHAIN.md`.
+`docs/toolchain.md`.
 
 **Until the SD card works, boot from a preloaded RAM image instead:**
 
@@ -575,7 +575,7 @@ milestones — happy to help with any of these next:
 | | |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
-| [docs/PRACTICES.md](docs/PRACTICES.md) | The working rules — sixteen of them, each attached to the incident on this repo that produced it |
+| [docs/practices.md](docs/practices.md) | The working rules — sixteen of them, each attached to the incident on this repo that produced it |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |
 | [AI_USAGE.md](AI_USAGE.md) | Disclosure of how this project was built, and the policy for contributions |
@@ -595,7 +595,7 @@ repository are unverified self-measurements, not EEMBC-certified ones.
 inferred — including the three failure modes it produced here (confident wrong
 diagnostics, plausible tests that cannot fail, fluent explanations of the
 wrong cause) and what the verification layers are there to catch. The first
-three rules in `docs/PRACTICES.md` exist because of them.
+three rules in `docs/practices.md` exist because of them.
 
 **CI.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the RTL
 regression, the SoC on both boot paths, the reset-and-rerun test, the trap

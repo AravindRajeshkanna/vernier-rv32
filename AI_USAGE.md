@@ -49,7 +49,7 @@ all of which happened here:
 - *Fluent explanations of the wrong cause.* "printf hangs on hardware" was the
   accepted description of a bug for months. printf never hung.
 
-[docs/PRACTICES.md](docs/PRACTICES.md) is largely a response to that list. Its
+[docs/practices.md](docs/practices.md) is largely a response to that list. Its
 first three rules — a test must be able to fail, prove the instrument before
 trusting it, diagnostics lie too — are there because of incidents like these.
 

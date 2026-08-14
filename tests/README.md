@@ -190,6 +190,6 @@ rather than as a slow drift. It stays a local gate; `CONTRIBUTING.md` asks for
 its output in a pull request.
 
 FPGA place-and-route is not in CI either: it is 4–11 minutes on an ECP5, the
-placement is stochastic (see `docs/TOOLCHAIN.md` §6), and the numbers in
+placement is stochastic (see `docs/toolchain.md` §6), and the numbers in
 `fpga/README.md` are recorded by hand from real runs so that a single noisy
 placement cannot quietly move a published figure.

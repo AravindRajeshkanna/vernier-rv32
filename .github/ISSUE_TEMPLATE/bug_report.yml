@@ -10,7 +10,7 @@ body:
         passed but should not have" is as welcome as a crash.
 
         Security-relevant bugs — the privilege boundary, the MMU, trap
-        delegation — go through [SECURITY.md](../blob/main/SECURITY.md)
+        delegation — go through [SECURITY.md](https://github.com/aravindrajeshkanna/vernier-rv32/blob/main/SECURITY.md)
         instead of here.
 
   - type: dropdown

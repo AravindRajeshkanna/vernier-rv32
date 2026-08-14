@@ -59,7 +59,7 @@ week. There is no bounty.
 **Out of scope**, because they are known and documented rather than
 undiscovered:
 
-- No PMP. `docs/SOC.md` §7 lists it under "what is not here".
+- No PMP. `docs/soc.md` §7 lists it under "what is not here".
 - No debug module, no JTAG, so no debug authentication to bypass.
 - Timing side channels. The core has a variable-latency divider and a
   multi-cycle bus; nothing is constant-time and nothing claims to be.
