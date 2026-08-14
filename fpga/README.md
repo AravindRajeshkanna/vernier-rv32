@@ -1,8 +1,9 @@
 # FPGA integration — status and honest caveats
 
-**The design builds to a ULX3S bitstream against that board's real pinout and
-closes timing at 25 MHz — 30.77 MHz on an 85F, 28.78 MHz on a 45F. It has
-never been loaded onto hardware.** Those are different claims:
+**The design builds to a ULX3S bitstream against that board's real pinout,
+closes timing at 25 MHz — 30.77 MHz on an 85F, 28.78 MHz on a 45F — and has
+been loaded onto an LFE5U-85F, where it boots and passes its acceptance
+test.** Those are different claims, and two of them are still open:
 
 | Artifact | Status |
 |---|---|
@@ -14,7 +15,9 @@ never been loaded onto hardware.** Those are different claims:
 | **Fmax with I/O constrained** | ✅ **30.77 MHz** (85F) / **28.78 MHz** (45F), PASS at the board's 25 MHz |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
-| Running on a board | ❌ **no board** |
+| Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
+| SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
+| Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
 The pinout is no longer fictional, which is a smaller claim than "this works"
 but a real one: the numbers above come from builds where every port is locked
@@ -22,10 +25,20 @@ to the pin it will actually use, rather than ones where nextpnr could place
 I/O wherever suited it. When that constraint was first applied it cost about
 1 MHz (30.38 → 29.37 on a 45F), less than expected.
 
-**What is still unproven is everything that needs a board**: that the ESP32
-hold-off is sufficient in practice, that a real SD card answers the boot ROM,
-that the FTDI console is legible, that the design works at temperature. None
-of that is knowable from here.
+**What a board has now settled.** The ESP32 hold-off is sufficient in
+practice — the board stays up. The FTDI console is legible at 115200 with no
+tuning. The design runs at the ULX3S's 25 MHz oscillator without a PLL, which
+is what the 30.77 MHz Fmax predicted. Bring-up took three bitstreams to get
+there — a heartbeat, an SD probe, and the full SoC — and `ulx3s_diag.v` and
+`ulx3s_cmd0.v` are kept in the tree because that is what made each failure
+diagnosable rather than mysterious.
+
+**What a board has not settled**: the SD card. A 64 GB SDXC card never
+answers CMD0, which is permitted — SPI mode is optional above 32 GB — but
+that has not been distinguished from a wiring fault yet, because no smaller
+card has been tried. `BOARD=ulx3s-cmd0` answers it in seconds when one is.
+Nothing about temperature, long-run stability or the video pins is known
+either.
 
 ## Building for a ULX3S
 

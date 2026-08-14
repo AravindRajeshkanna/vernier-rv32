@@ -1,13 +1,15 @@
 // FPGA top level for the SoC (rtl/soc/soc_top.v).
 //
-// !! NEVER RUN ON HARDWARE !!  This builds all the way through - yosys,
-// nextpnr-ecp5 and ecppack all complete - and via fpga/ulx3s_top.v it does so
-// against a **real pinout**, closing timing at 25 MHz with a measured Fmax of
-// 29.37 MHz on an LFE5U-45F. What has *not* happened is any of it running on
-// a board, because there is no board.
+// This runs on hardware. Via fpga/ulx3s_top.v it builds against a **real
+// pinout** and has been loaded onto a ULX3S with an LFE5U-85F, where the boot
+// ROM comes up on the FTDI console, jumps to the acceptance test in RAM, and
+// the test reports SOC-TEST: PASS.
 //
-// Synthesized, placed, routed and timed against real pins: yes. Executed: no.
-// See fpga/README.md for exactly which claims have evidence behind them.
+// Not everything here is proven by that. The SD card is not - the boot ROM
+// reaches CMD0 and gets no answer from a 64 GB SDXC card, so the hardware
+// runs are done with RAM preloaded from the bitstream instead. Neither is
+// video scan-out, which is left unconnected below. See fpga/README.md for
+// which claims have evidence behind them and which do not.
 //
 // This file stays board-agnostic on purpose: it asks for a clock, an
 // active-low reset, a UART pair, four SPI wires, GPIO and four LEDs, and

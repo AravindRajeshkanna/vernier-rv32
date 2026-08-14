@@ -184,6 +184,15 @@ into the edge detector would let metastability set a spurious interrupt.
 `DIR`. That is how the boot ROM reports its progress without a serial cable;
 see `BOOT_STAGE_*` in `soc.h`.
 
+**An undriven pin has no defined level.** `fpga/constraints/ulx3s.lpf` sets
+`PULLMODE=NONE` on the whole header, so a pin with its `DIR` bit clear and
+nothing plugged in reads whatever it happens to float to — not 0, and not
+necessarily the same value twice. Firmware that wants a known level with
+nothing attached has to drive the pin. A driven pin does read back through
+`IN`: the pad's input path is live whether or not the output driver is
+enabled, which is what `test_gpio()` in `software/soc/main.c` relies on to
+test the pins without any external wiring.
+
 ### `wb_spi` — SPI master, `0x0600_0000`
 
 Mode 0 (CPOL=0, CPHA=0), 8 bits, MSB first. Enough to talk to an SD card.

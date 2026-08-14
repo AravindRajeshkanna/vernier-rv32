@@ -27,10 +27,21 @@ module tb_soc;
     wire [15:0] gpio_out, gpio_dir;
     wire        trap;
 
-    // GPIO loopback: pins 8-15 (inputs) see whatever pins 0-7 (outputs)
-    // drive. `gpio_dir` is respected so an undriven pin reads 0 rather than
-    // whatever the output register happens to hold.
-    wire [15:0] gpio_in = {gpio_out[7:0] & gpio_dir[7:0], 8'b0};
+    // ---- GPIO pads ----
+    // This used to be a loopback - `{gpio_out[7:0] & gpio_dir[7:0], 8'b0}` -
+    // which fed the SoC's own output register back into its input port and
+    // called pins 8-15 a copy of pins 0-7. No such wire exists on a board:
+    // gpio[15:8] is {gn[1:0], gp[13:8]}, bare header pins. The GPIO test
+    // built on it passed here for as long as it existed and failed the first
+    // time it met real hardware.
+    //
+    // What it models now is a pad. A pin the SoC is driving reads back the
+    // value it drives, which is what an IOBUF's input path does. A pin it is
+    // *not* driving reads X, not 0, because fpga/constraints/ulx3s.lpf sets
+    // PULLMODE=NONE on the whole header: an undriven pin there has no defined
+    // level, and the honest model of an unknown value is X. Anything that
+    // depends on one now fails in simulation rather than on a board.
+    wire [15:0] gpio_in = (gpio_out & gpio_dir) | (16'hxxxx & ~gpio_dir);
 
     soc_top #(
         .ROM_INIT_FILE("bootrom.hex"),

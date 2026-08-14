@@ -134,6 +134,17 @@ if [ "$PRELOAD_RAM" = "1" ]; then
         echo "error: sim/ramimage.hex missing - run 'make ramimage' first" >&2
         exit 1
     fi
+    # A *stale* preload image is worse than a missing one. Missing stops the
+    # build; stale sails through and bakes whatever program was current the
+    # last time someone remembered into the bitstream, with nothing anywhere
+    # in the log to say so. The board then runs yesterday's software and
+    # reproduces a bug that was already fixed - which is exactly what happened
+    # here, and cost a full synthesize-and-flash cycle to notice.
+    if [ software/soc/socprog.elf -nt sim/ramimage.hex ]; then
+        echo "error: sim/ramimage.hex is older than software/soc/socprog.elf" >&2
+        echo "       the bitstream would carry a stale program - run 'make ramimage'" >&2
+        exit 1
+    fi
 fi
 
 if [ "$DIAG_ONLY" = "1" ]; then

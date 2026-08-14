@@ -1112,15 +1112,16 @@ is correctly still a read, which is also how Spike models it.
   (`tselect`/`tdata`). These are the only two features the RISC-V
   architectural test suite fails this core on — see
   `tests/expected-failures.txt`.
-- **The SoC is memory-limited and has never run on hardware.** 64 KB of
+- **The SoC is memory-limited.** 64 KB of
   on-chip RAM in the FPGA configuration (256 KB in simulation), no external
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
   no JTAG debug module (`docs/DEBUG.md` sets out exactly what one would
-  take), no Ethernet. The design now builds to a **bitstream** on an
-  ULX3S and closes timing at 25 MHz against that board's real pinout —
-  30.77 MHz measured post-route on an LFE5U-85F, 28.78 MHz on a 45F — but
-  has never been loaded onto hardware, so everything that needs a board is
-  still unproven. See `fpga/README.md`. The measured critical path is **75% routing** and
+  take), no Ethernet. The design builds to a **bitstream** on an
+  ULX3S, closes timing at 25 MHz against that board's real pinout —
+  30.77 MHz measured post-route on an LFE5U-85F, 28.78 MHz on a 45F — and
+  **runs on an 85F**, where it boots and passes its acceptance test. The SD
+  card and the video pins are the parts a board has not yet settled; see
+  `fpga/README.md`. The measured critical path is **75% routing** and
   only 8 ns of logic — the design is wire-bound rather than logic-bound, so
   floorplanning is worth more than shortening logic. Where exactly that path
   lands moves from build to build: `fpga/README.md` records three consecutive

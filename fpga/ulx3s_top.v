@@ -12,11 +12,16 @@
 // ULX3S, which way round its buttons read, and what has to be driven to stop
 // the board interfering with itself.
 //
-// !! STILL NEVER RUN ON HARDWARE !!  The pin assignments here are real - they
-// come from the official ulx3s_v20.lpf and are cross-checked against
-// litex-boards' platform file - but no board has been attached. The claim
-// this file supports is "the pinout is no longer fictional", which is a
-// smaller claim than "this works".
+// This file has been run on a board. The pin assignments come from the
+// official ulx3s_v20.lpf, cross-checked against litex-boards' platform file,
+// and an LFE5U-85F configured with them boots and passes the SoC acceptance
+// test. Reset polarity, the ESP32 hold-off, the FTDI console and the GPIO
+// header are all confirmed on silicon rather than argued from a datasheet.
+//
+// The SD pins are the exception: they are wired per the v2.0/v3.0 table
+// below, and a 64 GB SDXC card in that slot never answers CMD0. That has not
+// been distinguished from a wiring fault, because no card under 32 GB has
+// been tried yet. fpga/ulx3s_cmd0.v is the four-second test for it.
 //
 // ---- Board revision matters, and gets this wrong silently ----
 // The four SD pins used for SPI mode are wired **differently on v1.7**:

@@ -218,25 +218,66 @@ static int test_lr_sc_failure(void) {
 }
 
 /* ---------------------------------------------------------------------
- * GPIO - loopback through the testbench
+ * GPIO - driven pins read back through the pad
  * ------------------------------------------------------------------- */
 
-/* sim/tb_soc.v ties the upper GPIO pins back to the lower ones, so driving
- * the low half should be readable on the high half. That checks the output
- * path, the direction register and the input synchronizer in one go. */
+/* This test used to drive the low 8 pins and expect to read them on the high
+ * 8, which worked because sim/tb_soc.v fed gpio_out straight back into
+ * gpio_in. On a board there is no such wire: gpio[15:8] is {gn[1:0],
+ * gp[13:8]}, header pins with PULLMODE=NONE and nothing plugged into them.
+ * It was the one check that failed the first time this program ran on
+ * hardware, and it was measuring a testbench, not a SoC - it never touched a
+ * pad at all.
+ *
+ * What replaces it needs no external wiring, so it means the same thing in
+ * both places: an enabled bidirectional pin reads back the value it drives.
+ * That covers the whole chain - bus write, OUT register, direction register,
+ * output driver, the physical pad, the input buffer, the two-flop
+ * synchronizer, bus read - which is strictly more than the loopback did.
+ *
+ * Two complementary patterns, so every pin is required to be both 0 and 1.
+ * That is what makes this rigorous without assuming a pull direction: a pin
+ * that is not really being driven settles at *some* level, and no single
+ * level matches both 0x5A5A and 0xA5A5. A direction register stuck at zero,
+ * an output driver that never enables, a pin shorted to either rail, and a
+ * GPIO_IN that returns a constant all fail. */
 static int test_gpio(void) {
-    GPIO_DIR = 0x00FFu;          /* low 8 pins drive, high 8 listen */
-    GPIO_OUT = 0x005Au;
-    /* Two flops of input synchronizer plus the loopback: give it a few
-     * cycles before believing what we read. */
-    for (volatile int i = 0; i < 20; i++) { }
-    if (((GPIO_IN >> 8) & 0xFFu) != 0x5Au) return 0;
+    static const uint32_t pattern[2] = { 0x5A5Au, 0xA5A5u };
+    int ok = 1;
+    int i;
 
-    GPIO_OUT = 0x00A5u;
-    for (volatile int i = 0; i < 20; i++) { }
-    if (((GPIO_IN >> 8) & 0xFFu) != 0xA5u) return 0;
+    GPIO_DIR = 0xFFFFu;                  /* drive every pin */
 
-    return 1;
+    for (i = 0; i < 2; i++) {
+        uint32_t got;
+        GPIO_OUT = pattern[i];
+        /* Two flops of input synchronizer plus the pad round trip: give it a
+         * few cycles before believing what we read. */
+        for (volatile int d = 0; d < 20; d++) { }
+        got = GPIO_IN & 0xFFFFu;
+        if (got != pattern[i]) {
+            /* Print the mismatch. A bare FAIL on a bring-up board says only
+             * that something is wrong; the differing bits say which pins. */
+            put_str("    drove ");
+            put_hex(pattern[i]);
+            put_str(" read ");
+            put_hex(got);
+            put_str(" differ ");
+            put_hex(got ^ pattern[i]);
+            put_str("\n");
+            ok = 0;
+        }
+    }
+
+    /* The registers themselves - bus decode rather than pins. */
+    if (GPIO_DIR != 0xFFFFu) ok = 0;
+    if (GPIO_OUT != 0xA5A5u) ok = 0;
+
+    /* Hand the header back undriven, so nothing plugged in afterwards meets
+     * a pin still being driven by a test that has finished. */
+    GPIO_DIR = 0x0000u;
+    GPIO_OUT = 0x0000u;
+    return ok;
 }
 
 /* ---------------------------------------------------------------------
@@ -394,7 +435,7 @@ int main(void) {
     check("AMO read-modify-write", test_amo_rmw());
     check("LR/SC success",         test_lr_sc_success());
     check("LR/SC broken by store", test_lr_sc_failure());
-    check("GPIO loopback",         test_gpio());
+    check("GPIO pin readback",     test_gpio());
     check("framebuffer read/write", test_framebuffer());
     check("CLINT mtime advances",  test_timer());
     check("misa reports I+M+A",    test_misa());

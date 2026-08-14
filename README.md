@@ -18,9 +18,18 @@ unmeasured or unproven this repo says so rather than rounding in its own
 favour. See **Verification** below for the numbers, and `fpga/README.md` for
 a worked example of the tool disagreeing with the prediction.
 
-It has never run on hardware. The pinout is real — `fpga/constraints/ulx3s.lpf`
-targets a ULX3S and every pin is placed — but no board has been attached, so
-everything that needs one is still unproven. **Read the "Can this run Linux?"
+**It runs on hardware.** On a ULX3S with an LFE5U-85F the boot ROM comes up on
+the FTDI console, jumps to the acceptance test in RAM, and the test reports
+`SOC-TEST: PASS` — RAM, atomics, LR/SC, GPIO pins, framebuffer, the CLINT
+timer, the counters, misaligned-access traps and `FENCE.I`, all executing
+compiled C from block RAM on a real ECP5.
+
+Two things still need a board and have not got one to work yet: **the SD
+card** (a 64 GB SDXC card never answers CMD0 — cards above 32 GB are not
+required to implement SPI mode, and the test bitstream sidesteps it by
+preloading RAM from the bitstream) and **video scan-out**, which is generated
+and simulated but not routed to the HDMI pins, since that needs a PLL and a
+TMDS serializer neither of which exists yet. **Read the "Can this run Linux?"
 section before you get too attached to that plan**: the honest answer is not with this core, and it
 explains why and what the realistic path looks like.
 
@@ -275,11 +284,13 @@ attached. It runs the real boot sequence — nothing is preloaded into RAM.
 === RV32IMA SoC boot ROM ===
 SPI/SD init...
   card ready
-  image 0x00002A3C bytes -> 0x80001000
+  image 0x00000F4C bytes -> 0x80001000
   loaded, starting program
 
+MV
+
 === SoC acceptance test ===
-Running from RAM at 0x80001000, loaded from SD by the boot ROM.
+Running from RAM at 0x80001248
 
   RAM walking ones             ok
   RAM address uniqueness       ok
@@ -287,15 +298,20 @@ Running from RAM at 0x80001000, loaded from SD by the boot ROM.
   AMO read-modify-write        ok
   LR/SC success                ok
   LR/SC broken by store        ok
-  GPIO loopback                ok
+  GPIO pin readback            ok
+  framebuffer read/write       ok
   CLINT mtime advances         ok
+  misa reports I+M+A           ok
+  cycle/time/instret           ok
+  misaligned access traps      ok
+  FENCE.I invalidates          ok
 
 0 failure(s)
 SOC-TEST: PASS
 ```
 
 The boot ROM brings up SPI, initializes the card, reads an image header,
-pulls 21 blocks in over a bit-banged SPI link, and jumps to RAM; the loaded
+pulls eight blocks in over a bit-banged SPI link, and jumps to RAM; the loaded
 program then runs its own acceptance tests and reports over the UART. Every
 character above is decoded off the CPU's actual serial TX pin by a receiver
 state machine in `sim/tb_soc.v`. Pass/fail is also written as a magic word
@@ -324,15 +340,10 @@ first pulled the success check out from under the write phase. See
 
 ## 4. Getting it onto an actual FPGA
 
-**Nothing in `fpga/` has been synthesized, placed, routed, or run on
-hardware** — no FPGA toolchain and no board were available where this was
-built, so those files are elaborated and lint-clean but otherwise unproven.
-`fpga/README.md` is explicit about exactly what is and isn't known, and
-about which paths are the likely suspects if timing doesn't close.
-
-**On a ULX3S there is nothing to fill in.** `fpga/constraints/ulx3s.lpf` has
-real pins, `fpga/ulx3s_top.v` handles the board's quirks, and both FPGA
-variants that fit have a build target:
+**On a ULX3S there is nothing to fill in, and it has been done.**
+`fpga/constraints/ulx3s.lpf` has real pins, `fpga/ulx3s_top.v` handles the
+board's quirks, and the result boots on an LFE5U-85F and passes its
+acceptance test. Both FPGA variants that fit have a build target:
 
 ```bash
 make soc                                     # boot ROM is a synthesis input
@@ -340,6 +351,21 @@ BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh     # LFE5U-85F
 BOARD=ulx3s   ./fpga/synth/synth_ecp5.sh     # LFE5U-45F
 openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
 ```
+
+Synthesis needs oss-cad-suite on `PATH` (`export
+PATH=~/tools/oss-cad-suite/bin:$PATH`); `make verify` does not. See
+`docs/TOOLCHAIN.md`.
+
+**Until the SD card works, boot from a preloaded RAM image instead:**
+
+```bash
+make ramimage
+BOARD=ulx3s85-ram ./fpga/synth/synth_ecp5.sh
+```
+
+That bakes the program into the bitstream, and the boot ROM notices RAM is
+already populated and jumps straight to it. It is how the acceptance test
+was run on hardware, and it takes the card out of the path entirely.
 
 The 12F and 25F variants of that board do **not** fit — they are over their
 block-RAM budget and fail to place. See `fpga/README.md`.
