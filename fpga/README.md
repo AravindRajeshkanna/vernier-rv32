@@ -16,6 +16,8 @@ test.** Those are different claims, and two of them are still open:
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
+| Surviving a reset | ✅ **fixed** — `.data` is rebuilt at startup; two consecutive board runs are byte-identical |
+| newlib / `printf` on a board | ✅ **works** — `NEWLIB-PROBE: PASS`; the old failure was the `.data` bug above, not libc |
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
@@ -131,6 +133,35 @@ pulses reset *without* touching RAM, and it runs again. Both runs must pass.
 It is in `make verify`. It uses the probe rather than the acceptance test on
 purpose — the acceptance test keeps its state in `.bss`, which `_start` has
 always zeroed, so it passes twice either way and would never have caught this.
+
+### Confirmed on the board
+
+Two consecutive runs on a ULX3S / LFE5U-85F from `BOARD=ulx3s85-probe`, the
+second after a reset with no reconfiguration — which is precisely the case
+that used to fail. The two transcripts are **byte-identical**, and the fields
+that carried the bug read:
+
+```
+0  image 4925 words at 0x80001000...0x80005CF4
+   rotate-xor checksum 0x29346809
+   .data runs at 0x80009000, loaded from 0x80005C98, 23 words
+   ok   crt0 rebuilt .data from the image
+...
+8  puts: this line came out of newlib's stdio
+9  printf: 1234 formatted 0xdeadbeef
+A  __cleanup at entry  0x00000000  NULL: __sinit was free to run
+   stdout _flags 0x00000089 __SLBF(line-buffered) __SWR __SMBF(malloc'd buffer)
+
+0 failure(s)
+NEWLIB-PROBE: PASS
+  traps taken: 0
+```
+
+Before the fix the second run read `__cleanup at entry 0x80002890`, `_flags
+0x00000040 __SERR` with no `__SWR`, and `printf returned -1` with rungs 8 and
+9 printing nothing at all. The checksum `0x29346809` is also what
+`make sim_rerun` produces, so the silicon and the model agree on the image as
+well as on the outcome.
 
 ## The instrument that found it
 
