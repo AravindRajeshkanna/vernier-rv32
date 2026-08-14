@@ -16,9 +16,13 @@ real invariants, and it has already had a real failure — see below.
 
 ## Reporting
 
-Email **REDACTED** with `[vernier-rv32 security]` in the
-subject, or use GitHub's private vulnerability reporting on this repository
-(Security → Report a vulnerability).
+Use **GitHub's private vulnerability reporting** on this repository:
+Security → Report a vulnerability, or
+<https://github.com/aravindrajeshkanna/vernier-rv32/security/advisories/new>.
+
+That is the only reporting channel, deliberately — it keeps the report
+private until there is a fix, gives it a tracking number, and does not depend
+on anyone publishing a mailbox.
 
 Please do not open a public issue for privilege-boundary bugs until there has
 been a chance to look.
