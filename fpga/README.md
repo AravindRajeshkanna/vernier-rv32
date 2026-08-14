@@ -19,6 +19,44 @@ test.** Those are different claims, and two of them are still open:
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
+## The hardware run
+
+Verbatim from `picocom -b 115200 /dev/cu.usbserial-D01595`, on a ULX3S with
+an LFE5U-85F configured from `BOARD=ulx3s85-ram ./fpga/synth/synth_ecp5.sh`
+(27.26 MHz post-route, PASS at the board's 25 MHz):
+
+```
+=== RV32IMA SoC boot ROM ===
+RAM already holds a program (first word 0x00001197)
+  skipping SD, starting it
+
+MV
+
+=== SoC acceptance test ===
+Running from RAM at 0x80001248
+
+  RAM walking ones             ok
+  RAM address uniqueness       ok
+  RAM byte/half access         ok
+  AMO read-modify-write        ok
+  LR/SC success                ok
+  LR/SC broken by store        ok
+  GPIO pin readback            ok
+  framebuffer read/write       ok
+  CLINT mtime advances         ok
+  misa reports I+M+A           ok
+  cycle/time/instret           ok
+  misaligned access traps      ok
+  FENCE.I invalidates          ok
+
+0 failure(s)
+SOC-TEST: PASS
+```
+
+`0x00001197` is `_start`'s `auipc gp,0x1` and `0x80001248` is `main` — both
+match the ELF the bitstream was built from, which is what makes this a report
+about *that* build rather than about whatever was last flashed.
+
 The pinout is no longer fictional, which is a smaller claim than "this works"
 but a real one: the numbers above come from builds where every port is locked
 to the pin it will actually use, rather than ones where nextpnr could place
