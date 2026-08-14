@@ -48,7 +48,17 @@ one**:
 - `make formal` runs whatever `yosys` is first on `PATH` — normally
   Homebrew's 0.67+post.
 - `fpga/synth/synth_ecp5.sh` needs `PATH` pointed at oss-cad-suite first,
-  because that is the only place `nextpnr-ecp5` exists.
+  because that is the only place `nextpnr-ecp5` exists:
+
+  ```bash
+  export PATH=$HOME/tools/oss-cad-suite/bin:$PATH
+  ```
+
+  The script checks for `yosys`, `nextpnr-ecp5` and `ecppack` before it starts
+  and prints that line if any are missing. That check exists because a run
+  once got through 56 seconds of synthesis on a shell with only Homebrew on
+  its `PATH` before dying at `nextpnr-ecp5: command not found`, with the
+  netlist already built and nothing to do with it.
 
 This is not a deliberate design, it is a consequence of packaging: Homebrew
 has a `yosys` formula and a `prjtrellis` formula, but **no `nextpnr`

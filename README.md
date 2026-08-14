@@ -1,5 +1,11 @@
 # Vernier-RV32
 
+[![CI](https://github.com/aravindrajeshkanna/vernier-rv32/actions/workflows/ci.yml/badge.svg)](https://github.com/aravindrajeshkanna/vernier-rv32/actions/workflows/ci.yml)
+[![License: Apache-2.0 WITH SHL-2.1](https://img.shields.io/badge/license-Apache--2.0%20WITH%20SHL--2.1-blue.svg)](LICENSE)
+[![riscv-tests](https://img.shields.io/badge/riscv--tests-79%20passed%2C%200%20failed%2C%203%20xfail-brightgreen.svg)](tests/README.md)
+[![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-82%2F82%20traces%20match-brightgreen.svg)](tests/README.md)
+[![Hardware](https://img.shields.io/badge/ULX3S%20LFE5U--85F-SOC--TEST%3A%20PASS-brightgreen.svg)](fpga/README.md)
+
 **An RV32IMA SoC that measures itself.**
 
 A small, working RISC-V core — 5-stage pipeline, RV32IMA + Zicsr, full M/S/U
@@ -98,8 +104,8 @@ software/
     main.c       acceptance test: RAM, atomics, GPIO, timer
     console.c/.h libc-free UART output, so a test can't fail inside libc
     trap.c/.h    the loud trap handler's C half: report an unarmed trap, halt
-    newlibprobe.c  why does newlib die on hardware? a one-dependency-per-rung
-                   ladder: heap RAM -> _sbrk -> malloc -> snprintf -> printf
+    newlibprobe.c  the ladder that found the .data bug: one dependency per
+                   rung, heap RAM -> _sbrk -> malloc -> snprintf -> printf
     trapcheck.c  provokes known faults, so the handler is calibrated not assumed
     crt0_rom.S / crt0_ram.S, link_rom.ld / link_ram.ld
     mkcard.py    builds the SD card image (header block + program)
@@ -112,6 +118,8 @@ docs/
                    MMU, SoC, and every bug worth recording
   SOC.md         component and register reference: what each block is,
                  its registers, and what bites you when programming it
+  PRACTICES.md   the working rules, each attached to the incident that
+                 produced it - start here before changing anything
   DEBUG.md       UART, tracer, and an honest account of the missing JTAG
   TOOLCHAIN.md   every tool and version this was built with, and which
                  flow uses which
@@ -559,3 +567,38 @@ milestones — happy to help with any of these next:
 - A JTAG TAP and a RISC-V Debug Module, so debugging isn't just `printf`
 - SPI/SD storage, so `software/` programs could load data larger than
   fits in `dmem`
+
+---
+
+## Contributing, licence, and how this was built
+
+| | |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
+| [docs/PRACTICES.md](docs/PRACTICES.md) | The working rules — sixteen of them, each attached to the incident on this repo that produced it |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
+| [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |
+| [AI_USAGE.md](AI_USAGE.md) | Disclosure of how this project was built, and the policy for contributions |
+| [LICENSE](LICENSE) / [NOTICE](NOTICE) | Solderpad Hardware License 2.1 (`Apache-2.0 WITH SHL-2.1`) |
+
+**Licence.** Solderpad 2.1 is the Apache License 2.0 with hardware-specific
+wording — it extends the definitions to cover designs, netlists, layouts and
+mask works, and grants rights to *make* and *instantiate* the work, not only
+to copy it. You may treat anything here as plain Apache-2.0 if you prefer;
+Section 2 of the licence says so explicitly. No third-party code is vendored:
+riscv-tests and CoreMark are fetched at pinned commits and stay under their
+own terms. See [NOTICE](NOTICE), and note that CoreMark scores from this
+repository are unverified self-measurements, not EEMBC-certified ones.
+
+**AI.** This project was built with substantial AI assistance, and
+[AI_USAGE.md](AI_USAGE.md) says so in detail rather than leaving it to be
+inferred — including the three failure modes it produced here (confident wrong
+diagnostics, plausible tests that cannot fail, fluent explanations of the
+wrong cause) and what the verification layers are there to catch. The first
+three rules in `docs/PRACTICES.md` exist because of them.
+
+**CI.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the RTL
+regression, the SoC on both boot paths, the reset-and-rerun test, the trap
+handler calibration, the architectural suite and formal on every push. Spike
+co-simulation and FPGA place-and-route are local gates — they are too slow for
+CI, and `fpga/README.md` records the timing numbers from real runs by hand.

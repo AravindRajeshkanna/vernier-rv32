@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+title: >-
+  Vernier-RV32: a pipelined RV32IMA core and Wishbone SoC,
+  verified against riscv-tests, Spike and formal methods
+message: >-
+  If you use this project in academic work, please cite it using
+  these metadata. Note that CoreMark figures reported here are
+  unverified self-measurements and are not EEMBC-certified scores.
+type: software
+authors:
+  - given-names: Aravind
+    family-names: Rajesh Kanna
+    email: REDACTED
+repository-code: 'https://github.com/aravindrajeshkanna/vernier-rv32'
+abstract: >-
+  Vernier-RV32 is a five-stage pipelined RISC-V RV32IMA
+  implementation with machine, supervisor and user modes, an Sv32
+  MMU, a branch target buffer, and a Wishbone B4 system-on-chip
+  comprising boot ROM, on-chip RAM, CLINT, PLIC, UART, GPIO, SPI
+  and a framebuffer. It is verified in four independent layers:
+  directed testbenches, the upstream RISC-V architectural test
+  suite, instruction-level co-simulation against the Spike
+  reference model, and bounded model checking with Yosys and Z3.
+  The design synthesises for the Lattice ECP5 and has been run on
+  a ULX3S board, where it boots from a preloaded image and passes
+  its acceptance test at 25 MHz.
+keywords:
+  - risc-v
+  - rv32ima
+  - cpu
+  - soc
+  - verilog
+  - fpga
+  - ecp5
+  - ulx3s
+  - wishbone
+  - formal-verification
+  - co-simulation
+license: Apache-2.0 WITH SHL-2.1

@@ -1,0 +1,256 @@
+# Continuous integration for Vernier-RV32.
+#
+# Split into jobs by what each one needs installed, so a failure names the
+# layer rather than "CI is red". They run in parallel; `rtl` is the fastest
+# thing that can fail and needs nothing but Icarus Verilog.
+#
+# What is NOT here, and why:
+#
+#   cosim   needs Spike, which has to be built from source (several minutes)
+#           and would dominate the run. It is a local gate - see
+#           CONTRIBUTING.md - not a CI one.
+#   FPGA    synthesis needs YosysHQ's oss-cad-suite for nextpnr-ecp5, and
+#           place-and-route is 4-11 minutes on an ECP5. Timing numbers are
+#           recorded by hand in fpga/README.md from a real run.
+#
+# See docs/PRACTICES.md for what these layers are each meant to catch.
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Pure RTL: no RISC-V toolchain involved at all.
+  #
+  # sim's testbench is hand-assembled and sim_video/sim_cmd0 are RTL-only,
+  # so this job has no firmware to build. It is the one that should stay
+  # green even if the toolchain situation changes underneath us.
+  # ---------------------------------------------------------------------
+  rtl:
+    name: RTL (no toolchain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iverilog
+
+      - name: Core regression (hand-assembled)
+        run: make sim | tee sim.log
+      - name: Check core regression verdict
+        run: grep -q "TEST PASSED" sim.log
+
+      - name: Framebuffer scan-out
+        run: make sim_video | tee video.log
+      - name: Check video verdict
+        run: grep -q "VIDEO TEST PASSED" video.log
+
+      - name: SD CMD0 probe against the card model
+        run: make sim_cmd0 | tee cmd0.log
+      - name: Check CMD0 probe verdict
+        run: grep -q "CMD0 PROBE TEST PASSED" cmd0.log
+
+  # ---------------------------------------------------------------------
+  # Everything that needs firmware built.
+  #
+  # The toolchain comes from riscv-collab's prebuilt nightlies rather than
+  # apt: Ubuntu's gcc-riscv64-unknown-elf now pairs with picolibc, which has
+  # no nano.specs, and this firmware builds with -specs=nano.specs.
+  #
+  # UNVERIFIED UNTIL THE FIRST RUN. The asset name and the presence of
+  # nano.specs in the nightly are checked explicitly below so a change
+  # upstream fails with a sentence rather than a compiler error 200 lines
+  # deep. Pin `TOOLCHAIN_TAG` to a known-good release once one is green.
+  # ---------------------------------------------------------------------
+  firmware:
+    name: SoC, firmware and traps
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN_TAG: latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iverilog jq
+
+      - name: Resolve RISC-V toolchain download
+        id: tc
+        run: |
+          set -euo pipefail
+          if [ "$TOOLCHAIN_TAG" = "latest" ]; then
+            API=https://api.github.com/repos/riscv-collab/riscv-gnu-toolchain/releases/latest
+          else
+            API=https://api.github.com/repos/riscv-collab/riscv-gnu-toolchain/releases/tags/$TOOLCHAIN_TAG
+          fi
+          URL=$(curl -fsSL "$API" | jq -r '
+            .assets[].browser_download_url
+            | select(test("riscv64-elf-ubuntu-.*-gcc-nightly-.*\\.tar\\.gz$"))' | sort | tail -1)
+          if [ -z "$URL" ]; then
+            echo "::error::No riscv64-elf nightly asset found. Upstream asset naming"
+            echo "::error::has changed - update the filter in .github/workflows/ci.yml."
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "key=$(basename "$URL")" >> "$GITHUB_OUTPUT"
+          echo "Using $URL"
+
+      - name: Cache toolchain
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/riscv
+          key: riscv-${{ steps.tc.outputs.key }}
+
+      - name: Install RISC-V toolchain
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL "${{ steps.tc.outputs.url }}" -o /tmp/riscv.tar.gz
+          mkdir -p "$HOME/riscv"
+          tar xzf /tmp/riscv.tar.gz -C "$HOME/riscv" --strip-components=1
+
+      - name: Put the toolchain on PATH and check it can build this firmware
+        run: |
+          set -euo pipefail
+          echo "$HOME/riscv/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/riscv/bin:$PATH"
+          riscv64-unknown-elf-gcc --version | head -1
+          # The firmware builds with -specs=nano.specs. Check that up front:
+          # without it every build below fails inside the linker instead of
+          # here, which is a much worse place to learn about it.
+          printf 'int main(void){return 0;}\n' > /tmp/t.c
+          if ! riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -specs=nano.specs \
+                 -nostartfiles -c /tmp/t.c -o /tmp/t.o 2>/tmp/spec.err; then
+            echo "::error::This toolchain has no newlib-nano (nano.specs)."
+            echo "::error::See SOCPROG_CFLAGS in the Makefile; the firmware needs it."
+            cat /tmp/spec.err
+            exit 1
+          fi
+          echo "nano.specs: present"
+
+      - name: Build boot ROM, SoC program and images
+        run: make soc ramimage probeimage
+
+      - name: SoC over the SD boot path
+        run: make sim_soc | tee soc.log
+      - name: Check SoC verdict
+        run: grep -q "SOC TEST PASSED" soc.log
+
+      # The board's own configuration: program preloaded, 64 KB of RAM.
+      # PRACTICES.md §4 - sim_soc runs a machine no board has.
+      - name: SoC on the board's preloaded path (64 KB)
+        run: make sim_ramboot | tee ramboot.log
+      - name: Check preloaded-path verdict
+        run: grep -q "RAMBOOT TEST PASSED" ramboot.log
+
+      # PRACTICES.md §5 - reset is not a fresh start. This is the regression
+      # test for the .data initialisation bug.
+      - name: Survives a reset (run twice, RAM untouched)
+        run: make sim_rerun
+
+      - name: Trap handler calibration
+        run: make trapcheck
+
+      - name: Board wrapper wiring
+        run: make sim_ulx3s | tee ulx3s.log
+      - name: Check wrapper verdict
+        run: grep -q "ULX3S WRAPPER TEST PASSED" ulx3s.log
+
+      - name: Flat (non-SoC) software build and run
+        run: make sim_software
+
+  # ---------------------------------------------------------------------
+  # Architectural tests: somebody else's suite, pinned to a commit.
+  # ---------------------------------------------------------------------
+  isa:
+    name: riscv-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iverilog jq
+
+      - name: Resolve RISC-V toolchain download
+        id: tc
+        run: |
+          set -euo pipefail
+          URL=$(curl -fsSL https://api.github.com/repos/riscv-collab/riscv-gnu-toolchain/releases/latest | jq -r '
+            .assets[].browser_download_url
+            | select(test("riscv64-elf-ubuntu-.*-gcc-nightly-.*\\.tar\\.gz$"))' | sort | tail -1)
+          [ -n "$URL" ] || { echo "::error::No riscv64-elf nightly asset found."; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "key=$(basename "$URL")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache toolchain
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/riscv
+          key: riscv-${{ steps.tc.outputs.key }}
+
+      - name: Install RISC-V toolchain
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL "${{ steps.tc.outputs.url }}" -o /tmp/riscv.tar.gz
+          mkdir -p "$HOME/riscv"
+          tar xzf /tmp/riscv.tar.gz -C "$HOME/riscv" --strip-components=1
+
+      - name: PATH
+        run: echo "$HOME/riscv/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the suite (pinned commit)
+        run: make isa-fetch
+
+      - name: Run the architectural tests
+        run: make isa | tee isa.log
+
+      # run.sh already fails on a regression *and* on an expected failure
+      # that starts passing, so the list in expected-failures.txt cannot go
+      # stale. This asserts the summary line as well.
+      - name: Check no failures
+        run: |
+          grep -qE "riscv-tests: [0-9]+ passed, 0 failed" isa.log
+
+  # ---------------------------------------------------------------------
+  # Formal: bounded model checking. No RISC-V toolchain needed.
+  # ---------------------------------------------------------------------
+  formal:
+    name: Formal (yosys + z3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yosys and z3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends yosys z3
+
+      - name: Bounded model checking
+        run: make formal | tee formal.log
+
+      # formal/fv_selftest.v is a property that MUST fail. If the summary
+      # ever shows 0 refuted *and* the selftest as proved, the flow has
+      # stopped being able to go red - which is the failure mode that makes
+      # every other proof here worthless.
+      - name: Check the proofs held
+        run: |
+          grep -qE "formal: [0-9]+ proved, 0 refuted" formal.log

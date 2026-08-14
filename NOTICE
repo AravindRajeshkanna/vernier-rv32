@@ -1,0 +1,47 @@
+Vernier-RV32
+Copyright 2026 Aravind Rajesh Kanna
+
+Licensed under the Solderpad Hardware License, Version 2.1
+(SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1). See LICENSE.
+
+-------------------------------------------------------------------------------
+Third-party components
+-------------------------------------------------------------------------------
+
+No third-party source is vendored into this repository. Everything under rtl/,
+sim/, software/ (excluding the fetched directories named below), fpga/, formal/
+and docs/ is original work covered by LICENSE.
+
+Two external projects are used for verification and are fetched at pinned
+commits by scripts in this repository. They are downloaded into directories
+that .gitignore excludes, are never redistributed here, and remain under their
+own licenses:
+
+  riscv-tests
+    Upstream:  https://github.com/riscv-software-src/riscv-tests
+    Fetched by: tests/fetch.sh  ->  tests/riscv-tests/
+    License:   BSD-3-Clause (see the LICENSE file in the fetched tree)
+
+  CoreMark
+    Upstream:  https://github.com/eembc/coremark
+    Fetched by: software/bench/fetch-coremark.sh  ->  software/bench/coremark/
+    License:   Apache-2.0, with additional usage terms from EEMBC
+    Note:      CoreMark is an EEMBC benchmark and carries rules about how
+               scores may be published, including the required reporting
+               format and that scores must not be compared across different
+               compiler flags without disclosure. Any CoreMark number taken
+               from this repository is an unverified self-measurement and is
+               not an EEMBC-certified score. See software/bench/README.md.
+
+The port layer for CoreMark (software/bench/core_portme.c, core_portme.h,
+crt0_bench.S, link_bench.ld) is original work in this repository and is
+covered by LICENSE; the benchmark's own sources are used unmodified and are
+not redistributed here.
+
+-------------------------------------------------------------------------------
+Toolchain
+-------------------------------------------------------------------------------
+
+This project builds with, but does not distribute, the following: the RISC-V
+GNU toolchain and newlib, Icarus Verilog, Verilator, Yosys, nextpnr-ecp5,
+Project Trellis, Z3, Spike, and openFPGALoader. Each is under its own license.

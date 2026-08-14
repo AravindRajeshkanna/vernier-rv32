@@ -1,0 +1,66 @@
+name: Feature or change proposal
+description: Propose something the core, SoC or tooling should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please open one of these before writing a large change — this is a
+        small project reviewed by one person, and a 4,000-line pull request is
+        not reviewable regardless of how good it is.
+
+        The known gaps are already written down and do not need a new issue
+        unless you want to work on one: video scan-out to the HDMI pins (needs
+        a PLL and a TMDS serializer), an SDRAM controller (the seam is marked
+        in `rtl/soc/wb_ram.v`), a JTAG debug module, PMP, caches, and an
+        OpenSBI platform port. See `README.md` and `software/opensbi/README.md`.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What becomes possible that is not possible now
+      description: >-
+        Concrete beats general. "So an S-mode kernel can install its own
+        misaligned-access handler" is a better case than "better spec
+        compliance".
+    validations:
+      required: true
+
+  - type: textarea
+    id: verify
+    attributes:
+      label: How would it be verified?
+      description: >-
+        The question this project asks first. Which layer proves it — a
+        directed test, an upstream architectural test, Spike co-simulation, a
+        formal property, a board run? If it can only be checked on hardware,
+        say so; that is a real answer.
+      placeholder: |
+        rv32ui-p-... from the upstream suite already covers this and
+        currently fails / a new property in formal/ / a board run only
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: Expected cost
+      description: >-
+        For RTL: rough LUT/BRAM impact and whether you expect it on the
+        critical path. The design closes timing at 25 MHz with an Fmax around
+        28-31 MHz, so there is not much headroom — see `fpga/README.md`.
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Would you like to implement it?
+      options:
+        - label: I am offering to write this
+        - label: I have read CONTRIBUTING.md and docs/PRACTICES.md

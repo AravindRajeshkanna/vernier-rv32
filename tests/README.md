@@ -175,3 +175,21 @@ Two shapes, for a reason rather than by accident:
 
 Both are compiled only under `-DFORMAL`; simulation and synthesis never see
 them.
+
+---
+
+## Running these in CI
+
+`.github/workflows/ci.yml` runs the architectural suite and formal on every
+push, alongside the RTL regression and both SoC boot paths.
+
+**Spike co-simulation is deliberately not in CI.** It needs Spike built from
+source, which would dominate the run time, and it is the layer least likely to
+regress silently — a divergence shows up as a specific instruction mismatch
+rather than as a slow drift. It stays a local gate; `CONTRIBUTING.md` asks for
+its output in a pull request.
+
+FPGA place-and-route is not in CI either: it is 4–11 minutes on an ECP5, the
+placement is stochastic (see `docs/TOOLCHAIN.md` §6), and the numbers in
+`fpga/README.md` are recorded by hand from real runs so that a single noisy
+placement cannot quietly move a published figure.

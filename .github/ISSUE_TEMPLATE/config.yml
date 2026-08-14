@@ -1,0 +1,13 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/aravindrajeshkanna/vernier-rv32/security/advisories/new
+    about: >-
+      Privilege escalation, MMU permission bypass, trap delegation - please
+      report privately. See SECURITY.md for what is in and out of scope.
+  - name: Question about the design
+    url: https://github.com/aravindrajeshkanna/vernier-rv32/discussions
+    about: >-
+      Not a bug? docs/ARCHITECTURE.md covers the pipeline, hazards, privilege
+      and MMU in detail, and docs/SOC.md is the register reference - but ask
+      here if it is not answered there.

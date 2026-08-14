@@ -1,0 +1,95 @@
+name: Bug report
+description: Something behaves differently from what the docs or the spec say
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The most useful bugs against this project have
+        all been things nobody thought to test, so a report that says "this
+        passed but should not have" is as welcome as a crash.
+
+        Security-relevant bugs — the privilege boundary, the MMU, trap
+        delegation — go through [SECURITY.md](../blob/master/SECURITY.md)
+        instead of here.
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Where did it show up?
+      options:
+        - make sim (core regression)
+        - make sim_soc / sim_ramboot / sim_rerun (SoC in simulation)
+        - make isa (architectural tests)
+        - make cosim (Spike co-simulation)
+        - make formal
+        - make trapcheck / sim_probe (diagnostics)
+        - FPGA synthesis or place-and-route
+        - On a board
+        - Building the toolchain or firmware
+        - Docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what should have happened
+      description: >-
+        If it is an architectural question, quoting the spec passage helps a
+        lot — this project has been wrong about WARL fields before.
+      placeholder: |
+        misa reports ... but the spec says ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Verbatim output
+      description: >-
+        Paste it rather than describing it. Console output from a board is
+        especially valuable — the values in it are what make a report about a
+        specific build rather than about the project in general.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      placeholder: |
+        make isa-fetch
+        make isa
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware, if it was on a board
+      description: >-
+        Board and revision, FPGA variant, and the `BOARD=` target you built.
+        If the machine stopped, say what the LEDs were doing — `led[1:0]` is
+        the boot stage, `led[2]` a heartbeat, `led[3]` a sticky "a trap
+        happened", and alternating `led[1:0]` means the trap handler halted
+        and there is a report on the UART.
+      placeholder: |
+        ULX3S v3.0, LFE5U-85F, BOARD=ulx3s85-ram
+        led[3] lit, led[1:0] alternating
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Toolchain versions
+      description: "`iverilog -V | head -1`, `riscv64-unknown-elf-gcc --version | head -1`, `yosys -V`, OS"
+      render: text
