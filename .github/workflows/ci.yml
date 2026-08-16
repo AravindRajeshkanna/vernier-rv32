@@ -66,82 +66,25 @@ jobs:
   # ---------------------------------------------------------------------
   # Everything that needs firmware built.
   #
-  # The toolchain comes from riscv-collab's prebuilt nightlies rather than
-  # apt: Ubuntu's gcc-riscv64-unknown-elf now pairs with picolibc, which has
-  # no nano.specs, and this firmware builds with -specs=nano.specs.
+  # The toolchain install lives in .github/actions/riscv-toolchain, shared
+  # with the isa job below - one place to pin, one place to fix.
   #
-  # UNVERIFIED UNTIL THE FIRST RUN. The asset name and the presence of
-  # nano.specs in the nightly are checked explicitly below so a change
-  # upstream fails with a sentence rather than a compiler error 200 lines
-  # deep. Pin `TOOLCHAIN_TAG` to a known-good release once one is green.
+  # ubuntu-24.04 rather than ubuntu-latest, deliberately: the toolchain asset
+  # is built for a specific Ubuntu, and pinning the runner keeps the two from
+  # drifting apart when GitHub rolls the `latest` label forward.
   # ---------------------------------------------------------------------
   firmware:
     name: SoC, firmware and traps
-    runs-on: ubuntu-latest
-    env:
-      TOOLCHAIN_TAG: latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Icarus Verilog
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iverilog jq
+          sudo apt-get install -y --no-install-recommends iverilog
 
-      - name: Resolve RISC-V toolchain download
-        id: tc
-        run: |
-          set -euo pipefail
-          if [ "$TOOLCHAIN_TAG" = "latest" ]; then
-            API=https://api.github.com/repos/riscv-collab/riscv-gnu-toolchain/releases/latest
-          else
-            API=https://api.github.com/repos/riscv-collab/riscv-gnu-toolchain/releases/tags/$TOOLCHAIN_TAG
-          fi
-          URL=$(curl -fsSL "$API" | jq -r '
-            .assets[].browser_download_url
-            | select(test("riscv64-elf-ubuntu-.*-gcc-nightly-.*\\.tar\\.gz$"))' | sort | tail -1)
-          if [ -z "$URL" ]; then
-            echo "::error::No riscv64-elf nightly asset found. Upstream asset naming"
-            echo "::error::has changed - update the filter in .github/workflows/ci.yml."
-            exit 1
-          fi
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "key=$(basename "$URL")" >> "$GITHUB_OUTPUT"
-          echo "Using $URL"
-
-      - name: Cache toolchain
-        id: tc-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/riscv
-          key: riscv-${{ steps.tc.outputs.key }}
-
-      - name: Install RISC-V toolchain
-        if: steps.tc-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          curl -fsSL "${{ steps.tc.outputs.url }}" -o /tmp/riscv.tar.gz
-          mkdir -p "$HOME/riscv"
-          tar xzf /tmp/riscv.tar.gz -C "$HOME/riscv" --strip-components=1
-
-      - name: Put the toolchain on PATH and check it can build this firmware
-        run: |
-          set -euo pipefail
-          echo "$HOME/riscv/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/riscv/bin:$PATH"
-          riscv64-unknown-elf-gcc --version | head -1
-          # The firmware builds with -specs=nano.specs. Check that up front:
-          # without it every build below fails inside the linker instead of
-          # here, which is a much worse place to learn about it.
-          printf 'int main(void){return 0;}\n' > /tmp/t.c
-          if ! riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -specs=nano.specs \
-                 -nostartfiles -c /tmp/t.c -o /tmp/t.o 2>/tmp/spec.err; then
-            echo "::error::This toolchain has no newlib-nano (nano.specs)."
-            echo "::error::See SOCPROG_CFLAGS in the Makefile; the firmware needs it."
-            cat /tmp/spec.err
-            exit 1
-          fi
-          echo "nano.specs: present"
+      - uses: ./.github/actions/riscv-toolchain
 
       - name: Build boot ROM, SoC program and images
         run: make soc ramimage probeimage
@@ -179,43 +122,16 @@ jobs:
   # ---------------------------------------------------------------------
   isa:
     name: riscv-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Icarus Verilog
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iverilog jq
+          sudo apt-get install -y --no-install-recommends iverilog
 
-      - name: Resolve RISC-V toolchain download
-        id: tc
-        run: |
-          set -euo pipefail
-          URL=$(curl -fsSL https://api.github.com/repos/riscv-collab/riscv-gnu-toolchain/releases/latest | jq -r '
-            .assets[].browser_download_url
-            | select(test("riscv64-elf-ubuntu-.*-gcc-nightly-.*\\.tar\\.gz$"))' | sort | tail -1)
-          [ -n "$URL" ] || { echo "::error::No riscv64-elf nightly asset found."; exit 1; }
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "key=$(basename "$URL")" >> "$GITHUB_OUTPUT"
-
-      - name: Cache toolchain
-        id: tc-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/riscv
-          key: riscv-${{ steps.tc.outputs.key }}
-
-      - name: Install RISC-V toolchain
-        if: steps.tc-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          curl -fsSL "${{ steps.tc.outputs.url }}" -o /tmp/riscv.tar.gz
-          mkdir -p "$HOME/riscv"
-          tar xzf /tmp/riscv.tar.gz -C "$HOME/riscv" --strip-components=1
-
-      - name: PATH
-        run: echo "$HOME/riscv/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/riscv-toolchain
 
       - name: Fetch the suite (pinned commit)
         run: make isa-fetch

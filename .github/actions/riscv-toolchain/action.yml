@@ -1,0 +1,86 @@
+name: RISC-V toolchain
+description: >-
+  Install a prebuilt riscv64-unknown-elf toolchain with newlib-nano, and prove
+  it can build this project's firmware before any job depends on it.
+
+# Why a prebuilt tarball rather than apt:
+#
+# Ubuntu's gcc-riscv64-unknown-elf now pairs with picolibc, which provides
+# picolibc.specs and not nano.specs. This firmware builds with
+# -specs=nano.specs (see SOCPROG_CFLAGS in the Makefile), so the apt package
+# cannot build it.
+#
+# Why pinned rather than "latest":
+#
+# The first version of this resolved the newest release through the GitHub API
+# and matched assets with a regex. It broke on the first run, because the
+# assets are no longer named `...-gcc-nightly-<date>.tar.gz` - they are plain
+# `riscv64-elf-ubuntu-24.04-gcc.tar.xz`, and the extension changed from gz to
+# xz. A pinned tag and an exact filename cannot drift like that, and it is how
+# this project already treats riscv-tests and CoreMark: pinned, so a result
+# can never move because somebody else published something.
+#
+# The runner version and the asset are pinned *together* on purpose. The asset
+# is built for a specific Ubuntu, and picking `ubuntu-latest` while naming a
+# 24.04 tarball is a mismatch waiting for GitHub to roll the label forward.
+
+inputs:
+  tag:
+    description: riscv-collab/riscv-gnu-toolchain release tag
+    required: false
+    default: '2026.07.15'
+  asset:
+    description: Release asset filename; must match the runner's Ubuntu version
+    required: false
+    default: riscv64-elf-ubuntu-24.04-gcc.tar.xz
+
+runs:
+  using: composite
+  steps:
+    - name: Cache toolchain
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/riscv
+        key: riscv-${{ inputs.tag }}-${{ inputs.asset }}
+
+    - name: Download and unpack
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        URL="https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/${{ inputs.tag }}/${{ inputs.asset }}"
+        echo "Fetching $URL"
+        if ! curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/riscv.tar.xz; then
+          echo "::error::Could not download ${{ inputs.asset }} from release ${{ inputs.tag }}."
+          echo "::error::Check the release still carries that asset:"
+          echo "::error::  https://github.com/riscv-collab/riscv-gnu-toolchain/releases/tag/${{ inputs.tag }}"
+          echo "::error::and update tag/asset in .github/actions/riscv-toolchain/action.yml."
+          exit 1
+        fi
+        mkdir -p "$HOME/riscv"
+        # The tarball's single top-level directory is `riscv/`, hence
+        # --strip-components=1. J, not z: these assets are xz-compressed.
+        tar xJf /tmp/riscv.tar.xz -C "$HOME/riscv" --strip-components=1
+        rm -f /tmp/riscv.tar.xz
+
+    - name: Add to PATH
+      shell: bash
+      run: echo "$HOME/riscv/bin" >> "$GITHUB_PATH"
+
+    - name: Prove it can build this firmware
+      shell: bash
+      run: |
+        set -euo pipefail
+        riscv64-unknown-elf-gcc --version | head -1
+        # Fail here, with a sentence, rather than 200 lines deep in a link
+        # step. PRACTICES.md §13: check preconditions in cost order.
+        printf 'int main(void){return 0;}\n' > /tmp/probe.c
+        if ! riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -specs=nano.specs \
+               -nostartfiles -c /tmp/probe.c -o /tmp/probe.o 2>/tmp/probe.err; then
+          echo "::error::This toolchain has no newlib-nano (nano.specs)."
+          echo "::error::The firmware builds with -specs=nano.specs; see SOCPROG_CFLAGS."
+          cat /tmp/probe.err
+          exit 1
+        fi
+        echo "nano.specs: present"
