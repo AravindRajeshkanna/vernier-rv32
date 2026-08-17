@@ -96,6 +96,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
+        check-program regen-program \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
@@ -133,6 +134,39 @@ sim/firmware_imem.hex: software/firmware.elf software/bin2hex.py Makefile
 sim/firmware_dmem.hex: software/firmware.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary --only-section=.data software/firmware.elf software/firmware_data.bin
 	python3 software/bin2hex.py --word-size=1 software/firmware_data.bin > sim/firmware_dmem.hex
+
+# ---- the hand-assembled core regression program ----
+# sim/program.hex is committed, because `make sim` must run with no RISC-V
+# toolchain at all - that is what makes it the fastest thing in the suite that
+# can fail, and what lets CI run it on a bare runner.
+#
+# It used to be committed with no source: produced by a throwaway Python
+# encoder that was never in the repository, which left 440 instructions that
+# could be read but not changed. sim/program.S is that source, recovered by
+# disassembly and verified by reassembling to the identical bytes.
+#
+# Neither target runs as part of a normal build; both need a toolchain.
+#   make check-program   reassemble and fail if it differs from the committed hex
+#   make regen-program   rewrite the hex from the source
+PROGRAM_CFLAGS = -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib \
+                  -nostartfiles -Wl,-Ttext=0
+
+sim/program.rebuilt.hex: sim/program.S software/bin2hex.py Makefile
+	$(RISCV_CC) $(PROGRAM_CFLAGS) -o sim/program.rebuilt.elf sim/program.S
+	$(RISCV_OBJCOPY) -O binary sim/program.rebuilt.elf sim/program.rebuilt.bin
+	python3 software/bin2hex.py --word-size=4 sim/program.rebuilt.bin > $@
+
+check-program: sim/program.rebuilt.hex
+	@if diff -q sim/program.rebuilt.hex sim/program.hex >/dev/null; then \
+	    echo "program.hex matches sim/program.S"; \
+	else \
+	    echo "program.hex does NOT match sim/program.S:"; \
+	    diff sim/program.rebuilt.hex sim/program.hex | head -20; \
+	    exit 1; \
+	fi
+
+regen-program: sim/program.rebuilt.hex
+	cp sim/program.rebuilt.hex sim/program.hex
 
 sim_software: software
 	$(IVERILOG) -g2012 -o sim/sim_software.out sim/tb_software.v $(RTL)
@@ -383,7 +417,8 @@ coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
 # Everything that can gate a change, in rough order of how fast it fails.
-verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 isa cosim formal
+verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
+        check-program isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
@@ -391,6 +426,7 @@ clean:
 	       software/firmware.elf software/firmware_text.bin software/firmware_data.bin \
 	       sim/sim_soc.out sim/wave_soc.vcd sim/bootrom.hex sim/card.hex \
 	       sim/sim_ramboot.out sim/sim_probe.out sim/sim_rerun.out \
+	       sim/program.rebuilt.hex sim/program.rebuilt.elf sim/program.rebuilt.bin \
 	       sim/wave_ramboot.vcd sim/rerun.log \
 	       sim/ramimage.hex sim/probeimage.hex \
 	       software/soc/bootrom.elf software/soc/bootrom.bin \

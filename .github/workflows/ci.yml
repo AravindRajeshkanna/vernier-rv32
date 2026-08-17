@@ -95,6 +95,11 @@ jobs:
 
       - uses: ./.github/actions/riscv-toolchain
 
+      # sim/program.hex is committed so the rtl job needs no toolchain; this
+      # is where it gets proved to still match its source.
+      - name: Core regression program matches its source
+        run: make check-program
+
       - name: Build boot ROM, SoC program and images
         run: make soc ramimage probeimage
 
