@@ -142,6 +142,49 @@ module cpu_core #(
     output wire         fence_i, // FENCE.I retired: any instruction buffer/cache must drop its contents
     output wire         trap   // pulses for one cycle when a trap/interrupt redirect is taken (EX)
 );
+
+    // ---- forward declarations ----
+    //
+    // Verilog requires a net to be declared before it is referenced, and
+    // these are all referenced above the point where the logic that drives
+    // them reads most naturally - pipeline registers used by the hazard and
+    // forwarding logic in the stage before them, CSR outputs consumed by
+    // decode, branch resolution feeding the fetch redirect.
+    //
+    // iverilog 12 accepted the forward references; iverilog 14 rejects them
+    // with 94 elaboration errors, and it is right to. Declaring them here
+    // and assigning them where they belong keeps the layout of the file and
+    // makes it build on both.
+    reg        id_ex_valid;
+    reg [31:0] id_ex_pc;
+    reg [4:0]  id_ex_rs1, id_ex_rs2, id_ex_rd;
+    reg        id_ex_is_load, id_ex_is_store, id_ex_mem_we;
+    reg        id_ex_is_amo;
+    wire actual_taken;
+    wire btb_train_en;
+    reg branch_taken;
+    wire [31:0] actual_target;
+    wire fetch_misaligned;
+    wire mmu_resolved, mmu_fault, mmu_busy;
+    wire sfence_en;
+    wire ex_commit;
+    wire ex_busy_stall;
+    wire [31:0] csr_mcounteren, csr_scounteren;
+    wire [1:0]  current_priv;
+    wire        satp_mode;
+    wire [21:0] satp_ppn;
+    wire        csr_mstatus_mprv;
+    wire [1:0]  csr_mstatus_mpp;
+    wire        csr_mstatus_sum, csr_mstatus_mxr;
+    wire        csr_mstatus_tvm, csr_mstatus_tw, csr_mstatus_tsr;
+    wire interrupt_taken;
+    reg        ex_mem_valid;
+    reg [4:0]  ex_mem_rd;
+    reg        ex_mem_reg_we;
+    reg [31:0] ex_mem_wb_data;
+    reg        reservation_valid;
+    reg [31:0] reservation_addr;
+
     localparam OPC_LOAD    = 7'b0000011;
     localparam OPC_MISCMEM = 7'b0001111;
     localparam OPC_OPIMM   = 7'b0010011;
@@ -499,16 +542,12 @@ module cpu_core #(
     // =======================================================================
     // ID/EX pipeline register
     // =======================================================================
-    reg        id_ex_valid;
-    reg [31:0] id_ex_pc;
     reg [31:0] id_ex_rs1_data, id_ex_rs2_data;
-    reg [4:0]  id_ex_rs1, id_ex_rs2, id_ex_rd;
     reg [31:0] id_ex_imm;
     reg [3:0]  id_ex_alu_ctrl;
     reg        id_ex_is_op;
     reg [2:0]  id_ex_wb_sel;
     reg        id_ex_reg_we;
-    reg        id_ex_is_load, id_ex_is_store, id_ex_mem_we;
     reg [1:0]  id_ex_mem_size;
     reg [2:0]  id_ex_funct3;
     reg        id_ex_is_branch, id_ex_is_jal, id_ex_is_jalr;
@@ -518,7 +557,6 @@ module cpu_core #(
     reg        id_ex_is_trap_event, id_ex_is_mret, id_ex_is_sret;
     reg [31:0] id_ex_trap_cause, id_ex_trap_val;
     reg        id_ex_is_muldiv, id_ex_is_sfence_vma, id_ex_is_fence_i;
-    reg        id_ex_is_amo;
     reg [4:0]  id_ex_funct5;
     reg        id_ex_pred_taken;
     reg [31:0] id_ex_pred_target;
@@ -621,14 +659,13 @@ module cpu_core #(
     wire div_stall = is_div_now && !div_done;
     wire [31:0] div_result = id_ex_funct3[1] ? div_remainder : div_quotient;
 
-    wire actual_taken  = (id_ex_is_branch && branch_taken) || id_ex_is_jal || id_ex_is_jalr;
+    assign actual_taken = (id_ex_is_branch && branch_taken) || id_ex_is_jal || id_ex_is_jalr;
     wire is_control_flow = id_ex_is_branch || id_ex_is_jal || id_ex_is_jalr;
     // Not trained on a misaligned target: that branch traps rather than
     // transferring control, so caching its target would mispredict the next
     // time round for a jump that never actually goes there.
-    wire btb_train_en = id_ex_valid && is_control_flow && ex_commit && !fetch_misaligned;
+    assign btb_train_en = id_ex_valid && is_control_flow && ex_commit && !fetch_misaligned;
 
-    reg branch_taken;
     always @(*) begin
         case (id_ex_funct3)
             3'b000:  branch_taken = (op1 == op2_reg);                       // BEQ
@@ -646,7 +683,7 @@ module cpu_core #(
     wire [31:0] jal_target    = id_ex_pc + id_ex_imm;
     wire [31:0] branch_target = id_ex_pc + id_ex_imm;
     wire [31:0] auipc_result  = id_ex_pc + id_ex_imm;
-    wire [31:0] actual_target = id_ex_is_jal  ? jal_target  :
+    assign actual_target = id_ex_is_jal  ? jal_target  :
                                 id_ex_is_jalr ? jalr_target : branch_target;
 
     // Misaligned instruction fetch (cause 0). Without the C extension
@@ -662,7 +699,7 @@ module cpu_core #(
     // A not-taken branch to a misaligned target must *not* trap, which is why
     // `actual_taken` gates this rather than the target being computed for
     // every branch.
-    wire fetch_misaligned = is_control_flow && actual_taken && actual_target[1];
+    assign fetch_misaligned = is_control_flow && actual_taken && actual_target[1];
 
     // ---- data MMU: translate load/store/AMO addresses ----
     // Real spec: satp/paging only applies at S/U privilege, or to an
@@ -712,9 +749,8 @@ module cpu_core #(
 
     wire need_translate  = is_mem_op_now && !mem_misaligned &&
                            satp_mode && (effective_priv_for_data != PRIV_M);
-    wire mmu_resolved, mmu_fault, mmu_busy;
     wire [31:0] mmu_pa;
-    wire sfence_en = id_ex_valid && id_ex_is_sfence_vma && !interrupt_taken && ex_commit;
+    assign sfence_en = id_ex_valid && id_ex_is_sfence_vma && !interrupt_taken && ex_commit;
     wire fence_i_en = id_ex_valid && id_ex_is_fence_i && !interrupt_taken && ex_commit;
     assign fence_i = fence_i_en;
 
@@ -760,9 +796,9 @@ module cpu_core #(
     // re-present the same instruction next cycle, so letting it redirect,
     // write a CSR, take a trap, return from one, flush the TLB, or train
     // the predictor now would do all of that twice.
-    wire ex_commit = !dbus_stall;
+    assign ex_commit = !dbus_stall;
 
-    wire ex_busy_stall = div_stall || mmu_wait_stall || dbus_stall;
+    assign ex_busy_stall = div_stall || mmu_wait_stall || dbus_stall;
 
     // op2_reg is live-forwarded and drifts once EX/MEM and MEM/WB drain
     // (a few cycles into a walk, well before it resolves, since the rest
@@ -784,15 +820,7 @@ module cpu_core #(
     wire [31:0] csr_mtvec, csr_stvec, csr_mepc, csr_sepc;
     wire        csr_trap_to_s;
     wire [31:0] csr_mie, csr_mip, csr_mideleg;
-    wire [31:0] csr_mcounteren, csr_scounteren;
     wire        csr_mstatus_mie, csr_sstatus_sie;
-    wire [1:0]  current_priv;
-    wire        satp_mode;
-    wire [21:0] satp_ppn;
-    wire        csr_mstatus_mprv;
-    wire [1:0]  csr_mstatus_mpp;
-    wire        csr_mstatus_sum, csr_mstatus_mxr;
-    wire        csr_mstatus_tvm, csr_mstatus_tw, csr_mstatus_tsr;
     wire [31:0] csr_op_operand = id_ex_csr_imm_form ? id_ex_zimm : op1;
     reg  [31:0] csr_new_value;
     always @(*) begin
@@ -848,7 +876,7 @@ module cpu_core #(
                                 m_sei ? 32'h8000_0009 : m_ssi ? 32'h8000_0001 : 32'h8000_0005) :
                                (s_sei ? 32'h8000_0009 : s_ssi ? 32'h8000_0001 : 32'h8000_0005);
 
-    wire interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall;
+    assign interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall;
 
     wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now ||
                             mem_misaligned || fetch_misaligned;
@@ -986,10 +1014,6 @@ module cpu_core #(
     // =======================================================================
     // EX/MEM pipeline register
     // =======================================================================
-    reg        ex_mem_valid;
-    reg [4:0]  ex_mem_rd;
-    reg        ex_mem_reg_we;
-    reg [31:0] ex_mem_wb_data;
     reg        ex_mem_is_load, ex_mem_mem_we;
     reg [2:0]  ex_mem_funct3;
     reg [31:0] ex_mem_mem_addr, ex_mem_mem_wdata;
@@ -1101,8 +1125,6 @@ module cpu_core #(
     // same-cycle LR); any SC (success or failure) invalidates it too, as
     // does any successful write anywhere (coarser than address-matched,
     // spec-legal, simpler).
-    reg        reservation_valid;
-    reg [31:0] reservation_addr;
     wire       any_successful_write = (ex_mem_valid && ex_mem_mem_we) || dmem_we_amo;
     wire       any_sc_this_cycle    = ex_mem_valid && ex_mem_is_sc;
 

@@ -90,6 +90,10 @@ module sd_card_model #(
     reg        in_cmd = 0;
     reg        app_cmd = 0;   // set by CMD55, so the next command is an ACMD
 
+    // Declared up here, not with the other clock-policing state below, because
+    // process_command reads it: iverilog 14 requires declaration before use.
+    reg        init_done   = 0;
+
     task process_command;
         reg [5:0]  cmd;
         reg [31:0] arg;
@@ -165,7 +169,6 @@ module sd_card_model #(
     // host is actually driving rather than what it intended to. Only the
     // pre-ACMD41 window is policed; `cs_n` gaps are ignored, since a long idle
     // between bytes is not a slow clock.
-    reg        init_done   = 0;
     time       last_rise   = 0;
     reg        have_rise   = 0;
 
