@@ -120,6 +120,7 @@ docs/
                  its registers, and what bites you when programming it
   practices.md   the working rules, each attached to the incident that
                  produced it - start here before changing anything
+  roadmap.md     what is next, in phases, with the state of each stated
   debug.md       UART, tracer, and an honest account of the missing JTAG
   toolchain.md   every tool and version this was built with, and which
                  flow uses which
@@ -518,56 +519,30 @@ different scale of project.
 
 ### Where this goes next
 
-Roughly in order of how much each one unblocks, with the current state of each
+[docs/roadmap.md](docs/roadmap.md) has the full picture, in dependency order
+rather than by how interesting each item is, with the current state of each
 stated rather than implied.
 
-**The SD card.** The one piece of the boot path that has never worked on
-hardware. A 64 GB SDXC card never answers CMD0, which is permitted — SPI mode
-is optional above 32 GB — but that has not been distinguished from a wiring
-fault, because no smaller card has been tried. `BOARD=ulx3s-cmd0` builds a
-60-flip-flop probe that answers it in seconds. This is the cheapest open
-question in the project by a wide margin.
+The short version:
 
-**External DRAM.** The 64 KB of block RAM is what stands between this and
-anything Linux-shaped, and it is also what forces the firmware to be as small
-as it is. `rtl/soc/wb_ram.v` is the seam: everything above it speaks Wishbone
-and knows only a base address and a size. The ULX3S carries 32 MB of SDRAM
-that nothing here can reach. LiteDRAM via LiteX is the well-trodden path.
+| Phase | | Status |
+|---|---|---|
+| 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
+| 1 | **Close the boot path** — the SD card | the only untested link in the boot chain, and the cheapest open question here |
+| 2 | **Break the memory ceiling** — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
+| 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | every fetch and load goes to the bus |
+| 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
+| 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot |
+| 6 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
 
-**Video scan-out.** The framebuffer works and is verified by capturing a frame
-off the scan-out and comparing it back (`make sim_video`), but nothing is
-routed to the HDMI pins — that needs a PLL and a TMDS serializer, neither of
-which exists.
+Phase 1 needs a card of 32 GB or less and about five minutes. Phase 2 unblocks
+almost everything after it. Superscalar and out-of-order execution sit outside
+the phases deliberately — that is a redesign of the thing the phases build on,
+not an addition to it.
 
-**Caches.** Every fetch and every load goes to the bus, and the shared-bus
-interconnect means a load costs the fetch behind it a cycle. An I-cache alone
-would be a large win and is self-contained.
-
-**The intermittent `ISA-TIMEOUT` under `make verify`.** Undiagnosed. It
-self-reports rather than hanging silently now, which is not the same as being
-fixed, and the cause is still unknown.
-
-**An OpenSBI platform port.** OpenSBI builds for this core and does not boot on
-it. `software/opensbi/README.md` lists the four things standing in the way; the
-memory ceiling above is one of them.
-
-Smaller, each independent of the others:
-
-- Make the UART interrupt-driven through the PLIC instead of polled. The
-  interrupt is already wired; the driver just does not use it.
-- Hardware PTE accessed/dirty update in the MMU walker, so it does not fault
-  when software has not pre-set those bits.
-- A JTAG TAP and a RISC-V Debug Module. `docs/debug.md` is honest about what
-  their absence costs.
-- PMP, which `SECURITY.md` lists as a known gap rather than an oversight.
-- FreeRTOS or Zephyr, now that there is a bus, a timer, an interrupt
-  controller and storage.
-
-And one that is not an increment: **superscalar issue and out-of-order
-execution** — register renaming, a reorder buffer, reservation stations or a
-scoreboard, multiple execution units. That is a microarchitecture redesign
-rather than an addition to this pipeline, which is why it is treated as a
-separate effort rather than a to-do item.
+One known defect is open and unscheduled: the intermittent `ISA-TIMEOUT` under
+`make verify`. It self-reports rather than hanging silently now, which is not
+the same as being fixed.
 
 ---
 
@@ -577,6 +552,7 @@ separate effort rather than a to-do item.
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
 | [docs/practices.md](docs/practices.md) | The working rules — sixteen of them, each attached to the incident on this repo that produced it |
+| [docs/roadmap.md](docs/roadmap.md) | Where this goes next, in phases, in dependency order |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |
 | [AI_USAGE.md](AI_USAGE.md) | Disclosure of how this project was built, and the policy for contributions |
