@@ -20,9 +20,11 @@ ROOT="$(cd "$HERE/.." && pwd)"
 SRC="$HERE/riscv-tests"
 OUT="$HERE/build"
 
-CC=riscv64-unknown-elf-gcc
-OBJCOPY=riscv64-unknown-elf-objcopy
-NM=riscv64-unknown-elf-nm
+# Overridable, so a toolchain with a different prefix works without editing
+# this file - see RISCV_CC in the Makefile for why CI needs that.
+CC=${RISCV_CC:-riscv64-unknown-elf-gcc}
+OBJCOPY=${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}
+NM=${RISCV_NM:-$(echo "$CC" | sed 's/gcc$/nm/')}
 
 SUITES="${SUITES:-rv32ui rv32um rv32ua rv32mi rv32si}"
 

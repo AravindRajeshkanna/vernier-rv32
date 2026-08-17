@@ -1,0 +1,104 @@
+name: RISC-V toolchain
+description: >-
+  Install a bare-metal RISC-V toolchain with an rv32im/ilp32 newlib-nano
+  multilib, and prove it can link this project's firmware before any job
+  depends on it.
+
+# Why xPack and not the obvious candidates:
+#
+#   apt gcc-riscv64-unknown-elf   pairs with picolibc - no nano.specs at all,
+#                                 and this firmware builds -specs=nano.specs.
+#   riscv-collab riscv64-elf      ships one libc_nano.a, built for rv64. The
+#                                 boot ROM links (no libc), then socprog fails:
+#                                 "target emulation `elf64-littleriscv' does
+#                                 not match `elf32-littleriscv'".
+#   riscv-collab riscv32-elf      ships one libc_nano.a and no multilib
+#                                 directories at all.
+#
+# What the firmware actually needs is the rv32im/ilp32 multilib, which is what
+# `riscv64-unknown-elf-gcc -march=rv32im_zicsr_zifencei -mabi=ilp32
+# -print-file-name=libc_nano.a` resolves to on a working install. xPack ships
+# that multilib (along with rv32i, rv32imc, rv32ia... variants), which is the
+# whole point of a toolchain packaged for embedded work.
+#
+# The prefix is riscv-none-elf- rather than riscv64-unknown-elf-, so this sets
+# RISCV_CC/RISCV_OBJCOPY for the rest of the job. The Makefile and
+# tests/build.sh both take them from the environment.
+#
+# Pinned, like riscv-tests and CoreMark: a result should never move because
+# somebody else published something.
+
+inputs:
+  version:
+    description: xpack-dev-tools/riscv-none-elf-gcc-xpack release, without the leading v
+    required: false
+    default: 15.2.0-1
+
+runs:
+  using: composite
+  steps:
+    - name: Cache toolchain
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/riscv
+        key: xpack-riscv-none-elf-gcc-${{ inputs.version }}-linux-x64
+
+    - name: Download and unpack
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        V='${{ inputs.version }}'
+        URL="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${V}/xpack-riscv-none-elf-gcc-${V}-linux-x64.tar.gz"
+        echo "Fetching $URL"
+        if ! curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/riscv.tar.gz; then
+          echo "::error::Could not download the xPack toolchain v${V}."
+          echo "::error::Check the release still carries that asset:"
+          echo "::error::  https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/tag/v${V}"
+          echo "::error::and update `version` in .github/actions/riscv-toolchain/action.yml."
+          exit 1
+        fi
+        mkdir -p "$HOME/riscv"
+        tar xzf /tmp/riscv.tar.gz -C "$HOME/riscv" --strip-components=1
+        rm -f /tmp/riscv.tar.gz
+
+    - name: Put it on PATH and select it for make
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "$HOME/riscv/bin" >> "$GITHUB_PATH"
+        echo "RISCV_CC=riscv-none-elf-gcc" >> "$GITHUB_ENV"
+        echo "RISCV_OBJCOPY=riscv-none-elf-objcopy" >> "$GITHUB_ENV"
+
+    - name: Prove it can LINK this firmware, not merely compile it
+      shell: bash
+      run: |
+        set -euo pipefail
+        riscv-none-elf-gcc --version | head -1
+        echo "multilib selected for the firmware's flags:"
+        riscv-none-elf-gcc -march=rv32im_zicsr_zifencei -mabi=ilp32 -print-multi-directory
+        riscv-none-elf-gcc -march=rv32im_zicsr_zifencei -mabi=ilp32 \
+          -specs=nano.specs -print-file-name=libc_nano.a
+
+        # This step used to run `gcc -c`, which compiles and never links, so it
+        # never touched libc_nano.a - and passed against a toolchain whose only
+        # libc_nano.a was 64-bit. The firmware then failed at link, one step
+        # later, which is exactly the check-that-cannot-fail that
+        # docs/practices.md §1 is about. Link a real binary instead.
+        printf 'int main(void){return 0;}\n' > /tmp/probe.c
+        if ! riscv-none-elf-gcc -march=rv32im_zicsr_zifencei -mabi=ilp32 \
+               -specs=nano.specs -nostartfiles -e main \
+               /tmp/probe.c -o /tmp/probe.elf 2>/tmp/probe.err; then
+          echo "::error::This toolchain cannot link rv32im/ilp32 against newlib-nano."
+          echo "::error::The firmware needs that multilib; see SOCPROG_CFLAGS in the Makefile."
+          cat /tmp/probe.err
+          exit 1
+        fi
+        # And that what came out is 32-bit, which is the thing that was wrong.
+        file /tmp/probe.elf
+        if ! riscv-none-elf-objcopy -O binary /tmp/probe.elf /tmp/probe.bin; then
+          echo "::error::objcopy from the same toolchain could not process its own output."
+          exit 1
+        fi
+        echo "toolchain links rv32im/ilp32 + newlib-nano: ok"
