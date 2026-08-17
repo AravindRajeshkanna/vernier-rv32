@@ -4,19 +4,20 @@ description: >-
 
 # Why not apt's yosys:
 #
-# formal/run.sh builds its self-test with
-#
-#     read_verilog -sv -formal ...; prep -flatten; async2sync;
-#     chformal -lower; write_smt2 -wires ...
-#
-# and `chformal -lower` is newer than the yosys Ubuntu packages. On
-# ubuntu-24.04 the run aborts at the first step with
+# On ubuntu-24.04 the packaged yosys aborts at the first step of
+# formal/run.sh with
 #
 #     ABORT: yosys could not build the self-test
 #
 # which is the flow refusing to report proofs it could not actually check -
 # the self-test is a property that MUST fail, and if it cannot be built,
 # nothing below it would mean anything. See formal/fv_selftest.v.
+#
+# The exact reason apt's yosys cannot build it is NOT established. An earlier
+# version of this file asserted it was `chformal -lower` being too new. That
+# was a guess and a wrong one: yosys 0.67 has the option and builds the
+# self-test fine. What is established is that the packaged yosys fails and
+# this bundle works.
 #
 # docs/toolchain.md already records that the published formal numbers come
 # from the oss-cad-suite yosys specifically, so using it here makes CI match
@@ -73,9 +74,12 @@ runs:
           echo "::error::yosys-smtbmc missing from the bundle."; exit 1; }
         command -v z3 >/dev/null || {
           echo "::error::z3 missing from the bundle; formal/run.sh uses it as the solver."; exit 1; }
-        # The specific option that apt's yosys was too old for.
-        if ! yosys -q -p "help chformal" 2>&1 | grep -q -- "-lower"; then
-          echo "::error::This yosys has no 'chformal -lower'; formal/run.sh needs it."
-          exit 1
-        fi
-        echo "yosys, yosys-smtbmc, z3 and chformal -lower: ok"
+        echo "yosys, yosys-smtbmc and z3: present"
+
+        # No capability grep here. The first version of this step ran
+        # `yosys -q -p "help chformal" | grep -- -lower` and failed against a
+        # yosys that has the option - because -q suppresses the very output it
+        # was grepping. formal/run.sh already builds the self-test as its first
+        # act and aborts with a clear message if yosys cannot, which is a check
+        # that cannot be fooled by the phrasing of a help page. Let it be the
+        # check.

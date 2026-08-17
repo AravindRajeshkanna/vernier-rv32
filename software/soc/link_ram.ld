@@ -97,9 +97,23 @@ SECTIONS
         *(.bss*)
         *(.sbss*)
         *(COMMON)
+        /* crt0_ram.S zeroes [_bss_start, _bss_end) a word at a time, so the
+         * end has to be a word boundary or the last store runs past it. */
+        . = ALIGN(4);
         _bss_end = .;
     } > RUN
 
+    /* _end is where syscalls.c starts the heap, so it is the address malloc
+     * hands out first - it must be aligned for the largest type malloc is
+     * expected to return storage for, which on ilp32 newlib is 8.
+     *
+     * This was not aligned, and nothing noticed for as long as every build
+     * used one toolchain: with Homebrew's, .bss happened to end on a boundary.
+     * xPack's lays the section out differently, _end came out at ...F1, and
+     * the first word written to the heap was a misaligned store. The loud trap
+     * handler caught it on the first CI run that used a different toolchain -
+     * mcause 6, mtval 0x800093F1, which is _end itself. */
+    . = ALIGN(8);
     _end = .;
 
     PROVIDE(__global_pointer$ = _bss_start + 0x800);
@@ -119,4 +133,8 @@ SECTIONS
            "program image has grown into the memory-test region at 0x80008000")
     ASSERT(_end <= 0x8000F000,
            ".bss reaches the heap ceiling - no room left for a heap")
+    ASSERT((_end & 7) == 0,
+           "_end is not 8-byte aligned - the heap would start misaligned")
+    ASSERT((_bss_end & 3) == 0,
+           "_bss_end is not word aligned - crt0's zeroing loop would overrun")
 }
