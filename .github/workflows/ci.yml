@@ -25,6 +25,15 @@ on:
 permissions:
   contents: read
 
+# `shell: bash` is not cosmetic. Without it GitHub runs steps as `bash -e`,
+# where `make foo | tee foo.log` reports tee's exit status and a failing make
+# looks green - which is exactly what happened to the formal job: "Bounded
+# model checking" passed while make had exited 2, and only the grep after it
+# noticed. Naming the shell gets `bash -eo pipefail`.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -155,10 +164,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install yosys and z3
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends yosys z3
+      - uses: ./.github/actions/oss-cad-suite
 
       - name: Bounded model checking
         run: make formal | tee formal.log

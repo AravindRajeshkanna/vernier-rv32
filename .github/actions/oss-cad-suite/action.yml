@@ -1,0 +1,81 @@
+name: oss-cad-suite
+description: >-
+  Install YosysHQ's oss-cad-suite bundle, for the formal flow.
+
+# Why not apt's yosys:
+#
+# formal/run.sh builds its self-test with
+#
+#     read_verilog -sv -formal ...; prep -flatten; async2sync;
+#     chformal -lower; write_smt2 -wires ...
+#
+# and `chformal -lower` is newer than the yosys Ubuntu packages. On
+# ubuntu-24.04 the run aborts at the first step with
+#
+#     ABORT: yosys could not build the self-test
+#
+# which is the flow refusing to report proofs it could not actually check -
+# the self-test is a property that MUST fail, and if it cannot be built,
+# nothing below it would mean anything. See formal/fv_selftest.v.
+#
+# docs/toolchain.md already records that the published formal numbers come
+# from the oss-cad-suite yosys specifically, so using it here makes CI match
+# what the documentation claims rather than a second, different flow.
+#
+# This bundle also contains iverilog 14, which rejects the declaration-after-
+# use in rtl/cpu_core.v that iverilog 12 accepts. That is why only the formal
+# job uses it: putting it on PATH for a simulation job would change which
+# iverilog runs.
+
+inputs:
+  version:
+    description: oss-cad-suite-build release date, YYYY-MM-DD
+    required: false
+    default: '2026-08-16'
+
+runs:
+  using: composite
+  steps:
+    - name: Cache oss-cad-suite
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/oss-cad-suite
+        key: oss-cad-suite-${{ inputs.version }}-linux-x64
+
+    - name: Download and unpack
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        V='${{ inputs.version }}'
+        FLAT="${V//-/}"
+        URL="https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${V}/oss-cad-suite-linux-x64-${FLAT}.tgz"
+        echo "Fetching $URL"
+        if ! curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/oss.tgz; then
+          echo "::error::Could not download oss-cad-suite ${V}."
+          echo "::error::Check the release still carries that asset:"
+          echo "::error::  https://github.com/YosysHQ/oss-cad-suite-build/releases/tag/${V}"
+          exit 1
+        fi
+        mkdir -p "$HOME/oss-cad-suite"
+        tar xzf /tmp/oss.tgz -C "$HOME/oss-cad-suite" --strip-components=1
+        rm -f /tmp/oss.tgz
+
+    - name: Put it on PATH and check the formal flow's requirements
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "$HOME/oss-cad-suite/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/oss-cad-suite/bin:$PATH"
+        yosys -V
+        command -v yosys-smtbmc >/dev/null || {
+          echo "::error::yosys-smtbmc missing from the bundle."; exit 1; }
+        command -v z3 >/dev/null || {
+          echo "::error::z3 missing from the bundle; formal/run.sh uses it as the solver."; exit 1; }
+        # The specific option that apt's yosys was too old for.
+        if ! yosys -q -p "help chformal" 2>&1 | grep -q -- "-lower"; then
+          echo "::error::This yosys has no 'chformal -lower'; formal/run.sh needs it."
+          exit 1
+        fi
+        echo "yosys, yosys-smtbmc, z3 and chformal -lower: ok"

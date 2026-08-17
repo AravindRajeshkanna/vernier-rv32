@@ -38,8 +38,13 @@ VERILATOR     = verilator
 # memory's organization leaves a stale image that loads silently and wrong -
 # which cost real debugging time when wb_ram.v went from byte- to
 # word-organized.
-RISCV_CC      = riscv64-unknown-elf-gcc
-RISCV_OBJCOPY = riscv64-unknown-elf-objcopy
+# ?= so the environment can select a differently-prefixed toolchain without
+# editing this file. CI does exactly that: the prebuilt it uses is xPack's
+# riscv-none-elf-, because riscv-collab's riscv64-elf build ships only a
+# 64-bit libc_nano.a and this firmware links -specs=nano.specs against the
+# rv32im/ilp32 multilib.
+RISCV_CC      ?= riscv64-unknown-elf-gcc
+RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 
 RTL = rtl/regfile.v rtl/imem.v rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v \
       rtl/clint.v rtl/plic.v rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v
