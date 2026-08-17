@@ -516,57 +516,58 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
 None of that is a natural extension of the file set above — it's a
 different scale of project.
 
-### What I'd actually recommend
+### Where this goes next
 
-If your real goal is "get Linux running on an FPGA and benchmark it," the
-practical path is to use an existing, proven, open-source Linux-capable
-core/SoC rather than build one from scratch:
+Roughly in order of how much each one unblocks, with the current state of each
+stated rather than implied.
 
-- **[LiteX](https://github.com/enjoy-digital/litex) + [VexRiscv](https://github.com/SpinalHDL/VexRiscv)** — the most
-  mature, well-documented option. The
-  [linux-on-litex-vexriscv](https://github.com/litex-hub/linux-on-litex-vexriscv)
-  project boots mainline Linux on affordable boards (Arty A7, ECPIX-5,
-  OrangeCrab, and others), and has a working, maintained toolchain and
-  build flow, plus benchmarking guidance (e.g. Dhrystone/CoreMark, and
-  real Linux userspace benchmarks once booted).
-- **SweRV / Rocket Chip / other larger RISC-V SoC generators** are also
-  Linux-capable but generally have a steeper learning curve than
-  LiteX-VexRiscv.
+**The SD card.** The one piece of the boot path that has never worked on
+hardware. A 64 GB SDXC card never answers CMD0, which is permitted — SPI mode
+is optional above 32 GB — but that has not been distinguished from a wiring
+fault, because no smaller card has been tried. `BOARD=ulx3s-cmd0` builds a
+60-flip-flop probe that answers it in seconds. This is the cheapest open
+question in the project by a wide margin.
 
-If you'd like, I can help you get `linux-on-litex-vexriscv` running on
-whatever board you have — that's a realistic weekend-to-a-few-weeks project
-depending on board and prior FPGA experience, versus the homemade-core-to-
-Linux path which is a much longer undertaking.
+**External DRAM.** The 64 KB of block RAM is what stands between this and
+anything Linux-shaped, and it is also what forces the firmware to be as small
+as it is. `rtl/soc/wb_ram.v` is the seam: everything above it speaks Wishbone
+and knows only a base address and a size. The ULX3S carries 32 MB of SDRAM
+that nothing here can reach. LiteDRAM via LiteX is the well-trodden path.
 
-### If you want to keep building on *this* core instead
+**Video scan-out.** The framebuffer works and is verified by capturing a frame
+off the scan-out and comparing it back (`make sim_video`), but nothing is
+routed to the HDMI pins — that needs a PLL and a TMDS serializer, neither of
+which exists.
 
-That's also a great learning path, just with different, more achievable
-milestones — happy to help with any of these next:
-- **Actually get the bitstream onto a board.** This is still the
-  highest-value next step by a distance, but for a narrower reason than it
-  used to be: the bitstream exists, targets a real pinout and closes timing
-  with margin, so what's left is precisely the set of things simulation
-  cannot substitute for — that a real SD card answers the boot ROM, that the
-  console is legible, that the ESP32 hold-off works in practice, that it runs
-  at temperature.
-- **External DRAM**, which unblocks essentially everything else on this
-  list (OpenSBI, FreeRTOS/Zephyr with any real workload, and eventually
-  Linux). LiteDRAM via LiteX is the well-trodden path.
-- **Caches.** Every fetch and load currently goes to the bus, and the
-  shared-bus interconnect means a load costs the fetch behind it a cycle.
-  An I-cache alone would help a lot.
-- Make the UART interrupt-driven (a PLIC source) instead of polled, and
-  write a real console/shell in C now that `printf`/`scanf` both work
-- Bring up FreeRTOS or Zephyr — a realistic intermediate milestone now
-  that there's a bus, a timer, an interrupt controller and storage
-- **Superscalar issue and out-of-order execution** — register renaming, a
-  reorder buffer, reservation stations or a scoreboard, multiple execution
-  units. A genuine microarchitecture redesign, not an incremental add.
-- Hardware PTE Accessed/Dirty auto-update in the MMU walker, so it
-  doesn't have to fault when software forgot to pre-set those bits
-- A JTAG TAP and a RISC-V Debug Module, so debugging isn't just `printf`
-- SPI/SD storage, so `software/` programs could load data larger than
-  fits in `dmem`
+**Caches.** Every fetch and every load goes to the bus, and the shared-bus
+interconnect means a load costs the fetch behind it a cycle. An I-cache alone
+would be a large win and is self-contained.
+
+**The intermittent `ISA-TIMEOUT` under `make verify`.** Undiagnosed. It
+self-reports rather than hanging silently now, which is not the same as being
+fixed, and the cause is still unknown.
+
+**An OpenSBI platform port.** OpenSBI builds for this core and does not boot on
+it. `software/opensbi/README.md` lists the four things standing in the way; the
+memory ceiling above is one of them.
+
+Smaller, each independent of the others:
+
+- Make the UART interrupt-driven through the PLIC instead of polled. The
+  interrupt is already wired; the driver just does not use it.
+- Hardware PTE accessed/dirty update in the MMU walker, so it does not fault
+  when software has not pre-set those bits.
+- A JTAG TAP and a RISC-V Debug Module. `docs/debug.md` is honest about what
+  their absence costs.
+- PMP, which `SECURITY.md` lists as a known gap rather than an oversight.
+- FreeRTOS or Zephyr, now that there is a bus, a timer, an interrupt
+  controller and storage.
+
+And one that is not an increment: **superscalar issue and out-of-order
+execution** — register renaming, a reorder buffer, reservation stations or a
+scoreboard, multiple execution units. That is a microarchitecture redesign
+rather than an addition to this pipeline, which is why it is treated as a
+separate effort rather than a to-do item.
 
 ---
 

@@ -54,3 +54,4 @@ formal/build/
 fpga/build/
 sim/sim_rerun.out
 sim/rerun.log
+sim/program.rebuilt.*
