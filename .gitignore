@@ -1,33 +1,30 @@
+# Simulation build products.
+#
+# Patterns rather than the explicit list this used to be: that list needed a
+# new entry for almost every target added, and a missed one shows up as a
+# stray file in `git status` that somebody eventually commits by accident.
+#
+# sim/program.hex is the exception and is re-included below. It is the
+# hand-assembled core regression program - tracked source, not a build
+# product, and the reason `make sim` needs no RISC-V toolchain. It has already
+# been deleted once by an over-broad glob; see sim/program.S.
+sim/*.out
+sim/*.vcd
+sim/*.hex
+sim/*.img
+sim/*.log
+sim/*.ppm
+sim/*.bin
+sim/*.elf
+!sim/program.hex
+
 # Build artifacts
 obj_dir/
-sim/sim.out
-sim/sim_software.out
-sim/wave.vcd
-sim/wave_verilator.vcd
-sim/firmware_imem.hex
-sim/firmware_dmem.hex
 software/firmware.elf
 software/firmware_text.bin
 software/firmware_data.bin
 
 # SoC build artifacts
-sim/sim_soc.out
-sim/sim_ulx3s.out
-sim/sim_video.out
-sim/sim_cmd0.out
-sim/frame.ppm
-sim/wave_soc.vcd
-sim/bootrom.hex
-sim/card.hex
-sim/card.img
-sim/ramimage.hex
-sim/probeimage.hex
-sim/trapimage.hex
-sim/sim_ramboot.out
-sim/sim_probe.out
-sim/sim_trap.out
-sim/wave_ramboot.vcd
-sim/trapcheck.log
 software/soc/*.elf
 software/soc/*.bin
 dts/*.dtb
@@ -45,13 +42,7 @@ tests/build/
 software/bench/coremark/
 software/bench/coremark.elf
 software/bench/coremark.bin
-sim/sim_isa.out
-sim/sim_bench.out
-sim/coremark.hex
 formal/build/
 
 # FPGA build products (bitstream, PnR logs, synthesis JSON)
 fpga/build/
-sim/sim_rerun.out
-sim/rerun.log
-sim/program.rebuilt.*
