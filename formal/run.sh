@@ -42,6 +42,7 @@ TARGETS=(
     "btb             $ROOT/rtl/btb.v"
     "fv_regfile      $ROOT/rtl/regfile.v $HERE/fv_regfile.v"
     "fv_interconnect $ROOT/rtl/soc/wb_interconnect.v $HERE/fv_interconnect.v"
+    "fv_regfile_wide $ROOT/rtl/ooo/regfile_wide.v $HERE/fv_regfile_wide.v"
 )
 
 # Returns 0 if the solver proved the properties, 1 if it found a

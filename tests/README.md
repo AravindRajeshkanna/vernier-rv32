@@ -130,6 +130,7 @@ formal: 4 proved, 0 refuted, 0 errored (bound = 12 cycles)
 | `plic` | `eip` is exactly "something is claimable"; a claim names an eligible source, and the *highest-priority* one; claim reads 0 when nothing is claimable; an in-service source is never handed out again |
 | `btb` | No prediction without a tag match (the aliasing property); a predicted-taken entry is really in a taken counter state; training touches only the entry it indexes |
 | `regfile` | x0 always reads zero, including when a write to x0 is in flight; the write-to-read bypass is correct on both ports; the write path never touches x0's storage |
+| `regfile_wide` | x0 reads zero on all four ports; the bypass returns the written value from either write port; two ports reading one register agree; and port 1 (the younger instruction) wins when a dual-issue pair writes the same register |
 | `wb_interconnect` | At most one slave strobed; the strobed slave matches the decode; exactly one master granted, data over fetch; acks go only to the requesting master; an unmapped access still acks; a fetch never writes |
 
 The PLIC is the best target here and the reason this layer exists. Its job is

@@ -88,7 +88,7 @@ regression against.
 | Stage | | Status |
 |---|---|---|
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
-| 1b | 2-wide fetch/decode, dual issue for independent ALU ops | next |
+| 1b | 2-wide fetch/decode, dual issue for independent ALU ops | in progress — see below |
 | 1c | Scoreboard: out-of-order completion, in-order retire | |
 | 1d | Renaming, reorder buffer, reservation stations, LSQ | |
 
@@ -99,6 +99,39 @@ formality. It means every later stage has a harness already known to work, and
 a diff that contains only the change being made rather than the change plus a
 rewrite of the privilege, MMU and atomics logic that fifteen bugs went into
 getting right (`tests/README.md`).
+
+#### Stage 1b, and a constraint found while starting it
+
+**The fetch port is one 32-bit word per cycle**, and that decides the shape of
+this stage. `imem_addr`/`imem_rdata` on both cores are a single word, `cpu_wb.v`
+holds a one-entry fetch buffer, and the Wishbone interconnect is a shared bus
+where an instruction fetch already contends with data. A two-wide back end fed
+by a one-wide front end cannot exceed 1 IPC on straight-line code no matter how
+good the issue logic is.
+
+So dual issue here is worth having for a narrower reason than "two per cycle":
+the fetch port is *idle* during multi-cycle stalls — a divider, an MMU walk, a
+data-bus wait — and a buffer that runs ahead during those windows can hand the
+back end two instructions when the stall clears. That is a real gain on this
+design, and it is not the same as a 2 IPC machine.
+
+Getting to a genuine 2-wide front end means widening the fetch interface, which
+is not a change to `core_ooo.v` alone: it reaches `cpu_wb.v`, the interconnect,
+and `wb_ram.v`'s port structure. That is a phase-scale change of its own, and
+it belongs in the plan rather than being discovered halfway through the issue
+logic.
+
+**Landed for 1b so far:** `rtl/ooo/regfile_wide.v`, the 4-read/2-write register
+file the pair needs, with formal properties in `formal/fv_regfile_wide.v`.
+Two writes to the same architectural register in one cycle is a legal pair
+(`addi a0,..` ; `addi a0,..`) rather than something the issue logic should
+forbid, so port 1 is defined as the younger and wins in both the array and the
+bypass — and that is the property the proof exists for, since getting it
+backwards is wrong rather than slow, and wrong only when a pair happens to
+share a destination.
+
+**Still to do for 1b:** the fetch buffer, dual decode, the second ALU, the
+issue rule and its hazard checks, and branch/trap redirect across two slots.
 
 The `CORE` knob was checked the way `docs/practices.md` §1 asks: breaking
 `core_ooo.v` on purpose fails `CORE=ooo` and leaves `CORE=inorder` green, so
