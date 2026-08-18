@@ -51,6 +51,12 @@ module tb_isa;
     // through the synthesizable module hierarchy would put simulation-only
     // signals in the FPGA wrapper's port list for no benefit. Only writes a
     // file when +trace= is given.
+    //
+    // Slot 1 exists only on the wide core, so the hierarchical reference to
+    // `trace1_*` has to be compiled out for the in-order one - the names are
+    // not there to refer to. Tying the port low is what makes the second half
+    // of the tracer inert rather than absent, so both cores are traced by the
+    // same module and co-simulation compares them the same way.
     tracer TRACE (
         .clk(clk), .rst(rst),
         .valid(DUT.CPU.trace_valid),
@@ -58,7 +64,22 @@ module tb_isa;
         .instr(DUT.CPU.trace_instr),
         .rd_we(DUT.CPU.trace_rd_we),
         .rd(DUT.CPU.trace_rd),
-        .rd_data(DUT.CPU.trace_rd_data)
+        .rd_data(DUT.CPU.trace_rd_data),
+`ifdef CORE_OOO
+        .valid1(DUT.CPU.trace1_valid),
+        .pc1(DUT.CPU.trace1_pc),
+        .instr1(DUT.CPU.trace1_instr),
+        .rd_we1(DUT.CPU.trace1_rd_we),
+        .rd1(DUT.CPU.trace1_rd),
+        .rd_data1(DUT.CPU.trace1_rd_data)
+`else
+        .valid1(1'b0),
+        .pc1(32'b0),
+        .instr1(32'b0),
+        .rd_we1(1'b0),
+        .rd1(5'b0),
+        .rd_data1(32'b0)
+`endif
     );
 
     // ---- configuration from the command line ----

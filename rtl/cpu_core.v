@@ -935,7 +935,10 @@ module cpu_core #(
         .mie_out(csr_mie), .mip_out(csr_mip), .mideleg_out(csr_mideleg),
         .mstatus_mie_out(csr_mstatus_mie), .sstatus_sie_out(csr_sstatus_sie),
         .current_priv_out(current_priv),
-        .mtime_in(mtime_in), .instret_inc(instret_retire),
+        // Zero-extended: this core retires at most one instruction per
+        // cycle. csr_file.v's port is 2 bits wide so that rtl/ooo/core_ooo.v
+        // can report a dual-issue pair; nothing else about this core changes.
+        .mtime_in(mtime_in), .instret_inc({1'b0, instret_retire}),
         .mcounteren_out(csr_mcounteren), .scounteren_out(csr_scounteren),
         .satp_mode_out(satp_mode), .satp_ppn_out(satp_ppn),
         .mstatus_mprv_out(csr_mstatus_mprv), .mstatus_mpp_out(csr_mstatus_mpp),

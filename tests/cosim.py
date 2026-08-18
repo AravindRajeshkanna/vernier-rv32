@@ -28,6 +28,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BUILD = os.path.join(HERE, "build")
 SIM = os.path.join(ROOT, "sim", "sim_isa.out")
+# Run the simulation through `vvp` rather than executing sim_isa.out directly.
+# iverilog gives its output a `#!/path/to/vvp` shebang, which works only if vvp
+# is a real binary. In the macOS oss-cad-suite builds it is a bash wrapper, and
+# a shebang naming a script is a nested shebang - macOS answers ENOEXEC, so
+# co-simulation could not be run locally at all. Every other simulation in the
+# tree is already launched as `vvp <image>` (see the Makefile's VVP), so this
+# just makes cosim.py agree with the rest.
+VVP = os.environ.get("VVP", "vvp")
 # zicntr covers cycle/time/instret, which this core implements; Spike makes
 # them illegal unless the extension is named, and its default ISA string also
 # includes zihpm (hpmcounter3-31), which this core does *not* implement.
@@ -174,7 +182,7 @@ def run_one(name, verbose=False):
         return True
 
     subprocess.run(
-        [SIM, f"+hex={hexf}", f"+tohost={tohost}", f"+trace={trace_path}"],
+        [VVP, SIM, f"+hex={hexf}", f"+tohost={tohost}", f"+trace={trace_path}"],
         cwd=os.path.join(ROOT, "sim"),
         capture_output=True, text=True, timeout=600)
 

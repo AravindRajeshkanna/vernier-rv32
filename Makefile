@@ -40,7 +40,10 @@ IVERILOG      = iverilog
 # The knob exists so a regression in one cannot hide behind the other.
 CORE         ?= inorder
 ifeq ($(CORE),ooo)
-CORE_RTL      = rtl/ooo/core_ooo.v
+# regfile_wide.v is only in this list, never the in-order one: rtl/regfile.v
+# (2R/1W) still serves cpu_core.v, and building both cores against the same
+# register file would remove the point of having two cores.
+CORE_RTL      = rtl/ooo/core_ooo.v rtl/ooo/regfile_wide.v
 CORE_DEFINES  = -DCORE_OOO
 else
 CORE_RTL      =

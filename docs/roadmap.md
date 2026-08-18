@@ -54,7 +54,7 @@ What it actually requires, each item a dependency of the ones after it:
 | 4 | Multiple execution units | including the existing multi-cycle divider, which already stalls in-order today |
 | 5 | A load-store queue with memory disambiguation | loads may not pass an aliasing store; `LR`/`SC` reservations and AMO atomicity must survive reordering |
 | 6 | Misprediction recovery | RAT checkpointing or rollback, replacing today's single-cycle flush |
-| 7 | Wider fetch and decode | otherwise the back end starves and none of the above shows up as throughput |
+| 7 | Wider fetch and decode | otherwise the back end starves and none of the above shows up as throughput. Stage 1b measured this rather than assuming it, and the number says this row should be first, not last |
 
 And the constraints that do not relax while it happens:
 
@@ -77,6 +77,10 @@ with more than one instruction retiring per cycle on CoreMark, and a measured
 Fmax and utilisation reported next to the cycle count rather than instead of
 it.
 
+On CoreMark today that figure is 47 second-slot retirements out of ~400,000
+instructions. Stage 1b's measurements below say why, and say which of the
+remaining pieces is actually on the path to changing it.
+
 ### How it is being built
 
 `rtl/ooo/core_ooo.v`, a second core with the identical port list, selected by
@@ -88,9 +92,9 @@ regression against.
 | Stage | | Status |
 |---|---|---|
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
-| 1b | 2-wide fetch/decode, dual issue for independent ALU ops | in progress — see below |
-| 1c | Scoreboard: out-of-order completion, in-order retire | |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | |
+| 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
+| 1c | Scoreboard: out-of-order completion, in-order retire | blocked on fetch bandwidth — see below |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | blocked on fetch bandwidth — see below |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
@@ -100,42 +104,89 @@ a diff that contains only the change being made rather than the change plus a
 rewrite of the privilege, MMU and atomics logic that fifteen bugs went into
 getting right (`tests/README.md`).
 
-#### Stage 1b, and a constraint found while starting it
+#### Stage 1b: what was built
 
-**The fetch port is one 32-bit word per cycle**, and that decides the shape of
-this stage. `imem_addr`/`imem_rdata` on both cores are a single word, `cpu_wb.v`
-holds a one-entry fetch buffer, and the Wishbone interconnect is a shared bus
-where an instruction fetch already contends with data. A two-wide back end fed
-by a one-wide front end cannot exceed 1 IPC on straight-line code no matter how
-good the issue logic is.
+Complete, and green on the whole suite under `make verify_ooo` — 82/82
+co-simulation against Spike, 79/82 architectural tests, 5 formal proofs, and
+every SoC, firmware and trap simulation.
 
-So dual issue here is worth having for a narrower reason than "two per cycle":
-the fetch port is *idle* during multi-cycle stalls — a divider, an MMU walk, a
-data-bus wait — and a buffer that runs ahead during those windows can hand the
-back end two instructions when the stall clears. That is a real gain on this
-design, and it is not the same as a 2 IPC machine.
+| Piece | |
+|---|---|
+| `rtl/ooo/regfile_wide.v` | 4-read/2-write register file, formal properties in `formal/fv_regfile_wide.v`. Two writes to one architectural register in a cycle is a legal pair (`addi a0,..` ; `addi a0,..`), so port 1 is the younger and wins in both the array and the bypass |
+| Fetch buffer | a 4-deep FIFO replacing the single IF/ID register, so the PC advances on whether the *buffer* has room rather than on whether the back end is ready |
+| Second decoder and ALU | slot 1 accepts single-cycle integer ALU ops only — OP (minus M), OP-IMM, LUI, AUIPC |
+| Issue rule | both halves must be in that class, slot 1 may not read slot 0's destination, and slot 1 gets its own load-use check against EX |
+| Redirect and traps across the pair | slot 1 shares slot 0's `commit_ok`, so an interrupt at slot 0 withholds both writes |
 
-Getting to a genuine 2-wide front end means widening the fetch interface, which
-is not a change to `core_ooo.v` alone: it reaches `cpu_wb.v`, the interconnect,
-and `wb_ram.v`'s port structure. That is a phase-scale change of its own, and
-it belongs in the plan rather than being discovered halfway through the issue
-logic.
+The issue rule is narrow on purpose. Requiring *slot 0* to be in slot 1's class
+is what keeps the change reviewable: a pair in EX then contains nothing that
+can branch, trap on an address, touch memory or take a second cycle, so there
+is no second redirect source, no second memory port, and no way for the two
+halves to come apart mid-flight.
 
-**Landed for 1b so far:** `rtl/ooo/regfile_wide.v`, the 4-read/2-write register
-file the pair needs, with formal properties in `formal/fv_regfile_wide.v`.
-Two writes to the same architectural register in one cycle is a legal pair
-(`addi a0,..` ; `addi a0,..`) rather than something the issue logic should
-forbid, so port 1 is defined as the younger and wins in both the array and the
-bypass — and that is the property the proof exists for, since getting it
-backwards is wrong rather than slow, and wrong only when a pair happens to
-share a destination.
+SFENCE.VMA now redirects to PC+4 on this core, which it does not on
+`cpu_core.v`. The fence invalidates the ITLB and the buffer holds up to four
+instructions already translated under the mappings being invalidated. The
+one-entry IF/ID had the same exposure for a single instruction; a deeper buffer
+makes it worth fixing rather than worth noting.
 
-**Still to do for 1b:** the fetch buffer, dual decode, the second ALU, the
-issue rule and its hazard checks, and branch/trap redirect across two slots.
+#### Stage 1b: what it measured, which is the point
 
-The `CORE` knob was checked the way `docs/practices.md` §1 asks: breaking
-`core_ooo.v` on purpose fails `CORE=ooo` and leaves `CORE=inorder` green, so
-the selector demonstrably selects rather than silently doing nothing.
+CoreMark in simulation, one iteration, on the SoC:
+
+| | Cycles | Pairs issued |
+|---|---|---|
+| In-order core | 867,958 | — |
+| + fetch buffer | 867,672 | — |
+| + dual issue | 867,590 | 47 |
+
+**0.04% in total.** That number is worth more than the feature is.
+
+The instrumentation says exactly why. `core_ooo.v` counts not just the pairs
+formed but the cycles that *offered* a second instruction at all
+(`pair_window_count`, reported by `sim/tb_bench.v`): **293 cycles out of
+867,590**. The issue rule is not what is rejecting work — it is never asked.
+The buffer is almost always empty of a second instruction.
+
+And it has to be. Fetch supplies one instruction per cycle and decode consumes
+one per cycle, so in steady state the buffer's occupancy is pinned at one entry
+and the only way it ever holds two is in the shadow of a back-end stall. On
+this SoC even that window mostly closes, because instruction fetch and data
+share one Wishbone bus: the stalls that would let fetch run ahead are usually
+data accesses, which are stalling the fetch too. The same measurement with a
+zero-latency memory (`make sim CORE=ooo`, `rtl/top.v`) shows the same shape —
+36 windows, 4 pairs — so this is structural, not a property of the bus.
+
+**So the conclusion stage 1b actually produced is about stages 1c and 1d.** A
+scoreboard, register renaming, a reorder buffer and a load-store queue all
+make the back end better at consuming instructions. Nothing in the machine is
+short of back-end capacity. Building them next would be optimising the half
+that is already waiting.
+
+**What is worth doing next in this phase is widening the front end**, and that
+is not a change to `core_ooo.v`: `imem_addr`/`imem_rdata` are a single word,
+`cpu_wb.v` holds a one-entry fetch buffer, and it reaches the interconnect and
+`wb_ram.v`'s port structure. An instruction cache — currently Phase 4 — is the
+other half of the same answer, and on this evidence has a stronger claim to
+being done before 1c than 1c does.
+
+That reordering is not being made here. It is written down because the
+measurement is what should decide it, and the measurement now exists.
+
+#### A defect this stage found in its own harness
+
+`rtl/top.v` instantiated `cpu_core` unconditionally, with no `CORE_OOO`
+selection. `make sim CORE=ooo` therefore compiled the wide core into the image,
+instantiated the in-order one, and reported a pass — for stage 1a and for the
+first half of 1b. Every other target in `verify_ooo` goes through
+`soc_top.v`, which does select correctly, so the suite as a whole was always
+testing the right core; this one testbench was not. It is fixed, and it is the
+reason the `CORE` knob's earlier check — breaking `core_ooo.v` on purpose fails
+`CORE=ooo` and leaves `CORE=inorder` green — passed while a hole remained: the
+check proved the knob selects *somewhere*, not everywhere.
+
+`docs/practices.md` §17 records the other one, which cost more: a register file
+whose formal proofs passed against a netlist the simulator never built.
 
 This phase is ordered first because it is the largest and because everything
 it touches is easier to change before, not after, the phases below add

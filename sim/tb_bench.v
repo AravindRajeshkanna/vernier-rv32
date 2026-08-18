@@ -108,6 +108,14 @@ module tb_bench;
 
         $display("\n---------------------------------------------");
         $display("total cycles (including startup and console I/O): %0d", cycles);
+`ifdef CORE_OOO
+        // How many instructions retired in slot 1 - i.e. how many dual-issue
+        // pairs actually formed on a real workload. Reported next to the
+        // cycle count rather than instead of it: a pair rate without a cycle
+        // count says nothing about whether the pairing was worth having.
+        $display("dual-issue pairs (slot 1 retirements): %0d", DUT.CPU.dual_issue_count);
+        $display("  ...out of %0d cycles that offered a second instruction", DUT.CPU.pair_window_count);
+`endif
         if (validated)   $display("BENCHMARK PASSED (CoreMark validated its own results)");
         else if (errors) $display("BENCHMARK FAILED (CoreMark reported errors)");
         else             $display("BENCHMARK FAILED (timed out after %0d cycles)", cycles);

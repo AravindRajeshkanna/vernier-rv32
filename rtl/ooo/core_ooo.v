@@ -29,13 +29,36 @@
 //
 // ---- Staging ----
 //
-//   1a  parallel core, behaviourally identical, full suite green   <- here
-//   1b  2-wide fetch/decode, dual issue for independent ALU ops
+//   1a  parallel core, behaviourally identical, full suite green   done
+//   1b  decoupled fetch buffer, dual issue for independent ALU ops <- here
 //   1c  scoreboard: out-of-order completion, in-order retire
 //   1d  renaming + reorder buffer + reservation stations + LSQ
 //
 // Each stage must leave `make verify_ooo` green, because a core that is
 // half-converted and failing tells you nothing about which half is wrong.
+//
+// ---- What stage 1b added, and what it did not ----
+//
+// Two things, in two places worth reading together: the fetch buffer that
+// replaces the single IF/ID register (search for `fb_`), and the second issue
+// slot that the buffer makes possible (search for `s1_` and `id_ex1_`).
+//
+// The second slot executes exactly one class of instruction - single-cycle
+// integer ALU ops - and the pair only forms when *both* halves are in that
+// class. That is what keeps the change small enough to reason about: a pair
+// in EX contains nothing that can branch, trap on an address, touch memory or
+// take a second cycle, so there is no second redirect source, no second
+// memory port and no way for the two halves to come apart mid-flight. An
+// interrupt is the one event that can still kill a pair, and slot 1 shares
+// slot 0's `commit_ok` so that it kills both.
+//
+// This is not a 2 IPC machine and cannot become one here. The fetch port is
+// one 32-bit word per cycle all the way down to `wb_ram.v`, so sustained
+// throughput is bounded at 1 IPC on straight-line code no matter how good the
+// issue rule is. What dual issue buys on this design is the backlog: fetch
+// runs ahead during a stall, and when the stall clears the buffer can hand
+// the back end two instructions at once. The measured effect is in
+// docs/roadmap.md, next to the cycle count it was measured against.
 //
 // ---------------------------------------------------------------------------
 // A 5-stage pipelined RV32IMA CPU core (base integer ISA + Zicsr + the M
@@ -289,14 +312,59 @@ module core_ooo #(
     );
 
     // =======================================================================
-    // IF/ID pipeline register
+    // IF/ID: a fetch buffer, not a single register
     // =======================================================================
-    reg        if_id_valid;
-    reg [31:0] if_id_pc;
-    reg [31:0] if_id_instr;
-    reg        if_id_ifetch_fault;
-    reg        if_id_pred_taken;
-    reg [31:0] if_id_pred_target;
+    // `cpu_core.v` has one IF/ID register, so the front end and the back end
+    // move as one unit: whenever ID/EX can't accept (a load-use stall, a
+    // divide, a data-bus wait), PC freezes and the fetch port sits idle. Every
+    // one of those cycles is a fetch this machine could have performed and
+    // didn't, and when the stall clears the pipe restarts from empty.
+    //
+    // Here IF/ID is a FIFO instead. Fetch advances whenever the *buffer* has
+    // room, which decouples it from whether ID/EX is ready, and decode drains
+    // the head. Two things fall out:
+    //
+    //  - An `ibus_wait` is absorbed rather than bubbling the pipe, as long as
+    //    the buffer is non-empty. That is the win that matters on the SoC,
+    //    where instruction fetch and data share one Wishbone bus, so a load is
+    //    *routinely* stalling the fetch behind it (docs/roadmap.md Phase 4).
+    //  - Instructions accumulate during a stall, which is what gives the dual
+    //    issue below something to be dual about. A one-entry IF/ID can never
+    //    offer a second instruction, so no issue rule, however clever, can
+    //    find a pair.
+    //
+    // Depth 4 is chosen against the stall it is meant to cover: the longest
+    // routine stall here is a 33-cycle divide, which would fill any buffer,
+    // and the common one is a handful of cycles of bus wait, which 4 covers.
+    // Deeper costs flops and buys only the tail.
+    //
+    // Flushing: `redirect_valid` empties the buffer, exactly as it used to
+    // clear `if_id_valid`. `sfence_en` empties it too, and that is new - see
+    // the redirect logic for why SFENCE.VMA now redirects.
+    localparam FB_DEPTH = 4;
+    localparam FB_AW    = 2;   // clog2(FB_DEPTH)
+
+    reg [31:0] fb_pc      [0:FB_DEPTH-1];
+    reg [31:0] fb_instr   [0:FB_DEPTH-1];
+    reg        fb_fault   [0:FB_DEPTH-1];
+    reg        fb_ptaken  [0:FB_DEPTH-1];
+    reg [31:0] fb_ptarget [0:FB_DEPTH-1];
+
+    reg [FB_AW-1:0] fb_head, fb_tail;
+    reg [FB_AW:0]   fb_count;   // one bit wider than an index: 0..FB_DEPTH
+
+    wire fb_empty = (fb_count == 0);
+
+    // The head entry, presented to ID under the names the decode logic below
+    // already uses. Everything from here to the ID/EX register is unchanged
+    // from the single-register version - decode is still exactly one
+    // instruction wide, and slot 1 below reads the *second* entry separately.
+    wire        if_id_valid        = !fb_empty;
+    wire [31:0] if_id_pc           = fb_pc[fb_head];
+    wire [31:0] if_id_instr        = fb_instr[fb_head];
+    wire        if_id_ifetch_fault = fb_fault[fb_head];
+    wire        if_id_pred_taken   = fb_ptaken[fb_head];
+    wire [31:0] if_id_pred_target  = fb_ptarget[fb_head];
 
     // =======================================================================
     // ID stage: decode
@@ -546,19 +614,141 @@ module core_ooo #(
                     (is_csr && !csr_imm_form);
     wire uses_rs2 = is_op || is_store || is_branch || is_amo;
 
-    // regfile: ID reads (combinational), WB writes (synchronous) - same
-    // instance, same trick the single-cycle core used.
+    // =======================================================================
+    // Slot 1: the second decoder
+    // =======================================================================
+    // Deliberately not a copy of the decoder above. Slot 1 accepts exactly one
+    // class of instruction - a single-cycle integer ALU op - and refusing
+    // everything else is what keeps the second pipe down to an ALU, a result
+    // register and a write port. Anything outside the class simply waits and
+    // is decoded by slot 0 on a later cycle, at exactly the speed it has now.
+    //
+    // What slot 1 must never contain, and why each is excluded rather than
+    // handled:
+    //   loads/stores/AMO      a second memory port, and a second load-use
+    //                         hazard shape
+    //   branches/JAL/JALR     a second redirect source - and slot 1 is the
+    //                         *younger* instruction, so its redirect would
+    //                         have to lose to slot 0's, which is a priority
+    //                         question with no cheap answer
+    //   CSR/ECALL/xRET/fences architectural state that is only correct if it
+    //                         is updated in program order
+    //   MUL/DIV               multi-cycle; the pair has to move in lockstep
+    //
+    // The class that is left - OP (minus M), OP-IMM, LUI, AUIPC - has a
+    // property worth exploiting: every member is `alu_exec(a, b, ctrl)` for
+    // some choice of a and b. So slot 1 has no writeback-select mux at all.
+    // LUI is 0 + imm and AUIPC is pc + imm, both with the ALU's ADD control.
+    // One ALU, one shared function, and no second copy of the result
+    // selection logic that could drift out of step with slot 0's.
+    wire [FB_AW-1:0] fb_head1 = fb_head + {{(FB_AW-1){1'b0}}, 1'b1};
+
+    wire        s1_present = (fb_count > 1);
+    wire [31:0] s1_pc      = fb_pc[fb_head1];
+    wire [31:0] s1_instr   = fb_instr[fb_head1];
+    wire        s1_fault   = fb_fault[fb_head1];
+
+    wire [6:0]  s1_opcode = s1_instr[6:0];
+    wire [4:0]  s1_rd     = s1_instr[11:7];
+    wire [2:0]  s1_funct3 = s1_instr[14:12];
+    wire [4:0]  s1_rs1    = s1_instr[19:15];
+    wire [4:0]  s1_rs2    = s1_instr[24:20];
+    wire [6:0]  s1_funct7 = s1_instr[31:25];
+
+    wire s1_is_op    = (s1_opcode == OPC_OP) && (s1_funct7 != 7'b0000001); // M excluded
+    wire s1_is_opimm = (s1_opcode == OPC_OPIMM);
+    wire s1_is_lui   = (s1_opcode == OPC_LUI);
+    wire s1_is_auipc = (s1_opcode == OPC_AUIPC);
+    wire s1_in_class = s1_is_op || s1_is_opimm || s1_is_lui || s1_is_auipc;
+
+    // The same funct7 legality rules slot 0 applies, against slot 1's fields.
+    // Duplicated rather than shared because slot 0's version reads slot 0's
+    // instruction word. An instruction this calls illegal is simply not
+    // paired; it takes the ordinary illegal-instruction trap when it reaches
+    // slot 0 next cycle. That is the safe direction to be wrong in - a false
+    // "illegal" here costs throughput and never correctness.
+    reg s1_alu_illegal;
+    always @(*) begin
+        s1_alu_illegal = 1'b0;
+        if (s1_is_op) begin
+            case (s1_funct3)
+                3'b000, 3'b101: if (s1_funct7 != 7'b0000000 && s1_funct7 != 7'b0100000) s1_alu_illegal = 1'b1;
+                default:        if (s1_funct7 != 7'b0000000) s1_alu_illegal = 1'b1;
+            endcase
+        end else if (s1_is_opimm) begin
+            case (s1_funct3)
+                3'b001:  if (s1_funct7 != 7'b0000000) s1_alu_illegal = 1'b1;                          // SLLI
+                3'b101:  if (s1_funct7 != 7'b0000000 && s1_funct7 != 7'b0100000) s1_alu_illegal = 1'b1; // SRLI/SRAI
+                default: ; // funct7 is immediate bits for the rest
+            endcase
+        end
+    end
+
+    wire s1_uses_rs1 = s1_is_op || s1_is_opimm;
+    wire s1_uses_rs2 = s1_is_op;
+
+    wire s1_use_funct7b5 = s1_is_op || (s1_is_opimm && s1_funct3 == 3'b101);
+    wire [3:0] s1_alu_ctrl = (s1_is_lui || s1_is_auipc) ? 4'b0000
+                                                        : {(s1_use_funct7b5 & s1_funct7[5]), s1_funct3};
+
+    wire [31:0] s1_imm = (s1_is_lui || s1_is_auipc) ? {s1_instr[31:12], 12'b0}
+                                                    : {{20{s1_instr[31]}}, s1_instr[31:20]};
+
+    // Operand-A source, resolved at decode: LUI adds its immediate to zero,
+    // AUIPC to its own PC, everything else to rs1 (forwarded in EX).
+    localparam [1:0] A_REG = 2'd0, A_PC = 2'd1, A_ZERO = 2'd2;
+    wire [1:0] s1_a_sel   = s1_is_auipc ? A_PC : (s1_is_lui ? A_ZERO : A_REG);
+    wire       s1_use_imm = !s1_is_op;
+
+    // =======================================================================
+    // Register file
+    // =======================================================================
     wire [31:0] d_rs1_data, d_rs2_data;
     wire [31:0] mem_wb_wb_data;
     wire        mem_wb_reg_we;
     wire [4:0]  mem_wb_rd;
+    wire [31:0] s1_rs1_data, s1_rs2_data;
+    wire [31:0] mem_wb1_wb_data;
+    wire        mem_wb1_reg_we;
+    wire [4:0]  mem_wb1_rd;
 
-    regfile RF (
-        .clk(clk), .we(mem_wb_reg_we),
-        .rs1(d_rs1), .rs2(d_rs2), .rd(mem_wb_rd),
-        .wdata(mem_wb_wb_data),
-        .rdata1(d_rs1_data), .rdata2(d_rs2_data)
+    // rtl/ooo/regfile_wide.v (4R/2W) in place of rtl/regfile.v (2R/1W), which
+    // is unchanged and still serves cpu_core.v. Port b is read
+    // unconditionally with slot 1's register fields even when no pair issues:
+    // reading a register file has no side effect, and gating the address
+    // would only put a mux in front of it. Write port 1 is the younger half
+    // of a pair - see regfile_wide.v's header for why that priority is the
+    // property its formal proof is about.
+    regfile_wide RF (
+        .clk(clk),
+        .rs1_a(d_rs1),  .rs2_a(d_rs2),
+        .rs1_b(s1_rs1), .rs2_b(s1_rs2),
+        .rdata1_a(d_rs1_data),  .rdata2_a(d_rs2_data),
+        .rdata1_b(s1_rs1_data), .rdata2_b(s1_rs2_data),
+        .we0(mem_wb_reg_we),  .rd0(mem_wb_rd),  .wdata0(mem_wb_wb_data),
+        .we1(mem_wb1_reg_we), .rd1(mem_wb1_rd), .wdata1(mem_wb1_wb_data)
     );
+
+    // ---- slot 1's pipeline registers -------------------------------------
+    // Declared here because the forwarding function below reads them. Slot 1
+    // has no MEM work to do, so EX/MEM and MEM/WB carry a result and a
+    // destination and nothing else - but they exist, rather than slot 1
+    // writing back early, because the pair must retire in the same cycle for
+    // regfile_wide's write-port priority to mean what it says. A shorter
+    // slot-1 pipe would let the younger instruction's write land *before* the
+    // older one's, which is the WAW bug renaming exists to solve and which
+    // this stage is far too simple to need.
+    reg        ex_mem1_valid, ex_mem1_reg_we, ex_mem1_retire;
+    reg [4:0]  ex_mem1_rd;
+    reg [31:0] ex_mem1_wb_data;
+    reg [31:0] ex_mem1_pc, ex_mem1_instr;   // trace only
+
+    reg        mem_wb1_reg_we_r;
+    reg [4:0]  mem_wb1_rd_r;
+    reg [31:0] mem_wb1_wb_data_r;
+    assign mem_wb1_reg_we  = mem_wb1_reg_we_r;
+    assign mem_wb1_rd      = mem_wb1_rd_r;
+    assign mem_wb1_wb_data = mem_wb1_wb_data_r;
 
     // =======================================================================
     // Hazard detection
@@ -570,13 +760,58 @@ module core_ooo #(
                            ((uses_rs1 && (id_ex_rd == d_rs1)) || (uses_rs2 && (id_ex_rd == d_rs2)));
 
     wire id_ex_stall = load_use_stall || ex_busy_stall;
+
+    // ---- the issue rule --------------------------------------------------
+    // Slot 0 must itself be in slot 1's class. That is a stronger condition
+    // than it first looks, and it is what makes the pair safe rather than
+    // merely fast: a slot 0 that cannot branch, cannot trap, cannot touch
+    // memory and cannot take more than one cycle also cannot redirect or
+    // stall out from under the younger instruction beside it. The one thing
+    // that can still kill the pair from slot 0's side is an interrupt, and
+    // `commit_ok` - which slot 1 shares verbatim - already covers that.
+    wire s0_in_class = (is_op && !is_muldiv) || is_opimm || is_lui || is_auipc;
+    wire s0_pairable = if_id_valid && !if_id_ifetch_fault && !illegal &&
+                       s0_in_class && !if_id_pred_taken;
+
+    // `!if_id_pred_taken` is what makes slot 1 slot 0's architectural
+    // successor rather than merely the next thing that happened to be
+    // fetched. Fetch follows the BTB, so if slot 0's fetch was predicted
+    // taken then the next buffer entry is at the predicted *target* - correct
+    // to execute only if the prediction holds, which is not something the
+    // issue stage is in a position to know.
+    wire s1_pairable = s1_present && !s1_fault && s1_in_class && !s1_alu_illegal;
+
+    // No intra-pair forwarding: slot 1 may not read what slot 0 writes. The
+    // alternative is an ALU-to-ALU path inside a single cycle, which is the
+    // classic way a machine that is faster in cycles turns out slower in
+    // nanoseconds. The pair is simply not formed and slot 1 issues next
+    // cycle, forwarded from EX/MEM like any other dependent instruction.
+    wire pair_raw = d_reg_we_raw && (d_rd != 5'd0) &&
+                    ((s1_uses_rs1 && (s1_rs1 == d_rd)) ||
+                     (s1_uses_rs2 && (s1_rs2 == d_rd)));
+
+    // Slot 1 needs the same load-use check slot 0 gets. `load_use_stall`
+    // above only looks at slot 0's source fields, and a pair that ignored
+    // this would forward a load's *address* out of EX/MEM in place of its
+    // data - precisely the bug the load-use stall exists to prevent, and one
+    // that only appears when a load is followed by a pair whose younger half
+    // is the dependent one.
+    wire s1_load_use = id_ex_valid && id_ex_is_load_like && (id_ex_rd != 5'd0) &&
+                       ((s1_uses_rs1 && (id_ex_rd == s1_rs1)) ||
+                        (s1_uses_rs2 && (id_ex_rd == s1_rs2)));
+
+    wire issue_pair = s0_pairable && s1_pairable && !pair_raw && !s1_load_use;
     // The IF-stage ITLB-miss stall is independent of id_ex_stall: it's
     // about whether IF has something new to offer id_ex, not about
     // whether id_ex is free to accept if_id's *current* content. Folding
     // the two together would double-latch an instruction - see the
     // if_id register block below.
     wire if_stall    = itlb_wait_stall || ibus_wait;
-    wire pc_freeze   = id_ex_stall || if_stall;
+    // There is no `pc_freeze` any more. In cpu_core.v the PC froze on
+    // `id_ex_stall || if_stall`; with the fetch buffer the back end being
+    // stalled no longer stops the front end, and the only thing that holds
+    // the PC is the fetch itself stalling or the buffer filling up. See the
+    // `fb_push` term in the sequential section.
 
     // =======================================================================
     // ID/EX pipeline register
@@ -629,18 +864,82 @@ module core_ooo #(
     wire [4:0] trace_rd      = mem_wb_rd;
     wire [31:0] trace_rd_data = mem_wb_wb_data;
 
+    // Slot 1's half of the retire trace. sim/tracer.v emits this line *after*
+    // slot 0's when both are valid in the same cycle, which is what keeps the
+    // trace in program order and therefore keeps it diffable against Spike.
+    // A dual-issue machine that retired two instructions per cycle and told
+    // the tracer about only one would pass co-simulation by not showing it
+    // the second one, which is the shape of test failure docs/practices.md
+    // section 1 is about.
+    reg [31:0] trace1_pc, trace1_instr;
+    reg        trace1_valid;
+    wire        trace1_rd_we   = mem_wb1_reg_we;
+    wire [4:0]  trace1_rd      = mem_wb1_rd;
+    wire [31:0] trace1_rd_data = mem_wb1_wb_data;
+
     // =======================================================================
     // EX stage
     // =======================================================================
 
     // forwarding: EX/MEM (most recent) takes priority over MEM/WB
-    wire fwd1_exmem = ex_mem_valid && ex_mem_reg_we && (ex_mem_rd != 5'd0) && (ex_mem_rd == id_ex_rs1);
-    wire fwd1_memwb = mem_wb_reg_we && (mem_wb_rd != 5'd0) && (mem_wb_rd == id_ex_rs1);
-    wire fwd2_exmem = ex_mem_valid && ex_mem_reg_we && (ex_mem_rd != 5'd0) && (ex_mem_rd == id_ex_rs2);
-    wire fwd2_memwb = mem_wb_reg_we && (mem_wb_rd != 5'd0) && (mem_wb_rd == id_ex_rs2);
+    // Four in-flight results to choose between now instead of two, so the
+    // four-way priority is written once as a function rather than eight times
+    // as wires. The order is age, youngest first: within a pair slot 1 is the
+    // younger instruction, so EX/MEM slot 1 beats EX/MEM slot 0, and both
+    // beat either half of MEM/WB. Get that order backwards and the machine
+    // reads a stale value only when a pair happens to write the same
+    // register as a later instruction reads - which is to say, rarely, and
+    // never in a way an end-of-test pass/fail check would notice.
+    //
+    // With slot 1 idle this is exactly the two-source mux it replaces:
+    // `ex_mem1_reg_we` and `mem_wb1_reg_we` are low, and the remaining two
+    // arms are the original EX/MEM-then-MEM/WB priority.
+    // The four candidate producers, each reduced to "this really writes a
+    // register": EX/MEM and MEM/WB, for each of the two slots.
+    wire        fwd_e0_we = ex_mem_valid && ex_mem_reg_we && (ex_mem_rd != 5'd0);
+    wire        fwd_m0_we = mem_wb_reg_we && (mem_wb_rd != 5'd0);
+    // Slot 1's two already have validity and the x0 case folded in where they
+    // are latched, so they need no extra qualification here.
 
-    wire [31:0] op1     = fwd1_exmem ? ex_mem_wb_data : (fwd1_memwb ? mem_wb_wb_data : id_ex_rs1_data);
-    wire [31:0] op2_reg = fwd2_exmem ? ex_mem_wb_data : (fwd2_memwb ? mem_wb_wb_data : id_ex_rs2_data);
+    // Every forwarding source is passed in as an argument rather than read
+    // out of the enclosing scope, and that is not a style choice. A function
+    // called from a continuous assignment is only guaranteed to re-evaluate
+    // when its *arguments* change; signals it reads from the module around it
+    // may not appear in the assignment's sensitivity list at all. Written the
+    // other way this function computed a correct answer whenever a new
+    // instruction entered EX - which is most of the time, and enough to pass
+    // the zero-latency-memory testbench - and a stale one whenever EX held
+    // its contents across a bus stall and a result landed underneath it. On
+    // the SoC that showed up as the boot ROM reading a wrong magic number,
+    // and in co-simulation as a CSR write that the very next trap could not
+    // see. Arguments make the dependency explicit and the sensitivity total.
+    function [31:0] fwd_pick;
+        input [4:0]  a;
+        input [31:0] regval;
+        input        e1_we; input [4:0] e1_rd; input [31:0] e1_data;  // youngest
+        input        e0_we; input [4:0] e0_rd; input [31:0] e0_data;
+        input        m1_we; input [4:0] m1_rd; input [31:0] m1_data;
+        input        m0_we; input [4:0] m0_rd; input [31:0] m0_data;  // oldest
+        begin
+            if (a == 5'd0)                    fwd_pick = 32'b0;
+            else if (e1_we && (e1_rd == a))   fwd_pick = e1_data;
+            else if (e0_we && (e0_rd == a))   fwd_pick = e0_data;
+            else if (m1_we && (m1_rd == a))   fwd_pick = m1_data;
+            else if (m0_we && (m0_rd == a))   fwd_pick = m0_data;
+            else                              fwd_pick = regval;
+        end
+    endfunction
+
+    wire [31:0] op1     = fwd_pick(id_ex_rs1, id_ex_rs1_data,
+                                   ex_mem1_reg_we, ex_mem1_rd, ex_mem1_wb_data,
+                                   fwd_e0_we,      ex_mem_rd,  ex_mem_wb_data,
+                                   mem_wb1_reg_we, mem_wb1_rd, mem_wb1_wb_data,
+                                   fwd_m0_we,      mem_wb_rd,  mem_wb_wb_data);
+    wire [31:0] op2_reg = fwd_pick(id_ex_rs2, id_ex_rs2_data,
+                                   ex_mem1_reg_we, ex_mem1_rd, ex_mem1_wb_data,
+                                   fwd_e0_we,      ex_mem_rd,  ex_mem_wb_data,
+                                   mem_wb1_reg_we, mem_wb1_rd, mem_wb1_wb_data,
+                                   fwd_m0_we,      mem_wb_rd,  mem_wb_wb_data);
 
     function [31:0] alu_exec;
         input [31:0] a, b;
@@ -664,6 +963,36 @@ module core_ooo #(
 
     wire [31:0] alu_b      = id_ex_is_op ? op2_reg : id_ex_imm;
     wire [31:0] alu_result = alu_exec(op1, alu_b, id_ex_alu_ctrl);
+
+    // ---- slot 1's EX: the second ALU -------------------------------------
+    // The same `alu_exec` function, so the two slots cannot disagree about
+    // what SRA means. Everything slot 1 can execute reduces to one call: the
+    // operand-A select turns LUI into 0 + imm and AUIPC into pc + imm, which
+    // is why there is no result mux here to match slot 0's `ex_result`.
+    reg        id_ex1_valid;
+    reg [4:0]  id_ex1_rd, id_ex1_rs1, id_ex1_rs2;
+    reg [31:0] id_ex1_rs1_data, id_ex1_rs2_data;
+    reg [31:0] id_ex1_imm, id_ex1_pc;
+    reg [3:0]  id_ex1_alu_ctrl;
+    reg [1:0]  id_ex1_a_sel;
+    reg        id_ex1_use_imm;
+    reg [31:0] id_ex1_instr;   // trace only
+
+    wire [31:0] s1_op1 = fwd_pick(id_ex1_rs1, id_ex1_rs1_data,
+                                  ex_mem1_reg_we, ex_mem1_rd, ex_mem1_wb_data,
+                                  fwd_e0_we,      ex_mem_rd,  ex_mem_wb_data,
+                                  mem_wb1_reg_we, mem_wb1_rd, mem_wb1_wb_data,
+                                  fwd_m0_we,      mem_wb_rd,  mem_wb_wb_data);
+    wire [31:0] s1_op2 = fwd_pick(id_ex1_rs2, id_ex1_rs2_data,
+                                  ex_mem1_reg_we, ex_mem1_rd, ex_mem1_wb_data,
+                                  fwd_e0_we,      ex_mem_rd,  ex_mem_wb_data,
+                                  mem_wb1_reg_we, mem_wb1_rd, mem_wb1_wb_data,
+                                  fwd_m0_we,      mem_wb_rd,  mem_wb_wb_data);
+
+    wire [31:0] s1_a = (id_ex1_a_sel == A_PC)   ? id_ex1_pc :
+                       (id_ex1_a_sel == A_ZERO) ? 32'b0     : s1_op1;
+    wire [31:0] s1_b = id_ex1_use_imm ? id_ex1_imm : s1_op2;
+    wire [31:0] s1_result = alu_exec(s1_a, s1_b, id_ex1_alu_ctrl);
 
     // ---- M extension: multiply (combinational) ----
     wire signed [63:0] mul_ss = $signed({{32{op1[31]}}, op1}) * $signed({{32{op2_reg[31]}}, op2_reg});
@@ -956,7 +1285,14 @@ module core_ooo #(
     // riscv-tests' instret_overflow expects to observe. `!ex_busy_stall` is
     // what keeps a multi-cycle divide or page walk from counting itself once
     // per cycle it spends parked in EX.
-    wire instret_retire = id_ex_valid && !ex_busy_stall && !take_trap;
+    wire instret_retire  = id_ex_valid  && !ex_busy_stall && !take_trap;
+    wire instret1_retire = id_ex1_valid && !ex_busy_stall && !take_trap;
+    // `minstret` has to advance by two when a pair retires, so csr_file.v's
+    // increment is a 2-bit count rather than a flag. Anything that stops slot
+    // 0 retiring stops slot 1 too - slot 1 is the younger instruction and
+    // never outlives its partner - so this is a sum of two terms that share
+    // their gating rather than two independent conditions.
+    wire [1:0] instret_inc_n = {1'b0, instret_retire} + {1'b0, instret1_retire};
 
     wire mret_en = id_ex_valid && id_ex_is_mret && !interrupt_taken && ex_commit;
     wire sret_en = id_ex_valid && id_ex_is_sret && !interrupt_taken && ex_commit;
@@ -974,7 +1310,7 @@ module core_ooo #(
         .mie_out(csr_mie), .mip_out(csr_mip), .mideleg_out(csr_mideleg),
         .mstatus_mie_out(csr_mstatus_mie), .sstatus_sie_out(csr_sstatus_sie),
         .current_priv_out(current_priv),
-        .mtime_in(mtime_in), .instret_inc(instret_retire),
+        .mtime_in(mtime_in), .instret_inc(instret_inc_n),
         .mcounteren_out(csr_mcounteren), .scounteren_out(csr_scounteren),
         .satp_mode_out(satp_mode), .satp_ppn_out(satp_ppn),
         .mstatus_mprv_out(csr_mstatus_mprv), .mstatus_mpp_out(csr_mstatus_mpp),
@@ -1002,9 +1338,16 @@ module core_ooo #(
                       ((id_ex_pred_taken != actual_taken) ||
                        (actual_taken && (id_ex_pred_target != actual_target)));
 
+    // `sfence_en` joins this list, which it was not part of in cpu_core.v.
+    // There, the only instruction ahead of an SFENCE.VMA was the single IF/ID
+    // entry; here the fetch buffer holds up to four, all translated under the
+    // mappings the fence is invalidating. Redirecting to PC+4 - the same
+    // treatment FENCE.I gets, for the same reason - refetches them under the
+    // new mappings. It costs a flush on an instruction that is rare and
+    // already expensive, and it is what makes the buffer safe under Sv32.
     wire redirect_valid = id_ex_valid && ex_commit &&
                           (interrupt_taken || synchronous_trap || mispredict ||
-                           mret_en || sret_en || fence_i_en);
+                           mret_en || sret_en || fence_i_en || sfence_en);
     reg [31:0] redirect_target;
     always @(*) begin
         if (interrupt_taken)        redirect_target = trap_redirect_target;
@@ -1013,6 +1356,7 @@ module core_ooo #(
         else if (mret_en)           redirect_target = csr_mepc;
         else if (sret_en)           redirect_target = csr_sepc;
         else if (fence_i_en)        redirect_target = id_ex_pc + 32'd4;
+        else if (sfence_en)         redirect_target = id_ex_pc + 32'd4;
         else                        redirect_target = id_ex_pc + 32'd4; // unreachable given redirect_valid's gating
     end
 
@@ -1023,6 +1367,37 @@ module core_ooo #(
     always @(posedge clk or posedge rst) begin
         if (rst) mispredict_count <= 32'b0;
         else if (mispredict && ex_commit) mispredict_count <= mispredict_count + 32'd1;
+    end
+
+    // Testbench-observability-only, same as `mispredict_count` above and read
+    // the same way (a hierarchical reference from sim/tb_bench.v).
+    //
+    // It exists because without it "dual issue works" is unfalsifiable. An
+    // issue rule that never fires also never breaks anything, and would sail
+    // through 82/82 co-simulation by being indistinguishable from the
+    // single-issue core it replaced - the most expensive kind of test that
+    // cannot fail (docs/practices.md section 1). This counts the pairs, so
+    // the claim can be checked against a number instead of an absence of
+    // failures.
+    reg [31:0] dual_issue_count;
+    always @(posedge clk or posedge rst) begin
+        if (rst) dual_issue_count <= 32'b0;
+        else if (instret1_retire) dual_issue_count <= dual_issue_count + 32'd1;
+    end
+
+    // The denominator for the above, and the more interesting number of the
+    // two: cycles on which the buffer actually held a second instruction to
+    // consider while the back end was ready to take it. If this is close to
+    // `dual_issue_count` then the issue rule is accepting nearly everything
+    // it is offered and the buffer is what limits pairing; if it is far
+    // larger, the rule is what limits it. Those call for opposite fixes, and
+    // guessing which one is in play is how a microarchitecture gets tuned in
+    // the wrong direction.
+    reg [31:0] pair_window_count;
+    always @(posedge clk or posedge rst) begin
+        if (rst) pair_window_count <= 32'b0;
+        else if (!redirect_valid && !id_ex_stall && if_id_valid && s1_present)
+            pair_window_count <= pair_window_count + 32'd1;
     end
 
     reg [31:0] ex_result;
@@ -1232,13 +1607,44 @@ module core_ooo #(
     // =======================================================================
     // Sequential pipeline register updates
     // =======================================================================
+    // ---- fetch buffer control -------------------------------------------
+    // Declared here rather than beside the buffer itself because they depend
+    // on `redirect_valid`, `if_stall` and `id_ex_stall`, all of which are
+    // defined further down. iverilog 14 rejects use-before-declaration.
+    //
+    // How many entries leave the head this cycle. `fb_pop_n` is 0, 1 or 2:
+    // slot 0 alone, or a dual-issued pair. It is 0 when ID/EX can't accept
+    // (`id_ex_stall`), which is the same condition that used to hold IF/ID.
+    wire [1:0] fb_pop_n = (redirect_valid || id_ex_stall || fb_empty) ? 2'd0 :
+                          issue_pair                                  ? 2'd2 : 2'd1;
+    wire       fb_pop   = (fb_pop_n != 2'd0);
+
+    // Push whenever this cycle's fetch produced a real instruction and there
+    // is somewhere to put it. `fb_pop_n` counts against fullness in the same
+    // cycle: an entry leaving frees its slot for the one arriving.
+    wire fb_push = !redirect_valid && !sfence_en && !if_stall &&
+                   ((fb_count - {1'b0, fb_pop_n}) < FB_DEPTH);
+
+    // The fetch buffer makes SFENCE.VMA's ordering visible, so it has to be
+    // handled rather than left implicit: `sfence_en` invalidates the ITLB, and
+    // any instruction already sitting in the buffer was translated by the
+    // mappings being invalidated. With a one-entry IF/ID that was one
+    // instruction; with a 4-deep buffer it is up to four, plus however far the
+    // PC has run ahead. Both are wrong - the spec orders subsequent implicit
+    // references after the fence - so SFENCE.VMA now redirects to PC+4 and
+    // empties the buffer, which is precisely what FENCE.I already did.
+    wire fb_flush = redirect_valid || sfence_en;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             pc <= RESET_PC;
         end else if (redirect_valid) begin
             pc <= redirect_target;
-        end else if (pc_freeze) begin
-            // hold
+        end else if (!fb_push) begin
+            // hold: either the fetch itself is stalled (ITLB walk, bus wait)
+            // or the buffer is full. Note what is *not* here any more -
+            // `id_ex_stall`. The back end being busy no longer freezes the
+            // front end, which is the whole point of the buffer.
         end else if (btb_pred_taken) begin
             pc <= btb_pred_target;
         end else begin
@@ -1248,33 +1654,40 @@ module core_ooo #(
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            if_id_valid <= 1'b0;
-        end else if (redirect_valid) begin
-            if_id_valid <= 1'b0;
-        end else if (id_ex_stall) begin
-            // hold if_id unchanged (content not yet consumed by id_ex)
-        end else if (if_stall) begin
-            if_id_valid <= 1'b0; // content WAS consumed into id_ex; IF has nothing new this cycle
+            fb_head  <= {FB_AW{1'b0}};
+            fb_tail  <= {FB_AW{1'b0}};
+            fb_count <= {(FB_AW+1){1'b0}};
+        end else if (fb_flush) begin
+            fb_head  <= {FB_AW{1'b0}};
+            fb_tail  <= {FB_AW{1'b0}};
+            fb_count <= {(FB_AW+1){1'b0}};
         end else begin
-            if_id_valid        <= 1'b1;
-            if_id_pc           <= pc;
-            if_id_instr        <= imem_rdata;
-            if_id_ifetch_fault <= itlb_fault_now;
-            if_id_pred_taken   <= btb_pred_taken;
-            if_id_pred_target  <= btb_pred_target;
+            if (fb_push) begin
+                fb_pc[fb_tail]      <= pc;
+                fb_instr[fb_tail]   <= imem_rdata;
+                fb_fault[fb_tail]   <= itlb_fault_now;
+                fb_ptaken[fb_tail]  <= btb_pred_taken;
+                fb_ptarget[fb_tail] <= btb_pred_target;
+                fb_tail             <= fb_tail + {{(FB_AW-1){1'b0}}, 1'b1};
+            end
+            fb_head  <= fb_head + fb_pop_n[FB_AW-1:0];
+            fb_count <= fb_count + {2'b0, fb_push} - {1'b0, fb_pop_n};
         end
     end
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            id_ex_valid <= 1'b0;
+            id_ex_valid  <= 1'b0;
+            id_ex1_valid <= 1'b0;
         end else if (redirect_valid) begin
-            id_ex_valid <= 1'b0; // flush: squash instruction currently in ID
+            id_ex_valid  <= 1'b0; // flush: squash instruction currently in ID
+            id_ex1_valid <= 1'b0; // ...and the younger half of any pair with it
         end else if (ex_busy_stall) begin
             // hold id_ex unchanged: the same divide/translating instruction
             // stays "in EX" until the multi-cycle op finishes
         end else if (load_use_stall) begin
-            id_ex_valid <= 1'b0; // bubble: load-use hazard
+            id_ex_valid  <= 1'b0; // bubble: load-use hazard
+            id_ex1_valid <= 1'b0;
         end else begin
             id_ex_valid         <= if_id_valid;
             id_ex_pc            <= if_id_pc;
@@ -1314,12 +1727,33 @@ module core_ooo #(
             id_ex_pred_taken    <= if_id_pred_taken;
             id_ex_pred_target   <= if_id_pred_target;
             id_ex_instr         <= if_id_instr;               // trace only
+
+            // Slot 1 latches under exactly slot 0's conditions - same block,
+            // same branches - because the pair has to move as one unit. Split
+            // into a second always block it would be one edit away from the
+            // two halves stalling differently, and a pair that came apart
+            // mid-flight would write back out of order.
+            id_ex1_valid        <= issue_pair;
+            id_ex1_rd           <= s1_rd;
+            id_ex1_rs1          <= s1_rs1;
+            id_ex1_rs2          <= s1_rs2;
+            id_ex1_rs1_data     <= s1_rs1_data;
+            id_ex1_rs2_data     <= s1_rs2_data;
+            id_ex1_imm          <= s1_imm;
+            id_ex1_pc           <= s1_pc;
+            id_ex1_alu_ctrl     <= s1_alu_ctrl;
+            id_ex1_a_sel        <= s1_a_sel;
+            id_ex1_use_imm      <= s1_use_imm;
+            id_ex1_instr        <= s1_instr;                  // trace only
         end
     end
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            ex_mem_valid <= 1'b0;
+            ex_mem_valid   <= 1'b0;
+            ex_mem1_valid  <= 1'b0;
+            ex_mem1_reg_we <= 1'b0;
+            ex_mem1_retire <= 1'b0;
         end else if (dbus_stall) begin
             // Hold: this MEM access is still on the bus and its request
             // signals (driven straight off these registers) have to stay
@@ -1334,6 +1768,10 @@ module core_ooo #(
                                     // per stalled cycle. Found by the Spike
                                     // co-simulation, which is exactly the class of
                                     // thing an end-of-test pass/fail check cannot see.
+            ex_mem1_valid  <= 1'b0;
+            ex_mem1_reg_we <= 1'b0; // slot 1's forwarding is gated on reg_we
+                                     // alone, so this must bubble here too
+            ex_mem1_retire <= 1'b0;
         end else begin
             ex_mem_valid     <= id_ex_valid;
             ex_mem_rd        <= id_ex_rd;
@@ -1350,18 +1788,35 @@ module core_ooo #(
             ex_mem_pc        <= id_ex_pc;                     // trace only
             ex_mem_instr     <= id_ex_instr;                  // trace only
             ex_mem_retire    <= instret_retire;               // trace only
+
+            // Slot 1. `commit_ok` is slot 0's, deliberately: it is what
+            // withholds the write when an interrupt is taken at slot 0, and
+            // slot 1 is younger, so anything that stops slot 0 committing has
+            // to stop slot 1 too. Interrupts are the only member of
+            // `commit_ok` a pair can actually meet - the issue rule has
+            // already excluded every instruction that can fault.
+            ex_mem1_valid    <= id_ex1_valid;
+            ex_mem1_reg_we   <= id_ex1_valid && (id_ex1_rd != 5'd0) && commit_ok;
+            ex_mem1_rd       <= id_ex1_rd;
+            ex_mem1_wb_data  <= s1_result;
+            ex_mem1_pc       <= id_ex1_pc;                    // trace only
+            ex_mem1_instr    <= id_ex1_instr;                 // trace only
+            ex_mem1_retire   <= instret1_retire;              // trace only
         end
     end
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            mem_wb_reg_we_r <= 1'b0;
-            trace_valid     <= 1'b0;
+            mem_wb_reg_we_r  <= 1'b0;
+            trace_valid      <= 1'b0;
+            mem_wb1_reg_we_r <= 1'b0;
+            trace1_valid     <= 1'b0;
         end else if (dbus_stall) begin
             // Trace only: MEM/WB's contents are held below, so without this
             // an instruction stalled on the bus would be reported as retiring
             // once per stall cycle instead of once.
-            trace_valid <= 1'b0;
+            trace_valid  <= 1'b0;
+            trace1_valid <= 1'b0;
             // Hold rather than bubble. The MEM access hasn't produced its
             // result yet, so there's nothing new to write back - but
             // clearing reg_we here would also tear down the MEM/WB
@@ -1376,6 +1831,13 @@ module core_ooo #(
             trace_valid      <= ex_mem_retire;                // trace only
             trace_pc         <= ex_mem_pc;                    // trace only
             trace_instr      <= ex_mem_instr;                 // trace only
+
+            mem_wb1_reg_we_r  <= ex_mem1_reg_we;
+            mem_wb1_rd_r      <= ex_mem1_rd;
+            mem_wb1_wb_data_r <= ex_mem1_wb_data;
+            trace1_valid      <= ex_mem1_retire;              // trace only
+            trace1_pc         <= ex_mem1_pc;                  // trace only
+            trace1_instr      <= ex_mem1_instr;               // trace only
         end
     end
 endmodule

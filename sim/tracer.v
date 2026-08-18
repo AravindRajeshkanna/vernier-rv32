@@ -19,6 +19,19 @@
 // a trace buffer that could ever exist on an FPGA. Real on-chip tracing
 // (compressed branch trace out a pin) is a different piece of hardware, and
 // pretending this is that would overstate what the project has.
+// ---- two slots ----
+//
+// A dual-issue core retires two instructions in one cycle, and the trace has
+// to contain both, in program order, or co-simulation silently stops checking
+// half the machine. Slot 0 is the older instruction and its line is written
+// first. Cores that issue one at a time tie slot 1's `valid1` low and the
+// second half of this module never fires - which is how the in-order core is
+// wired (see sim/tb_isa.v).
+//
+// Both lines come out of one `always` block on purpose: two `tracer`
+// instances writing the same file would interleave in whatever order the
+// simulator happened to schedule them, and a trace that is out of order
+// against Spike is indistinguishable from a core that is.
 module tracer (
     input wire        clk,
     input wire        rst,
@@ -27,7 +40,14 @@ module tracer (
     input wire [31:0] instr,
     input wire        rd_we,
     input wire [4:0]  rd,
-    input wire [31:0] rd_data
+    input wire [31:0] rd_data,
+
+    input wire        valid1,
+    input wire [31:0] pc1,
+    input wire [31:0] instr1,
+    input wire        rd_we1,
+    input wire [4:0]  rd1,
+    input wire [31:0] rd_data1
 );
     integer      fd = 0;
     reg [1023:0] path;
@@ -41,15 +61,24 @@ module tracer (
     end
 
     always @(posedge clk) begin
-        if (!rst && valid && fd != 0) begin
-            retired = retired + 1;
-            // x0 is filtered here rather than in the core: the pipeline
-            // happily "writes" x0 for instructions whose result is discarded
-            // (rd=x0), the register file drops it, and Spike does not log it.
-            if (rd_we && rd != 5'd0)
-                $fdisplay(fd, "%08x %08x x%0d %08x", pc, instr, rd, rd_data);
-            else
-                $fdisplay(fd, "%08x %08x - -", pc, instr);
+        if (!rst && fd != 0) begin
+            if (valid) begin
+                retired = retired + 1;
+                // x0 is filtered here rather than in the core: the pipeline
+                // happily "writes" x0 for instructions whose result is discarded
+                // (rd=x0), the register file drops it, and Spike does not log it.
+                if (rd_we && rd != 5'd0)
+                    $fdisplay(fd, "%08x %08x x%0d %08x", pc, instr, rd, rd_data);
+                else
+                    $fdisplay(fd, "%08x %08x - -", pc, instr);
+            end
+            if (valid1) begin
+                retired = retired + 1;
+                if (rd_we1 && rd1 != 5'd0)
+                    $fdisplay(fd, "%08x %08x x%0d %08x", pc1, instr1, rd1, rd_data1);
+                else
+                    $fdisplay(fd, "%08x %08x - -", pc1, instr1);
+            end
         end
     end
 

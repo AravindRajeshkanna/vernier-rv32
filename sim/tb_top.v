@@ -133,6 +133,14 @@ module tb_top;
         $display("fail word (expect 0 = PASS): 0x%08x",
                   {DUT.DMEM.mem[7], DUT.DMEM.mem[6], DUT.DMEM.mem[5], DUT.DMEM.mem[4]});
         $display("BTB mispredict_count (expect %0d): %0d", EXPECT_MISPREDICTS, DUT.CPU.mispredict_count);
+`ifdef CORE_OOO
+        // Reported here as well as in tb_bench because this testbench is the
+        // one with a zero-latency memory: it shows what the issue rule does
+        // when the fetch port is not the constraint, which is the contrast
+        // that makes the SoC number mean something.
+        $display("dual-issue pairs (slot 1 retirements): %0d", DUT.CPU.dual_issue_count);
+        $display("  ...out of %0d cycles that offered a second instruction", DUT.CPU.pair_window_count);
+`endif
 
         if ({DUT.DMEM.mem[7], DUT.DMEM.mem[6], DUT.DMEM.mem[5], DUT.DMEM.mem[4]} == 32'h0 &&
             DUT.DMEM.mem[0] == 8'd15 &&

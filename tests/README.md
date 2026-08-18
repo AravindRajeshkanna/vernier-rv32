@@ -213,3 +213,25 @@ ask of it.
 `verify_ooo` deletes the simulation binaries before and after it runs. They do
 not encode which core they were built with, and running a stale one would
 report the in-order core's result under the other core's name.
+
+There was a second, quieter way to report the in-order core's result under the
+other core's name, and it went unnoticed for two stages: `rtl/top.v`
+instantiated `cpu_core` with no `CORE_OOO` selection at all, so `make sim
+CORE=ooo` compiled the wide core into the image, instantiated the in-order one,
+and passed. The other targets all reach the CPU through `rtl/soc/soc_top.v`,
+which did select correctly, so the suite as a whole was never testing the wrong
+core — but that one testbench was, and its `TEST PASSED` meant nothing about
+the core it named. Fixed in stage 1b.
+
+The lesson is narrower than "check the knob": the knob *was* checked, by
+breaking `core_ooo.v` on purpose and confirming `CORE=ooo` went red while
+`CORE=inorder` stayed green. That check proves a selector selects somewhere. It
+does not prove it selects everywhere, and a suite with more than one top level
+needs the question asked once per top level.
+
+Re-running that check after the fix is worth recording for a second reason.
+The first attempt broke `OR` in the ALU, and `make sim CORE=ooo` passed — not
+because the selector was still broken, but because `sim/program.hex` never
+executes an `OR`. Breaking `ADD` instead fails it immediately (`mem[0]` reads
+18 where 15 is expected). A deliberate-breakage check is only evidence if the
+thing broken is on a path the test actually walks, which is §1 applied to §1.
