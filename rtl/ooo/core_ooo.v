@@ -1621,6 +1621,23 @@ module core_ooo #(
     reg [31:0] stall_dbus_count;     // data access waiting on the bus
     reg [31:0] stall_loaduse_count;  // load-use hazard bubble
     reg [31:0] stall_ifetch_count;   // fetch had nothing to offer
+    // Events, not cycles: `stall_dbus_count / dbus_event_count` is the mean
+    // length of a data-bus wait, which is what decides how deep the reorder
+    // buffer has to be to cover one. Depth is the expensive dimension of a
+    // ROB - every entry is a forwarding comparator on four read ports - so
+    // it is worth knowing rather than rounding up to a power of two that
+    // sounds safe.
+    reg [31:0] dbus_event_count;
+    reg        dbus_stall_q;
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            dbus_event_count <= 32'b0;
+            dbus_stall_q     <= 1'b0;
+        end else begin
+            dbus_stall_q <= dbus_stall;
+            if (dbus_stall && !dbus_stall_q) dbus_event_count <= dbus_event_count + 32'd1;
+        end
+    end
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             stall_div_count     <= 32'b0;

@@ -118,7 +118,7 @@ module tb_bench;
         $display("stall cycles by cause:");
         $display("  divide        %0d", DUT.CPU.stall_div_count);
         $display("  MMU walk      %0d", DUT.CPU.stall_mmu_count);
-        $display("  data bus      %0d", DUT.CPU.stall_dbus_count);
+        $display("  data bus      %0d  in %0d waits", DUT.CPU.stall_dbus_count, DUT.CPU.dbus_event_count);
         $display("  load-use      %0d", DUT.CPU.stall_loaduse_count);
         $display("  fetch empty   %0d", DUT.CPU.stall_ifetch_count);
 `endif

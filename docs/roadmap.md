@@ -93,8 +93,8 @@ regression against.
 |---|---|---|
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
-| 1c | Scoreboard: out-of-order completion, in-order retire | blocked on fetch bandwidth — see below |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | blocked on fetch bandwidth — see below |
+| 1c | Scoreboard: out-of-order completion, in-order retire | in progress — measured and designed, see below |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | after 1c — the ROB 1c builds is most of its foundation |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
@@ -167,13 +167,96 @@ that is already waiting.
 is not a change to `core_ooo.v`: `imem_addr`/`imem_rdata` are a single word,
 `cpu_wb.v` holds a one-entry fetch buffer, and it reaches the interconnect and
 `wb_ram.v`'s port structure. An instruction cache — currently Phase 4 — is the
-other half of the same answer, and on this evidence has a stronger claim to
-being done before 1c than 1c does.
+other half of the same answer.
+
+Stage 1c below revises this. Measuring the stalls rather than reasoning about
+them showed the data bus costs 12.6% against the front end's 10.7%, and that a
+reorder buffer aimed at the *bus* instead of at the divider is both cheaper and
+worth far more. The front end is still the second thing to fix, not a thing to
+skip.
 
 That reordering is not being made here. It is written down because the
 measurement is what should decide it, and the measurement now exists.
 
-#### A defect this stage found in its own harness
+#### Stage 1c: where the cycles actually are
+
+Stage 1b established that the back end is not what this machine is short of.
+Stage 1c starts by answering the question that leaves open. `core_ooo.v` now
+charges every stalled cycle to exactly one cause — the innermost one actually
+blocking — and `sim/tb_bench.v` reports the breakdown. CoreMark, one
+iteration, on the SoC:
+
+| Cause | Cycles | Share | |
+|---|---|---|---|
+| Total | 867,590 | | |
+| Data bus | 109,577 | 12.6% | in 80,738 waits — **1.36 cycles each** |
+| Fetch empty | 92,740 | 10.7% | |
+| Divide | 2,772 | 0.3% | |
+| Load-use | 41 | 0.005% | |
+| MMU walk | 0 | — | |
+
+**This reshapes the stage.** A scoreboard's textbook target is the multi-cycle
+divide, and the entire divide stall here is 0.3% of runtime — an out-of-order
+divider would be worth less than the logic it takes to build, and covering one
+33-cycle divide needs a ~33-entry reorder buffer, which is the expensive
+dimension: every entry is a forwarding comparator on four read ports.
+
+The cycles are in the data bus, where every load and store freezes the whole
+pipeline — fetch included — until Wishbone acknowledges. At 1.36 cycles per
+wait the buffer needed to cover one is **two to four entries**, not thirty-two.
+So the same mechanism, aimed at the measured stall instead of the textbook one,
+is both cheaper and worth roughly forty times more.
+
+The load-use figure is worth reading twice: 41 cycles. It is not that this code
+has no load-use hazards, it is that the data-bus stall is already absorbing
+them. That is a preview of the ceiling — some of the 109,577 is covering work
+the pipeline would otherwise stall on anyway, so the recoverable fraction is
+below 12.6% and has to be measured rather than assumed.
+
+#### Stage 1c: the design, and why it stops where it does
+
+**Target:** a load or store waiting on the bus releases the EX stage, so
+independent younger instructions execute underneath it, with results retiring
+in program order.
+
+**What that requires, in dependency order:**
+
+| | Piece | Note |
+|---|---|---|
+| 1 | A store buffer | a store writes no register, so it needs no ROB entry at all — and a store that has passed EX cannot fault, since misaligned is caught in EX and page faults come from the MMU before the bus access. This is the cheap half and it is correct on its own |
+| 2 | A 1-entry load buffer | the load's result has to land somewhere after EX has moved on |
+| 3 | A 4-entry reorder buffer | so younger results retire *after* the load's, in program order |
+| 4 | A scoreboard | one pending destination; readers of it stall at issue. WAR and WAW need nothing, because reads happen in order at issue and writes in order at retire |
+| 5 | ROB forwarding | four entries against four read ports |
+
+**The obstacle, which is specific and worth writing down.** `rtl/soc/cpu_wb.v`
+drives Wishbone combinationally from `dmem_*` — `dwb_cyc`, `dwb_stb`,
+`dwb_adr`, `dwb_dat_w` are continuous assignments off the core's `ex_mem_*`
+registers, with no request register in the adapter. So the core cannot release
+`ex_mem` early unless it holds the request itself, and the mux handing over
+from `ex_mem` to the buffer has to keep every bus signal glitch-free across the
+changeover cycle.
+
+That is tractable — the buffer latches `ex_mem`'s values at the same edge
+`ex_mem` changes, so the muxed output is continuous — but it lands in the same
+logic as the LR/SC reservation tracking, which keys off `ex_mem_valid &&
+ex_mem_is_sc` and `any_successful_write`. Moving a store into a buffer changes
+*when* those fire. Atomics are the part of this core that fifteen bugs went
+into getting right (`tests/README.md`), and they are not a thing to convert
+without room to verify the conversion.
+
+**Landed for 1c so far:** the measurement above, and the instrumentation that
+produced it — `stall_div_count`, `stall_mmu_count`, `stall_dbus_count`,
+`stall_loaduse_count`, `stall_ifetch_count` and `dbus_event_count`,
+observability-only and read by hierarchical reference exactly as
+`mispredict_count` is.
+
+**Still to do for 1c:** the store buffer first, since it needs no reorder
+buffer and no scoreboard and is correct in isolation; then the load buffer,
+the 4-entry ROB and its forwarding; and AMO last, because its two bus phases
+and its reservation interlock are the part with no cheap version.
+
+#### A defect stage 1b found in its own harness
 
 `rtl/top.v` instantiated `cpu_core` unconditionally, with no `CORE_OOO`
 selection. `make sim CORE=ooo` therefore compiled the wide core into the image,
