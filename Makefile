@@ -30,6 +30,23 @@
 #   make trapcheck    -> provoke known faults, check the trap reports come out
 
 IVERILOG      = iverilog
+# Which CPU to build the SoC around. `inorder` is rtl/cpu_core.v, the design
+# that has run on hardware; `ooo` is rtl/ooo/core_ooo.v, Phase 1 of
+# docs/roadmap.md. Both have the same port list and face the same suites:
+#
+#   make verify            the in-order core
+#   make verify_ooo        the same suites against the wide core
+#
+# The knob exists so a regression in one cannot hide behind the other.
+CORE         ?= inorder
+ifeq ($(CORE),ooo)
+CORE_RTL      = rtl/ooo/core_ooo.v
+CORE_DEFINES  = -DCORE_OOO
+else
+CORE_RTL      =
+CORE_DEFINES  =
+endif
+IVFLAGS       = -g2012 $(CORE_DEFINES)
 VVP           = vvp
 VERILATOR     = verilator
 # The $$readmemh image rules below list `Makefile` as a prerequisite on
@@ -47,7 +64,7 @@ RISCV_CC      ?= riscv64-unknown-elf-gcc
 RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 
 RTL = rtl/regfile.v rtl/imem.v rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v \
-      rtl/clint.v rtl/plic.v rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v
+      rtl/clint.v rtl/plic.v rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v $(CORE_RTL)
 TB  = sim/tb_top.v
 
 # The SoC build shares the core and peripherals but swaps rtl/top.v (flat,
@@ -57,7 +74,7 @@ SOC_RTL = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
           rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
-          rtl/soc/soc_top.v
+          rtl/soc/soc_top.v $(CORE_RTL)
 SOC_TB  = sim/tb_soc.v sim/sd_card_model.v
 
 SOFTWARE_SRCS = software/crt0.S software/syscalls.c software/uart.c software/main.c
@@ -96,13 +113,13 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
-        check-program regen-program \
+        check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
 all: sim
 
 sim:
-	$(IVERILOG) -g2012 -o sim/sim.out $(TB) $(RTL)
+	$(IVERILOG) $(IVFLAGS) -o sim/sim.out $(TB) $(RTL)
 	cd sim && $(VVP) sim.out
 
 # Waveform viewer. GTKWave was discontinued upstream and Homebrew disabled
@@ -169,7 +186,7 @@ regen-program: sim/program.rebuilt.hex
 	cp sim/program.rebuilt.hex sim/program.hex
 
 sim_software: software
-	$(IVERILOG) -g2012 -o sim/sim_software.out sim/tb_software.v $(RTL)
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_software.out sim/tb_software.v $(RTL)
 	cd sim && $(VVP) sim_software.out
 
 # =====================================================================
@@ -239,7 +256,7 @@ sim/probeimage.hex: software/soc/newlibprobe.elf software/bin2hex.py Makefile
 	    software/soc/newlibprobe.bin > $@
 
 sim_soc: soc
-	$(IVERILOG) -g2012 -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
 	cd sim && $(VVP) sim_soc.out
 
 # ---- the preloaded-RAM boot path, in simulation ----
@@ -249,13 +266,13 @@ sim_soc: soc
 # between "passes in simulation" and "dies on hardware", and until now nothing
 # simulated them - so this testbench is that path, at that size.
 sim/sim_ramboot.out: sim/tb_ramboot.v $(SOC_RTL)
-	$(IVERILOG) -g2012 -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
 
 sim_ramboot: sim/bootrom.hex sim/ramimage.hex sim/sim_ramboot.out
 	cd sim && $(VVP) sim_ramboot.out
 
 sim/sim_probe.out: sim/tb_ramboot.v $(SOC_RTL)
-	$(IVERILOG) -g2012 -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
 
 sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
 	cd sim && $(VVP) sim_probe.out
@@ -277,7 +294,7 @@ sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
 # keeps its state in .bss, which _start has always zeroed, so it passes twice
 # either way and would not have caught this.
 sim/sim_rerun.out: sim/tb_ramboot.v $(SOC_RTL)
-	$(IVERILOG) -g2012 -DRAM_IMAGE='"probeimage.hex"' -DRERUN \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -DRERUN \
 	    -o $@ sim/tb_ramboot.v $(SOC_RTL)
 
 sim_rerun: sim/bootrom.hex sim/probeimage.hex sim/sim_rerun.out
@@ -296,7 +313,7 @@ sim/trapimage.hex: software/soc/trapcheck.elf software/bin2hex.py Makefile
 	    software/soc/trapcheck.bin > $@
 
 sim/sim_trap.out: sim/tb_ramboot.v $(SOC_RTL)
-	$(IVERILOG) -g2012 -DRAM_IMAGE='"trapimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"trapimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
 
 trapcheck: sim/bootrom.hex sim/sim_trap.out
 	./sim/trapcheck.sh
@@ -307,7 +324,7 @@ trapcheck: sim/bootrom.hex sim/sim_trap.out
 # Also drops sim/frame.ppm for a human to look at - but the verdict is the
 # readback, not the image.
 sim_video:
-	$(IVERILOG) -g2012 -o sim/sim_video.out sim/tb_video.v \
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_video.out sim/tb_video.v \
 	    rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v
 	cd sim && $(VVP) sim_video.out
 
@@ -317,7 +334,7 @@ sim_video:
 # there. This proves it against the card model first: 0xFF with no card, 0x01
 # when one is inserted mid-run, 0xFF again when removed.
 sim_cmd0:
-	$(IVERILOG) -g2012 -o sim/sim_cmd0.out sim/tb_cmd0.v \
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_cmd0.out sim/tb_cmd0.v \
 	    sim/sd_card_model.v fpga/ulx3s_cmd0.v
 	cd sim && $(VVP) sim_cmd0.out
 
@@ -329,7 +346,7 @@ sim_cmd0:
 # direction, polarity, tie-offs - and is part of `make verify` so the file
 # cannot rot the same way. It does not re-test the SoC; sim_soc does that.
 sim_ulx3s: soc
-	$(IVERILOG) -g2012 -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v
 	cd sim && $(VVP) sim_ulx3s.out
 
@@ -365,7 +382,7 @@ tests/build/manifest.txt:
 isa-build: tests/build/manifest.txt
 
 sim/sim_isa.out: $(ISA_TB) $(SOC_RTL)
-	$(IVERILOG) -g2012 -o $@ $(ISA_TB) $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ $(ISA_TB) $(SOC_RTL)
 
 isa: sim/sim_isa.out isa-build
 	./tests/run.sh
@@ -411,12 +428,20 @@ sim/coremark.hex: software/bench/coremark.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 software/bench/coremark.bin > $@
 
 sim/sim_bench.out: $(BENCH_TB) $(SOC_RTL)
-	$(IVERILOG) -g2012 -o $@ $(BENCH_TB) $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ $(BENCH_TB) $(SOC_RTL)
 
 coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
 # Everything that can gate a change, in rough order of how fast it fails.
+# Rebuilds from scratch on purpose: the simulation binaries do not encode
+# which core they were built with, and running a stale one would report the
+# in-order core's result under the other core's name.
+verify_ooo:
+	rm -f sim/*.out
+	$(MAKE) verify CORE=ooo
+	rm -f sim/*.out
+
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
         check-program isa cosim formal
 

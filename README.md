@@ -54,6 +54,9 @@ rtl/
   plic.v         prioritized/claimable external interrupt controller
   uart.v         TX+RX serial console, polled (txdata/rxdata/status)
   cpu_core.v     the CPU itself: 5-stage pipeline (IF/ID/EX/MEM/WB)
+  ooo/
+    core_ooo.v   the wide core being built for roadmap Phase 1, same port
+                 list; `make verify_ooo` runs the whole suite against it
   top.v          flat top level (cpu + imem + dmem + clint + plic + uart)
   soc/
     soc_top.v          the SoC: CPU on a Wishbone bus, unified address space
@@ -528,7 +531,7 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | a redesign of the pipeline, not an addition to it |
+| 1 | **Superscalar issue and out-of-order execution** | in progress — `rtl/ooo/core_ooo.v`, a second core facing the same suites |
 | 2 | Close the boot path — the SD card | the only untested link in the boot chain |
 | 3 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
 | 4 | Make it fast enough to be interesting — caches, interrupt-driven UART | every fetch and load goes to the bus |

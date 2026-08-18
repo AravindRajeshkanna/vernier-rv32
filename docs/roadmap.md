@@ -72,9 +72,37 @@ And the constraints that do not relax while it happens:
 - **Area.** The 45F is already at 97% block RAM. A physical register file and a
   ROB are not free, and this may become 85F-only.
 
-**Done when:** `make verify` is green — including 82/82 co-simulation — with
-more than one instruction retiring per cycle on CoreMark, and a measured Fmax
-and utilisation reported next to the cycle count rather than instead of it.
+**Done when:** `make verify_ooo` is green — including 82/82 co-simulation —
+with more than one instruction retiring per cycle on CoreMark, and a measured
+Fmax and utilisation reported next to the cycle count rather than instead of
+it.
+
+### How it is being built
+
+`rtl/ooo/core_ooo.v`, a second core with the identical port list, selected by
+`make verify CORE=ooo` (or `make verify_ooo`). `rtl/cpu_core.v` is untouched
+and stays the default, because it is the only design here that has run on
+silicon and evolving it in place would leave no working baseline to diff a
+regression against.
+
+| Stage | | Status |
+|---|---|---|
+| 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
+| 1b | 2-wide fetch/decode, dual issue for independent ALU ops | next |
+| 1c | Scoreboard: out-of-order completion, in-order retire | |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | |
+
+Stage 1a is deliberately empty of microarchitecture: the file starts as a
+byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
+proves the second core passes everything the first does. That is not a
+formality. It means every later stage has a harness already known to work, and
+a diff that contains only the change being made rather than the change plus a
+rewrite of the privilege, MMU and atomics logic that fifteen bugs went into
+getting right (`tests/README.md`).
+
+The `CORE` knob was checked the way `docs/practices.md` §1 asks: breaking
+`core_ooo.v` on purpose fails `CORE=ooo` and leaves `CORE=inorder` green, so
+the selector demonstrably selects rather than silently doing nothing.
 
 This phase is ordered first because it is the largest and because everything
 it touches is easier to change before, not after, the phases below add

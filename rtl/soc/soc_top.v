@@ -123,7 +123,15 @@ module soc_top #(
     wire [NUM_SLAVES*32-1:0] s_dat_r;
     wire [NUM_SLAVES-1:0]    s_ack;
 
+    // Which core. Both have the identical port list; -DCORE_OOO picks the
+    // wide/out-of-order one in rtl/ooo/. See docs/roadmap.md Phase 1 - the
+    // in-order core stays the proven default, and `make verify CORE=ooo`
+    // runs the whole suite against the other one.
+`ifdef CORE_OOO
+    core_ooo #(.RESET_PC(RESET_PC)) CPU (
+`else
     cpu_core #(.RESET_PC(RESET_PC)) CPU (
+`endif
         .clk(clk), .rst(rst),
         .imem_addr(imem_addr), .imem_rdata(imem_rdata),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),

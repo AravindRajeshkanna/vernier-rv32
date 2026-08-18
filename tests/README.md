@@ -193,3 +193,22 @@ FPGA place-and-route is not in CI either: it is 4–11 minutes on an ECP5, the
 placement is stochastic (see `docs/toolchain.md` §6), and the numbers in
 `fpga/README.md` are recorded by hand from real runs so that a single noisy
 placement cannot quietly move a published figure.
+
+---
+
+## Two cores, the same suites
+
+`make verify` runs everything against `rtl/cpu_core.v`, the in-order design
+that has run on hardware. `make verify_ooo` runs the identical suites against
+`rtl/ooo/core_ooo.v`, the wide core being built for Phase 1 of
+`docs/roadmap.md`.
+
+Both must be green. The point of running one suite against two cores is that a
+regression in either cannot hide behind the other, and co-simulation is what
+makes that strict: an out-of-order machine still retires in order, so
+"every retired instruction matches Spike" stays exactly the right question to
+ask of it.
+
+`verify_ooo` deletes the simulation binaries before and after it runs. They do
+not encode which core they were built with, and running a stale one would
+report the in-order core's result under the other core's name.
