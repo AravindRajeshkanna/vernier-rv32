@@ -61,20 +61,41 @@ module regfile_wide (
 
     // One read port: x0 first, then the younger write, then the older, then
     // the array. The order of the two bypass terms is the write priority.
-    function [31:0] rd_port;
-        input [4:0] a;
-        begin
-            if (a == 5'd0)            rd_port = 32'b0;
-            else if (w1 && rd1 == a)  rd_port = wdata1;
-            else if (w0 && rd0 == a)  rd_port = wdata0;
-            else                      rd_port = regs[a];
-        end
-    endfunction
+    //
+    // Written out per port rather than as a `rd_port(a)` function, and that
+    // is a correctness requirement rather than a style preference. A function
+    // called from a continuous assignment is only guaranteed to re-evaluate
+    // when its *arguments* change; the signals it reads out of the enclosing
+    // module - here `regs`, `w0/w1`, `rd0/rd1`, `wdata0/wdata1` - need not be
+    // in the assignment's sensitivity list at all. The function version
+    // simulated as a register file whose outputs only moved when a read
+    // address changed, which is wrong every time a write lands under a
+    // steady address.
+    //
+    // The formal proofs in formal/fv_regfile_wide.v passed against the
+    // function version, and would pass against it again: yosys elaborates the
+    // function into the combinational logic that was meant, so the property
+    // being proved was about a netlist the simulator never built. Two
+    // different tools disagreeing about the same source is exactly the gap
+    // co-simulation exists to sit in - it found this, on the SoC, as a CSR
+    // write that the very next trap could not see.
+    wire byp1a_1 = w1 && (rd1 == rs1_a);
+    wire byp1a_0 = w0 && (rd0 == rs1_a);
+    wire byp2a_1 = w1 && (rd1 == rs2_a);
+    wire byp2a_0 = w0 && (rd0 == rs2_a);
+    wire byp1b_1 = w1 && (rd1 == rs1_b);
+    wire byp1b_0 = w0 && (rd0 == rs1_b);
+    wire byp2b_1 = w1 && (rd1 == rs2_b);
+    wire byp2b_0 = w0 && (rd0 == rs2_b);
 
-    assign rdata1_a = rd_port(rs1_a);
-    assign rdata2_a = rd_port(rs2_a);
-    assign rdata1_b = rd_port(rs1_b);
-    assign rdata2_b = rd_port(rs2_b);
+    assign rdata1_a = (rs1_a == 5'd0) ? 32'b0 :
+                      byp1a_1 ? wdata1 : byp1a_0 ? wdata0 : regs[rs1_a];
+    assign rdata2_a = (rs2_a == 5'd0) ? 32'b0 :
+                      byp2a_1 ? wdata1 : byp2a_0 ? wdata0 : regs[rs2_a];
+    assign rdata1_b = (rs1_b == 5'd0) ? 32'b0 :
+                      byp1b_1 ? wdata1 : byp1b_0 ? wdata0 : regs[rs1_b];
+    assign rdata2_b = (rs2_b == 5'd0) ? 32'b0 :
+                      byp2b_1 ? wdata1 : byp2b_0 ? wdata0 : regs[rs2_b];
 
     // Same priority in the array: apply the older write first so the younger
     // one overwrites it when both target the same register.

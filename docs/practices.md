@@ -294,6 +294,44 @@ When something has only been done in simulation, say so; when it has been done
 on hardware, record the run verbatim, with the values that make it a report
 about *that* build.
 
+## 17. Two tools reading the same file can build different machines
+
+**The incident.** `rtl/ooo/regfile_wide.v` computed each of its four read
+ports by calling a function that read the write ports and the register array
+out of the module around it — `assign rdata1_a = rd_port(rs1_a);`. Yosys
+elaborates that into exactly the combinational logic it looks like, so all
+four formal properties passed, including the write-priority one the module
+exists for. Icarus builds the sensitivity list of a continuous assignment from
+the *expression*, and a function's internal reads are not in it: in simulation
+the register file's outputs moved only when a read address changed. A write
+landing under a steady address was invisible.
+
+The proof was not wrong. It was about a netlist the simulator never built.
+
+The same mistake was then made a second time, in the forwarding mux of
+`rtl/ooo/core_ooo.v`, and behaved differently again — that one updated
+whenever a new instruction entered EX, which is most of the time, so it passed
+the zero-latency-memory testbench with the BTB mispredict count unchanged and
+failed only when the EX stage held its contents across a bus stall. It
+surfaced on the SoC as the boot ROM reading a wrong magic number, and in
+co-simulation as a `csrw mtvec` that the very next trap could not see.
+
+**The rule.** A formal proof is evidence about the netlist your synthesis tool
+builds. It is not evidence that your simulator builds the same one, and it is
+not a substitute for executing the module. Anything proved but never simulated
+is one tool's opinion.
+
+The concrete habit that follows: in synthesisable RTL, do not call a function
+from a continuous assignment unless every signal it reads is one of its
+arguments. Write the logic out per port instead. `rtl/regfile.v` — the 2R/1W
+file that has run on silicon — was always written that way, and the wide
+version's first mistake was departing from it.
+
+This is also the clearest case yet for §15's layering. No test caught this;
+co-simulation did, because it is the only layer that asks whether the machine
+executed the same instructions rather than whether it reached the right
+answer.
+
 ---
 
 ## Conventions

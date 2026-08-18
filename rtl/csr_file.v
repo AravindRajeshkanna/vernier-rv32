@@ -70,7 +70,11 @@ module csr_file (
     // exactly what an SBI timer implementation does) would otherwise be
     // comparing two unrelated clocks.
     input  wire [63:0]  mtime_in,
-    input  wire         instret_inc,   // an instruction completed this cycle
+    // How many instructions completed this cycle: 0, 1, or - once a core
+    // issues more than one instruction at a time - 2. A flag here would make
+    // `minstret` undercount on a dual-issue core, which is a wrong
+    // architectural counter rather than a slow one.
+    input  wire [1:0]   instret_inc,
     output wire [31:0]  mcounteren_out,
     output wire [31:0]  scounteren_out,
 
@@ -182,8 +186,8 @@ module csr_file (
         end else if (minstret_lo_we || minstret_hi_we) begin
             minstret_r <= {minstret_hi_we ? wdata : minstret_r[63:32],
                            minstret_lo_we ? wdata : minstret_r[31:0]};
-        end else if (instret_inc && !mcountinhibit_r[2]) begin
-            minstret_r <= minstret_r + 64'd1;
+        end else if ((instret_inc != 2'd0) && !mcountinhibit_r[2]) begin
+            minstret_r <= minstret_r + {62'b0, instret_inc};
         end
     end
 

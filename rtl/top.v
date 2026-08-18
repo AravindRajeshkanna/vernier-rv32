@@ -53,7 +53,22 @@ module top #(
                          is_plic  ? plic_rdata  :
                          is_uart  ? uart_rdata  : dmem_rdata_raw;
 
+    // Which core, on the same `-DCORE_OOO` switch soc_top.v uses.
+    //
+    // This selection was missing, and its absence was invisible: `make sim
+    // CORE=ooo` built the OoO core into the image, instantiated the in-order
+    // one, and reported a pass. Every other target in `verify_ooo` goes
+    // through soc_top.v and did select correctly, so the suite as a whole was
+    // still testing the right core - but this one testbench was answering a
+    // question about a module it never instantiated, which is docs/practices.md
+    // section 1 in its purest form. It is also the only testbench here with a
+    // zero-latency memory, and therefore the only place the fetch port is not
+    // the constraint, which makes it the one worth having.
+`ifdef CORE_OOO
+    core_ooo CPU (
+`else
     cpu_core CPU (
+`endif
         .clk(clk), .rst(rst),
         .imem_addr(imem_addr), .imem_rdata(imem_rdata),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
