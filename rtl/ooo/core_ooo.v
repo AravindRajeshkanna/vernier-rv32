@@ -289,14 +289,59 @@ module core_ooo #(
     );
 
     // =======================================================================
-    // IF/ID pipeline register
+    // IF/ID: a fetch buffer, not a single register
     // =======================================================================
-    reg        if_id_valid;
-    reg [31:0] if_id_pc;
-    reg [31:0] if_id_instr;
-    reg        if_id_ifetch_fault;
-    reg        if_id_pred_taken;
-    reg [31:0] if_id_pred_target;
+    // `cpu_core.v` has one IF/ID register, so the front end and the back end
+    // move as one unit: whenever ID/EX can't accept (a load-use stall, a
+    // divide, a data-bus wait), PC freezes and the fetch port sits idle. Every
+    // one of those cycles is a fetch this machine could have performed and
+    // didn't, and when the stall clears the pipe restarts from empty.
+    //
+    // Here IF/ID is a FIFO instead. Fetch advances whenever the *buffer* has
+    // room, which decouples it from whether ID/EX is ready, and decode drains
+    // the head. Two things fall out:
+    //
+    //  - An `ibus_wait` is absorbed rather than bubbling the pipe, as long as
+    //    the buffer is non-empty. That is the win that matters on the SoC,
+    //    where instruction fetch and data share one Wishbone bus, so a load is
+    //    *routinely* stalling the fetch behind it (docs/roadmap.md Phase 4).
+    //  - Instructions accumulate during a stall, which is what gives the dual
+    //    issue below something to be dual about. A one-entry IF/ID can never
+    //    offer a second instruction, so no issue rule, however clever, can
+    //    find a pair.
+    //
+    // Depth 4 is chosen against the stall it is meant to cover: the longest
+    // routine stall here is a 33-cycle divide, which would fill any buffer,
+    // and the common one is a handful of cycles of bus wait, which 4 covers.
+    // Deeper costs flops and buys only the tail.
+    //
+    // Flushing: `redirect_valid` empties the buffer, exactly as it used to
+    // clear `if_id_valid`. `sfence_en` empties it too, and that is new - see
+    // the redirect logic for why SFENCE.VMA now redirects.
+    localparam FB_DEPTH = 4;
+    localparam FB_AW    = 2;   // clog2(FB_DEPTH)
+
+    reg [31:0] fb_pc      [0:FB_DEPTH-1];
+    reg [31:0] fb_instr   [0:FB_DEPTH-1];
+    reg        fb_fault   [0:FB_DEPTH-1];
+    reg        fb_ptaken  [0:FB_DEPTH-1];
+    reg [31:0] fb_ptarget [0:FB_DEPTH-1];
+
+    reg [FB_AW-1:0] fb_head, fb_tail;
+    reg [FB_AW:0]   fb_count;   // one bit wider than an index: 0..FB_DEPTH
+
+    wire fb_empty = (fb_count == 0);
+
+    // The head entry, presented to ID under the names the decode logic below
+    // already uses. Everything from here to the ID/EX register is unchanged
+    // from the single-register version - decode is still exactly one
+    // instruction wide, and slot 1 below reads the *second* entry separately.
+    wire        if_id_valid        = !fb_empty;
+    wire [31:0] if_id_pc           = fb_pc[fb_head];
+    wire [31:0] if_id_instr        = fb_instr[fb_head];
+    wire        if_id_ifetch_fault = fb_fault[fb_head];
+    wire        if_id_pred_taken   = fb_ptaken[fb_head];
+    wire [31:0] if_id_pred_target  = fb_ptarget[fb_head];
 
     // =======================================================================
     // ID stage: decode
@@ -570,13 +615,24 @@ module core_ooo #(
                            ((uses_rs1 && (id_ex_rd == d_rs1)) || (uses_rs2 && (id_ex_rd == d_rs2)));
 
     wire id_ex_stall = load_use_stall || ex_busy_stall;
+
+    // Dual issue is not wired up yet - this stage lands the decoupled front
+    // end on its own, so that if co-simulation moves it is the buffer that
+    // moved it and not the issue logic. `issue_pair` is the seam the next
+    // stage fills in; tied off, the buffer drains one entry per cycle and the
+    // machine is behaviourally what it was.
+    wire issue_pair = 1'b0;
     // The IF-stage ITLB-miss stall is independent of id_ex_stall: it's
     // about whether IF has something new to offer id_ex, not about
     // whether id_ex is free to accept if_id's *current* content. Folding
     // the two together would double-latch an instruction - see the
     // if_id register block below.
     wire if_stall    = itlb_wait_stall || ibus_wait;
-    wire pc_freeze   = id_ex_stall || if_stall;
+    // There is no `pc_freeze` any more. In cpu_core.v the PC froze on
+    // `id_ex_stall || if_stall`; with the fetch buffer the back end being
+    // stalled no longer stops the front end, and the only thing that holds
+    // the PC is the fetch itself stalling or the buffer filling up. See the
+    // `fb_push` term in the sequential section.
 
     // =======================================================================
     // ID/EX pipeline register
@@ -1002,9 +1058,16 @@ module core_ooo #(
                       ((id_ex_pred_taken != actual_taken) ||
                        (actual_taken && (id_ex_pred_target != actual_target)));
 
+    // `sfence_en` joins this list, which it was not part of in cpu_core.v.
+    // There, the only instruction ahead of an SFENCE.VMA was the single IF/ID
+    // entry; here the fetch buffer holds up to four, all translated under the
+    // mappings the fence is invalidating. Redirecting to PC+4 - the same
+    // treatment FENCE.I gets, for the same reason - refetches them under the
+    // new mappings. It costs a flush on an instruction that is rare and
+    // already expensive, and it is what makes the buffer safe under Sv32.
     wire redirect_valid = id_ex_valid && ex_commit &&
                           (interrupt_taken || synchronous_trap || mispredict ||
-                           mret_en || sret_en || fence_i_en);
+                           mret_en || sret_en || fence_i_en || sfence_en);
     reg [31:0] redirect_target;
     always @(*) begin
         if (interrupt_taken)        redirect_target = trap_redirect_target;
@@ -1013,6 +1076,7 @@ module core_ooo #(
         else if (mret_en)           redirect_target = csr_mepc;
         else if (sret_en)           redirect_target = csr_sepc;
         else if (fence_i_en)        redirect_target = id_ex_pc + 32'd4;
+        else if (sfence_en)         redirect_target = id_ex_pc + 32'd4;
         else                        redirect_target = id_ex_pc + 32'd4; // unreachable given redirect_valid's gating
     end
 
@@ -1232,13 +1296,44 @@ module core_ooo #(
     // =======================================================================
     // Sequential pipeline register updates
     // =======================================================================
+    // ---- fetch buffer control -------------------------------------------
+    // Declared here rather than beside the buffer itself because they depend
+    // on `redirect_valid`, `if_stall` and `id_ex_stall`, all of which are
+    // defined further down. iverilog 14 rejects use-before-declaration.
+    //
+    // How many entries leave the head this cycle. `fb_pop_n` is 0, 1 or 2:
+    // slot 0 alone, or a dual-issued pair. It is 0 when ID/EX can't accept
+    // (`id_ex_stall`), which is the same condition that used to hold IF/ID.
+    wire [1:0] fb_pop_n = (redirect_valid || id_ex_stall || fb_empty) ? 2'd0 :
+                          issue_pair                                  ? 2'd2 : 2'd1;
+    wire       fb_pop   = (fb_pop_n != 2'd0);
+
+    // Push whenever this cycle's fetch produced a real instruction and there
+    // is somewhere to put it. `fb_pop_n` counts against fullness in the same
+    // cycle: an entry leaving frees its slot for the one arriving.
+    wire fb_push = !redirect_valid && !sfence_en && !if_stall &&
+                   ((fb_count - {1'b0, fb_pop_n}) < FB_DEPTH);
+
+    // The fetch buffer makes SFENCE.VMA's ordering visible, so it has to be
+    // handled rather than left implicit: `sfence_en` invalidates the ITLB, and
+    // any instruction already sitting in the buffer was translated by the
+    // mappings being invalidated. With a one-entry IF/ID that was one
+    // instruction; with a 4-deep buffer it is up to four, plus however far the
+    // PC has run ahead. Both are wrong - the spec orders subsequent implicit
+    // references after the fence - so SFENCE.VMA now redirects to PC+4 and
+    // empties the buffer, which is precisely what FENCE.I already did.
+    wire fb_flush = redirect_valid || sfence_en;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             pc <= RESET_PC;
         end else if (redirect_valid) begin
             pc <= redirect_target;
-        end else if (pc_freeze) begin
-            // hold
+        end else if (!fb_push) begin
+            // hold: either the fetch itself is stalled (ITLB walk, bus wait)
+            // or the buffer is full. Note what is *not* here any more -
+            // `id_ex_stall`. The back end being busy no longer freezes the
+            // front end, which is the whole point of the buffer.
         end else if (btb_pred_taken) begin
             pc <= btb_pred_target;
         end else begin
@@ -1248,20 +1343,24 @@ module core_ooo #(
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            if_id_valid <= 1'b0;
-        end else if (redirect_valid) begin
-            if_id_valid <= 1'b0;
-        end else if (id_ex_stall) begin
-            // hold if_id unchanged (content not yet consumed by id_ex)
-        end else if (if_stall) begin
-            if_id_valid <= 1'b0; // content WAS consumed into id_ex; IF has nothing new this cycle
+            fb_head  <= {FB_AW{1'b0}};
+            fb_tail  <= {FB_AW{1'b0}};
+            fb_count <= {(FB_AW+1){1'b0}};
+        end else if (fb_flush) begin
+            fb_head  <= {FB_AW{1'b0}};
+            fb_tail  <= {FB_AW{1'b0}};
+            fb_count <= {(FB_AW+1){1'b0}};
         end else begin
-            if_id_valid        <= 1'b1;
-            if_id_pc           <= pc;
-            if_id_instr        <= imem_rdata;
-            if_id_ifetch_fault <= itlb_fault_now;
-            if_id_pred_taken   <= btb_pred_taken;
-            if_id_pred_target  <= btb_pred_target;
+            if (fb_push) begin
+                fb_pc[fb_tail]      <= pc;
+                fb_instr[fb_tail]   <= imem_rdata;
+                fb_fault[fb_tail]   <= itlb_fault_now;
+                fb_ptaken[fb_tail]  <= btb_pred_taken;
+                fb_ptarget[fb_tail] <= btb_pred_target;
+                fb_tail             <= fb_tail + {{(FB_AW-1){1'b0}}, 1'b1};
+            end
+            fb_head  <= fb_head + fb_pop_n[FB_AW-1:0];
+            fb_count <= fb_count + {2'b0, fb_push} - {1'b0, fb_pop_n};
         end
     end
 
