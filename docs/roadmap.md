@@ -1,6 +1,9 @@
 # Roadmap
 
-Phases, ordered by what each one unblocks rather than by how interesting it is.
+Phases, ordered by what each one unblocks rather than by how interesting it is,
+with one exception: Phase 1 is ordered first because it is a redesign of the
+machine every later phase builds on, and is cheaper to do before they widen the
+surface it has to preserve.
 Each phase states what is already true, so the gap between "done" and "next" is
 visible rather than implied — the same standard `fpga/README.md` applies to
 hardware claims.
@@ -31,7 +34,55 @@ Timing: 30.77 MHz on an 85F, 28.78 MHz on a 45F, against the board's 25 MHz.
 
 ---
 
-## Phase 1 — Close the boot path
+## Phase 1 — Superscalar issue and out-of-order execution
+
+**This is a redesign, not an increment**, and it is worth being plain about
+that before it is worth being enthusiastic about it. Every other phase adds to
+the machine in `rtl/cpu_core.v`; this one replaces it. The current core is
+1,342 lines of five-stage, single-issue, in-order pipeline, and roughly 140 of
+those lines are load-bearing for privilege, the Sv32 MMU and the A extension —
+none of which get simpler when instructions stop retiring in the order they
+were fetched.
+
+What it actually requires, each item a dependency of the ones after it:
+
+| | Piece | Why it is not optional |
+|---|---|---|
+| 1 | Register renaming — a RAT and a physical register file | WAR and WAW hazards stop being stalls and start being wrong answers |
+| 2 | A reorder buffer | precise traps. This core takes misaligned-access, page and illegal-instruction traps, and `mepc` must name the faulting instruction |
+| 3 | Reservation stations or a scoreboard | the wakeup/select loop, which is where the Fmax goes |
+| 4 | Multiple execution units | including the existing multi-cycle divider, which already stalls in-order today |
+| 5 | A load-store queue with memory disambiguation | loads may not pass an aliasing store; `LR`/`SC` reservations and AMO atomicity must survive reordering |
+| 6 | Misprediction recovery | RAT checkpointing or rollback, replacing today's single-cycle flush |
+| 7 | Wider fetch and decode | otherwise the back end starves and none of the above shows up as throughput |
+
+And the constraints that do not relax while it happens:
+
+- **Co-simulation still compares every retired instruction against Spike.**
+  This is the good news: an out-of-order machine still retires in order, so
+  82/82 remains exactly the right check, and it is a brutal one.
+- **79/82 architectural tests, 4 formal proofs, and a hardware run** are the
+  standing bar. `docs/practices.md` §1 applies with force here: a superscalar
+  core that passes because the tests never create the hazard is the most
+  expensive kind of test that cannot fail.
+- **Timing.** The design closes at 30.77 MHz on an 85F with the critical path
+  running from a block RAM read port through the MMU walk result to the PC. A
+  wakeup/select loop is a classic critical path, and "it is faster in cycles"
+  is not a result until Fmax is measured alongside it.
+- **Area.** The 45F is already at 97% block RAM. A physical register file and a
+  ROB are not free, and this may become 85F-only.
+
+**Done when:** `make verify` is green — including 82/82 co-simulation — with
+more than one instruction retiring per cycle on CoreMark, and a measured Fmax
+and utilisation reported next to the cycle count rather than instead of it.
+
+This phase is ordered first because it is the largest and because everything
+it touches is easier to change before, not after, the phases below add
+external memory, caches and a debug module to the surface it has to preserve.
+
+---
+
+## Phase 2 — Close the boot path
 
 **The SD card is the only part of the boot chain that has never worked on
 hardware**, and it is by a wide margin the cheapest open question in the
@@ -50,7 +101,7 @@ acceptance test off the card rather than out of block RAM.
 
 ---
 
-## Phase 2 — Break the memory ceiling
+## Phase 3 — Break the memory ceiling
 
 **64 KB of block RAM is what stands between this and anything Linux-shaped**,
 and it is also what forces the firmware to stay as small as it is. 256 KB costs
@@ -68,7 +119,7 @@ and `sim_ramboot`'s 64 KB assumption is no longer the binding constraint.
 
 ---
 
-## Phase 3 — Make it fast enough to be interesting
+## Phase 4 — Make it fast enough to be interesting
 
 Every fetch and every load goes to the bus, and the interconnect is a shared
 bus rather than a crossbar, so a load costs the fetch behind it a cycle.
@@ -89,7 +140,7 @@ EEMBC-certified scores.
 
 ---
 
-## Phase 4 — Video out
+## Phase 5 — Video out
 
 The framebuffer works and is verified by capturing a frame off the scan-out and
 comparing it back (`make sim_video`), and the CPU's path to it is covered on
@@ -104,7 +155,7 @@ the framebuffer.
 
 ---
 
-## Phase 5 — Run software this project did not write
+## Phase 6 — Run software this project did not write
 
 OpenSBI **builds** for this core and does not **boot** on it.
 [software/opensbi/README.md](../software/opensbi/README.md) is precise about
@@ -119,7 +170,7 @@ sooner: there is a bus, a timer, an interrupt controller and storage.
 
 ---
 
-## Phase 6 — Debug infrastructure
+## Phase 7 — Debug infrastructure
 
 No JTAG TAP, no RISC-V Debug Module, so debugging is UART `printf` and the
 loud trap handler. [docs/debug.md](debug.md) is honest about what that costs.
@@ -131,12 +182,6 @@ others because none of them are blocked by it.
 ---
 
 ## Beyond the phases
-
-**Superscalar issue and out-of-order execution** — register renaming, a
-reorder buffer, reservation stations or a scoreboard, multiple execution
-units. This is a microarchitecture redesign rather than an addition to this
-pipeline, which is why it is not a phase: it would replace the thing the
-phases are built on.
 
 **PMP**, which [SECURITY.md](../SECURITY.md) lists as a known gap rather than
 an oversight.

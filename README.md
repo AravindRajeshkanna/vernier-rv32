@@ -528,17 +528,19 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Close the boot path** — the SD card | the only untested link in the boot chain, and the cheapest open question here |
-| 2 | **Break the memory ceiling** — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
-| 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | every fetch and load goes to the bus |
-| 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
-| 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot |
-| 6 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
+| 1 | **Superscalar issue and out-of-order execution** | a redesign of the pipeline, not an addition to it |
+| 2 | Close the boot path — the SD card | the only untested link in the boot chain |
+| 3 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
+| 4 | Make it fast enough to be interesting — caches, interrupt-driven UART | every fetch and load goes to the bus |
+| 5 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
+| 6 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot |
+| 7 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
 
-Phase 1 needs a card of 32 GB or less and about five minutes. Phase 2 unblocks
-almost everything after it. Superscalar and out-of-order execution sit outside
-the phases deliberately — that is a redesign of the thing the phases build on,
-not an addition to it.
+Phase 1 is first because it replaces the machine every later phase builds on,
+and is cheaper to do before they widen the surface it has to preserve — but it
+is the largest thing on the list by a wide margin, and `docs/roadmap.md` is
+specific about what it requires and what must not regress while it happens.
+Phase 2 needs a card of 32 GB or less and about five minutes.
 
 One known defect is open and unscheduled: the intermittent `ISA-TIMEOUT` under
 `make verify`. It self-reports rather than hanging silently now, which is not
