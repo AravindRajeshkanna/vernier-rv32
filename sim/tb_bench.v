@@ -123,7 +123,8 @@ module tb_bench;
         $display("  fetch empty   %0d", DUT.CPU.stall_ifetch_count);
         $display("stores handed to the store buffer: %0d", DUT.CPU.store_buffered_count);
         $display("load bus-wait cycles: %0d, of which recoverable by a", DUT.CPU.load_wait_count);
-        $display("  load-completion buffer: %0d", DUT.CPU.defer_candidate_count);
+        $display("  load-completion buffer: %0d (taken: %0d)",
+                 DUT.CPU.defer_candidate_count, DUT.CPU.defer_taken_count);
 `endif
         if (validated)   $display("BENCHMARK PASSED (CoreMark validated its own results)");
         else if (errors) $display("BENCHMARK FAILED (CoreMark reported errors)");
