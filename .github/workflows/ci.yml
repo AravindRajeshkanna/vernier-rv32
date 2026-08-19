@@ -13,6 +13,13 @@
 #           place-and-route is 4-11 minutes on an ECP5. Timing numbers are
 #           recorded by hand in fpga/README.md from a real run.
 #
+# Every job carries `timeout-minutes`. A run on PR #9 sat in `apt-get` for two
+# hours and fifteen minutes across three jobs before anyone noticed, because
+# the default job timeout is six hours and apt's default behaviour against a
+# dead mirror is to wait rather than give up. The budgets below are roughly
+# double each job's observed runtime, so a real slowdown still passes and a
+# hang fails while someone is still looking. See .github/actions/iverilog.
+#
 # See docs/practices.md for what these layers are each meant to catch.
 name: CI
 
@@ -49,13 +56,11 @@ jobs:
   rtl:
     name: RTL (no toolchain)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Icarus Verilog
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iverilog
+      - uses: ./.github/actions/iverilog
 
       # Both cores. rtl/top.v is the only top level with a zero-latency
       # memory, which makes it the one place the fetch port is not the
@@ -101,6 +106,7 @@ jobs:
   firmware:
     name: SoC, firmware and traps (${{ matrix.core }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -110,10 +116,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Icarus Verilog
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iverilog
+      - uses: ./.github/actions/iverilog
 
       - uses: ./.github/actions/riscv-toolchain
 
@@ -159,6 +162,7 @@ jobs:
   isa:
     name: riscv-tests (${{ matrix.core }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -168,10 +172,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Icarus Verilog
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iverilog
+      - uses: ./.github/actions/iverilog
 
       - uses: ./.github/actions/riscv-toolchain
 
@@ -194,6 +195,7 @@ jobs:
   formal:
     name: Formal (yosys + z3)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

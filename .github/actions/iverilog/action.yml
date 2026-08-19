@@ -1,0 +1,51 @@
+name: iverilog
+description: >-
+  Install Icarus Verilog from apt, with retries and a bounded failure.
+
+# Why this is an action rather than four copies of two apt lines:
+#
+# It used to be inline in every job that needed it. That was fine at three
+# jobs; matrixing the firmware and isa jobs over both cores took it to five,
+# and five copies of a step is five places to fix.
+#
+# The retries are not decoration. A CI run on PR #9 sat in `apt-get` for two
+# hours and fifteen minutes across three jobs before anyone looked - the
+# runner's package mirror stopped answering, and the default apt behaviour is
+# to wait rather than to give up. `formal` was unaffected because it installs
+# oss-cad-suite instead, which is the only reason the run was not a total
+# blank.
+#
+# So: retry a few times, cap how long any single attempt can hang, and fail
+# loudly if the mirror is genuinely down. A job that fails in four minutes
+# tells you the mirror is down; a job that hangs for six hours tells you
+# nothing and holds a runner while doing it. docs/practices.md section 13.
+runs:
+  using: composite
+  steps:
+    - name: Install Icarus Verilog
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # -o Acquire::Retries covers a flaky single request; the loop covers a
+        # mirror that is down long enough for a whole update to fail. timeout(1)
+        # is what turns "hangs forever" into "fails and says why".
+        for attempt in 1 2 3; do
+          echo "::group::apt attempt $attempt"
+          if timeout 240 sudo apt-get update -o Acquire::Retries=3 \
+             && timeout 240 sudo apt-get install -y --no-install-recommends \
+                  -o Acquire::Retries=3 iverilog; then
+            echo "::endgroup::"
+            iverilog -V | head -1
+            exit 0
+          fi
+          echo "::endgroup::"
+          echo "apt attempt $attempt failed or timed out"
+          sleep $((attempt * 15))
+        done
+
+        echo "Could not install iverilog after 3 attempts."
+        echo "This is an apt/mirror failure on the runner, not a repository"
+        echo "problem - re-run the job. If it persists, the package mirror is"
+        echo "down and every job that needs a toolchain will be affected."
+        exit 1
