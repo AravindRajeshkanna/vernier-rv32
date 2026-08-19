@@ -94,7 +94,7 @@ regression against.
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
 | 1c | Scoreboard: out-of-order completion, in-order retire | ✅ done — store buffer and load-completion buffer, +0.34% |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | next — ~15,000 cycles of 1c's ceiling are still unreached, and a dedicated completion slot is what reaches them |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | designed, not started — a redesign with no independently useful piece, ceiling 2.9%. A data cache should be measured against it first |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
@@ -378,10 +378,60 @@ traps precise once issue is out of order, and renaming exists to make both
 correct. The ROB is still required — it is just required *by* the thing worth
 building, not worth building on its own.
 
-**Still to do for 1d:** reservation stations and register renaming, with the
-reorder buffer as their precondition rather than their headline; then AMO's
-non-blocking path last, because its two bus phases and its reservation
-interlock have no cheap version.
+#### Stage 1d: why it cannot be staged, and what it needs
+
+Stages 1b and 1c were built as small increments, each one green on the whole
+suite before the next started. That was possible because each had a piece that
+was independently useful: a fetch buffer works without dual issue, a store
+buffer works without a reorder buffer. **Stage 1d has no such piece**, and it
+is worth writing down why, because the instinct to slice it will not survive
+contact with the pipeline.
+
+| Piece | On its own | |
+|---|---|---|
+| Register renaming | nothing | WAR and WAW are already impossible with in-order issue and in-order writeback. Renaming exists to make out-of-order issue *safe*, and buys nothing before it |
+| Scoreboard | nothing | tracks pending writes so a reader can stall. In-order issue already stalls readers |
+| Reorder buffer | 0.14% | measured: 682 cycles of slot contention. It is a precondition for out-of-order issue, not a feature |
+| Reservation stations | **~2.9%** | the 14,231 cycles where the successor depends on the load. But issuing out of order requires the ROB for retire order and renaming for correctness |
+| Load-store queue | unknown | needed before a second memory access can be in flight; `cpu_wb.v` issues one transaction at a time, so it is blocked on the bus adapter too |
+
+Everything valuable in the list depends on two things that are worth nothing
+until it exists. That is the definition of a redesign, which is what this
+file said Phase 1 was at the top, and 1d is the part where that becomes
+unavoidable rather than convenient to defer.
+
+**What it needs, in the order it has to be built:** a ROB with its own entries
+(not slot 1's pipeline, which dual issue is using); a RAT and physical register
+file; reservation stations feeding the existing ALU, the divider and the memory
+port; and misprediction recovery by RAT checkpoint rather than the current
+single-cycle flush. None of it can be verified in isolation, so it lands as one
+change or not at all — and `make verify_ooo` plus the CoreMark CRC gate are the
+bar it has to clear on the first commit that includes any of it.
+
+#### The comparison that should happen before that work starts
+
+| | Cycles | What reaches it |
+|---|---|---|
+| Data-bus stall | 66,316 | a data cache |
+| Successor depends on an outstanding load | 14,231 | reservation stations + ROB + renaming |
+
+Stage 1d's entire ceiling is 14,231 cycles, or 2.9%. The data-bus stall is four
+and a half times that, and an instruction cache — 40 lines of RTL, one word per
+line, no state machine — turned a comparable number into **1.79× overall**.
+
+A data cache is harder than an instruction cache: writes need a policy, and it
+has to stay coherent with the store buffer. It is not four hundred lines of
+renaming and wakeup/select logic either, and the wakeup/select loop is where
+this design's Fmax would go — `rtl/ooo/core_ooo.v` closes at 30.77 MHz today
+with the critical path already running through an MMU walk.
+
+So: **measure a data cache before committing to 1d.** Three of this phase's
+four predictions were wrong, every one of them corrected by a cheap experiment
+run before an expensive one, and this is the same shape of question.
+
+**Still to do for 1d:** all of it, as one change. AMO's non-blocking path stays
+last regardless, because its two bus phases and its reservation interlock have
+no cheap version.
 
 **Worth measuring before any of it:** whether a data cache beats all three.
 The data-bus stall is 66,316 cycles against reservation stations' 14,231
