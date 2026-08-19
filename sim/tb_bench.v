@@ -115,6 +115,11 @@ module tb_bench;
         // count says nothing about whether the pairing was worth having.
         $display("dual-issue pairs (slot 1 retirements): %0d", DUT.CPU.dual_issue_count);
         $display("  ...out of %0d cycles that offered a second instruction", DUT.CPU.pair_window_count);
+        $display("  windows that did not pair, by cause:");
+        $display("    slot 0 out of class / predicted taken: %0d", DUT.CPU.pair_blk_slot0);
+        $display("    slot 1 out of class:                   %0d", DUT.CPU.pair_blk_class);
+        $display("    slot 1 reads slot 0's result:          %0d", DUT.CPU.pair_blk_raw);
+        $display("    slot 1 reads a load still in EX:       %0d", DUT.CPU.pair_blk_loaduse);
         $display("stall cycles by cause:");
         $display("  divide        %0d", DUT.CPU.stall_div_count);
         $display("  MMU walk      %0d", DUT.CPU.stall_mmu_count);
@@ -127,7 +132,25 @@ module tb_bench;
                  DUT.CPU.defer_candidate_count, DUT.CPU.defer_taken_count);
         $display("  missed - successor depends on the load: %0d", DUT.CPU.defer_blk_dep);
         $display("  missed - slot 1's pipeline in use:      %0d", DUT.CPU.defer_blk_slot1);
+        $display("load-use stall cycles with an independent instruction in the");
+        $display("  fetch buffer - the ceiling on out-of-order issue:");
+        $display("    an ALU op was available:            %0d", DUT.CPU.loaduse_oo_alu);
+        $display("    only a load/store/branch was:       %0d", DUT.CPU.loaduse_oo_any);
+        $display("    nothing independent was available:  %0d", DUT.CPU.loaduse_oo_none);
+        $display("  window behind the stall: %0d entries summed over %0d stalls, full %0d times",
+                 DUT.CPU.loaduse_window_sum, DUT.CPU.stall_loaduse_count,
+                 DUT.CPU.loaduse_window_full);
 `endif
+        // The bus adapter's caches. Reported for both cores, because
+        // rtl/soc/cpu_wb.v is shared and neither cache is a core feature.
+        $display("data cache: %0d load hits, %0d load misses (%0d.%0d%% hit)",
+                 DUT.BUSADAPT.dc_load_hits, DUT.BUSADAPT.dc_load_misses,
+                 (100 * DUT.BUSADAPT.dc_load_hits) /
+                     (DUT.BUSADAPT.dc_load_hits + DUT.BUSADAPT.dc_load_misses),
+                 ((1000 * DUT.BUSADAPT.dc_load_hits) /
+                     (DUT.BUSADAPT.dc_load_hits + DUT.BUSADAPT.dc_load_misses)) % 10);
+        $display("  store lines updated: %0d, uncached accesses: %0d",
+                 DUT.BUSADAPT.dc_store_updates, DUT.BUSADAPT.dc_uncached_reqs);
         if (validated)   $display("BENCHMARK PASSED (CoreMark validated its own results)");
         else if (errors) $display("BENCHMARK FAILED (CoreMark reported errors)");
         else             $display("BENCHMARK FAILED (timed out after %0d cycles)", cycles);

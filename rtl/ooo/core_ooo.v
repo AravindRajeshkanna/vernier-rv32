@@ -1524,6 +1524,31 @@ module core_ooo #(
             pair_window_count <= pair_window_count + 32'd1;
     end
 
+    // And *why* it did not pair, charged to one cause per window, innermost
+    // first. This is the other half of the paragraph above: knowing that the
+    // window is wide and the pair rate is low says the rule is the
+    // constraint, but not which clause of it. Widening slot 1's class,
+    // adding intra-pair forwarding and deepening the fetch buffer are three
+    // different changes, and these four counters are what separates them.
+    reg [31:0] pair_blk_slot0;   // slot 0 itself is out of class, or predicted taken
+    reg [31:0] pair_blk_class;   // slot 1 is not an ALU op this design will pair
+    reg [31:0] pair_blk_raw;     // slot 1 reads what slot 0 writes
+    reg [31:0] pair_blk_loaduse; // slot 1 reads a load still in EX
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            pair_blk_slot0   <= 32'b0;
+            pair_blk_class   <= 32'b0;
+            pair_blk_raw     <= 32'b0;
+            pair_blk_loaduse <= 32'b0;
+        end else if (!redirect_valid && !id_ex_stall && if_id_valid &&
+                     s1_present && !issue_pair) begin
+            if (!s0_pairable)      pair_blk_slot0   <= pair_blk_slot0   + 32'd1;
+            else if (!s1_pairable) pair_blk_class   <= pair_blk_class   + 32'd1;
+            else if (pair_raw)     pair_blk_raw     <= pair_blk_raw     + 32'd1;
+            else                   pair_blk_loaduse <= pair_blk_loaduse + 32'd1;
+        end
+    end
+
     reg [31:0] ex_result;
     always @(*) begin
         case (id_ex_wb_sel)
@@ -1882,6 +1907,115 @@ module core_ooo #(
         end
     end
 
+    // ---- how much of the load-use stall out-of-order issue could reach ----
+    //
+    // `stall_loaduse_count` says the pipeline waited. It does not say whether
+    // there was anything else it could have run instead, and that difference
+    // is the entire case for stage 1d. So this walks the fetch buffer behind
+    // the stalled instruction and asks whether any entry could have issued in
+    // its place: none of its sources may be written by the load in EX, by the
+    // instruction that is stuck, or by anything between that one and it.
+    //
+    // Two answers, because they cost very different amounts to build:
+    //
+    //   `alu`  the independent candidate is OP / OP-IMM / LUI / AUIPC.
+    //          Reachable with reservation stations and renaming alone - no
+    //          memory ordering, no speculative control.
+    //   `any`  a candidate exists at all, loads, stores and branches
+    //          included. That needs a load-store queue and checkpointed
+    //          recovery on top, so it is the looser bound.
+    //
+    // Both are ceilings, deliberately. Neither checks that the candidate's
+    // own operands have been produced yet, that a functional unit is free, or
+    // that issuing it would not simply move the stall one instruction later.
+    // The window is FB_DEPTH entries, which is what this front end holds.
+    // Running the same counters at FB_DEPTH 8 and 16 moves the `alu` count
+    // from 1,303 to 1,743 on CoreMark, so the shallow window is not what is
+    // limiting the answer - see docs/roadmap.md.
+    reg [31:0] loaduse_oo_alu;
+    reg [31:0] loaduse_oo_any;
+    reg [31:0] loaduse_oo_none;
+    // How many entries there actually were to look at, summed over every
+    // load-use stall, and how often the buffer was full. Without these the
+    // three counts above are unreadable: "nothing independent was available"
+    // means one thing when the window held three instructions and something
+    // else entirely when it held none.
+    reg [31:0] loaduse_window_sum;
+    reg [31:0] loaduse_window_full;
+
+    integer         lu_k;
+    reg [FB_AW-1:0] lu_idx;
+    reg [31:0]      lu_instr;
+    reg [6:0]       lu_op;
+    reg [4:0]       lu_rs1, lu_rs2, lu_rd;
+    reg             lu_u1, lu_u2, lu_is_alu, lu_writes, lu_serial, lu_dep;
+    reg             lu_found_alu, lu_found_any;
+    // One bit per architectural register: "a write to this is already in
+    // flight ahead of the candidate". Cheaper and more exact than a nested
+    // scan over the entries in between.
+    reg [31:0]      lu_blockers;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            loaduse_oo_alu  <= 32'b0;
+            loaduse_oo_any  <= 32'b0;
+            loaduse_oo_none <= 32'b0;
+            loaduse_window_sum  <= 32'b0;
+            loaduse_window_full <= 32'b0;
+        end else if (load_use_stall) begin
+            loaduse_window_sum <= loaduse_window_sum +
+                                  {{(32-FB_AW-1){1'b0}}, (fb_count - {{FB_AW{1'b0}}, 1'b1})};
+            if (fb_count == FB_DEPTH)
+                loaduse_window_full <= loaduse_window_full + 32'd1;
+            lu_blockers           = 32'b0;
+            lu_blockers[id_ex_rd] = 1'b1;              // the load in EX
+            lu_blockers[d_rd]     = 1'b1;              // the instruction that is stuck
+            lu_blockers[0]        = 1'b0;              // x0 is never a dependence
+            lu_found_alu          = 1'b0;
+            lu_found_any          = 1'b0;
+
+            for (lu_k = 1; lu_k < FB_DEPTH; lu_k = lu_k + 1) begin
+                if (lu_k < fb_count) begin
+                    lu_idx    = fb_head + lu_k[FB_AW-1:0];
+                    lu_instr  = fb_instr[lu_idx];
+                    lu_op     = lu_instr[6:0];
+                    lu_rs1    = lu_instr[19:15];
+                    lu_rs2    = lu_instr[24:20];
+                    lu_rd     = lu_instr[11:7];
+
+                    lu_is_alu = (lu_op == 7'b0110011) || (lu_op == 7'b0010011) ||
+                                (lu_op == 7'b0110111) || (lu_op == 7'b0010111);
+                    // SYSTEM and FENCE serialize; an out-of-order machine
+                    // does not get to hoist past them either.
+                    lu_serial = (lu_op == 7'b1110011) || (lu_op == 7'b0001111);
+                    lu_u1     = lu_is_alu || (lu_op == 7'b0000011) ||   // load
+                                (lu_op == 7'b0100011) || (lu_op == 7'b1100011) ||
+                                (lu_op == 7'b1100111) || (lu_op == 7'b0101111);
+                    lu_u2     = (lu_op == 7'b0110011) || (lu_op == 7'b0100011) ||
+                                (lu_op == 7'b1100011) || (lu_op == 7'b0101111);
+                    lu_writes = lu_is_alu || (lu_op == 7'b0000011) ||
+                                (lu_op == 7'b1101111) || (lu_op == 7'b1100111) ||
+                                (lu_op == 7'b0101111);
+
+                    lu_dep = (lu_u1 && lu_blockers[lu_rs1]) ||
+                             (lu_u2 && lu_blockers[lu_rs2]);
+
+                    if (!lu_dep && !lu_serial) begin
+                        lu_found_any = 1'b1;
+                        if (lu_is_alu) lu_found_alu = 1'b1;
+                    end
+                    // Whether or not it could have issued, anything past it
+                    // has to treat its destination as pending.
+                    if (lu_writes && (lu_rd != 5'd0)) lu_blockers[lu_rd] = 1'b1;
+                end
+            end
+
+            if (lu_found_alu)      loaduse_oo_alu  <= loaduse_oo_alu  + 32'd1;
+            else if (lu_found_any) loaduse_oo_any  <= loaduse_oo_any  + 32'd1;
+            else                   loaduse_oo_none <= loaduse_oo_none + 32'd1;
+        end
+    end
+
     // =======================================================================
     // Sequential pipeline register updates
     // =======================================================================
@@ -1896,12 +2030,21 @@ module core_ooo #(
     wire [1:0] fb_pop_n = (redirect_valid || id_ex_stall || fb_empty) ? 2'd0 :
                           issue_pair                                  ? 2'd2 : 2'd1;
     wire       fb_pop   = (fb_pop_n != 2'd0);
+    // Zero-extended to the counter's width once, here, rather than at each
+    // of the three places it is used. `fb_pop_n` is two bits because the
+    // issue rule can retire at most a pair; `fb_count` is FB_AW+1 bits
+    // because it counts 0..FB_DEPTH inclusive. Mixing those by hand is how
+    // FB_DEPTH stopped being a parameter: `fb_pop_n[FB_AW-1:0]` is an
+    // out-of-range part-select for any FB_AW above 2, which yields x rather
+    // than an error, and the head pointer went x on the first pop. The core
+    // executed nothing at FB_DEPTH=8 and every stall counter read zero.
+    wire [FB_AW:0] fb_pop_ext = {{(FB_AW-1){1'b0}}, fb_pop_n};
 
     // Push whenever this cycle's fetch produced a real instruction and there
     // is somewhere to put it. `fb_pop_n` counts against fullness in the same
     // cycle: an entry leaving frees its slot for the one arriving.
     wire fb_push = !redirect_valid && !sfence_en && !if_stall &&
-                   ((fb_count - {1'b0, fb_pop_n}) < FB_DEPTH);
+                   ((fb_count - fb_pop_ext) < FB_DEPTH);
 
     // The fetch buffer makes SFENCE.VMA's ordering visible, so it has to be
     // handled rather than left implicit: `sfence_en` invalidates the ITLB, and
@@ -1948,8 +2091,8 @@ module core_ooo #(
                 fb_ptarget[fb_tail] <= btb_pred_target;
                 fb_tail             <= fb_tail + {{(FB_AW-1){1'b0}}, 1'b1};
             end
-            fb_head  <= fb_head + fb_pop_n[FB_AW-1:0];
-            fb_count <= fb_count + {2'b0, fb_push} - {1'b0, fb_pop_n};
+            fb_head  <= fb_head + fb_pop_ext[FB_AW-1:0];
+            fb_count <= fb_count + {{FB_AW{1'b0}}, fb_push} - fb_pop_ext;
         end
     end
 
