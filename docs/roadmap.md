@@ -288,6 +288,13 @@ that the front end is already covering. The ordering that follows from the
 measurement is: instruction cache first (Phase 4), then finish 1c against a
 machine that can actually feed it.
 
+**That was done, and it was right.** The I-cache is in Phase 4 below: 1.79× on
+CoreMark, fetch starvation down 90%, and stage 1b's dual issue going from 47
+pairs to 19,872 without a line of it changing. The load-use stall this stage
+measured at 41 cycles is now 27,211, exactly as §18 predicted — it was always
+there, hidden behind a bus stall. That, not the reorder buffer, is what the
+rest of 1c should be aimed at when it resumes.
+
 **Still to do for 1c, once fetch is fixed:** the load buffer, the 4-entry ROB
 and its forwarding, and AMO last, because its two bus phases and its
 reservation interlock are the part with no cheap version.
@@ -361,8 +368,61 @@ and `sim_ramboot`'s 64 KB assumption is no longer the binding constraint.
 Every fetch and every load goes to the bus, and the interconnect is a shared
 bus rather than a crossbar, so a load costs the fetch behind it a cycle.
 
-- **An I-cache alone would be a large win** and is self-contained — it needs no
-  other phase.
+### The I-cache: done, and it was the whole game
+
+`rtl/soc/cpu_wb.v` now holds a 256-entry direct-mapped instruction cache, one
+word per line, replacing the single tagged word it used to buffer. It was
+brought forward ahead of the rest of Phase 1 because stage 1c's experiment said
+to — see below — and the result says that was right:
+
+| CoreMark, one iteration, on the SoC | Cycles | |
+|---|---|---|
+| In-order core, no I-cache | 867,958 | the baseline everything so far was measured against |
+| Wide core, no I-cache | 867,508 | dual issue + store buffer, worth **0.05%** |
+| In-order core, with the I-cache | 517,588 | **1.68×** from the cache alone |
+| **Wide core, with the I-cache** | **484,306** | **1.79×**, and now dual issue + store buffer are worth **6.9%** |
+
+Read the last column downward. Stage 1b and stage 1c were worth 0.05% before
+the cache and 6.9% after it — the same RTL, unmodified, measured against a
+machine that can feed it. Two cheap experiments established that the front end
+was the constraint, and the third confirmed it by removing it.
+
+The knock-on effects are the interesting part:
+
+| | Before | After |
+|---|---|---|
+| Fetch-empty stall | 111,520 | **11,903** |
+| Data-bus stall | 78,839 | 66,316 |
+| Load-use stall | 41 | **27,211** |
+| Dual-issue pairs | 47 | **19,872** |
+| Cycles offering a second instruction | 293 | **182,627** |
+
+**Stage 1b's dual issue went from 47 pairs to 19,872 without a line of it
+changing.** The fetch buffer could never accumulate while fetch was the
+bottleneck; with cache hits served in the cycle they are asked for, fetch runs
+ahead of decode and the issue rule finally has pairs to find. The work was not
+wasted, it was stranded.
+
+The load-use stall going from 41 to 27,211 is the same effect in reverse, and
+was predicted: `docs/practices.md` §18 said some of the data-bus stall was
+covering work the pipeline would have stalled on anyway. Now that fetch keeps
+up, those hazards are exposed and are the next thing worth attacking.
+
+**One word per line, deliberately.** No fill FSM, no burst: a miss fetches the
+word that missed using the same single-transfer machinery the one-entry buffer
+used. That buys nothing on straight-line code and buys the whole of a loop.
+Whether spatial locality is worth a fill state machine on top is now a question
+with a number attached rather than a guess.
+
+**Not measured:** Fmax and ECP5 utilisation. The arrays are read
+asynchronously — a synchronous block-RAM read would add a wait state to every
+fetch including hits, and the core's fetch buffer cannot hide it because the PC
+only advances when the fetch is not stalled — so they infer distributed LUT RAM.
+256 entries is roughly 900 LUT4s against an 85F's 84k, but that is an estimate,
+not a place-and-route result, and the 45F was already at 97% block RAM before
+this. Nothing here has been through synthesis.
+
+- **~~An I-cache alone would be a large win~~** — done, above.
 - **Interrupt-driven UART.** The interrupt is already wired to the PLIC; the
   driver simply polls. Small, independent.
 - **Hardware PTE accessed/dirty update** in the MMU walker, so it does not

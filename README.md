@@ -532,10 +532,10 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | in progress — `rtl/ooo/core_ooo.v` dual-issues ALU pairs and buffers stores, and passes the whole suite. Both measured at ~0.01%: removing 30,738 cycles of data-bus stall returned 82, because the machine is fetch-bound |
+| 1 | **Superscalar issue and out-of-order execution** | in progress — `rtl/ooo/core_ooo.v` dual-issues ALU pairs and buffers stores. Worth 0.05% until the Phase 4 I-cache landed and 6.9% after it, on unchanged RTL |
 | 2 | Close the boot path — the SD card | the only untested link in the boot chain |
 | 3 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
-| 4 | Make it fast enough to be interesting — caches, interrupt-driven UART | every fetch and load goes to the bus |
+| 4 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache done: **1.79× on CoreMark**. Interrupt-driven UART and a D-cache remain |
 | 5 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
 | 6 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot |
 | 7 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
