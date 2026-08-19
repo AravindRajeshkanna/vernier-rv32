@@ -362,6 +362,43 @@ scoreboard to learn — the rest of stage 1c, which the same experiment now
 predicts would also return nothing until the front end is fixed. An experiment
 that changes the plan is worth more than a feature that confirms it.
 
+## 19. Work that measures as worthless may only be stranded
+
+**The incident.** Stage 1b built dual issue. On CoreMark it formed 47 pairs and
+moved the total by 0.04%, and the instrumentation was clear about why: only 293
+cycles in the whole run ever offered a second instruction to consider. Stage 1c
+built a store buffer. It removed 30,738 cycles of data-bus stall and returned
+82. Two features, both correct, both worth approximately nothing.
+
+Then the instruction cache landed, and without a line of either changing:
+
+| | Before | After |
+|---|---|---|
+| Dual-issue pairs | 47 | 19,872 |
+| Cycles offering a second instruction | 293 | 182,627 |
+| Value of stages 1b and 1c together | 0.05% | 6.9% |
+
+The dual-issue logic was never the problem. The fetch buffer feeding it could
+not accumulate while fetch was the bottleneck, so the issue rule was asked to
+find a pair 293 times and found 47. With hits served in the cycle they are
+asked for, fetch runs ahead of decode and it is asked 182,627 times.
+
+**The rule.** A feature measured against a machine that cannot exercise it has
+not been measured. "It gains nothing" and "nothing reaches it" produce the same
+number and call for opposite responses — the first says remove it, the second
+says fix what is upstream and measure again.
+
+The instrumentation is what tells them apart, and it has to count the
+*opportunities*, not just the successes. `dual_issue_count` alone would have
+said the feature was useless. `pair_window_count` beside it said the feature was
+starved, which is a different sentence with a different next step. When adding a
+counter for how often something fires, add one for how often it could have.
+
+This is not licence to keep everything. §18's rule still holds and the order
+still matters: the cheap experiment that finds the real constraint comes first,
+and the reorder buffer stage 1c did *not* build is still not built, because the
+same reasoning now points at the load-use stall it exposed instead.
+
 ---
 
 ## Conventions

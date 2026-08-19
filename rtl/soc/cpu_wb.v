@@ -69,25 +69,59 @@ module cpu_wb (
     // =====================================================================
     // Instruction bus - always a word read, no lane shuffling.
     // =====================================================================
-    // A one-entry fetch buffer: remember the address whose data we already
-    // have. On a hit we stop driving the bus entirely, which is what keeps
-    // the fetch master from re-requesting the same word every cycle while
-    // the pipeline is held up by something else (a data access, a divide, an
-    // ITLB walk) - and, more importantly, from holding `cyc` permanently
-    // asserted, which would be a lie about there being an outstanding
-    // transfer.
+    // A direct-mapped instruction cache. On a hit we stop driving the bus
+    // entirely, which is what keeps the fetch master from re-requesting the
+    // same word every cycle while the pipeline is held up by something else
+    // (a data access, a divide, an ITLB walk) - and, more importantly, from
+    // holding `cyc` permanently asserted, which would be a lie about there
+    // being an outstanding transfer.
     //
-    // Serving a cached word is only safe because the entry is tagged with
-    // the full address and is a single entry, so it can never return data
-    // for an address the core didn't just ask for. It is *not* coherent with
-    // writes to that address - RISC-V requires FENCE.I before executing
-    // freshly-written code, and this core has no instruction-cache
-    // invalidation, so self-modifying code was already out of scope.
-    reg [31:0] have_addr;
-    reg [31:0] have_dat;
-    reg        have_valid;
+    // ---- Why one word per line ----
+    //
+    // No line fill, no burst, no fill state machine: a miss fetches exactly
+    // the word that missed, using the same single-transfer machinery a
+    // one-entry buffer used, and remembers it. That buys nothing on
+    // straight-line code, where every new word still misses. It buys the
+    // whole of a loop, which after the first iteration is served without
+    // touching the bus at all.
+    //
+    // That is the right first shape here because of what the stall counters
+    // say. `docs/roadmap.md` records 111,520 cycles of fetch starvation on
+    // CoreMark, a benchmark that is almost entirely loops, and a word-granular
+    // cache is a few dozen lines against a fill FSM's few hundred. Whether
+    // spatial locality is worth adding on top is a question with a number
+    // attached once this one is measured, which is the order those two should
+    // happen in.
+    //
+    // ---- Why the arrays are read asynchronously ----
+    //
+    // `imem_addr` comes straight off the core's PC register and the core
+    // expects `imem_rdata` in the same cycle unless `ibus_wait` says
+    // otherwise. A synchronous read - which is what an ECP5 block RAM
+    // offers - would add a wait state to every fetch including hits, and the
+    // core's fetch buffer cannot hide it, because the PC only advances when
+    // the fetch is not stalled. So these infer distributed LUT RAM, which is
+    // why the cache is sized in hundreds of words rather than thousands:
+    // 256 entries is roughly 900 LUT4s for data and tags together, against
+    // an 85F's 84k. Making it much bigger means making it synchronous, and
+    // that is a different design.
+    //
+    // Coherence is by invalidation only. RISC-V requires FENCE.I before
+    // executing freshly-written code; `fence_i` clears every valid bit.
+    localparam IC_ENTRIES  = 256;
+    localparam IC_IDX_BITS = 8;                        // clog2(IC_ENTRIES)
+    localparam IC_TAG_BITS = 32 - IC_IDX_BITS - 2;
 
-    wire fetch_hit = have_valid && (have_addr == imem_addr);
+    reg [IC_TAG_BITS-1:0] ic_tag  [0:IC_ENTRIES-1];
+    reg [31:0]            ic_data [0:IC_ENTRIES-1];
+    // A flat vector rather than an array, so FENCE.I can clear the whole
+    // thing in one cycle instead of walking it.
+    reg [IC_ENTRIES-1:0]  ic_valid;
+
+    wire [IC_IDX_BITS-1:0] ic_idx     = imem_addr[IC_IDX_BITS+1:2];
+    wire [IC_TAG_BITS-1:0] ic_tag_now = imem_addr[31:IC_IDX_BITS+2];
+
+    wire fetch_hit = ic_valid[ic_idx] && (ic_tag[ic_idx] == ic_tag_now);
 
     // ---- the fetch currently on the bus ----
     // Now that memory takes a wait state, a fetch spans more than one cycle,
@@ -132,21 +166,29 @@ module cpu_wb (
         end
     end
 
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            have_valid <= 1'b0;
-            have_addr  <= 32'b0;
-            have_dat   <= 32'b0;
-        end else if (fence_i) begin
-            have_valid <= 1'b0;
-        end else if (iwb_ack && !f_poison) begin
-            have_valid <= 1'b1;
-            have_addr  <= bus_addr;
-            have_dat   <= iwb_dat_r;
+    // Which entry an arriving word belongs in - keyed off `bus_addr`, not
+    // `imem_addr`, because the two diverge the moment a branch redirects
+    // mid-transfer and the word on its way back is for the old address.
+    wire [IC_IDX_BITS-1:0] ic_fill_idx = bus_addr[IC_IDX_BITS+1:2];
+    wire [IC_TAG_BITS-1:0] ic_fill_tag = bus_addr[31:IC_IDX_BITS+2];
+    wire                   ic_fill     = iwb_ack && !f_poison;
+
+    // Data and tag need no reset: an entry is only ever read when its valid
+    // bit is set, and that bit is what reset and FENCE.I clear.
+    always @(posedge clk) begin
+        if (ic_fill) begin
+            ic_data[ic_fill_idx] <= iwb_dat_r;
+            ic_tag[ic_fill_idx]  <= ic_fill_tag;
         end
     end
 
-    assign imem_rdata = fetch_hit ? have_dat : iwb_dat_r;
+    always @(posedge clk or posedge rst) begin
+        if (rst)            ic_valid <= {IC_ENTRIES{1'b0}};
+        else if (fence_i)   ic_valid <= {IC_ENTRIES{1'b0}};
+        else if (ic_fill)   ic_valid[ic_fill_idx] <= 1'b1;
+    end
+
+    assign imem_rdata = fetch_hit ? ic_data[ic_idx] : iwb_dat_r;
     assign ibus_wait  = !fetch_hit && !ack_for_current;
 
     // =====================================================================

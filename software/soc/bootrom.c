@@ -327,6 +327,21 @@ void main(void) {
 
     uart_puts("  loaded, starting program\r\n\r\n");
 
+    /* The program was just written to RAM through the *data* path, and we are
+     * about to execute it. RISC-V requires FENCE.I between the two: nothing
+     * makes a store visible to instruction fetch on its own. rtl/soc/cpu_wb.v
+     * holds a direct-mapped instruction cache, and `fence_i` is what clears
+     * it.
+     *
+     * This was missing while that cache was a single tagged word, and was
+     * safe only by accident - the loader never *fetched* from the addresses
+     * it was writing, so there was nothing stale to serve. That is a property
+     * of this loader's control flow rather than of the architecture, and it
+     * stops being true the moment anything executes from RAM before the copy
+     * (a resident second-stage loader would do it). Correct by construction
+     * costs one instruction here. */
+    __asm__ volatile ("fence.i" ::: "memory");
+
     entry = (void (*)(void))(uintptr_t)PROGRAM_LOAD_ADDR;
     entry();
 
