@@ -399,30 +399,52 @@ still matters: the cheap experiment that finds the real constraint comes first,
 and the reorder buffer stage 1c did *not* build is still not built, because the
 same reasoning now points at the load-use stall it exposed instead.
 
-## 20. A new feature is measured against the incumbent, not against zero
+## 20. Do not reason from a measurement you have already called invalid
 
-**The incident.** Stage 1c's load-completion buffer had the best ceiling of
-anything in the phase: 19,188 recoverable cycles, 4.0% of runtime, measured
-before a line was written. It was built. The machine got 2.5% slower.
+**The incident.** Stage 1c's load-completion buffer had the best ceiling in the
+phase: 19,188 recoverable cycles, 4.0% of runtime. It was built. The build
+measured 2.5% *slower* — and it also failed CoreMark's CRC.
 
-The mechanism was a shared resource. Slot 1's pipeline — built for dual issue
-in stage 1b — is the only completion slot this core has, and dual issue was
-already using it 19,872 times a run. Every deferral took one away from a pair.
-The ceiling calculation was correct and irrelevant: it measured the cycles the
-new feature could win and said nothing about the cycles the existing one would
-lose.
+Both facts were recorded. The cycle count was labelled, correctly, as coming
+from an incorrect machine and therefore not a clean measurement. Then it was
+reasoned from anyway, via a proxy: dual-issue pairs had fallen from 19,872 to
+18,386, so the new feature must be stealing a shared resource from an existing
+one, so the slowdown must be structural, so the feature was rejected and the
+stage closed without it.
 
-**The rule.** Before building anything that consumes a resource something else
-already uses, work out what the incumbent is doing with it. A ceiling computed
-against an idle machine is an upper bound on the gain and says nothing about
-the net. The question is not "how much can this win" but "how much can this win
-that something else is not already winning with the same hardware".
+Every step of that was plausible and the conclusion was wrong. The bug was a
+missed hazard check — the deferral released a stall that let a dual-issue pair
+be latched, and only the pair's older half was checked against the outstanding
+load. Fixed, the feature is a 0.34% *gain*. The pair count really does fall,
+so the contention was real; it simply does not dominate, which the proxy could
+never have shown either way.
 
-The cheap check is to instrument the *contended* resource, not just the new
-feature's opportunity — `dual_issue_count` dropping from 19,872 to 18,386 was
-the number that settled this, and it was already there from a previous stage.
-Counters earn their keep across stages, which is an argument for leaving them
-in.
+**The rule.** A measurement you have disqualified is not evidence, and a
+correlated signal is not a substitute for it. If a result is unusable because
+the build is wrong, the next step is to fix the build, not to find a different
+number that points the way the broken one did. The cost here was one wrong
+conclusion shipped in a merged PR and a roadmap phase closed on it.
+
+The corollary is about proxies specifically. `dual_issue_count` falling was a
+real observation and it did identify a real mechanism. What it could not do was
+weigh that mechanism against the one going the other way, because nothing was
+counting the other one. A proxy tells you a force exists; only the total tells
+you which force won.
+
+### The blind spot underneath it
+
+Worth recording separately, because it is what made the bug survive: the
+missing hazard check needs a load followed by a dual-issue pair whose *younger*
+half depends on it. **riscv-tests co-simulates 82/82 against Spike with the bug
+present.** CoreMark's list and state passes hit it within a few thousand
+instructions; its matrix pass, with fewer pointer chases, still produced a
+correct CRC.
+
+Co-simulation is the strongest layer here (§15) and it is still only as good as
+the instruction mix it is given. A suite cannot create a hazard its programs do
+not contain, and 82 hand-written architectural tests contain far less
+pointer-chasing than one real benchmark. That is an argument for keeping a real
+workload in the loop as a correctness check and not only as a stopwatch.
 
 ---
 

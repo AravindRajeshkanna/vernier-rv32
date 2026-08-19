@@ -231,6 +231,7 @@ module core_ooo #(
     wire sfence_en;
     wire ex_commit;
     wire ex_busy_stall;
+    wire defer_now;
     wire [31:0] csr_mcounteren, csr_scounteren;
     wire [1:0]  current_priv;
     wire        satp_mode;
@@ -759,7 +760,7 @@ module core_ooo #(
     wire load_use_stall = if_id_valid && id_ex_valid && id_ex_is_load_like && (id_ex_rd != 5'd0) &&
                            ((uses_rs1 && (id_ex_rd == d_rs1)) || (uses_rs2 && (id_ex_rd == d_rs2)));
 
-    wire id_ex_stall = load_use_stall || ex_busy_stall;
+    wire id_ex_stall = load_use_stall || (ex_busy_stall && !defer_now);
 
     // ---- the issue rule --------------------------------------------------
     // Slot 0 must itself be in slot 1's class. That is a stronger condition
@@ -1414,7 +1415,8 @@ module core_ooo #(
     // 0 retiring stops slot 1 too - slot 1 is the younger instruction and
     // never outlives its partner - so this is a sum of two terms that share
     // their gating rather than two independent conditions.
-    wire [1:0] instret_inc_n = {1'b0, instret_retire} + {1'b0, instret1_retire};
+    wire [1:0] instret_inc_n = {1'b0, instret_retire} + {1'b0, instret1_retire} +
+                               {1'b0, defer_now};
 
     wire mret_en = id_ex_valid && id_ex_is_mret && !interrupt_taken && ex_commit;
     wire sret_en = id_ex_valid && id_ex_is_sret && !interrupt_taken && ex_commit;
@@ -1803,6 +1805,36 @@ module core_ooo #(
     wire defer_candidate  = dbus_stall && ex_mem_valid && ex_mem_is_load &&
                             ex_is_simple_alu && ex_indep_of_load;
 
+    // Every instruction that will be in EX next cycle must be independent of
+    // the outstanding load - and that is *both* halves of a dual-issue pair,
+    // not just the one in slot 0.
+    //
+    // Deferring releases `id_ex_stall`, which is exactly the condition that
+    // lets a pair be latched. Checking only slot 0 leaves slot 1 to arrive in
+    // EX while the load is still in MEM and take the load's *address* off the
+    // EX/MEM forwarding path. It needs a load followed by a pair whose younger
+    // half depends on it, which no architectural test produces - riscv-tests
+    // co-simulates 82/82 against Spike with this bug present - and which
+    // CoreMark's list and state passes hit within a few thousand
+    // instructions. The matrix pass, which has fewer pointer chases, still
+    // produced a correct CRC.
+    wire next_indep_of_load =
+        !(ex_mem_valid && ex_mem_is_load && (ex_mem_rd != 5'd0) &&
+          ((uses_rs1 && (ex_mem_rd == d_rs1)) ||
+           (uses_rs2 && (ex_mem_rd == d_rs2)) ||
+           (issue_pair && s1_uses_rs1 && (ex_mem_rd == s1_rs1)) ||
+           (issue_pair && s1_uses_rs2 && (ex_mem_rd == s1_rs2))));
+
+    assign defer_now = defer_candidate && next_indep_of_load &&
+                       !ex_mem1_valid && !id_ex1_valid &&
+                       !redirect_valid && !fence_drain_stall;
+
+    reg [31:0] defer_taken_count;
+    always @(posedge clk or posedge rst) begin
+        if (rst) defer_taken_count <= 32'b0;
+        else if (defer_now) defer_taken_count <= defer_taken_count + 32'd1;
+    end
+
     reg [31:0] defer_candidate_count;  // recoverable by a load-completion buffer
     reg [31:0] load_wait_count;        // data-bus stall cycles caused by a load
     always @(posedge clk or posedge rst) begin
@@ -1895,7 +1927,7 @@ module core_ooo #(
         end else if (redirect_valid) begin
             id_ex_valid  <= 1'b0; // flush: squash instruction currently in ID
             id_ex1_valid <= 1'b0; // ...and the younger half of any pair with it
-        end else if (ex_busy_stall) begin
+        end else if (ex_busy_stall && !defer_now) begin
             // hold id_ex unchanged: the same divide/translating instruction
             // stays "in EX" until the multi-cycle op finishes
         end else if (load_use_stall) begin
@@ -1973,6 +2005,17 @@ module core_ooo #(
             // asserted until the slave acknowledges. Checked ahead of
             // `ex_busy_stall`, which `dbus_stall` is a member of but whose
             // bubble behavior would drop the in-flight request.
+            if (defer_now) begin
+                ex_mem1_valid   <= 1'b1;
+                ex_mem1_reg_we  <= id_ex_reg_we && (id_ex_rd != 5'd0) && commit_ok;
+                ex_mem1_rd      <= id_ex_rd;
+                ex_mem1_wb_data <= ex_result;
+                ex_mem1_pc      <= id_ex_pc;
+                ex_mem1_instr   <= id_ex_instr;
+                ex_mem1_retire  <= 1'b1;
+            end
+            //
+            // EX/MEM holds, but EX/MEM1 need not:
         end else if (ex_busy_stall) begin
             ex_mem_valid  <= 1'b0; // multi-cycle op still running - nothing new for MEM this cycle
             ex_mem_retire <= 1'b0; // trace only, and it must bubble with ex_mem_valid:

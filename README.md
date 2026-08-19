@@ -532,7 +532,7 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs and buffers stores. Worth 0.05% until the Phase 3 I-cache landed and 6.9% after it, on unchanged RTL. 1d (renaming, reorder buffer, LSQ) remains |
+| 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs, buffers stores, and completes independent work under a waiting load. Worth 0.05% until the Phase 3 I-cache landed and 7.2% after it, on largely unchanged RTL. 1d (renaming, reorder buffer, LSQ) remains |
 | 2 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache done: **1.79× on CoreMark**. Interrupt-driven UART and a D-cache remain |
 | 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |

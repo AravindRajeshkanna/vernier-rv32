@@ -93,8 +93,8 @@ regression against.
 |---|---|---|
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
-| 1c | Scoreboard: out-of-order completion, in-order retire | ✅ closed — store buffer kept, load-completion buffer measured and rejected |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | after 1c — the ROB 1c builds is most of its foundation |
+| 1c | Scoreboard: out-of-order completion, in-order retire | ✅ done — store buffer and load-completion buffer, +0.34% |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | next — ~15,000 cycles of 1c's ceiling are still unreached, and a dedicated completion slot is what reaches them |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
@@ -295,7 +295,7 @@ measured at 41 cycles is now 27,211, exactly as §18 predicted — it was always
 there, hidden behind a bus stall. That, not the reorder buffer, is what the
 rest of 1c should be aimed at when it resumes.
 
-#### Stage 1c: the load-completion buffer, built and not kept
+#### Stage 1c: the load-completion buffer, rejected and then reinstated
 
 With the front end fixed, the load buffer was the piece left. It was measured
 first, as everything in this phase now is:
@@ -305,78 +305,49 @@ first, as everything in this phase now is:
 | Data-bus stall caused by a load | 65,083 |
 | ...of which an independent simple ALU op was in EX | **19,188** |
 
-19,188 cycles is 4.0% of runtime, and the first ceiling in this stage worth
-building for — the store buffer's was 82 cycles and dual issue's was 293
-opportunities.
+19,188 cycles is 4.0% of runtime — the first ceiling in this stage worth
+building for. It was built, and then it was rejected on a bad reading, and then
+that was corrected. All three steps are here because the middle one shipped.
 
-**Then it was built, and it made the machine slower.**
+**The rejection.** The first working build measured 2.5% slower *and* failed
+CoreMark's CRC. The cycle count was recorded as unusable — an incorrect machine
+is not a measurement — and then reasoned from anyway through a proxy:
+dual-issue pairs had fallen from 19,872 to 18,386, so the deferral must be
+stealing slot 1's pipeline from dual issue, so the loss must be structural. The
+stage was closed without the feature.
 
-| | Baseline | With deferral |
-|---|---|---|
-| Total cycles | 484,306 | 496,228 |
-| Dual-issue pairs | 19,872 | 18,386 |
-| Deferrals taken | — | 4,616 of 19,188 |
+**The correction.** The slowdown was the bug, not the contention. Deferring
+releases `id_ex_stall`, which is exactly the condition that lets a dual-issue
+pair be latched — and only the pair's *older* half was checked against the
+outstanding load. The younger half arrived in EX while the load was still in
+MEM and took the load's address off the EX/MEM forwarding path.
 
-The mechanism is visible in the middle row. **Slot 1's pipeline is the only
-completion slot this core has**, and dual issue is already using it 19,872
-times a run. A deferral that borrows `ex_mem1` takes it away from a pair, and
-pairs were worth more. Only 4,616 of the 19,188 opportunities could be taken at
-all, because the rest were blocked by slot 1 being busy or by the successor
-instruction depending on the load.
+| | Baseline | Buggy build | Corrected |
+|---|---|---|---|
+| Total cycles | 484,306 | 496,228 | **482,674** |
+| CoreMark CRC | valid | **failed** | valid |
+| Dual-issue pairs | 19,872 | 18,386 | 18,276 |
+| Deferrals taken | — | 4,616 | 4,205 of 19,118 |
 
-It was also still wrong — CoreMark's CRC failed on the build that produced
-496,228, so that cycle count is from an incorrect machine and is not a clean
-measurement. The pair count is, and it is the number that decides this: the
-contention is structural and fixing the remaining bug would not remove it.
+**0.34%.** The contention was real — pairs still fall by 1,596 — it simply does
+not dominate. `docs/practices.md` §20 records what went wrong in the reasoning.
 
-**So it is not here.** A load-completion buffer that pays off needs a
-completion slot of its own rather than one borrowed from dual issue — which is
-a reorder buffer entry, which is stage 1d. The counters stay, because that
-argument is only as good as the number under it and because the next attempt
-should be measured against the same one.
+**What the numbers say about stage 1d.** Only 4,205 of 19,118 opportunities are
+taken, because a deferral needs slot 1's pipeline free and the successor pair
+independent of the load. The remaining ~15,000 cycles are what a completion
+slot of its own would reach, and that is a reorder buffer entry. The ceiling is
+still 4.0% and about a tenth of it is collected; the rest is 1d's to argue for.
 
-Two bugs found on the way, both by co-simulation and neither by any test:
+**The blind spot that let it through.** The missing hazard check needs a load
+followed by a pair whose younger half depends on it. riscv-tests co-simulates
+**82/82** against Spike with the bug present. CoreMark's list and state passes
+hit it within a few thousand instructions. Co-simulation is the strongest layer
+this project has and it is still only as good as the instruction mix it is
+given.
 
-- The ID/EX register block gates on `ex_busy_stall` directly rather than on
-  `id_ex_stall`, so releasing the latter left the deferred instruction sitting
-  in EX to be executed a second time. `rv32ui-p-lw` retired the same `nop`
-  twice.
-- Deferring advances ID/EX a cycle early, which puts a load's dependent in EX
-  while the load is still in MEM — a state `load_use_stall` guarantees can
-  never happen, so EX/MEM forwarding handed it the load's *address*. The same
-  bug that stall exists to prevent, arriving through a door that did not exist
-  when it was written.
-
-**Still to do for 1c:** nothing, on this evidence. What is left of the original
-plan — the reorder buffer and its forwarding — is stage 1d's, and AMO's
-non-blocking path stays last because its two bus phases and its reservation
-interlock have no cheap version. The stage closes having built three things and
-kept one, which is the correct ratio when the measurements say so.
-
-**A note on whether to keep the store buffer.** It costs a handful of registers
-and a six-way mux on the memory port for no measured gain today. It is kept
-because it is a prerequisite for the rest of 1c and because the experiment it
-supports is worth more than its area — but that is a judgement, and if ECP5
-utilisation becomes the binding constraint it is the first thing to remove.
-
-#### A defect stage 1b found in its own harness
-
-`rtl/top.v` instantiated `cpu_core` unconditionally, with no `CORE_OOO`
-selection. `make sim CORE=ooo` therefore compiled the wide core into the image,
-instantiated the in-order one, and reported a pass — for stage 1a and for the
-first half of 1b. Every other target in `verify_ooo` goes through
-`soc_top.v`, which does select correctly, so the suite as a whole was always
-testing the right core; this one testbench was not. It is fixed, and it is the
-reason the `CORE` knob's earlier check — breaking `core_ooo.v` on purpose fails
-`CORE=ooo` and leaves `CORE=inorder` green — passed while a hole remained: the
-check proved the knob selects *somewhere*, not everywhere.
-
-`docs/practices.md` §17 records the other one, which cost more: a register file
-whose formal proofs passed against a netlist the simulator never built.
-
-This phase is ordered first because it is the largest and because everything
-it touches is easier to change before, not after, the phases below add
-external memory, caches and a debug module to the surface it has to preserve.
+**Still deferred to 1d:** the reorder buffer and its forwarding, and AMO's
+non-blocking path last, because its two bus phases and its reservation
+interlock have no cheap version.
 
 ---
 
