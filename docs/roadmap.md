@@ -94,7 +94,7 @@ regression against.
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
 | 1c | Scoreboard: out-of-order completion, in-order retire | ✅ done — store buffer and load-completion buffer, +0.34% |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | designed, not started — a redesign with no independently useful piece, ceiling 2.9%. A data cache should be measured against it first |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | designed, **not scheduled** — a redesign with no independently useful piece, and the data cache took its measured ceiling from 2.9% to **0.56%** |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
@@ -113,7 +113,7 @@ every SoC, firmware and trap simulation.
 | Piece | |
 |---|---|
 | `rtl/ooo/regfile_wide.v` | 4-read/2-write register file, formal properties in `formal/fv_regfile_wide.v`. Two writes to one architectural register in a cycle is a legal pair (`addi a0,..` ; `addi a0,..`), so port 1 is the younger and wins in both the array and the bypass |
-| Fetch buffer | a 4-deep FIFO replacing the single IF/ID register, so the PC advances on whether the *buffer* has room rather than on whether the back end is ready |
+| Fetch buffer | a 4-deep FIFO replacing the single IF/ID register, so the PC advances on whether the *buffer* has room rather than on whether the back end is ready. `FB_DEPTH` is genuinely a parameter as of the D-cache change; it was not before, and depths of 8 and 16 have now been run |
 | Second decoder and ALU | slot 1 accepts single-cycle integer ALU ops only — OP (minus M), OP-IMM, LUI, AUIPC |
 | Issue rule | both halves must be in that class, slot 1 may not read slot 0's destination, and slot 1 gets its own load-use check against EX |
 | Redirect and traps across the pair | slot 1 shares slot 0's `commit_ok`, so an interrupt at slot 0 withholds both writes |
@@ -408,37 +408,111 @@ single-cycle flush. None of it can be verified in isolation, so it lands as one
 change or not at all — and `make verify_ooo` plus the CoreMark CRC gate are the
 bar it has to clear on the first commit that includes any of it.
 
-#### The comparison that should happen before that work starts
+#### The comparison happened, and stage 1d lost it
 
-| | Cycles | What reaches it |
+The section above said: measure a data cache before committing to 1d, because
+the data-bus stall was 66,316 cycles against 1d's 14,231-cycle ceiling. That
+measurement is now done — see Phase 3 — and it did not go the way the
+dependency list implied.
+
+**A data cache in the bus adapter cost about sixty lines, changed neither core,
+and was worth 9.9% on the wide core and 12.3% on the in-order one.** It also
+took the number stage 1d was scheduled on from 14,231 cycles to **1,138**.
+
+| | Before the D-cache | After |
 |---|---|---|
-| Data-bus stall | 66,316 | a data cache |
-| Successor depends on an outstanding load | 14,231 | reservation stations + ROB + renaming |
+| Successor depends on an outstanding load | 14,231 | **1,138** |
+| Load-use stall | 27,210 | 27,226 |
 
-Stage 1d's entire ceiling is 14,231 cycles, or 2.9%. The data-bus stall is four
-and a half times that, and an instruction cache — 40 lines of RTL, one word per
-line, no state machine — turned a comparable number into **1.79× overall**.
+So the case for reservation stations moved. It is no longer "a load sits on the
+bus and its successor cannot proceed" — that load now returns in the cycle it
+is asked for, 96.3% of the time. It is the plain load-use bubble, which is
+structural in a five-stage pipeline and is now the largest single stall at
+27,226 cycles, 6.3% of the total.
 
-A data cache is harder than an instruction cache: writes need a policy, and it
-has to stay coherent with the store buffer. It is not four hundred lines of
-renaming and wakeup/select logic either, and the wakeup/select loop is where
-this design's Fmax would go — `rtl/ooo/core_ooo.v` closes at 30.77 MHz today
-with the critical path already running through an MMU walk.
+Which raises exactly the question stage 1c's misses raised, one level up: when
+the pipeline stalls on a load-use hazard, **is there anything else it could
+have run?** `loaduse_oo_*` in `rtl/ooo/core_ooo.v` answers it directly. On each
+such stall it walks the fetch buffer behind the stalled instruction and asks
+whether any entry could have issued instead — none of its sources written by
+the load in EX, by the stalled instruction, or by anything in between:
 
-So: **measure a data cache before committing to 1d.** Three of this phase's
-four predictions were wrong, every one of them corrected by a cheap experiment
-run before an expensive one, and this is the same shape of question.
+| Of 27,226 load-use stall cycles | | | What reaches it |
+|---|---|---|---|
+| An independent **ALU op** was in the window | **1,303** | 4.8% | reservation stations + renaming + ROB |
+| Only a load, store or branch was | 14,796 | 54% | …**plus** a load-store queue and checkpointed recovery |
+| **Nothing independent was there at all** | **11,128** | **41%** | nothing. Out-of-order issue cannot help |
 
-**Still to do for 1d:** all of it, as one change. AMO's non-blocking path stays
-last regardless, because its two bus phases and its reservation interlock have
-no cheap version.
+The window was not the limiting factor, and that was checked rather than
+assumed. `FB_DEPTH` is a parameter, so the same run at 8 and 16 entries asks
+whether a bigger instruction window finds more:
 
-**Worth measuring before any of it:** whether a data cache beats all three.
-The data-bus stall is 66,316 cycles against reservation stations' 14,231
-ceiling, and the instruction cache turned an equivalent number into 1.79×
-overall for a fraction of this complexity. That comparison has not been made
-and should be, on the evidence of how the last three predictions in this phase
-went.
+| Fetch buffer | Candidates behind the stall | ALU op available | Nothing available | Cycles |
+|---|---|---|---|---|
+| 4 | 2.4 | 1,303 | 11,128 | 434,822 |
+| 8 | 5.1 | 1,721 | 10,652 | 434,710 |
+| 16 | 9.8 | **1,743** | 10,654 | 434,704 |
+
+**Quadrupling the window is worth 440 cycles of extra opportunity — 0.1%** —
+and the "nothing independent at all" bucket barely moves. The instruction-level
+parallelism around a load-use hazard in this program is genuinely thin, not
+window-limited, which is the objection that would otherwise have been left
+hanging over the table above.
+
+(That experiment could not be run before this change. `FB_DEPTH` read like a
+parameter and was not one: `fb_head <= fb_head + fb_pop_n[FB_AW-1:0]` is an
+out-of-range part-select for any `FB_AW` above 2, which Verilog resolves to x
+rather than to an error. At `FB_DEPTH=8` the head pointer went x on the first
+pop and the core executed nothing at all — every stall counter read zero, which
+is what made it obvious. Fixed here, and depth 4 is bit-for-bit unchanged at
+434,822 cycles.)
+
+**That gives stage 1d a measured ceiling for the first time:**
+
+| Scope | Cycles reachable | |
+|---|---|---|
+| Reservation stations + ROB + renaming, no LSQ | 1,303 + 1,138 = **2,441** | **0.56%** |
+| Everything, including an LSQ and speculative control | + 14,796 = **17,237** | **4.0%** |
+
+Both are ceilings in the strict sense: neither checks that the candidate's own
+operands are ready, that a functional unit is free, or that issuing it moves
+the stall rather than removing it. The real numbers are lower.
+
+**Against that, the thing this stage costs.** 1d is a redesign of a
+2,000-line core with no independently verifiable piece (the section above);
+its wakeup/select loop is a classic critical path on a design that closes at
+30.77 MHz today; and a physical register file plus a ROB land on a 45F that is
+already at 97% block RAM. Sixty lines in the bus adapter were worth 9.9%.
+
+**Stage 1d is therefore not scheduled.** Not "designed and deferred" — the
+design in the two sections above stands and is what it would be built from —
+but the number that justified it was 2.9% and is now 0.56%, and there are
+cheaper things above it in the same file. What would change this:
+
+- **A different workload.** CoreMark is the only program measured here. A
+  pointer-chasing or floating-point-heavy workload has a different independent-
+  instruction density, and 41%-nothing-available is a property of this
+  benchmark, not of the ISA. `make coremark` is one program; the honest read is
+  that 1d is unjustified *on the evidence that exists*.
+- **~~A deeper window~~** — measured above. 4 → 16 entries is worth 0.1%.
+- **A second memory port or a wider fetch**, either of which changes what the
+  back end is starved of. Neither is measured; both change what the back end
+  is starved of, which is the only thing that has moved this number so far.
+
+**Above it in the queue, on measured evidence:**
+
+| | Cycles | |
+|---|---|---|
+| Load-use, with nothing independent available | 11,128 | unreachable by issue policy; needs a shorter load or a compiler that schedules |
+| Fetch-empty | 7,435 | wider fetch, or spatial locality in the I-cache |
+| Data-bus, post-cache | 5,803 | spatial locality in the D-cache |
+| Divide | 2,772 | a faster divider — bounded, local, and nothing else depends on it |
+
+**Still open in Phase 1, and cheaper than 1d:** dual issue pairs on 5.6% of the
+windows that offer a pair. The counters that say which clause of the issue rule
+is refusing them are in `rtl/ooo/core_ooo.v` as of this change, and that
+breakdown is the next thing worth acting on in this phase.
+
 
 ---
 
@@ -521,7 +595,80 @@ only advances when the fetch is not stalled — so they infer distributed LUT RA
 not a place-and-route result, and the 45F was already at 97% block RAM before
 this. Nothing here has been through synthesis.
 
+### The D-cache: 1.11x more, and it moved where the next work is
+
+`rtl/soc/cpu_wb.v` now holds a second cache, on the data port, built to the
+same shape as the first: 256 entries, direct-mapped, one word per line, read
+asynchronously so a hit costs no wait state. It is in the *bus adapter*, not in
+either core, so one copy serves both and neither core changed a line.
+
+| CoreMark, one iteration, on the SoC | Cycles | |
+|---|---|---|
+| In-order core, I-cache only | 517,588 | |
+| In-order core, **+ D-cache** | **453,844** | **1.14×** |
+| Wide core, I-cache only | 482,674 | 1b + 1c, with the load-completion buffer |
+| **Wide core, + D-cache** | **434,822** | **1.11×**; **1.19×** over the in-order core with only an I-cache |
+
+**Write-through, allocate only on a full-word store miss.** Not the fast
+policy — the one that is coherent with the rest of this system for free, which
+matters more than the stores it doesn't accelerate:
+
+- the MMU's page-table walkers read RAM through `wb_ram.v`'s **second port**,
+  not through this bus. A write-back cache could hold a PTE no walker can see.
+- `wb_framebuffer.v` is scanned out by video logic that never touches this
+  adapter, so a pixel in a dirty line would never appear.
+- UART, CLINT, PLIC, SPI and GPIO are excluded by address rather than by
+  policy, but a write-back cache would have to get both right.
+
+With every write reaching memory, this cache only ever mirrors the truth.
+Nothing to flush, no dirty bit, no action on FENCE, SFENCE.VMA or a context
+switch — the tags are physical, because `dmem_addr` is already translated when
+it arrives. Allocating on a *full-word* store miss is the one piece of extra
+reach that needs no justification beyond arithmetic: after the acknowledgement
+memory holds exactly the store data, so caching it needs no bus read.
+
+**256 entries is the knee, and it was measured rather than chosen:**
+
+| Entries | Data | Load hit rate | Cycles |
+|---|---|---|---|
+| 128 | 512 B | 93.6% | 435,750 |
+| **256** | **1 KB** | **96.3%** | **434,822** |
+| 512 | 2 KB | 97.4% | 434,150 |
+| 1024 | 4 KB | 98.7% | 433,454 |
+
+Four times the LUT RAM buys 0.31%. The residual misses are compulsory, and the
+answer to those is spatial locality — a fill state machine — not capacity.
+
+**What it did to the stall profile is the part that matters**, because it is
+what the rest of the roadmap is scheduled against:
+
+| Wide core | Before D-cache | After | |
+|---|---|---|---|
+| Data-bus stall | 66,302 | **5,803** | −91% |
+| Fetch-empty stall | 12,328 | **7,435** | hits stop contending for the bus |
+| Load-use stall | 27,210 | 27,226 | unchanged, and now the largest |
+| Deferral opportunity (1c) | 19,118 | **1,711** | |
+| — successor depends on the load | 14,231 | **1,138** | the number stage 1d was scheduled on |
+
+Both columns are from the same build, which is why a few of them differ by
+tens of cycles from the I-cache section above — that one predates the
+load-completion buffer, and 66,316 there is 66,302 here.
+
+**That last row is why this measurement was made before stage 1d and not
+after.** 14,231 cycles was the whole case for reservation stations. A cache in
+the bus adapter removed 92% of it without touching the core.
+
+**Not measured:** Fmax and ECP5 utilisation, same as the I-cache and for the
+same reason — these arrays are asynchronously read, so they infer distributed
+LUT RAM rather than block RAM, and 256 entries of data plus 22-bit tags is
+roughly another 900 LUT4s on an estimate rather than a place-and-route result.
+Two caches now rest on that estimate instead of one.
+
 - **~~An I-cache alone would be a large win~~** — done, above.
+- **~~A D-cache~~** — done, above.
+- **Spatial locality: more than one word per line.** Both caches fetch exactly
+  the word that missed. The D-cache's residual 3.7% miss rate is compulsory,
+  which is the miss a fill state machine reaches and a bigger cache does not.
 - **Interrupt-driven UART.** The interrupt is already wired to the PLIC; the
   driver simply polls. Small, independent.
 - **Hardware PTE accessed/dirty update** in the MMU walker, so it does not

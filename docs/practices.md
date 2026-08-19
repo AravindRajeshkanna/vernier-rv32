@@ -446,6 +446,61 @@ not contain, and 82 hand-written architectural tests contain far less
 pointer-chasing than one real benchmark. That is an argument for keeping a real
 workload in the loop as a correctness check and not only as a stopwatch.
 
+## 21. A stall counter is a bill, not an opportunity
+
+Every stall counter in `rtl/ooo/core_ooo.v` says the same kind of thing: the
+pipeline waited here, for this many cycles, for this reason. That is a
+measurement of **cost**, and it is easy to read it as a measurement of
+**opportunity**, because the two are printed in the same units and one of them
+is an upper bound on the other. They are not the same number and the gap
+between them can be a factor of twenty.
+
+**The incident.** Stage 1d — renaming, a reorder buffer, reservation stations —
+was scheduled on 14,231 cycles: the times a load sat on the bus and the
+instruction behind it could not proceed. That is a real cost, correctly
+counted, and reservation stations are the textbook answer to it. Two things
+then happened to it.
+
+A data cache, sixty lines in the bus adapter, took those 14,231 cycles to
+**1,138** by making the load not sit on the bus in the first place. The
+opportunity was never really "issue out of order"; it was "the load is slow",
+and something much cheaper reached it.
+
+What was left standing was the plain load-use bubble — 27,226 cycles, and now
+the largest stall in the machine. So the same reasoning restarted one level up,
+and this time the question was asked properly first: *when the pipeline stalls
+on a load-use hazard, is there anything else it could have run?* A counter that
+walks the fetch buffer on each such stall and checks it for an independent
+instruction says: an ALU op in 4.8% of them, a load/store/branch in 54%, and
+**nothing at all in 41%**.
+
+Out-of-order issue does not recover 27,226 cycles. It recovers 1,303 of them
+for the version that was designed, because in the other 25,923 there is either
+nothing to run or nothing that can be run without a load-store queue. A 6.3%
+stall was a 0.56% opportunity.
+
+The obvious objection — that the window was only four instructions deep and a
+real machine would look further — was measured rather than argued. At sixteen
+entries the count goes from 1,303 to 1,743. Quadrupling the window is worth
+0.1%.
+
+**The rule.** Before building the mechanism that fills a stall, count the
+cycles in which the filler exists. A stall counter needs a companion counter —
+`defer_blk_dep`, `loaduse_oo_alu`, `pair_blk_class` — that asks what the
+proposed fix would actually have found there. Both of the ones written for this
+core answered "much less than you think", and both cost about thirty lines
+against a redesign.
+
+The corollary is scheduling. This project has re-derived the order of its own
+work after every change for a reason: **removing a bottleneck does not only
+reveal what was stranded behind it ([§18](#18-removing-a-bottleneck-is-how-you-find-out-it-was-not-one),
+[§19](#19-work-that-measures-as-worthless-may-only-be-stranded)) — it can
+delete the case for what was queued in front of it.** A ceiling computed
+against the old machine is not evidence about the new one, and a plan that
+survives without being re-measured is a plan nobody is checking.
+
+---
+
 ---
 
 ## Conventions

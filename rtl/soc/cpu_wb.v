@@ -15,6 +15,13 @@
 // registered "go to REQUEST state" FSM would have added a cycle to every
 // access, on top of the one the synchronous memories already cost.
 //
+// Both ports are cached here rather than inside the core, for the same
+// reason: a cache is about what the *bus* costs, and putting it here means
+// one copy serves rtl/cpu_core.v and rtl/ooo/core_ooo.v both, with no core
+// change at all. Each is direct-mapped, one word per line, read
+// asynchronously so a hit costs no wait state. See the two sections below
+// for why one word, and why the data side is write-through.
+//
 // Endian/lane note: the core's native convention is that sub-word data sits
 // in the *low* lanes with the exact byte address on the bus (that is what
 // rtl/dmem.v implements). Wishbone instead wants a word-aligned address plus
@@ -205,7 +212,7 @@ module cpu_wb (
     // `dmem_re` is *not* asserted for AMO/LR/SC (the core doesn't classify
     // them as loads), and during an AMO's read phase `dmem_we` is low too -
     // so `dmem_is_amo` is what tells us there is a request here at all.
-    wire req = dmem_re || dmem_we || dmem_is_amo;
+    wire want = dmem_re || dmem_we || dmem_is_amo;
 
     wire [1:0] byte_off = dmem_addr[1:0];
 
@@ -223,6 +230,86 @@ module cpu_wb (
     // the addressed lane.
     wire [31:0] wdata_shifted = dmem_wdata << (8 * byte_off);
 
+    // =====================================================================
+    // Data cache
+    // =====================================================================
+    // Same shape as the instruction cache above - direct-mapped, one word per
+    // line, asynchronously read so a hit costs nothing - and for the same
+    // reason: `docs/roadmap.md` measures 65,069 cycles of *load* bus-wait on
+    // CoreMark against a total of 482,674, and this is what reaches them.
+    // The other 1,233 cycles of data-bus stall are stores, which the wide
+    // core's store buffer already absorbs.
+    //
+    // ---- Write policy: write-through, allocate only on a full-word store ----
+    //
+    // Write-through is not the fast policy; it is the policy that makes this
+    // cache *provably* coherent with the rest of the system for free, and
+    // that matters more here than the stores it doesn't accelerate:
+    //
+    //   - the MMU's page-table walkers read RAM through `wb_ram.v`'s second
+    //     port, not through this bus. A write-back cache could hold a page
+    //     table entry that a walker cannot see. Write-through cannot.
+    //   - `rtl/soc/wb_framebuffer.v` is scanned out by video logic that never
+    //     touches this adapter, so a pixel written into a dirty line would
+    //     never appear.
+    //   - UART, CLINT, PLIC, SPI and GPIO are not memory at all. Those are
+    //     excluded by `dc_cacheable` rather than by policy, but a write-back
+    //     cache would have to get *both* right.
+    //
+    // With every write going to the bus, memory is always the truth and this
+    // cache only ever mirrors it. There is nothing to flush, nothing to write
+    // back, no dirty bit, and no action on FENCE, SFENCE.VMA or a context
+    // switch. (The tags are physical - `dmem_addr` is already translated when
+    // it reaches here - so a context switch cannot alias.)
+    //
+    // Allocating on a full-word store miss is the one piece of extra reach
+    // that costs nothing to justify: after the acknowledgement, memory holds
+    // exactly `dwb_dat_w` at that address, so caching it needs no read. A
+    // *partial* store to a line that isn't resident is left alone, because
+    // filling it would need the other bytes, which would need a bus read.
+    //
+    // ---- What does not hit ----
+    //
+    // AMOs bypass the cache on the read phase. In a single-master system they
+    // could safely be served from it - write-through means a hit is never
+    // stale - but an atomic that reads memory is worth keeping literal, and
+    // CoreMark contains none, so there is no measurement arguing the other
+    // way. Their *write* phase still updates the line, which is what keeps a
+    // later load from seeing the pre-AMO value.
+    localparam DC_ENTRIES  = 256;
+    localparam DC_IDX_BITS = 8;                        // clog2(DC_ENTRIES)
+    localparam DC_TAG_BITS = 32 - DC_IDX_BITS - 2;
+
+    reg [DC_TAG_BITS-1:0] dc_tag  [0:DC_ENTRIES-1];
+    reg [31:0]            dc_data [0:DC_ENTRIES-1];
+    reg [DC_ENTRIES-1:0]  dc_valid;
+
+    // Which addresses may be cached, from the slave table in
+    // `rtl/soc/soc_top.v`: RAM at 0x80_000000 and the boot ROM at
+    // 0x00_000000. Everything between them is a peripheral, where a read has
+    // a side effect or a value that changes without a write - a UART status
+    // register, `mtime`. Caching those would not be slow, it would be wrong.
+    wire dc_cacheable = (dmem_addr[31:24] == 8'h80) ||
+                        (dmem_addr[31:24] == 8'h00);
+
+    wire [DC_IDX_BITS-1:0] dc_idx     = dmem_addr[DC_IDX_BITS+1:2];
+    wire [DC_TAG_BITS-1:0] dc_tag_now = dmem_addr[31:DC_IDX_BITS+2];
+    wire [31:0]            dc_line    = dc_data[dc_idx];
+
+    wire dc_present = dc_cacheable && dc_valid[dc_idx] &&
+                      (dc_tag[dc_idx] == dc_tag_now);
+
+    // A plain load that the cache can answer. `dmem_re` is low for AMO/LR/SC
+    // and low while the store buffer owns the port, so neither can produce a
+    // hit here.
+    wire load_hit = dmem_re && dc_present;
+
+    // The request that actually reaches the bus. A hit stops driving `cyc`
+    // entirely, which - exactly as on the fetch side - both avoids a lie
+    // about an outstanding transfer and hands the interconnect to the
+    // instruction master for that cycle.
+    wire req = want && !load_hit;
+
     // AMOs are word-only and word-aligned, so their data never needs
     // shifting. The write phase's data comes out of a register in the core,
     // which is the whole point of the split: nothing on this net traces back
@@ -234,7 +321,42 @@ module cpu_wb (
     assign dwb_sel   = dmem_is_amo ? 4'b1111 : sel_from_size;
     assign dwb_dat_w = dmem_is_amo ? dmem_wdata : wdata_shifted;
 
-    wire read_ack = dwb_ack && !dwb_we;
+    wire read_ack  = dwb_ack && !dwb_we;
+    wire write_ack = dwb_ack &&  dwb_we;
+
+    // The word this entry should hold afterwards. On a returning load it is
+    // what memory just gave us; on a store it is the resident word with the
+    // written lanes replaced - which for a full-word store is just the store
+    // data, so the allocate case needs no separate expression.
+    wire [31:0] dc_merged = {
+        dwb_sel[3] ? dwb_dat_w[31:24] : dc_line[31:24],
+        dwb_sel[2] ? dwb_dat_w[23:16] : dc_line[23:16],
+        dwb_sel[1] ? dwb_dat_w[15:8]  : dc_line[15:8],
+        dwb_sel[0] ? dwb_dat_w[7:0]   : dc_line[7:0]
+    };
+
+    wire dc_fill  = read_ack  && dmem_re && dc_cacheable;
+    wire dc_store = write_ack && dc_cacheable &&
+                    (dc_present || (dwb_sel == 4'b1111));
+    wire dc_update = dc_fill || dc_store;
+
+    wire [31:0] dc_new = dc_fill ? dwb_dat_r : dc_merged;
+
+    // `dmem_addr` is stable for the whole of a transfer - the core holds
+    // EX/MEM while `dbus_wait` is high - so unlike the fetch side there is no
+    // second copy of the address to keep, and the index that fills is the
+    // index that missed.
+    always @(posedge clk) begin
+        if (dc_update) begin
+            dc_data[dc_idx] <= dc_new;
+            dc_tag[dc_idx]  <= dc_tag_now;
+        end
+    end
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)            dc_valid <= {DC_ENTRIES{1'b0}};
+        else if (dc_update) dc_valid[dc_idx] <= 1'b1;
+    end
 
     // Read data latched at ack so it stays stable past the ack cycle. The
     // core samples `dmem_rdata` in the cycle `dmem_rvalid` is high, which is
@@ -247,14 +369,45 @@ module cpu_wb (
         else if (read_ack) rdata_q <= dwb_dat_r;
     end
 
-    wire [31:0] read_word = read_ack ? dwb_dat_r : rdata_q;
+    wire [31:0] read_word = load_hit ? dc_line
+                          : read_ack ? dwb_dat_r
+                                     : rdata_q;
     // Shift the addressed lane back down to where the core expects it. AMOs
     // are word accesses so this is a no-op for them.
     assign dmem_rdata  = read_word >> (8 * byte_off);
-    assign dmem_rvalid = read_ack;
+    assign dmem_rvalid = load_hit || read_ack;
 
-    // Every phase is a single Wishbone transfer now, so completion is just
-    // the acknowledgement. An AMO's two phases are two separate waits, and
-    // the core holds itself in MEM across the gap between them.
+    // A hit completes in the cycle it is asked for, which is the same
+    // contract `rtl/dmem.v` offers the flat top level (`dbus_wait` tied low,
+    // `dmem_rvalid` tied high). A miss is a single Wishbone transfer, and an
+    // AMO's two phases are two separate waits with the core holding itself in
+    // MEM across the gap.
     assign dbus_wait = req && !dwb_ack;
+
+    // =====================================================================
+    // Observability
+    // =====================================================================
+    // Nothing in the design reads these; the benchmark testbench does, by
+    // hierarchical reference, and synthesis removes them. They exist because
+    // "the data cache is worth N cycles" and "the data cache hits M% of the
+    // time" are different claims, and only the second one says whether a
+    // bigger cache would help or a different policy would.
+    reg [31:0] dc_load_hits;
+    reg [31:0] dc_load_misses;
+    reg [31:0] dc_store_updates;
+    reg [31:0] dc_uncached_reqs;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            dc_load_hits     <= 32'b0;
+            dc_load_misses   <= 32'b0;
+            dc_store_updates <= 32'b0;
+            dc_uncached_reqs <= 32'b0;
+        end else begin
+            if (load_hit)                    dc_load_hits     <= dc_load_hits + 32'd1;
+            if (dc_fill)                     dc_load_misses   <= dc_load_misses + 32'd1;
+            if (dc_store)                    dc_store_updates <= dc_store_updates + 32'd1;
+            if (dwb_ack && !dc_cacheable)    dc_uncached_reqs <= dc_uncached_reqs + 32'd1;
+        end
+    end
 endmodule
