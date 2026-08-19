@@ -245,16 +245,58 @@ ex_mem_is_sc` and `any_successful_write`. Moving a store into a buffer changes
 into getting right (`tests/README.md`), and they are not a thing to convert
 without room to verify the conversion.
 
-**Landed for 1c so far:** the measurement above, and the instrumentation that
-produced it — `stall_div_count`, `stall_mmu_count`, `stall_dbus_count`,
-`stall_loaduse_count`, `stall_ifetch_count` and `dbus_event_count`,
-observability-only and read by hierarchical reference exactly as
-`mispredict_count` is.
+**Landed for 1c:** the measurement above and the instrumentation that produced
+it, and the store buffer — the first piece, and the one that needs no reorder
+buffer and no scoreboard.
 
-**Still to do for 1c:** the store buffer first, since it needs no reorder
-buffer and no scoreboard and is correct in isolation; then the load buffer,
-the 4-entry ROB and its forwarding; and AMO last, because its two bus phases
-and its reservation interlock are the part with no cheap version.
+#### Stage 1c: the store buffer, and what it proved
+
+A store writes no register, and a store that has reached MEM can no longer
+fault: misaligned is caught in EX, page faults come out of the MMU before the
+access is issued, and the interconnect decodes on `addr[31:24]` alone so an
+out-of-range store aliases rather than traps. There is nothing left to report
+and nothing to keep it in the pipeline for — only a bus transaction that has to
+finish. So it hands the transaction to a one-entry buffer and leaves, and the
+buffer drives `dmem_*` until the acknowledgement arrives.
+
+It works, by every measure except the one that matters:
+
+| | Before | After |
+|---|---|---|
+| Data-bus stall | 109,577 | **78,839** |
+| Fetch-empty stall | 92,740 | **111,520** |
+| Total cycles | 867,590 | **867,508** |
+
+18,979 stores took the buffered path and 30,738 cycles of data-bus stall
+disappeared. The program got **82 cycles** faster.
+
+**The two stalls were overlapping.** Part of the fetch-empty rise is
+reclassification — the counters charge each cycle to the innermost blocking
+cause, so a cycle that was both bus-stalled and fetch-starved used to be
+charged to the bus and is now charged to fetch. That is exactly the finding:
+those cycles were never recoverable by fixing the back end, because the front
+end was not going to supply an instruction for them either way.
+
+This is the strongest evidence in the project so far that **the machine is
+fetch-bound**, and it is evidence by construction rather than by inference:
+30,738 cycles of back-end stall were removed and 82 cycles came back.
+
+**So the rest of 1c should wait.** The load buffer, the 4-entry reorder buffer
+and its forwarding are several times the logic of the store buffer, and this
+experiment predicts the same non-result for them — they remove back-end stalls
+that the front end is already covering. The ordering that follows from the
+measurement is: instruction cache first (Phase 4), then finish 1c against a
+machine that can actually feed it.
+
+**Still to do for 1c, once fetch is fixed:** the load buffer, the 4-entry ROB
+and its forwarding, and AMO last, because its two bus phases and its
+reservation interlock are the part with no cheap version.
+
+**A note on whether to keep the store buffer.** It costs a handful of registers
+and a six-way mux on the memory port for no measured gain today. It is kept
+because it is a prerequisite for the rest of 1c and because the experiment it
+supports is worth more than its area — but that is a judgement, and if ECP5
+utilisation becomes the binding constraint it is the first thing to remove.
 
 #### A defect stage 1b found in its own harness
 

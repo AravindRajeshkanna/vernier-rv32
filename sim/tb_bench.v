@@ -121,6 +121,7 @@ module tb_bench;
         $display("  data bus      %0d  in %0d waits", DUT.CPU.stall_dbus_count, DUT.CPU.dbus_event_count);
         $display("  load-use      %0d", DUT.CPU.stall_loaduse_count);
         $display("  fetch empty   %0d", DUT.CPU.stall_ifetch_count);
+        $display("stores handed to the store buffer: %0d", DUT.CPU.store_buffered_count);
 `endif
         if (validated)   $display("BENCHMARK PASSED (CoreMark validated its own results)");
         else if (errors) $display("BENCHMARK FAILED (CoreMark reported errors)");

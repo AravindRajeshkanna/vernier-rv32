@@ -1158,15 +1158,137 @@ module core_ooo #(
     // between an AMO's two phases as they are across a bus wait. Driven in
     // the MEM stage, where the phase state lives.
     wire amo_stall;
-    wire dbus_stall = dbus_wait || amo_stall;
+
+    // =======================================================================
+    // EX/MEM pipeline register
+    // =======================================================================
+    // Declared up here, ahead of the store buffer below, because the buffer's
+    // ownership and stall logic reads them and iverilog 14 rejects
+    // declaration after use. The register itself is still written in the
+    // sequential block at the end of the file with the rest of the pipeline.
+    reg        ex_mem_is_load, ex_mem_mem_we;
+    reg [2:0]  ex_mem_funct3;
+    reg [31:0] ex_mem_mem_addr, ex_mem_mem_wdata;
+    reg [1:0]  ex_mem_mem_size;
+    reg        ex_mem_is_amo;
+    reg [4:0]  ex_mem_funct5;
+
+    // =======================================================================
+    // Store buffer
+    // =======================================================================
+    // Stage 1c's measurement: the data bus costs 12.6% of runtime, in 80,738
+    // waits averaging 1.36 cycles each. Every one of those cycles froze the
+    // entire pipeline, because `dbus_stall` held ID/EX and the request signals
+    // are driven straight off `ex_mem_*` - so the store had to stay in MEM
+    // until Wishbone acknowledged, and nothing behind it could move.
+    //
+    // A store is the case where that is pure waste. It writes no register, so
+    // nothing downstream is waiting on a result, and a store that has reached
+    // MEM can no longer fault: misaligned is caught in EX, page faults come
+    // out of the MMU before the access is issued, and the interconnect decodes
+    // on addr[31:24] alone so an out-of-range store aliases rather than
+    // traps. There is therefore nothing left to report and nothing to keep it
+    // in the pipeline for - only a bus transaction that has to finish.
+    //
+    // So it hands the transaction to this buffer and leaves. The buffer drives
+    // `dmem_*` in its place until the acknowledgement arrives. That needs no
+    // reorder buffer and no scoreboard, which is why it is the first piece of
+    // 1c rather than a slice of the last one.
+    //
+    // One entry, deliberately. `cpu_wb.v` issues one transaction at a time, so
+    // a second buffered store would have nowhere to go; depth here would buy
+    // nothing without a deeper bus.
+    reg        sb_valid;
+    reg [31:0] sb_addr, sb_wdata;
+    reg [1:0]  sb_size;
+
+    wire mem_op_in_mem   = ex_mem_valid && (ex_mem_is_load || ex_mem_mem_we || ex_mem_is_amo);
+    // `ex_mem_mem_we` is a plain store only - an AMO's and an SC's write
+    // enables are resolved in MEM, not carried in this bit - so this is
+    // already the exact set that may be buffered. `!ex_mem_is_amo` is there
+    // as a guard on that reasoning rather than because it currently excludes
+    // anything.
+    wire plain_store_now = ex_mem_valid && ex_mem_mem_we && !ex_mem_is_amo;
+
+    // Who owns the memory port this cycle. The buffer wins: it is holding an
+    // older transaction that Wishbone has already been told about.
+    wire ex_mem_owns_port = !sb_valid && mem_op_in_mem;
+
+    // The store hands over instead of stalling. Requires the port, and
+    // requires that the access did not already complete this cycle - a
+    // zero-wait-state slave acknowledges immediately and the buffer never
+    // sees it.
+    wire store_absorbed = plain_store_now && !sb_valid && dbus_wait;
+
+    // A younger memory access cannot use the port while the buffer holds it,
+    // and waits. This is the cost side of the trade: the gain is every
+    // *non*-memory instruction that gets to execute during the wait, and the
+    // loss is that back-to-back memory traffic is no better off than before.
+    wire sb_port_busy = sb_valid && mem_op_in_mem;
+
+    // `dbus_wait` refers to whatever request is actually on the port, so it
+    // only stalls the pipeline when the port belongs to the instruction in
+    // MEM. While the buffer owns it, a `dbus_wait` is the buffer's business
+    // and the pipeline runs underneath it.
+    wire dbus_wait_stall = ex_mem_owns_port && dbus_wait && !store_absorbed;
+
+    wire dbus_stall = dbus_wait_stall || amo_stall || sb_port_busy;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            sb_valid <= 1'b0;
+            sb_addr  <= 32'b0;
+            sb_wdata <= 32'b0;
+            sb_size  <= 2'b0;
+        end else if (sb_valid) begin
+            if (!dbus_wait) sb_valid <= 1'b0;   // acknowledged
+        end else if (store_absorbed) begin
+            // Latched at the same edge `ex_mem_*` advances, so the muxed bus
+            // output below is continuous across the handover - Wishbone sees
+            // one unbroken request, not a request that flickers while the
+            // core changes its mind about where it lives.
+            sb_valid <= 1'b1;
+            sb_addr  <= ex_mem_mem_addr;
+            sb_wdata <= ex_mem_mem_wdata;
+            sb_size  <= ex_mem_mem_size;
+        end
+    end
+
+    // A fence may not take effect over a store that has not reached memory
+    // yet. FENCE.I exists to publish writes to the instruction stream and
+    // SFENCE.VMA to publish page-table writes; both are stores, and both may
+    // still be sitting in the buffer. Draining costs a cycle or two on an
+    // instruction that is rare and already expensive.
+    //
+    // This gates `ex_commit` as well as `ex_busy_stall`, and it has to gate
+    // both or neither. Holding the instruction in EX without withholding its
+    // commit is what the first version of this did, and SFENCE.VMA promptly
+    // vanished: `sfence_en` keys off `ex_commit`, so the fence flushed the
+    // TLB and redirected - and `redirect_valid` is checked ahead of
+    // `ex_busy_stall` in the ID/EX block, so it squashed itself out of the
+    // pipeline. Meanwhile `instret_retire` keys off `ex_busy_stall`, so the
+    // instruction never retired. It executed and was never reported. Spike
+    // co-simulation caught it as a missing trace line; nothing else would
+    // have, because the TLB flush still happened and the program still ran.
+    wire fence_drain_stall = id_ex_valid && sb_valid &&
+                             (id_ex_is_fence_i || id_ex_is_sfence_vma);
+
+    // Testbench-observability-only: how many stores actually took the buffered
+    // path. Without it, a store buffer that never absorbs anything is
+    // indistinguishable from one that works (docs/practices.md section 1).
+    reg [31:0] store_buffered_count;
+    always @(posedge clk or posedge rst) begin
+        if (rst) store_buffered_count <= 32'b0;
+        else if (store_absorbed) store_buffered_count <= store_buffered_count + 32'd1;
+    end
     // Whether the instruction in EX may take architectural effect this
     // cycle. Under `dbus_stall` it may not: ID/EX is being held and will
     // re-present the same instruction next cycle, so letting it redirect,
     // write a CSR, take a trap, return from one, flush the TLB, or train
     // the predictor now would do all of that twice.
-    assign ex_commit = !dbus_stall;
+    assign ex_commit = !dbus_stall && !fence_drain_stall;
 
-    assign ex_busy_stall = div_stall || mmu_wait_stall || dbus_stall;
+    assign ex_busy_stall = div_stall || mmu_wait_stall || dbus_stall || fence_drain_stall;
 
     // op2_reg is live-forwarded and drifts once EX/MEM and MEM/WB drain
     // (a few cycles into a walk, well before it resolves, since the rest
@@ -1426,16 +1548,6 @@ module core_ooo #(
                      !fetch_misaligned;
 
     // =======================================================================
-    // EX/MEM pipeline register
-    // =======================================================================
-    reg        ex_mem_is_load, ex_mem_mem_we;
-    reg [2:0]  ex_mem_funct3;
-    reg [31:0] ex_mem_mem_addr, ex_mem_mem_wdata;
-    reg [1:0]  ex_mem_mem_size;
-    reg        ex_mem_is_amo;
-    reg [4:0]  ex_mem_funct5;
-
-    // =======================================================================
     // MEM stage
     // =======================================================================
     wire ex_mem_is_lr      = ex_mem_is_amo && (ex_mem_funct5 == 5'b00010);
@@ -1522,12 +1634,17 @@ module core_ooo #(
     wire        dmem_we_amo    = amo_active && amo_wr_phase;
     wire [31:0] dmem_wdata_amo = ex_mem_is_sc ? ex_mem_mem_wdata : amo_new_value;
 
-    assign dmem_addr  = ex_mem_mem_addr;
-    assign dmem_wdata = ex_mem_is_amo ? dmem_wdata_amo : ex_mem_mem_wdata;
-    assign dmem_we    = (ex_mem_valid && ex_mem_mem_we) || dmem_we_amo;
-    assign dmem_re    = ex_mem_valid && ex_mem_is_load;
-    assign dmem_size  = ex_mem_mem_size;
-    assign dmem_is_amo = ex_mem_valid && ex_mem_is_amo;
+    // The buffer drives the port whenever it holds a transaction; otherwise
+    // MEM does, exactly as before. Held values are copies of what `ex_mem_*`
+    // presented the cycle before, so every bus signal is bit-identical across
+    // the changeover and `cpu_wb.v` - which drives Wishbone combinationally
+    // off these, with no request register of its own - sees no discontinuity.
+    assign dmem_addr  = sb_valid ? sb_addr  : ex_mem_mem_addr;
+    assign dmem_wdata = sb_valid ? sb_wdata : (ex_mem_is_amo ? dmem_wdata_amo : ex_mem_mem_wdata);
+    assign dmem_we    = sb_valid ? 1'b1     : ((ex_mem_valid && ex_mem_mem_we) || dmem_we_amo);
+    assign dmem_re    = sb_valid ? 1'b0     : (ex_mem_valid && ex_mem_is_load);
+    assign dmem_size  = sb_valid ? sb_size  : ex_mem_mem_size;
+    assign dmem_is_amo = sb_valid ? 1'b0    : (ex_mem_valid && ex_mem_is_amo);
 
     // ---- LR/SC reservation - MEM stage only ----
     // Required, not stylistic: for back-to-back LR;SC, SC reaches EX the
