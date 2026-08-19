@@ -1835,6 +1835,39 @@ module core_ooo #(
         else if (defer_now) defer_taken_count <= defer_taken_count + 32'd1;
     end
 
+    // ---- why the other opportunities are missed ----
+    // 4,205 of 19,118 candidates are taken. Stage 1d's job is the rest, and
+    // the two blockers call for completely different work:
+    //
+    //   slot 1 busy       a pair is using the only completion slot this core
+    //                     has. Fixing it means a slot of its own - a third
+    //                     writeback path, a third register write port, and
+    //                     regfile_wide going from 2W to 3W. That is a reorder
+    //                     buffer entry in all but name.
+    //   successor depends the instruction that would take EX's place reads
+    //                     the outstanding load. No completion slot helps;
+    //                     this needs out-of-order *issue*, which is
+    //                     reservation stations.
+    //
+    // Whichever dominates is what 1d should build, and building the wrong one
+    // is the mistake this phase has already made twice. The categories are
+    // exclusive and ordered the way the condition evaluates, so they sum with
+    // `defer_taken_count` to the candidate count minus the rare
+    // redirect/fence cases.
+    reg [31:0] defer_blk_dep;    // successor instruction depends on the load
+    reg [31:0] defer_blk_slot1;  // slot 1's pipeline already in use
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            defer_blk_dep   <= 32'b0;
+            defer_blk_slot1 <= 32'b0;
+        end else if (defer_candidate) begin
+            if (!next_indep_of_load)
+                defer_blk_dep <= defer_blk_dep + 32'd1;
+            else if (ex_mem1_valid || id_ex1_valid)
+                defer_blk_slot1 <= defer_blk_slot1 + 32'd1;
+        end
+    end
+
     reg [31:0] defer_candidate_count;  // recoverable by a load-completion buffer
     reg [31:0] load_wait_count;        // data-bus stall cycles caused by a load
     always @(posedge clk or posedge rst) begin

@@ -190,6 +190,69 @@ jobs:
           grep -qE "riscv-tests: [0-9]+ passed, 0 failed" isa.log
 
   # ---------------------------------------------------------------------
+  # CoreMark, as a correctness gate rather than a stopwatch.
+  #
+  # This exists because of a specific incident. Stage 1d's load-completion
+  # buffer shipped with a missing hazard check: deferring released a stall
+  # that let a dual-issue pair be latched, and only the pair's older half was
+  # checked against the outstanding load. The younger half read the load's
+  # address instead of its data.
+  #
+  # Every layer above stayed green. riscv-tests co-simulated 82/82 against
+  # Spike with the bug present, because the hazard needs a load followed by a
+  # pair whose younger half depends on it, and 82 hand-written architectural
+  # tests contain far less pointer-chasing than one real program. CoreMark's
+  # list and state passes hit it within a few thousand instructions and its
+  # own CRCs caught it - and CoreMark was not run by CI at all.
+  #
+  # So it is here, matrixed over both cores like the suites it complements.
+  # It is checked for its verdict, not its cycle count: the number is printed
+  # in the log for whoever wants it, but asserting on it would turn every
+  # microarchitecture change into a CI edit and every environment difference
+  # into a false failure.
+  #
+  # Cost is two legs of roughly ten minutes, in parallel with the rest.
+  # docs/practices.md section 15: this is a layer that answers a question the
+  # others demonstrably cannot.
+  # ---------------------------------------------------------------------
+  coremark:
+    name: CoreMark CRCs (${{ matrix.core }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [inorder, ooo]
+    env:
+      CORE: ${{ matrix.core }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/iverilog
+
+      - uses: ./.github/actions/riscv-toolchain
+
+      - name: Fetch CoreMark (pinned commit)
+        run: make coremark-fetch
+
+      - name: Run CoreMark
+        run: make coremark | tee coremark.log
+
+      # CoreMark validates its own list/matrix/state CRCs against values the
+      # benchmark computes independently of this core. `BENCHMARK PASSED` is
+      # printed only when it validated; the `ERROR!` check is belt and braces,
+      # since that is the line the failing build actually printed
+      # ("[0]ERROR! list crc 0x9a29 - should be 0xe714").
+      - name: Check CoreMark validated its own results
+        run: |
+          grep -q "BENCHMARK PASSED" coremark.log
+          if grep -q "ERROR!" coremark.log; then
+            echo "CoreMark reported a CRC mismatch:"
+            grep "ERROR!" coremark.log
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------
   # Formal: bounded model checking. No RISC-V toolchain needed.
   # ---------------------------------------------------------------------
   formal:
