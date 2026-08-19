@@ -332,6 +332,36 @@ co-simulation did, because it is the only layer that asks whether the machine
 executed the same instructions rather than whether it reached the right
 answer.
 
+## 18. Removing a bottleneck is how you find out it was not one
+
+**The incident.** Stage 1c's stall counters said the data bus cost 12.6% of
+CoreMark's runtime and instruction fetch cost 10.7%. The data bus was the
+bigger number, so it got the work: a store buffer, so a store waiting on
+Wishbone releases the pipeline instead of freezing it.
+
+It did exactly what it was built to do. 18,979 stores took the buffered path
+and 30,738 cycles of data-bus stall disappeared.
+
+The program got 82 cycles faster.
+
+The two stalls were concurrent, not additive. A cycle that was both bus-stalled
+and fetch-starved had been charged to the bus, because the counters charge each
+cycle to the innermost blocking cause. Removing the bus stall did not free the
+cycle; it just relabelled it. The machine was fetch-bound the whole time, and
+no amount of back-end work was going to show up as throughput.
+
+**The rule.** A per-cause breakdown tells you where the cycles are *attributed*,
+not where they are *available*. Overlapping causes look additive in a table and
+are not. The only number that settles it is the total, measured before and
+after, on the same workload.
+
+The corollary is what to do with it: this is a reason to build the cheap version
+of a change first. The store buffer is a few registers and a mux, and it bought
+a fact that would otherwise have cost a reorder buffer, a load buffer and a
+scoreboard to learn — the rest of stage 1c, which the same experiment now
+predicts would also return nothing until the front end is fixed. An experiment
+that changes the plan is worth more than a feature that confirms it.
+
 ---
 
 ## Conventions

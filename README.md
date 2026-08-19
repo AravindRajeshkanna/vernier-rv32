@@ -532,7 +532,7 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | in progress — `rtl/ooo/core_ooo.v` dual-issues ALU pairs and passes the whole suite; measured at 0.04%, because a 1-wide fetch port cannot feed it |
+| 1 | **Superscalar issue and out-of-order execution** | in progress — `rtl/ooo/core_ooo.v` dual-issues ALU pairs and buffers stores, and passes the whole suite. Both measured at ~0.01%: removing 30,738 cycles of data-bus stall returned 82, because the machine is fetch-bound |
 | 2 | Close the boot path — the SD card | the only untested link in the boot chain |
 | 3 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
 | 4 | Make it fast enough to be interesting — caches, interrupt-driven UART | every fetch and load goes to the bus |
