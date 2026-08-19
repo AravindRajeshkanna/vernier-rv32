@@ -345,9 +345,50 @@ hit it within a few thousand instructions. Co-simulation is the strongest layer
 this project has and it is still only as good as the instruction mix it is
 given.
 
-**Still deferred to 1d:** the reorder buffer and its forwarding, and AMO's
+#### Stage 1d: which of its four pieces actually carries the value
+
+Phase 1's opening table lists what out-of-order execution requires: renaming, a
+reorder buffer, reservation stations, multiple execution units, a load-store
+queue, misprediction recovery, wider fetch. That list is a dependency order,
+not a value order, and until now nothing here said which piece was worth
+building first.
+
+The load-completion buffer's misses answer it. Of 19,118 opportunities:
+
+| | Cycles | |
+|---|---|---|
+| Taken | 4,205 | |
+| Missed — **successor depends on the load** | **14,231** | 74% |
+| Missed — slot 1's pipeline already in use | 682 | 3.6% |
+
+**The reorder buffer is not where the value is.** The shared completion slot —
+the thing stage 1c was rejected over, and the thing a ROB entry exists to fix —
+costs 682 cycles. A dedicated slot would need a third writeback path, a third
+register write port and `regfile_wide` going from 2W to 3W, to recover 0.14%.
+
+The 14,231 cycles are blocked because the instruction that would take EX's
+place reads the outstanding load. No completion slot helps that: the machine
+needs to issue a *later*, independent instruction instead, which is
+out-of-order issue, which is reservation stations and the renaming that makes
+them safe.
+
+So stage 1d's order is the reverse of the dependency list's convenience:
+reservation stations carry ~2.9%, the ROB carries 0.14% and exists to make
+traps precise once issue is out of order, and renaming exists to make both
+correct. The ROB is still required — it is just required *by* the thing worth
+building, not worth building on its own.
+
+**Still to do for 1d:** reservation stations and register renaming, with the
+reorder buffer as their precondition rather than their headline; then AMO's
 non-blocking path last, because its two bus phases and its reservation
 interlock have no cheap version.
+
+**Worth measuring before any of it:** whether a data cache beats all three.
+The data-bus stall is 66,316 cycles against reservation stations' 14,231
+ceiling, and the instruction cache turned an equivalent number into 1.79×
+overall for a fraction of this complexity. That comparison has not been made
+and should be, on the evidence of how the last three predictions in this phase
+went.
 
 ---
 

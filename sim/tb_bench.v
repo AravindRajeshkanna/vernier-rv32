@@ -125,6 +125,8 @@ module tb_bench;
         $display("load bus-wait cycles: %0d, of which recoverable by a", DUT.CPU.load_wait_count);
         $display("  load-completion buffer: %0d (taken: %0d)",
                  DUT.CPU.defer_candidate_count, DUT.CPU.defer_taken_count);
+        $display("  missed - successor depends on the load: %0d", DUT.CPU.defer_blk_dep);
+        $display("  missed - slot 1's pipeline in use:      %0d", DUT.CPU.defer_blk_slot1);
 `endif
         if (validated)   $display("BENCHMARK PASSED (CoreMark validated its own results)");
         else if (errors) $display("BENCHMARK FAILED (CoreMark reported errors)");
