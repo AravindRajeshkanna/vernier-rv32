@@ -399,6 +399,31 @@ still matters: the cheap experiment that finds the real constraint comes first,
 and the reorder buffer stage 1c did *not* build is still not built, because the
 same reasoning now points at the load-use stall it exposed instead.
 
+## 20. A new feature is measured against the incumbent, not against zero
+
+**The incident.** Stage 1c's load-completion buffer had the best ceiling of
+anything in the phase: 19,188 recoverable cycles, 4.0% of runtime, measured
+before a line was written. It was built. The machine got 2.5% slower.
+
+The mechanism was a shared resource. Slot 1's pipeline — built for dual issue
+in stage 1b — is the only completion slot this core has, and dual issue was
+already using it 19,872 times a run. Every deferral took one away from a pair.
+The ceiling calculation was correct and irrelevant: it measured the cycles the
+new feature could win and said nothing about the cycles the existing one would
+lose.
+
+**The rule.** Before building anything that consumes a resource something else
+already uses, work out what the incumbent is doing with it. A ceiling computed
+against an idle machine is an upper bound on the gain and says nothing about
+the net. The question is not "how much can this win" but "how much can this win
+that something else is not already winning with the same hardware".
+
+The cheap check is to instrument the *contended* resource, not just the new
+feature's opportunity — `dual_issue_count` dropping from 19,872 to 18,386 was
+the number that settled this, and it was already there from a previous stage.
+Counters earn their keep across stages, which is an argument for leaving them
+in.
+
 ---
 
 ## Conventions

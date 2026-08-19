@@ -93,7 +93,7 @@ regression against.
 |---|---|---|
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
-| 1c | Scoreboard: out-of-order completion, in-order retire | in progress — measured and designed, see below |
+| 1c | Scoreboard: out-of-order completion, in-order retire | ✅ closed — store buffer kept, load-completion buffer measured and rejected |
 | 1d | Renaming, reorder buffer, reservation stations, LSQ | after 1c — the ROB 1c builds is most of its foundation |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
@@ -295,9 +295,63 @@ measured at 41 cycles is now 27,211, exactly as §18 predicted — it was always
 there, hidden behind a bus stall. That, not the reorder buffer, is what the
 rest of 1c should be aimed at when it resumes.
 
-**Still to do for 1c, once fetch is fixed:** the load buffer, the 4-entry ROB
-and its forwarding, and AMO last, because its two bus phases and its
-reservation interlock are the part with no cheap version.
+#### Stage 1c: the load-completion buffer, built and not kept
+
+With the front end fixed, the load buffer was the piece left. It was measured
+first, as everything in this phase now is:
+
+| CoreMark, post-I-cache | Cycles |
+|---|---|
+| Data-bus stall caused by a load | 65,083 |
+| ...of which an independent simple ALU op was in EX | **19,188** |
+
+19,188 cycles is 4.0% of runtime, and the first ceiling in this stage worth
+building for — the store buffer's was 82 cycles and dual issue's was 293
+opportunities.
+
+**Then it was built, and it made the machine slower.**
+
+| | Baseline | With deferral |
+|---|---|---|
+| Total cycles | 484,306 | 496,228 |
+| Dual-issue pairs | 19,872 | 18,386 |
+| Deferrals taken | — | 4,616 of 19,188 |
+
+The mechanism is visible in the middle row. **Slot 1's pipeline is the only
+completion slot this core has**, and dual issue is already using it 19,872
+times a run. A deferral that borrows `ex_mem1` takes it away from a pair, and
+pairs were worth more. Only 4,616 of the 19,188 opportunities could be taken at
+all, because the rest were blocked by slot 1 being busy or by the successor
+instruction depending on the load.
+
+It was also still wrong — CoreMark's CRC failed on the build that produced
+496,228, so that cycle count is from an incorrect machine and is not a clean
+measurement. The pair count is, and it is the number that decides this: the
+contention is structural and fixing the remaining bug would not remove it.
+
+**So it is not here.** A load-completion buffer that pays off needs a
+completion slot of its own rather than one borrowed from dual issue — which is
+a reorder buffer entry, which is stage 1d. The counters stay, because that
+argument is only as good as the number under it and because the next attempt
+should be measured against the same one.
+
+Two bugs found on the way, both by co-simulation and neither by any test:
+
+- The ID/EX register block gates on `ex_busy_stall` directly rather than on
+  `id_ex_stall`, so releasing the latter left the deferred instruction sitting
+  in EX to be executed a second time. `rv32ui-p-lw` retired the same `nop`
+  twice.
+- Deferring advances ID/EX a cycle early, which puts a load's dependent in EX
+  while the load is still in MEM — a state `load_use_stall` guarantees can
+  never happen, so EX/MEM forwarding handed it the load's *address*. The same
+  bug that stall exists to prevent, arriving through a door that did not exist
+  when it was written.
+
+**Still to do for 1c:** nothing, on this evidence. What is left of the original
+plan — the reorder buffer and its forwarding — is stage 1d's, and AMO's
+non-blocking path stays last because its two bus phases and its reservation
+interlock have no cheap version. The stage closes having built three things and
+kept one, which is the correct ratio when the measurements say so.
 
 **A note on whether to keep the store buffer.** It costs a handful of registers
 and a six-way mux on the memory port for no measured gain today. It is kept

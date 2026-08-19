@@ -1773,6 +1773,50 @@ module core_ooo #(
         end
     end
 
+    // ---- what a load-completion buffer could recover, and what it costs ----
+    // The remaining piece of stage 1c is a buffer that lets an independent
+    // younger instruction complete while a load waits on the bus. These count
+    // the opportunity: a data-bus stall caused by a load in MEM, with an
+    // instruction in EX that is a simple ALU op and does not depend on that
+    // load. Every one is a cycle the machine spends frozen and could spend
+    // executing.
+    //
+    // On CoreMark that is 19,188 cycles of 65,083 load-wait cycles - a 4.0%
+    // ceiling, and the first piece of this phase whose ceiling was worth
+    // building for. It was built, and it is not here. See docs/roadmap.md:
+    // slot 1's pipeline is the only completion slot this core has, dual issue
+    // is already using it 19,872 times a run, and a deferral mechanism that
+    // borrows it takes more from dual issue than it returns. A version that
+    // pays off needs a completion slot of its own, which is a reorder buffer
+    // entry, which is stage 1d.
+    //
+    // The counters stay because that argument is only as good as the number
+    // under it, and because the next attempt should be measured against the
+    // same one.
+    wire ex_is_simple_alu = id_ex_valid && !id_ex_is_load && !id_ex_is_store &&
+                            !id_ex_is_amo && !id_ex_is_branch && !id_ex_is_jal &&
+                            !id_ex_is_jalr && !id_ex_is_csr && !id_ex_is_muldiv &&
+                            !id_ex_is_trap_event && !id_ex_is_mret && !id_ex_is_sret &&
+                            !id_ex_is_fence_i && !id_ex_is_sfence_vma;
+    wire ex_indep_of_load = !(ex_mem_valid && ex_mem_is_load && (ex_mem_rd != 5'd0) &&
+                              ((ex_mem_rd == id_ex_rs1) || (ex_mem_rd == id_ex_rs2)));
+    wire defer_candidate  = dbus_stall && ex_mem_valid && ex_mem_is_load &&
+                            ex_is_simple_alu && ex_indep_of_load;
+
+    reg [31:0] defer_candidate_count;  // recoverable by a load-completion buffer
+    reg [31:0] load_wait_count;        // data-bus stall cycles caused by a load
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            defer_candidate_count <= 32'b0;
+            load_wait_count       <= 32'b0;
+        end else begin
+            if (dbus_stall && ex_mem_valid && ex_mem_is_load)
+                load_wait_count <= load_wait_count + 32'd1;
+            if (defer_candidate)
+                defer_candidate_count <= defer_candidate_count + 32'd1;
+        end
+    end
+
     // =======================================================================
     // Sequential pipeline register updates
     // =======================================================================
