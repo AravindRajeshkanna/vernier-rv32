@@ -1605,6 +1605,58 @@ module core_ooo #(
     assign mem_wb_rd      = mem_wb_rd_r;
 
     // =======================================================================
+    // Stall attribution (simulation-observable only)
+    // =======================================================================
+    // Where the cycles actually go, by cause, read the same way
+    // `mispredict_count` is - a hierarchical reference from sim/tb_bench.v.
+    //
+    // This exists because stage 1b's measurement said the back end is not
+    // what this machine is short of, and the obvious next question -
+    // "then what is it waiting on?" - deserves an answer with numbers in it
+    // rather than a plausible story. The categories are prioritised so they
+    // sum to something meaningful: each cycle is charged to exactly one
+    // cause, the innermost one that is actually blocking.
+    reg [31:0] stall_div_count;      // multi-cycle divide
+    reg [31:0] stall_mmu_count;      // data-MMU page-table walk
+    reg [31:0] stall_dbus_count;     // data access waiting on the bus
+    reg [31:0] stall_loaduse_count;  // load-use hazard bubble
+    reg [31:0] stall_ifetch_count;   // fetch had nothing to offer
+    // Events, not cycles: `stall_dbus_count / dbus_event_count` is the mean
+    // length of a data-bus wait, which is what decides how deep the reorder
+    // buffer has to be to cover one. Depth is the expensive dimension of a
+    // ROB - every entry is a forwarding comparator on four read ports - so
+    // it is worth knowing rather than rounding up to a power of two that
+    // sounds safe.
+    reg [31:0] dbus_event_count;
+    reg        dbus_stall_q;
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            dbus_event_count <= 32'b0;
+            dbus_stall_q     <= 1'b0;
+        end else begin
+            dbus_stall_q <= dbus_stall;
+            if (dbus_stall && !dbus_stall_q) dbus_event_count <= dbus_event_count + 32'd1;
+        end
+    end
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            stall_div_count     <= 32'b0;
+            stall_mmu_count     <= 32'b0;
+            stall_dbus_count    <= 32'b0;
+            stall_loaduse_count <= 32'b0;
+            stall_ifetch_count  <= 32'b0;
+        end else begin
+            if (div_stall)                              stall_div_count     <= stall_div_count + 32'd1;
+            else if (mmu_wait_stall)                    stall_mmu_count     <= stall_mmu_count + 32'd1;
+            else if (dbus_stall)                        stall_dbus_count    <= stall_dbus_count + 32'd1;
+            else if (load_use_stall)                    stall_loaduse_count <= stall_loaduse_count + 32'd1;
+            // Charged only when the back end was ready and the buffer had
+            // nothing: an idle fetch behind a full buffer is not a stall.
+            else if (fb_empty && if_stall)              stall_ifetch_count  <= stall_ifetch_count + 32'd1;
+        end
+    end
+
+    // =======================================================================
     // Sequential pipeline register updates
     // =======================================================================
     // ---- fetch buffer control -------------------------------------------

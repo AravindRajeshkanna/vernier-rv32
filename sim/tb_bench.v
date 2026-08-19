@@ -115,6 +115,12 @@ module tb_bench;
         // count says nothing about whether the pairing was worth having.
         $display("dual-issue pairs (slot 1 retirements): %0d", DUT.CPU.dual_issue_count);
         $display("  ...out of %0d cycles that offered a second instruction", DUT.CPU.pair_window_count);
+        $display("stall cycles by cause:");
+        $display("  divide        %0d", DUT.CPU.stall_div_count);
+        $display("  MMU walk      %0d", DUT.CPU.stall_mmu_count);
+        $display("  data bus      %0d  in %0d waits", DUT.CPU.stall_dbus_count, DUT.CPU.dbus_event_count);
+        $display("  load-use      %0d", DUT.CPU.stall_loaduse_count);
+        $display("  fetch empty   %0d", DUT.CPU.stall_ifetch_count);
 `endif
         if (validated)   $display("BENCHMARK PASSED (CoreMark validated its own results)");
         else if (errors) $display("BENCHMARK FAILED (CoreMark reported errors)");
