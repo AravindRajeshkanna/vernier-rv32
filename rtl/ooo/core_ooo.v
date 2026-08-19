@@ -327,7 +327,7 @@ module core_ooo #(
     //  - An `ibus_wait` is absorbed rather than bubbling the pipe, as long as
     //    the buffer is non-empty. That is the win that matters on the SoC,
     //    where instruction fetch and data share one Wishbone bus, so a load is
-    //    *routinely* stalling the fetch behind it (docs/roadmap.md Phase 4).
+    //    *routinely* stalling the fetch behind it (docs/roadmap.md Phase 3).
     //  - Instructions accumulate during a stall, which is what gives the dual
     //    issue below something to be dual about. A one-entry IF/ID can never
     //    offer a second instruction, so no issue rule, however clever, can

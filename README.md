@@ -532,19 +532,21 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs and buffers stores. Worth 0.05% until the Phase 4 I-cache landed and 6.9% after it, on unchanged RTL. 1d (renaming, reorder buffer, LSQ) remains |
-| 2 | Close the boot path — the SD card | the only untested link in the boot chain |
-| 3 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
-| 4 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache done: **1.79× on CoreMark**. Interrupt-driven UART and a D-cache remain |
-| 5 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
-| 6 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot |
-| 7 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
+| 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs and buffers stores. Worth 0.05% until the Phase 3 I-cache landed and 6.9% after it, on unchanged RTL. 1d (renaming, reorder buffer, LSQ) remains |
+| 2 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
+| 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache done: **1.79× on CoreMark**. Interrupt-driven UART and a D-cache remain |
+| 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
+| 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot |
+| 6 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
+| 7 | Close the boot path — the SD card | the only untested link in the boot chain — and the only phase nothing else is waiting on |
 
 Phase 1 is first because it replaces the machine every later phase builds on,
 and is cheaper to do before they widen the surface it has to preserve — but it
 is the largest thing on the list by a wide margin, and `docs/roadmap.md` is
 specific about what it requires and what must not regress while it happens.
-Phase 2 needs a card of 32 GB or less and about five minutes.
+Phase 7 needs a card of 32 GB or less and about five minutes. It is last
+because nothing else is blocked by it — every hardware run preloads the program
+into the bitstream and that works — not because it is hard.
 
 One known defect is open and unscheduled: the intermittent `ISA-TIMEOUT` under
 `make verify`. It self-reports rather than hanging silently now, which is not

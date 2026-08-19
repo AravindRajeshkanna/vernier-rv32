@@ -166,7 +166,7 @@ that is already waiting.
 **What is worth doing next in this phase is widening the front end**, and that
 is not a change to `core_ooo.v`: `imem_addr`/`imem_rdata` are a single word,
 `cpu_wb.v` holds a one-entry fetch buffer, and it reaches the interconnect and
-`wb_ram.v`'s port structure. An instruction cache — currently Phase 4 — is the
+`wb_ram.v`'s port structure. An instruction cache — currently Phase 3 — is the
 other half of the same answer.
 
 Stage 1c below revises this. Measuring the stalls rather than reasoning about
@@ -285,10 +285,10 @@ fetch-bound**, and it is evidence by construction rather than by inference:
 and its forwarding are several times the logic of the store buffer, and this
 experiment predicts the same non-result for them — they remove back-end stalls
 that the front end is already covering. The ordering that follows from the
-measurement is: instruction cache first (Phase 4), then finish 1c against a
+measurement is: instruction cache first (Phase 3), then finish 1c against a
 machine that can actually feed it.
 
-**That was done, and it was right.** The I-cache is in Phase 4 below: 1.79× on
+**That was done, and it was right.** The I-cache is in Phase 3 below: 1.79× on
 CoreMark, fetch starvation down 90%, and stage 1b's dual issue going from 47
 pairs to 19,872 without a line of it changing. The load-use stall this stage
 measured at 41 cycles is now 27,211, exactly as §18 predicted — it was always
@@ -380,26 +380,7 @@ external memory, caches and a debug module to the surface it has to preserve.
 
 ---
 
-## Phase 2 — Close the boot path
-
-**The SD card is the only part of the boot chain that has never worked on
-hardware**, and it is by a wide margin the cheapest open question in the
-project.
-
-A 64 GB SDXC card never answers CMD0. That is permitted — SPI mode is optional
-above 32 GB — but it has not been distinguished from a wiring fault, because no
-smaller card has been tried. `BOARD=ulx3s-cmd0` builds a 60-flip-flop probe,
-proven against the card model by `make sim_cmd0`, that answers it in seconds.
-
-Until this closes, every hardware run depends on preloading the program into
-the bitstream, which is a bring-up crutch rather than a boot path.
-
-**Done when:** a card ≤32 GB answers CMD0, and `BOARD=ulx3s85` boots the
-acceptance test off the card rather than out of block RAM.
-
----
-
-## Phase 3 — Break the memory ceiling
+## Phase 2 — Break the memory ceiling
 
 **64 KB of block RAM is what stands between this and anything Linux-shaped**,
 and it is also what forces the firmware to stay as small as it is. 256 KB costs
@@ -410,14 +391,16 @@ no memory controller. `rtl/soc/wb_ram.v` is the seam, and it is deliberately
 shaped for this: everything above it speaks Wishbone and knows only a base
 address and a size. LiteDRAM via LiteX is the well-trodden path.
 
-This phase blocks Phase 5 entirely and constrains Phase 3.
+This phase blocks Phase 5 entirely — `fw_jump.bin` is 521 KB and there is
+nowhere to put it — and constrains Phase 3, because how big a data cache wants
+to be depends on what is behind it.
 
 **Done when:** the SoC runs a program larger than 64 KB from external memory,
 and `sim_ramboot`'s 64 KB assumption is no longer the binding constraint.
 
 ---
 
-## Phase 4 — Make it fast enough to be interesting
+## Phase 3 — Make it fast enough to be interesting
 
 Every fetch and every load goes to the bus, and the interconnect is a shared
 bus rather than a crossbar, so a load costs the fetch behind it a cycle.
@@ -491,7 +474,7 @@ EEMBC-certified scores.
 
 ---
 
-## Phase 5 — Video out
+## Phase 4 — Video out
 
 The framebuffer works and is verified by capturing a frame off the scan-out and
 comparing it back (`make sim_video`), and the CPU's path to it is covered on
@@ -506,7 +489,7 @@ the framebuffer.
 
 ---
 
-## Phase 6 — Run software this project did not write
+## Phase 5 — Run software this project did not write
 
 OpenSBI **builds** for this core and does not **boot** on it.
 [software/opensbi/README.md](../software/opensbi/README.md) is precise about
@@ -521,7 +504,7 @@ sooner: there is a bus, a timer, an interrupt controller and storage.
 
 ---
 
-## Phase 7 — Debug infrastructure
+## Phase 6 — Debug infrastructure
 
 No JTAG TAP, no RISC-V Debug Module, so debugging is UART `printf` and the
 loud trap handler. [docs/debug.md](debug.md) is honest about what that costs.
@@ -529,6 +512,33 @@ loud trap handler. [docs/debug.md](debug.md) is honest about what that costs.
 This is the phase that makes every other phase cheaper, which is an argument
 for doing it earlier than its position here suggests. It is placed after the
 others because none of them are blocked by it.
+
+---
+
+## Phase 7 — Close the boot path
+
+Moved to last, and not because it got harder. This file orders phases by what
+each one unblocks, and nothing above is blocked by the SD card: every hardware
+run preloads the program into the bitstream, and that works. It is the only
+phase whose absence costs convenience rather than capability.
+
+**The SD card is the only part of the boot chain that has never worked on
+hardware**, and it is by a wide margin the cheapest open question in the
+project — which is the argument for doing it out of order, below.
+
+A 64 GB SDXC card never answers CMD0. That is permitted — SPI mode is optional
+above 32 GB — but it has not been distinguished from a wiring fault, because no
+smaller card has been tried. `BOARD=ulx3s-cmd0` builds a 60-flip-flop probe,
+proven against the card model by `make sim_cmd0`, that answers it in seconds.
+
+Until this closes, every hardware run depends on preloading the program into
+the bitstream, which is a bring-up crutch rather than a boot path. That is the
+argument for doing it early despite its position: a crutch that works is still
+a crutch, and the phases above are all easier to test on hardware without
+one.
+
+**Done when:** a card ≤32 GB answers CMD0, and `BOARD=ulx3s85` boots the
+acceptance test off the card rather than out of block RAM.
 
 ---
 
