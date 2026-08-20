@@ -918,15 +918,62 @@ the split and lists what is missing: a platform port for console, timer and
 IPI glue, and a way to get a 521 KB `fw_jump.bin` onto the board.
 
 **The memory half of that is answered.** Phase 2's SDRAM is proven on silicon
-and reaches 16 MB, which is thirty times what `fw_jump.bin` needs. What is not
-answered is *loading* it there: a bitstream initialises block RAM at FPGA
-configuration time and SDRAM comes up empty, so this now waits on a boot path
-(Phase 7) or a UART loader rather than on memory that does not exist.
+and reaches 16 MB, which is thirty times what `fw_jump.bin` needs — and the
+loader question is answered too: `software/soc/uartload.py` sends an image
+over the serial line into SDRAM and the boot ROM runs it from there, verified
+on a board with a 99 KB program. Neither memory nor a way to fill it is a
+blocker any more.
 
 FreeRTOS or Zephyr is the realistic intermediate milestone, and is reachable
 sooner: there is a bus, a timer, an interrupt controller and storage.
 
 **Done when:** OpenSBI prints its banner and hands off to an S-mode payload.
+
+### The debug loop had to be fixed first
+
+Everything under `sim/tb_*.v` runs on Icarus, at about **11.3 thousand cycles
+per second** on this SoC. Every test in the suite fits comfortably inside
+that; the longest, `sim_sdramboot`, is 2.1 M cycles in three minutes.
+
+A Linux boot does not fit. It is order 10⁸ cycles — **seven hours or more per
+attempt** — on a bring-up whose characteristic failure is a silent hang with
+no output at all, where the only way forward is to look at a waveform and try
+again. One attempt per working day is not a debug loop.
+
+So `soc_top` is now built under Verilator as well (`sim/verilator_soc.cpp`),
+measured at **4.44 M cycles/s** on the same image and core: roughly **390×**,
+turning that seven hours into about a minute. This is the cheapest thing on
+the whole Phase 5 list and it multiplies everything after it, which is why it
+was done before any of the RTL below.
+
+Verilator cannot run `sim/sdram_model.v` — that model is written in
+nanoseconds, with `#T_AC_NS` on the data path — so the harness carries a C++
+port, and there are now two memory models that could disagree. A fast
+simulator that quietly lies is worse than a slow one that does not, so
+`make verilator_check` runs `sim_sdramboot` under both and requires the cycle
+counts to match — to within the one cycle the two testbenches' verdict
+watching differs by, which `sim/verilator_compare.py` justifies at length —
+along with the refresh counts and every byte of program output, both exactly.
+`sim/sdram_model.v` stays the authority; the port is checked against it.
+
+### What is actually left, for Linux specifically
+
+Beyond OpenSBI's platform port, in rough order of how much RTL each needs:
+
+1. **The page-table walkers cannot reach SDRAM.** They sit on `wb_ram.v`'s
+   second block RAM port, and an SDRAM has no second port. Page tables for a
+   real kernel have to live in DRAM, so the walkers need to become bus
+   masters. This is the largest of the three.
+2. **`mip.SEIP` is hardwired to zero and the PLIC has one M-mode context.**
+   Linux takes external interrupts in S-mode. The PLIC also puts
+   threshold/claim at `0x3000`/`0x3004` rather than the spec's per-context
+   `0x200000` stride, which a stock driver will not find.
+3. **The interconnect decodes `addr[31:24]`** — 16 MB per slave, against a
+   32 MB part.
+
+Then: an ns16550-compatible UART (or a driver that is not), a device tree, an
+rv32ima kernel with no `C`, and an initramfs. Hardware PTE A/D auto-update is
+absent and Linux does not strictly need it to boot.
 
 ---
 

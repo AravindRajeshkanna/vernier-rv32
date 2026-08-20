@@ -14,7 +14,7 @@
 #   make coremark     -> build and run CoreMark on the SoC in simulation
 #   make wave         -> run sim, then open the waveform (surfer)
 #   make wave_soc     -> same for the SoC simulation
-#   make verilator    -> build and run with Verilator instead
+#   make verilator    -> build and run rtl/top.v with Verilator instead
 #   make software     -> compile software/ with riscv64-unknown-elf-gcc
 #   make sim_software -> build software/ and run it, showing real UART output
 #   make clean
@@ -38,6 +38,15 @@
 #   make sim_uartload  -> the boot ROM's UART loader: a host sends a program
 #                         over the serial line and the SoC runs it from SDRAM
 #   make uartload-host -> the host script against a fake board on a pty
+#
+# The same SoC under Verilator: 4.44 M cycles/s against Icarus's 11.3 k, a
+# measured 390x. Built for the Linux bring-up, where a boot is order 10^8
+# cycles and the Icarus path would be seven hours per attempt:
+#
+#   make verilator_soc       -> build the harness (sim/verilator_soc.cpp)
+#   make verilator_sdramboot -> what sim_sdramboot runs, in about half a second
+#   make verilator_check     -> run it under *both* and require the cycle
+#                               counts, refresh counts and output to match
 
 IVERILOG      = iverilog
 # Which CPU to build the SoC around. `inorder` is rtl/cpu_core.v, the design
@@ -125,6 +134,7 @@ SOC_HDRS = software/soc/soc.h software/soc/console.h software/soc/trap.h
 SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
+        verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         sim_uartload uartload-host \
@@ -170,6 +180,98 @@ verilator:
 		$(RTL) sim/verilator_main.cpp \
 		--Mdir obj_dir
 	cd sim && ../obj_dir/Vtop
+
+# =====================================================================
+# The SoC under Verilator
+# =====================================================================
+#
+# `verilator` above builds rtl/top.v - the flat, Harvard, zero-latency core
+# on its own, for 100 cycles. That was the whole Verilator story until now,
+# and it could not run the SoC at all, which meant every SoC-level simulation
+# went through Icarus at about 11.3 thousand cycles a second.
+#
+# That rate is fine for the tests in this file - the longest is under four
+# minutes. It is not fine for the next milestone: a Linux boot is order 10^8
+# cycles, which is seven hours or more per attempt under Icarus, on a
+# bring-up whose characteristic failure is a silent hang with no output at
+# all. Measured here at 4.44 M cycles/s. See sim/verilator_soc.cpp.
+#
+# The Icarus path stays exactly as it is, and stays the authority: `verify`
+# runs sim_sdram and sim_sdramboot against sim/sdram_model.v, whose timing is
+# in nanoseconds and which is the definition of what the part accepts. The
+# C++ model in the harness is a port of it, and `verilator_check` below is
+# what keeps the two honest.
+#
+# Per-core output directory, for the reason `verify_ooo` deletes sim/*.out:
+# a built simulation does not record which core it was built with, and
+# running a stale one reports the in-order core's result under the other
+# core's name.
+VERILATOR_MDIR = obj_dir_soc_$(CORE)
+VERILATOR_BIN  = $(VERILATOR_MDIR)/Vsoc_top
+
+# Tracing is a build-time decision in Verilator, and it costs speed even when
+# no VCD is being written - so it is off by default and `VTRACE=1` turns it
+# on, at which point `+dump` works. The reason any of this is opt-in is a
+# 228 GB disk that unconditional dumping filled to 100%; see DUMP above.
+VTRACE ?=
+ifeq ($(VTRACE),1)
+VERILATOR_TRACE = --trace
+else
+VERILATOR_TRACE =
+endif
+
+# -O3 on the generated model, and the lint left at full strength: soc_top
+# currently verilates with zero warnings and the point of a second front end
+# is to keep finding things Icarus does not.
+#
+# The parameters are set here rather than in a testbench because Verilator
+# has no testbench to set them in. These match sim/tb_sdramboot.v: the
+# board's 64 KB of block RAM, and a reset vector pointing straight at SDRAM
+# so the first instruction fetch lands on a controller that is still 100 us
+# into its power-up sequence and cannot answer.
+VERILATOR_PARAMS = -GRAM_BYTES=65536 -GRESET_PC=0x90000000
+
+# CORE_DEFINES is `-DCORE_OOO` or empty, and Verilator spells `define the
+# same way Icarus does, so the same variable serves both front ends.
+VERILATOR_FLAGS = --cc --exe --build -j 4 -O3 -CFLAGS "-O2" \
+                   --top-module soc_top $(VERILATOR_TRACE) \
+                   $(CORE_DEFINES) $(VERILATOR_PARAMS) --Mdir $(VERILATOR_MDIR)
+
+$(VERILATOR_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
+	$(VERILATOR) $(VERILATOR_FLAGS) $(SOC_RTL) \
+	    sim/verilator_soc.vlt sim/verilator_soc.cpp
+
+verilator_soc: $(VERILATOR_BIN)
+
+# Extra plusargs for a one-off run: +quiet, +maxcycles=N, +sdram_words=N,
+# +dump (which needs VTRACE=1). sim/verilator_soc.cpp lists them all.
+VERILATOR_PLUSARGS ?=
+
+# The same program sim_sdramboot runs, in the same configuration, out of the
+# same image - and, being the same design, it must produce the same answer.
+verilator_sdramboot: sim/sdramimage.hex $(VERILATOR_BIN)
+	cd sim && ../$(VERILATOR_BIN) +sdram=sdramimage.hex $(VERILATOR_PLUSARGS)
+
+# ---- the check that makes the fast path trustworthy ----
+#
+# A second simulator is only worth having if it agrees with the first. This
+# compares sim_sdramboot's two runs on the cycle count, the refresh count and
+# every byte the program printed - not merely that both say PASS, which two
+# quite different machines could do.
+#
+# Matching cycle counts mean the C++ SDRAM model returns data on the same
+# edges the Verilog one does and nothing is being simulated approximately. It
+# is the only check here that can catch a port of a memory model being subtly
+# early. The cycle count is allowed to differ by one, for a reason that lives
+# in the testbenches rather than the design and that
+# sim/verilator_compare.py sets out in full; everything else must match
+# exactly.
+#
+# It reuses the Icarus run rather than repeating it - that run is three
+# minutes and `verify` does it anyway.
+verilator_check: sim_sdramboot $(VERILATOR_BIN)
+	@cd sim && ../$(VERILATOR_BIN) +sdram=sdramimage.hex | tee verilator_soc.log
+	@python3 sim/verilator_compare.py sim/sdramboot.log sim/verilator_soc.log
 
 software: sim/firmware_imem.hex sim/firmware_dmem.hex
 
@@ -573,8 +675,11 @@ sdramimage: sim/sdramimage.hex
 sim/sim_sdramboot.out: sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
 
+# The log is kept because `verilator_check` compares against it rather than
+# running Icarus a second time - this test is three minutes and `verify` runs
+# both targets. sim/*.log is gitignored.
 sim_sdramboot: sim/sdramimage.hex sim/sim_sdramboot.out
-	cd sim && $(VVP) sim_sdramboot.out $(VVP_DUMP)
+	cd sim && $(VVP) sim_sdramboot.out $(VVP_DUMP) | tee sdramboot.log
 
 # Everything that can gate a change, in rough order of how fast it fails.
 # Rebuilds from scratch on purpose: the simulation binaries do not encode
@@ -586,11 +691,13 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
-        sim_sdram sim_sdramboot sim_sdramprobe sim_sdramcheck sim_uartload \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_uartload \
         uartload-host check-program isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
+	       obj_dir_soc_inorder obj_dir_soc_ooo sim/wave_verilator_soc.vcd \
+	       sim/sdramboot.log sim/verilator_soc.log \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \
 	       software/firmware.elf software/firmware_text.bin software/firmware_data.bin \
 	       sim/sim_soc.out sim/wave_soc.vcd sim/bootrom.hex sim/card.hex \

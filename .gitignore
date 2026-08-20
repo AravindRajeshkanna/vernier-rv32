@@ -20,6 +20,8 @@ sim/*.elf
 
 # Build artifacts
 obj_dir/
+# Verilator's SoC harness, one directory per core (see VERILATOR_MDIR)
+obj_dir_soc_*/
 software/firmware.elf
 software/firmware_text.bin
 software/firmware_data.bin

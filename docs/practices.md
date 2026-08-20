@@ -657,6 +657,56 @@ the protocol, and all three were found by making a simulation actually run it.
 
 ---
 
+## 25. A correction fitted to one measurement is a guess with a number on it
+
+The SoC now runs under Verilator as well as Icarus, and the check that makes
+the fast one trustworthy is that both must produce the **same cycle count** on
+the same program — a far sharper instrument than both saying `PASS`, which two
+quite different machines could do.
+
+On the in-order core the two came out one cycle apart: 2,108,456 against
+2,108,457. That is a real difference and it needed an explanation, so I wrote
+one. Icarus watches the verdict word from a process that resumes in the active
+region, before the non-blocking write has landed, while a cycle-based harness
+sees it immediately; the harness should therefore read it one cycle stale. I
+subtracted one, the counts matched exactly, and I wrote a paragraph of comment
+explaining the scheduling semantics that made it so.
+
+Then the same check ran against the wide core:
+
+| | Icarus | Verilator, raw | offset |
+|---|---|---|---|
+| in-order | 2,108,456 | 2,108,457 | +1 |
+| wide | 1,688,890 | 1,688,890 | **0** |
+
+The offset is not a constant. The mechanism I had described so confidently
+predicted +1 in both cases, and the correction I built on it took a clean run
+on the wide core and reported it as a failure — a *false* one, in the check
+whose entire job is to be believed.
+
+The tell was there before the second measurement: **the correction was derived
+from the only data point it was ever validated against.** One sample, one
+free parameter, an exact fit — and an exact fit to one point is not evidence,
+it is arithmetic. Section 23 says that when the bench and your reasoning
+disagree the bench wins. This is the harder case, where the bench *agreed*,
+because there was only enough of it to agree with.
+
+**The rule.** If you cannot derive a discrepancy, do not model it — bound it,
+and write down why the bound cannot hide the thing you are actually looking
+for. `sim/verilator_compare.py` now allows the cycle counts to differ by one
+and requires everything else to match exactly, with the justification stated:
+a memory model that is early or late changes the stall on every one of ~10⁵
+SDRAM accesses, so it moves the total by thousands of cycles — the one case
+actually tried, loading the read pipeline at `cl` instead of `cl-1`, did not
+shift the count at all, it hung the program. Meanwhile the refresh count must
+match exactly, and at one refresh per ~196 cycles that pins the two runs
+together far tighter than the cycle counter's one-cycle slack.
+
+A tolerance you can justify beats an offset you fitted. It is also honest
+about what you know, which is what the next person needs.
+
+---
+
 ---
 
 ## Conventions

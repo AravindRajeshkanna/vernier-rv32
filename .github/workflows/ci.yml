@@ -152,6 +152,8 @@ jobs:
 
       - uses: ./.github/actions/iverilog
 
+      - uses: ./.github/actions/verilator
+
       - uses: ./.github/actions/riscv-toolchain
 
       # sim/program.hex is committed so the rtl job needs no toolchain; this
@@ -199,6 +201,26 @@ jobs:
         run: make sim_sdramboot | tee sdramboot.log
       - name: Check SDRAM boot verdict
         run: grep -q "SDRAMBOOT TEST PASSED" sdramboot.log
+
+      # The same run, same image, same core, under the other simulator - and
+      # then the two are required to agree on the cycle count, the refresh
+      # count and every byte the program printed.
+      #
+      # This is what makes the Verilator harness trustworthy enough to debug
+      # the Linux bring-up in, where it will be the only practical way to run
+      # 10^8 cycles. "Both said PASS" would not be enough: two quite different
+      # machines can both finish a self-checking program. Matching cycle
+      # counts mean the C++ SDRAM model returns read data on the same edges
+      # sim/sdram_model.v returns it on.
+      #
+      # Both this and `make verilator_check` compare against the Icarus run
+      # that has already happened rather than repeating it - that run is
+      # three minutes. The difference is only that make can express the
+      # dependency and a workflow step cannot, so the log is named here.
+      - name: The same run under Verilator
+        run: make verilator_sdramboot | tee verilator.log
+      - name: Both simulators agree, cycle for cycle
+        run: python3 sim/verilator_compare.py sdramboot.log verilator.log
 
       # The image `BOARD=ulx3s85-sdramcheck` bakes into a bitstream, run in
       # the configuration the board has: 64 KB of block RAM, program preloaded,
