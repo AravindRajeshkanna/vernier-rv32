@@ -518,21 +518,146 @@ breakdown is the next thing worth acting on in this phase.
 
 ## Phase 2 — Break the memory ceiling
 
-**64 KB of block RAM is what stands between this and anything Linux-shaped**,
-and it is also what forces the firmware to stay as small as it is. 256 KB costs
-244 ECP5 block RAMs, which no ECP5 has.
+**64 KB of block RAM is what stood between this and anything Linux-shaped.**
+256 KB costs 244 ECP5 block RAMs, which no ECP5 has, and the ULX3S's 32 MB of
+SDRAM was unreachable because there was no memory controller.
 
-The ULX3S carries 32 MB of SDRAM that nothing here can reach, because there is
-no memory controller. `rtl/soc/wb_ram.v` is the seam, and it is deliberately
-shaped for this: everything above it speaks Wishbone and knows only a base
-address and a size. LiteDRAM via LiteX is the well-trodden path.
+There is one now. `rtl/soc/wb_sdram.v` is a Wishbone slave in front of a
+16-bit SDR SDRAM, and `make sim_sdramboot` runs the SoC out of it:
 
-This phase blocks Phase 5 entirely — `fw_jump.bin` is 521 KB and there is
-nowhere to put it — and constrains Phase 3, because how big a data cache wants
-to be depends on what is behind it.
+```
+=== SDRAM acceptance test ===
+Running from 0x90000000 .. 0x90080228
+Loaded image is 99 KB, against 64 KB of block RAM
 
-**Done when:** the SoC runs a program larger than 64 KB from external memory,
-and `sim_ramboot`'s 64 KB assumption is no longer the binding constraint.
+  code is above SDRAM_BASE      ok
+  image exceeds block RAM       ok
+  96 KB .rodata reads back      ok
+  256 KB unique addresses       ok
+  byte lanes                    ok
+  halfword lanes                ok
+  block RAM still reachable     ok
+
+SDRAM-TEST: PASS
+```
+
+### Hand-written, not LiteDRAM
+
+This file previously said "LiteDRAM via LiteX is the well-trodden path", and
+for DDR it would be the only sane one. This is *SDR*: no read levelling, no
+write levelling, no calibration, no PHY training — a command truth table and
+six timing numbers. Against that, LiteX is a Python build dependency producing
+a blob this repo could not simulate against its own model, could not put
+through CI without installing a generator, and could not gate. The controller
+and its model together are about 750 lines that every existing verification
+layer reaches.
+
+| | |
+|---|---|
+| `rtl/soc/wb_sdram.v` | the controller: power-up, one open row, burst-of-2, byte lanes via DQM, refresh every 7.8 µs |
+| `sim/sdram_model.v` | a 32 MB part that **refuses illegal protocol** rather than tolerating it |
+| `sim/tb_sdram.v` | `make sim_sdram` — the controller at the bus, no CPU, no toolchain |
+| `sim/tb_sdramboot.v` | `make sim_sdramboot` — the SoC executing from SDRAM |
+| `software/soc/sdramtest.c` + `sdramtable.S` | a program that **cannot** be a block RAM program |
+
+### The model is the interesting half
+
+A permissive memory model would let almost any controller pass, because every
+interesting SDRAM bug is a *protocol* bug and none of them corrupt data in a
+way a write-then-read test notices in simulation. They corrupt data on a
+board, at temperature, weeks later. So the model checks tRCD, tRP, tRC, tRFC,
+tMRD, the 100 µs power-up interval, the refresh interval, row ownership, burst
+containment and the A[10] auto-precharge bit, and it takes CAS latency and
+burst length **from the mode register the controller actually programmed**
+rather than from what the model would prefer.
+
+Four deliberate breaks, each red:
+
+| Break | What it printed |
+|---|---|
+| Power-up wait cut from 100 µs to 10 µs | `command issued before the 100 us power-up interval` |
+| Refresh never becomes due | `no AUTO REFRESH within 2x tREFI - rows are losing data` |
+| Read captured one cycle early | `[00000000] = beefzzzz, expected deadbeef` |
+| High beat masked by the low byte lanes | `[00000200] = 11xx3399, expected 11223399` |
+
+The third is the one worth looking at twice: the low halfword arrives in the
+high position and the second capture finds the bus already tristated. That is
+what a CAS-latency error looks like, and no amount of staring at a controller
+finds it as fast as one line of output does.
+
+tRAS and tWR pass with margin and could not be made to fire by breaking the
+controller, so they were checked the other way round — raised past what the
+controller does, both fire. A check that cannot go red is not a check.
+
+**And the model still did not find the one real bug.** The refresh interval
+timer and the state machine both wrote `refresh_due`; the state machine's
+clear won, so a tick landing on the exact cycle a refresh was issued dropped
+the newly-owed refresh. One cycle in 195, found by reading the controller. A
+model watches the wire, and on any given run a refresh did arrive in time —
+it has no opinion about whether the controller meant to and lost track. See
+`docs/practices.md` §22.
+
+### Why a 96 KB table rather than a 256 KB memory test
+
+Because a memory test would have passed on block RAM. `wb_interconnect.v`
+decodes `addr[31:24]` alone, so the whole 16 MB window reaches whichever slave
+answers, and a slave indexes with only the address bits its size needs — a
+sweep over 256 KB of *block RAM* completes and reports success while quietly
+writing the same 64 KB four times (`sim/tb_ramboot.v`'s header is about
+exactly this). Only a program whose own image exceeds block RAM cannot be a
+block RAM program, so `software/soc/sdramtable.S` is 96 KB of `.rodata` where
+each word holds its own byte offset. It checks itself, it needs no generator
+and no committed blob, and it makes the link fail rather than shrink.
+
+### What it costs, and the one open row
+
+| | |
+|---|---|
+| Row hit | ~6 cycles |
+| Row miss | ~8 cycles, one precharge and one activate |
+| Refresh | every 195 cycles at 25 MHz, ~4 cycles |
+
+One open row, not four per bank. Per-bank open rows would remove the
+precharge from an interleaved pattern — and `rtl/soc/cpu_wb.v` now holds an
+instruction cache and a data cache that between them absorb 96.3% of loads and
+the whole of every loop, so what reaches this controller is mostly sequential
+cache misses. That is an argument for measuring before building it, which is
+this phase's own lesson applied to itself, not an argument that it would not
+help.
+
+### Two things this deliberately did not do
+
+**SDRAM sits at 0x9000_0000 alongside block RAM, not instead of it.**
+`wb_ram.v` carries the two page-table walker ports on its second block RAM
+port. An SDRAM has no second port, so putting the walkers there means
+arbitrating three requesters into one controller and running every Sv32 test
+through SDRAM latency. Keeping both memories made this an addition that cannot
+regress anything — the whole existing suite is untouched and green — and
+leaves **Sv32 page tables in SDRAM** as the next step, named rather than
+attempted in the same change.
+
+**The window is 16 MB, not 32.** One base byte is one 16 MB slave, because the
+interconnect decodes `addr[31:24]`. That is 256× block RAM and 30× the 521 KB
+`fw_jump.bin` that Phase 5 needs, so it is not the binding constraint on
+anything — but the part is 32 MB and half of it is unreachable until that
+decode grows a per-slave mask.
+
+### Not on hardware
+
+`fpga/soc_fpga.v` brings the pins out. `fpga/ulx3s_top.v` **does not route
+them**, and that is a decision: every pin assignment in that file was
+confirmed on silicon, its header says so, and transcribing thirty ball numbers
+out of a datasheet would put unverified lines in the one file whose value is
+that it contains none. The wiring needed is written out in a comment there,
+along with the part most likely to need attention on a real board — the SDRAM
+clock's phase relationship to the internal clock, which at a 40 ns period is
+forgiving enough that driving it straight from the oscillator *usually* works,
+and "usually" is not a measurement.
+
+**Done when:** ~~the SoC runs a program larger than 64 KB from external
+memory~~ — done in simulation, above. **Still open:** the same program on a
+board, and Sv32 out of SDRAM.
+
 
 ---
 

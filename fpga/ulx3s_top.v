@@ -67,6 +67,44 @@ module ulx3s_top #(
     // General-purpose header, carrying the SoC's GPIO.
     inout  wire [13:0] gp,
     inout  wire [13:0] gn
+
+    // ---- what is deliberately NOT here: the SDRAM pins ----
+    //
+    // `rtl/soc/wb_sdram.v` exists, is verified against `sim/sdram_model.v`
+    // and runs a 102 KB program in `make sim_sdramboot`, and
+    // `fpga/soc_fpga.v` brings its pins out. This file does not route them,
+    // and that is a decision rather than an omission.
+    //
+    // Every pin assignment in this file and in fpga/constraints/ulx3s.lpf was
+    // confirmed on silicon - the header above says so, and the one exception
+    // (the SD pins, wired differently on a v1.7 board) is called out because
+    // a wrong pin here does not fail loudly. It builds, it loads, and it does
+    // not work. Adding thirty ball numbers transcribed from a datasheet
+    // instead of read off a working board would put that claim in the same
+    // file as thirty unverified lines, and the next person would have no way
+    // to tell which was which.
+    //
+    // To wire it, on a board, with the board's own constraint file to hand:
+    //
+    //   1. add these ports here and pass them to soc_fpga.v -
+    //        sdram_clk, sdram_cke, sdram_csn, sdram_wen, sdram_rasn,
+    //        sdram_casn, sdram_a[12:0], sdram_ba[1:0], sdram_dqm[1:0],
+    //        inout sdram_d[15:0]
+    //   2. `assign sdram_d = sdram_dq_oe ? sdram_dq_o : 16'bz;` and feed
+    //      `sdram_d` back as `sdram_dq_i` - the same tristate shape the GPIO
+    //      header uses below, and the only place in the design that needs one
+    //   3. copy the matching LOCATE/IOBUF lines out of the ULX3S's own
+    //      `ulx3s_v20.lpf` into fpga/constraints/ulx3s.lpf
+    //   4. `sdram_clk` is the part that will not be right first time. It
+    //      wants a phase relationship to the internal clock that makes the
+    //      round trip land inside the setup window; at 25 MHz a 40 ns period
+    //      is forgiving enough that driving it straight from `clk_25mhz`
+    //      usually works, and "usually" is not a measurement. A DDR output
+    //      register or a PLL phase tap is the fix if it does not.
+    //
+    // Until someone does that with a board attached, docs/roadmap.md's
+    // Phase 2 is complete in simulation and open on hardware, which is what
+    // it now says.
 );
     // ---- ESP32 hold-off ----
     // On a ULX3S the ESP32 shares the board's power control. Leaving this pin

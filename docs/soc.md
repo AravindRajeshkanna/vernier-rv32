@@ -69,7 +69,8 @@ of how little of it it uses.
 | `0x0500_0000` | GPIO | 20 B | 0 |
 | `0x0600_0000` | SPI | 12 B | 0 → many |
 | `0x0700_0000` | Framebuffer | 75 KB | 1 |
-| `0x8000_0000` | Main RAM | 64 KB (FPGA) / 256 KB (sim) | 1 |
+| `0x8000_0000` | Main RAM (block) | 64 KB (FPGA) / 256 KB (sim) | 1 |
+| `0x9000_0000` | External SDRAM | 16 MB of a 32 MB part | ~6 on a row hit |
 
 `software/soc/soc.h` is the single source of truth for software and **must be
 kept in step by hand** with `soc_top.v`'s `s_base` table, `dts/soc.dts`, and
@@ -92,6 +93,27 @@ input** — the build scripts refuse to start without it, because the failure
 mode otherwise is a board that comes up and does nothing.
 
 `RESET_PC` is `0x0000_0000`, so the CPU starts here.
+
+### `wb_sdram` — external SDRAM, `0x9000_0000`
+
+A Wishbone slave in front of a 16-bit SDR SDRAM: 4 banks x 8192 rows x 512
+columns, which is 32 MB on a ULX3S. A 32-bit bus word is two SDRAM accesses,
+issued as one burst-of-2 command; byte lanes become DQM. The controller keeps
+**one** row open, refreshes every 7.8 µs, and takes about six cycles on a row
+hit and eight on a miss.
+
+It sits *beside* block RAM rather than replacing it, because `wb_ram.v` carries
+the two page-table walker ports on its second block RAM port and an SDRAM has
+no second port. Sv32 page tables therefore still have to live in block RAM.
+See docs/roadmap.md Phase 2 for what that leaves open.
+
+The window is 16 MB rather than the part's 32, because one base byte is one
+16 MB slave under this decode.
+
+Verified two ways: `make sim_sdram` drives the controller directly against
+`sim/sdram_model.v`, which refuses illegal protocol rather than tolerating it,
+and `make sim_sdramboot` runs the whole SoC out of it on a 99 KB program that
+could not have been loaded into block RAM at all.
 
 ### `wb_ram` — main memory, `0x8000_0000`
 
