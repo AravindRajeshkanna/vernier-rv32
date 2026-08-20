@@ -3,8 +3,9 @@
 **The design builds to a ULX3S bitstream against that board's real pinout,
 closes timing at 25 MHz — 27.41 MHz on an 85F as of the data cache and the
 SDRAM controller, 30.77 MHz before them — and has been loaded onto an
-LFE5U-85F, where it boots, passes its acceptance test, and reads and writes
-256 KB of external SDRAM.** Those are different claims, and two of them are
+LFE5U-85F, where it boots, passes its acceptance test, and runs a 99 KB
+program out of external SDRAM that was sent to it over the serial line.**
+Those are different claims, and two of them are
 still open:
 
 | Artifact | Status |
@@ -23,7 +24,7 @@ still open:
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
 | **SDRAM pins** | ✅ **confirmed on silicon** — 256 KB of unique addresses, byte and halfword lanes, refresh |
 | **SDRAM as data, on a board** | ✅ **`SDRAM-CHECK: PASS`** — failed first at one word in a thousand; see the clock-phase diagnosis below |
-| Running *code* from SDRAM on a board | ❌ nothing can load it there — needs a boot path, see below |
+| Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
 ## The hardware run
@@ -434,7 +435,6 @@ make sim/sdramimage.hex        # builds software/soc/sdramtest.bin on the way
 BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh
 openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
 
-pip install pyserial
 ./software/soc/uartload.py /dev/cu.usbserial-XXXXXXX software/soc/sdramtest.bin
 # then press reset on the board
 ```
@@ -456,12 +456,53 @@ knocking - press reset on the board
   accepted; the board is running it
 ```
 
+Verbatim from a ULX3S v3.1.8 / LFE5U-85F, `/dev/cu.usbserial-D01595`:
+
+```
+102052 bytes -> 0x90000000 (SDRAM), CRC32 6C1A7DAD
+knocking - press reset on the board
+  ROM answered
+  sent 102052/102052 (100%)
+  accepted; the board is running it
+
+UART loader: 0x00018EA4 bytes at 0x90000000, CRC ok
+  starting program
+
+=== SDRAM acceptance test ===
+Running from 0x90000000 .. 0x90080228
+Loaded image is 99 KB, against 64 KB of block RAM
+
+  code is above SDRAM_BASE      ok
+  image exceeds block RAM       ok
+  96 KB .rodata reads back      ok
+  256 KB unique addresses       ok
+  byte lanes                    ok
+  halfword lanes                ok
+  block RAM still reachable     ok
+
+SDRAM-TEST: PASS
+```
+
+**That is Phase 2's "done when", on silicon**: a program larger than the whole
+block RAM, fetched and executed out of external memory. `0x18EA4` is 102,052
+bytes and matches what the host sent; the 96 KB of `.rodata` it checks is 96 KB
+that arrived over a serial line, went into SDRAM, and read back word for word.
+
 **A 500 KB image takes about 87 seconds** at 115200. It is stop-and-wait, one
 byte at a time, because `rtl/uart.v`'s receiver is one byte deep — see
 `docs/practices.md` §24 for why the chunked version that was twice as fast was
 also wrong.
 
-`make sim_uartload` runs this whole path in simulation and is gated in CI.
+`uartload.py` needs nothing but the standard library — it configures the port
+with `termios` directly. That is deliberate: it used to `import serial`, and
+`pip` not being on PATH, `pipx` putting the library somewhere nothing can
+import it, and `#!/usr/bin/env python3` picking a different interpreter from
+the one it landed in between them cost a bench session, at the exact moment
+somebody was trying to find out whether a *hardware* loader worked.
+
+Two tests, in the order they fail: `make uartload-host` runs the script against
+a fake board on a pty and needs no toolchain at all, and `make sim_uartload`
+runs the whole path against the real RTL. Both are gated in CI.
 
 ---
 

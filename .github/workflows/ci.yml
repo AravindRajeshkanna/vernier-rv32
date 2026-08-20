@@ -93,6 +93,15 @@ jobs:
       # underneath us. The model refuses illegal protocol outright, so this
       # step also covers tRCD, tRP, tRC, tRFC, the refresh interval and burst
       # containment without the log mentioning them.
+      # The UART loader's *host* half, against a fake board on a pty. Needs
+      # nothing but python3 - no toolchain, no simulator - and it is the only
+      # thing that tests software/soc/uartload.py, which is what somebody at a
+      # bench is actually running when they find out whether the loader works.
+      - name: UART loader host script
+        run: make uartload-host | tee uartloadhost.log
+      - name: Check host script verdict
+        run: grep -q "UARTLOAD HOST TEST PASSED" uartloadhost.log
+
       - name: SDRAM controller against the SDRAM model
         run: make sim_sdram | tee sdram.log
       - name: Check SDRAM controller verdict
