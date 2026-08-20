@@ -358,7 +358,7 @@ sim_cmd0:
 # cannot rot the same way. It does not re-test the SoC; sim_soc does that.
 sim_ulx3s: soc
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
-	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v
+	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v
 	cd sim && $(VVP) sim_ulx3s.out
 
 # =====================================================================
@@ -459,9 +459,9 @@ coremark: sim/sim_bench.out sim/coremark.hex
 #   BOARD=ulx3s-sdram        ./fpga/synth/synth_ecp5.sh
 #   BOARD=ulx3s85-sdramcheck ./fpga/synth/synth_ecp5.sh
 sim/sim_sdramprobe.out: sim/tb_ulx3s_sdram.v sim/sdram_model.v \
-                        fpga/ulx3s_sdram.v rtl/soc/wb_sdram.v
+                        fpga/ulx3s_sdram.v fpga/sdram_clk_out.v rtl/soc/wb_sdram.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ulx3s_sdram.v sim/sdram_model.v \
-	    fpga/ulx3s_sdram.v rtl/soc/wb_sdram.v
+	    fpga/ulx3s_sdram.v fpga/sdram_clk_out.v rtl/soc/wb_sdram.v
 
 sim_sdramprobe: sim/sim_sdramprobe.out
 	cd sim && $(VVP) sim_sdramprobe.out

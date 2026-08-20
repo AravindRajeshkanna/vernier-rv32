@@ -18,8 +18,9 @@
 // broken version the four GPIO checks below read `x`.
 `timescale 1ns/1ps
 module tb_ulx3s;
+    localparam CLK_PERIOD = 40;     // 25 MHz, the ULX3S oscillator
     reg clk = 0;
-    always #20 clk = ~clk;          // 25 MHz, the ULX3S oscillator
+    always #(CLK_PERIOD / 2) clk = ~clk;
 
     reg  [6:0] btn = 7'b0000010;    // btn[1] high = pressed = reset asserted
     wire [7:0] led;
@@ -62,6 +63,7 @@ module tb_ulx3s;
     wire [15:0] gpio_seen = DUT.SOC.SOC.GPIO.in_sync2;
 
     integer errors = 0;
+    reg     sdram_clk_ok;
 
     task check(input [511:0] what, input got, input want);
         begin
@@ -112,7 +114,24 @@ module tb_ulx3s;
         // (the part stays in standby and never accepts a command), and a data
         // bus held by the FPGA (the part can never drive read data back, which
         // looks exactly like a clock-phase problem and is not).
-        check("sdram_clk driven from the board oscillator", sdram_clk, clk);
+        // 180 degrees out, not aligned - fpga/sdram_clk_out.v, and the reason
+        // is a hardware failure rather than a preference. Asserted here so
+        // that quietly going back to an aligned clock is a failing test.
+        //
+        // Sampled a quarter period *after each edge*, so both phases are
+        // checked and neither sample can land on a transition. Comparing
+        // `sdram_clk` against `~clk` at a clock edge races the continuous
+        // assignment that produces it - the testbench reads the new `clk` and
+        // the old `sdram_clk` in the same time step - and that race reported
+        // a failure for a wrapper that was correct. Free-running samples at a
+        // quarter period did no better, because they drift onto an edge
+        // depending on when the check happens to start.
+        sdram_clk_ok = 1'b1;
+        @(posedge clk); #(CLK_PERIOD / 4);      // clk high, settled
+        if (sdram_clk !== 1'b0) sdram_clk_ok = 1'b0;
+        @(negedge clk); #(CLK_PERIOD / 4);      // clk low, settled
+        if (sdram_clk !== 1'b1) sdram_clk_ok = 1'b0;
+        check("sdram_clk is the board clock, inverted", sdram_clk_ok, 1'b1);
         check("sdram_cke asserted", sdram_cke, 1'b1);
         check("sdram_d released while not writing",
               DUT.sdram_dq_oe ? 1'b1 : (sdram_d === 16'bz), 1'b1);

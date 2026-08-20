@@ -88,7 +88,11 @@ module ulx3s_sdram #(
     wire [15:0] dq_o;
     wire        dq_oe;
     assign sdram_d   = dq_oe ? dq_o : 16'bz;
-    assign sdram_clk = clk;
+
+    // Same clock output as the SoC uses, from the same module on purpose: a
+    // probe that clocked the part differently would pass and prove nothing
+    // about the design it exists to de-risk.
+    sdram_clk_out SDCLK (.clk(clk), .sdram_clk(sdram_clk));
 
     reg  [31:0] wb_adr;
     reg  [31:0] wb_dat_w;

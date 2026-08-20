@@ -30,7 +30,7 @@ that make it a report about that specific build.
 | newlib `printf` on hardware | ✅ — was a `.data` init bug, not libc |
 | riscv-tests 79/82, Spike co-simulation 82/82, 4 formal proofs | ✅ in CI |
 
-Timing: **26.77 MHz on an 85F** against the board's 25 MHz, as of the data
+Timing: **27.41 MHz on an 85F** against the board's 25 MHz, as of the data
 cache and the SDRAM controller. It was 30.77 before those two; the 45F's
 28.78 predates them and has not been re-measured. See `docs/toolchain.md` §2.
 
@@ -67,7 +67,7 @@ And the constraints that do not relax while it happens:
   standing bar. `docs/practices.md` §1 applies with force here: a superscalar
   core that passes because the tests never create the hazard is the most
   expensive kind of test that cannot fail.
-- **Timing.** The design closes at **26.77 MHz** on an 85F — 7% margin over
+- **Timing.** The design closes at **27.41 MHz** on an 85F — 10% margin over
   the board's 25, down from 23% before the data cache and the SDRAM
   controller. The critical path now runs from the CSR write-enable decode to
   the ID/EX register file's load enable, 11.32 ns of logic against 26.03 ns of
@@ -486,7 +486,7 @@ the stall rather than removing it. The real numbers are lower.
 **Against that, the thing this stage costs.** 1d is a redesign of a
 2,000-line core with no independently verifiable piece (the section above);
 its wakeup/select loop is a classic critical path on a design that closes at
-26.77 MHz today, with 7% margin over the board's clock; and a physical register file plus a ROB land on a 45F that is
+27.41 MHz today, with 10% margin over the board's clock; and a physical register file plus a ROB land on a 45F that is
 already at 97% block RAM. Sixty lines in the bus adapter were worth 9.9%.
 
 **Stage 1d is therefore not scheduled.** Not "designed and deferred" — the
@@ -660,18 +660,27 @@ therefore the one a transcription would get wrong without noticing.
 
 | | Fmax | LUT | Block RAM |
 |---|---|---|---|
-| Full SoC (`BOARD=ulx3s85-sdramcheck`) | **26.77 MHz** — PASS at 25 | 20% | 51% |
-| The probe (`BOARD=ulx3s-sdram`) | 104.50 MHz | <1% | 0% |
+| Full SoC (`BOARD=ulx3s85-sdramcheck`) | **27.41 MHz** — PASS at 25 | 20% | 51% |
+| The probe (`BOARD=ulx3s-sdram`) | 108.83 MHz | <1% | 0% |
 
-26.77 MHz is **down from 30.77**, and this is the first place-and-route since
+27.41 MHz is **down from 30.77**, and this is the first place-and-route since
 both the data cache and this controller landed, so the drop belongs to the pair
 of them. The critical path is in neither: it runs from the CSR write-enable
 decode to the ID/EX register file's load enable, 11.32 ns of logic against
-26.03 ns of routing. Margin at the board's 25 MHz is now 7% rather than 23%.
+26.03 ns of routing. Margin at the board's 25 MHz is now 10% rather than 23%.
 
-**None of that is evidence about a chip.** Placement and timing closure are
-tool output. So bring-up is two bitstreams, in the order that narrows the
-problem — `fpga/README.md` has the procedure and the LED table:
+**None of that is evidence about a chip**, and the chip has since said so. The
+first bitstream ran, mostly worked, and returned one wrong word in a thousand —
+a read capture point sitting 5.4 ns before the part swapped one burst beat for
+the next, and a write path with no hold margin at all because the clock and the
+data left the FPGA together. `fpga/sdram_clk_out.v` now clocks the part half a
+period out through an `ODDRX1F` and `rtl/soc/wb_sdram.v` captures a cycle
+earlier to match; the two are a matched pair. The log, the arithmetic and what
+it cost to read the evidence properly are in `fpga/README.md` and
+`docs/practices.md` §23. **Not yet re-run on the board.**
+
+So bring-up is two bitstreams, in the order that narrows the problem —
+`fpga/README.md` has the procedure and the LED table:
 
 | | |
 |---|---|
@@ -682,12 +691,9 @@ Both have simulations (`make sim_sdramprobe`, `make sim_sdramcheck`) and both
 are gated in CI, because a bring-up instrument that is itself wrong turns "the
 memory does not work" into a hunt through the memory, the pinout and the clock.
 
-**The thing most likely to need attention** is `sdram_clk`, driven straight
-from the oscillator in `ulx3s_top.v`. At a 40 ns period that is usually enough,
-and "usually" is not a measurement: place-and-route puts 7.27 ns of routing
-between the `sdram_d` pad and its capture flop before any board delay. If the
-probe stops with `led[0]` lit and nothing else, that is the line — a DDR output
-register clocked 180° out, or a PLL phase tap.
+**The thing most likely to need attention was `sdram_clk`**, and it was. That
+paragraph used to say a straight assignment "usually works, and usually is not
+a measurement". The measurement arrived and it did not work.
 
 ### Why nothing runs *from* SDRAM on a board yet
 

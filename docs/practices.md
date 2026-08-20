@@ -569,6 +569,49 @@ still says nothing about the state behind it.
 
 ---
 
+## 23. When the bench and your reasoning disagree, the bench is right
+
+[§22](#22-when-you-write-both-sides-the-model-must-encode-the-spec) says that a
+model written by the same hand as the thing it checks has to be written from
+the specification and then falsified. This is what happened the first time that
+model met a board, and it is a different failure with the same root.
+
+**The incident.** `BOARD=ulx3s85-sdramcheck` came back with one wrong word in a
+thousand. Chasing it, the read path looked off by one: CAS latency ought to
+mean the part *launches* data that many edges after the command, and
+`sim/sdram_model.v` was driving it a cycle earlier than that. The fix looked
+obvious, and it was made.
+
+It was wrong. With the model "corrected", the configuration the board had
+actually run failed *catastrophically* in simulation — every read returning the
+wrong beat. The board had not failed catastrophically. It had failed 0.1% of
+the time, which means the timing was very nearly right, which means the model
+had been very nearly right too. The change was reverted.
+
+What the reasoning had missed is that the real controller and the real part
+were meeting somewhere the datasheet's idealised diagram does not draw: the
+capture edge sat 5.4 ns — one `tAC` — before the part swapped one burst beat
+for the next. Correct almost always, wrong when a DQ line ran slow and the two
+beats disagreed on that bit. The bench's failure *rate* carried that
+information and the failure *itself* did not.
+
+**The rule.** A measurement from hardware outranks a derivation, including a
+derivation from the part's own datasheet, because the derivation is about an
+idealised device and the measurement is about the one on the desk. When they
+disagree, the thing to look for is what the derivation left out — not a way to
+make the hardware's answer fit.
+
+The corollary is about failure rates specifically. *That* it failed narrows the
+cause a little; **how often it failed narrowed it enormously.** 100% would have
+meant a wrong pin or an off-by-one. 0.1% cannot be either of those, and could
+only be a margin. Any test that stops at the first mismatch throws that away,
+which the one here did — so it now counts every failure, records which bits
+were ever wrong, and reports how many of them were bits that differ between the
+two halves of a word, because that last number is what confirms or refutes this
+diagnosis on the next run rather than in another argument.
+
+---
+
 ---
 
 ## Conventions

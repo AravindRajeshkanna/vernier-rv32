@@ -71,11 +71,16 @@ module tb_sdram;
         .sdram_ready(sd_ready)
     );
 
+    // Clocked 180 degrees from the controller, because that is what the board
+    // does: fpga/sdram_clk_out.v drives the part's clock from an ODDRX1F so
+    // its rising edge lands on the internal clock's falling edge. Clocking
+    // the model from `clk` here would simulate a machine no board is, and
+    // would be the *aligned* configuration that hardware rejected.
     sdram_model #(
         .ROW_BITS(ROW_BITS), .COL_BITS(COL_BITS), .BA_BITS(BA_BITS),
         .MEM_WORDS(1 << 20)
     ) MEM (
-        .clk(clk), .rst(rst), .cke(sd_cke), .cs_n(sd_cs_n), .ras_n(sd_ras_n),
+        .clk(~clk), .rst(rst), .cke(sd_cke), .cs_n(sd_cs_n), .ras_n(sd_ras_n),
         .cas_n(sd_cas_n), .we_n(sd_we_n),
         .a(sd_a), .ba(sd_ba), .dqm(sd_dqm), .dq(dq)
     );
