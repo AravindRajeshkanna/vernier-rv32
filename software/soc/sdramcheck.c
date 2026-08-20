@@ -76,7 +76,17 @@ int main(void)
      * If this fails, nothing below will mean anything, and the probe with no
      * CPU in it is the thing to flash next. */
     sdram[0] = 0xDEADBEEFu;
-    report("single word", sdram[0] == 0xDEADBEEFu);
+    {
+        uint32_t v = sdram[0];
+        if (v != 0xDEADBEEFu) {
+            put_str("  read ");
+            put_hex(v);
+            put_str(" want 0xDEADBEEF, differing bits ");
+            put_hex(v ^ 0xDEADBEEFu);
+            put_str("\n");
+        }
+        report("single word", v == 0xDEADBEEFu);
+    }
 
     /* ---- 2. walking ones ----
      * One data bit at a time. A stuck or swapped DQ line fails here and passes
@@ -96,23 +106,71 @@ int main(void)
     for (i = 0; i < SWEEP_BYTES; i += 4)
         *(volatile uint32_t *)(SDRAM_BASE + i) = pattern(SDRAM_BASE + i);
 
-    ok = 1;
-    bad_at = 0;
-    for (i = 0; i < SWEEP_BYTES; i += 4) {
-        if (*(volatile uint32_t *)(SDRAM_BASE + i) != pattern(SDRAM_BASE + i)) {
-            ok = 0;
-            bad_at = SDRAM_BASE + i;
-            break;
+    /* Every mismatch, not the first. A single failing word says almost
+     * nothing; the *shape* of a thousand of them says which side is wrong,
+     * and the first version of this program stopped at one and threw the rest
+     * away. What is accumulated:
+     *
+     *   bad_bits    which data bits ever came back wrong. One bit means one
+     *               slow DQ line; all of them means something structural.
+     *   bad_split   how many failures were in a bit that *differs between the
+     *               two halves of the word*. A 32-bit access is two 16-bit
+     *               burst beats, so if the capture edge sits too close to the
+     *               beat boundary the failing bit takes the other beat's
+     *               value - and only ever on bits where the two beats differ.
+     *               That signature is the reason for the clock change in
+     *               fpga/sdram_clk_out.v, and this is what confirms or
+     *               refutes it on a board rather than in an argument.
+     */
+    {
+        uint32_t bad_bits = 0, bad_count = 0, bad_split = 0, first = 0;
+        for (i = 0; i < SWEEP_BYTES; i += 4) {
+            uint32_t a = SDRAM_BASE + i;
+            uint32_t got = *(volatile uint32_t *)a;
+            uint32_t want = pattern(a);
+            uint32_t diff = got ^ want;
+            if (diff) {
+                if (!bad_count) first = a;
+                bad_count++;
+                bad_bits |= diff;
+                /* bits where the low and high halves of the word disagree */
+                if (diff & ((want ^ (want >> 16)) & 0xFFFFu)) bad_split++;
+                if (diff & (((want ^ (want >> 16)) & 0xFFFFu) << 16)) bad_split++;
+            }
         }
-    }
-    if (!ok) {
-        put_str("  first mismatch at ");
-        put_hex(bad_at);
-        put_str(": reads ");
-        put_hex(*(volatile uint32_t *)bad_at);
-        put_str(" want ");
-        put_hex(pattern(bad_at));
-        put_str("\n");
+        if (bad_count) {
+            put_str("  ");
+            put_dec((int)bad_count);
+            put_str(" of ");
+            put_dec((int)(SWEEP_BYTES / 4));
+            put_str(" words wrong; bits seen bad ");
+            put_hex(bad_bits);
+            put_str("\n  of those, ");
+            put_dec((int)bad_split);
+            put_str(" were bits that differ between the two burst halves\n");
+            put_str("  first at ");
+            put_hex(first);
+            put_str(": reads ");
+            put_hex(*(volatile uint32_t *)first);
+            put_str(" want ");
+            put_hex(pattern(first));
+            put_str("\n");
+
+            /* Re-read the first failing address several times without
+             * rewriting it. Identical wrong values every time means the write
+             * stored the wrong thing; values that vary mean the read path is
+             * catching the bus in transition. Those want different fixes, and
+             * nothing else here distinguishes them. */
+            {
+                uint32_t r0 = *(volatile uint32_t *)first;
+                uint32_t varies = 0, k;
+                for (k = 0; k < 64; k++)
+                    if (*(volatile uint32_t *)first != r0) varies = 1;
+                put_str(varies ? "  re-reads disagree - the READ path is marginal\n"
+                               : "  re-reads agree - the stored value is wrong (WRITE path)\n");
+            }
+        }
+        ok = (bad_count == 0);
     }
     report("256 KB unique addresses", ok);
 

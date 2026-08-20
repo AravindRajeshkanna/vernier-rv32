@@ -418,18 +418,41 @@ module wb_sdram #(
                 end
 
                 // ---- read: one burst-of-2 command, two words back -------
-                // The command is registered here, so it reaches the part one
-                // cycle later; CAS latency then applies from *there*. Waiting
-                // CAS_LATENCY cycles and capturing on the two edges after
-                // that is what lines the two up, and the write-then-read
-                // check in sim/tb_sdram.v is what proves it rather than the
-                // paragraph proving it.
+                //
+                // **This assumes the part is clocked 180 degrees from here**,
+                // which is what fpga/sdram_clk_out.v arranges. The two are a
+                // matched pair and neither is correct without the other.
+                //
+                // Why, in nanoseconds, at 25 MHz (tCK 40, tAC 5.4). The
+                // command is registered here, so it is on the pins for the
+                // following cycle and the part latches it on its own next
+                // edge - half a cycle later with the shifted clock, a full
+                // cycle later without. From there CAS latency applies, and
+                // each word sits on the bus for one period:
+                //
+                //   part clocked from clk, capture at CL     w0 arrives 34.6 ns
+                //     before the capture edge and is replaced 5.4 ns after it
+                //   part clocked 180 out, capture at CL-1    w0 arrives 14.6 ns
+                //     before and is replaced 25.4 ns after
+                //
+                // The first of those is what shipped, and 5.4 ns of hold is
+                // what a board turned into one wrong word in a thousand: any
+                // DQ line slower than its neighbours takes the *next* burst
+                // word's value, so a bit that differs between the two halves
+                // of a word comes back wrong. The failing word in
+                // fpga/README.md is exactly that - bit 12 is 1 in the low
+                // half and 0 in the high half, and it read back 0.
+                //
+                // Writes get the same treatment for free: with the part
+                // clocked half a period away from the moment this drives new
+                // data, it sees 20 ns of setup and 20 ns of hold instead of a
+                // full period of setup and none at all.
                 S_READ: begin
                     cmd_r <= CMD_READ;
                     a_r   <= col_a_of_req;
                     ba_r  <= req_bank;
                     dqm_r <= 2'b00;
-                    tmr   <= CAS_LATENCY[CNT_BITS-1:0];
+                    tmr   <= CAS_LATENCY[CNT_BITS-1:0] - 1'b1;
                     state <= S_READ_LO;
                 end
                 S_READ_LO: begin

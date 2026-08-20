@@ -84,7 +84,7 @@ case "$BOARD" in
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ulx3s_top.v"
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         ;;
     ulx3s-diag)
         # SD-path hardware diagnostic: no CPU, no SoC. Builds only
@@ -122,7 +122,7 @@ case "$BOARD" in
         TOP=${TOP:-ulx3s_sdram}
         LPF=${LPF:-fpga/constraints/ulx3s_sdram.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ulx3s_sdram.v rtl/soc/wb_sdram.v"
+        BOARD_RTL="fpga/ulx3s_sdram.v fpga/sdram_clk_out.v rtl/soc/wb_sdram.v"
         DIAG_ONLY=1
         ;;
     ulx3s85-sdramcheck)
@@ -137,7 +137,7 @@ case "$BOARD" in
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ulx3s_top.v"
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         PRELOAD_RAM=1
         RAM_IMAGE=sim/sdramcheckimage.hex
         RAM_ELF=software/soc/sdramcheck.elf
@@ -150,7 +150,7 @@ case "$BOARD" in
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ulx3s_top.v"
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         PRELOAD_RAM=1
         ;;
     ulx3s85-probe)
@@ -166,7 +166,7 @@ case "$BOARD" in
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ulx3s_top.v"
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         PRELOAD_RAM=1
         RAM_IMAGE=sim/probeimage.hex
         RAM_ELF=software/soc/newlibprobe.elf
@@ -186,7 +186,7 @@ case "$BOARD" in
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ulx3s_top.v"
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         PRELOAD_RAM=1
         RAM_IMAGE=sim/trapimage.hex
         RAM_ELF=software/soc/trapcheck.elf
@@ -196,7 +196,7 @@ case "$BOARD" in
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ulx3s_top.v"
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         ;;
     "")
         # 45k, because 64 KB of on-chip RAM needs 67 block RAMs and a 25F
@@ -220,6 +220,7 @@ esac
 # single thing that used to make this script appear to hang. See
 # rtl/soc/wb_ram.v.
 YOSYS_DEFINES="-DSYNTHESIS"
+
 if [ "$PRELOAD_RAM" = "1" ]; then
     YOSYS_DEFINES="$YOSYS_DEFINES -DPRELOAD_RAM"
     if [ ! -f "$RAM_IMAGE" ]; then

@@ -130,22 +130,11 @@ module ulx3s_top #(
     wire        sdram_dq_oe;
     assign sdram_d = sdram_dq_oe ? sdram_dq_o : 16'bz;
 
-    // The SDRAM clock, driven straight from the board oscillator.
-    //
-    // **This is the line most likely to need changing on a real board.** The
-    // part samples commands and write data on this edge, and returns read
-    // data referenced to it, so what matters is the phase relationship
-    // between the clock arriving at the chip and the clock the FPGA's input
-    // registers use - a round trip over board trace, pad and routing delay.
-    // At 25 MHz that budget is 40 ns against a few nanoseconds of delay, and
-    // driving the same clock out is the usual answer at this speed.
-    //
-    // "Usual" is not measured, and this project does not report unmeasured
-    // things as working. If fpga/ulx3s_sdram.v reads back consistent garbage
-    // while commands are clearly landing, this is the line: a DDR output
-    // register clocked 180 degrees out (ODDRX1F with D0=0, D1=1) or a PLL
-    // phase tap is the fix, and both are local changes to this one net.
-    assign sdram_clk = clk_25mhz;
+    // The SDRAM clock. **Not** driven straight from the oscillator any more -
+    // that is what the board rejected. See fpga/sdram_clk_out.v for the
+    // measurement and the reasoning; `SDRAM_CLK=aligned` restores the old
+    // behaviour for anyone who wants to reproduce it.
+    sdram_clk_out SDCLK (.clk(clk_25mhz), .sdram_clk(sdram_clk));
 
     // ---- GPIO ----
     // The SoC's 16 bidirectional pins go to the header: gpio[13:0] to

@@ -1,7 +1,7 @@
 # FPGA integration — status and honest caveats
 
 **The design builds to a ULX3S bitstream against that board's real pinout,
-closes timing at 25 MHz — 26.77 MHz on an 85F as of the data cache and the
+closes timing at 25 MHz — 27.41 MHz on an 85F as of the data cache and the
 SDRAM controller, 30.77 MHz before them — and has been loaded onto an
 LFE5U-85F, where it boots and passes its acceptance test.** Those are
 different claims, and three of them are still open:
@@ -13,7 +13,7 @@ different claims, and three of them are still open:
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
 | Resource usage | ✅ **measured** — 27% LUT / 62% EBR on a 45F, 14% / 32% on an 85F |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ✅ **26.77 MHz** (85F), PASS at the board's 25 MHz — down from 30.77 before the D-cache and SDRAM |
+| **Fmax with I/O constrained** | ✅ **27.41 MHz** (85F), PASS at the board's 25 MHz — down from 30.77 before the D-cache and SDRAM |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
@@ -21,7 +21,7 @@ different claims, and three of them are still open:
 | newlib / `printf` on a board | ✅ **works** — `NEWLIB-PROBE: PASS`; the old failure was the `.data` bug above, not libc |
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
 | **SDRAM pins** | ⚠️ **placed and cross-checked, bitstream builds, timing closes — never loaded** |
-| **SDRAM on a board** | ❌ **not run.** `BOARD=ulx3s-sdram` is the probe that would settle it — see below |
+| **SDRAM on a board** | ⚠️ **run once and failed** — one word in a thousand, diagnosed as a clock-phase problem and changed. The re-run has not happened |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
 ## The hardware run
@@ -251,6 +251,69 @@ simulation, because a diagnostic that arrives at a board untested turns "the
 memory does not work" into a hunt through the memory, the pinout and the clock
 when the fault is in the instrument.
 
+### The first attempt, and what it was actually telling us
+
+`BOARD=ulx3s85-sdramcheck`, flashed, verbatim from the console:
+
+```
+=== external SDRAM check (running from block RAM) ===
+SDRAM window at 0x90000000, sweeping 256 KB against 64 KB of block RAM
+
+  single word                   FAILED
+  walking ones, 32 bits         ok
+  first mismatch at 0x90001058: reads 0x47A5A808 want 0x47A5B808
+  256 KB unique addresses       FAILED
+  byte lanes                    ok
+  halfword lanes                ok
+  survives a short idle         ok
+  block RAM still reachable     ok
+
+SDRAM-CHECK: FAIL (2)
+```
+
+**Read that as "it very nearly works", not "it does not work".** The sweep is
+65,536 words and the first failure is word 1,046; walking ones, both lane
+tests and the idle test all passed. Whatever is wrong is marginal, and
+marginal faults do not come from a pin being on the wrong ball.
+
+Three things narrow it further:
+
+1. **It is not aliasing.** `0x47A5A808` is not the pattern of *any* address in
+   the 256 KB sweep — checked exhaustively, not eyeballed. So the read did not
+   fetch some other location's data; the data itself came back corrupted.
+2. **It is one bit.** `0x47A5B808 ^ 0x47A5A808 = 0x1000`, bit 12, in the *low*
+   halfword — the first of the two 16-bit beats a 32-bit access is made of.
+3. **That bit differs between the two beats.** The low half is `0xB808`
+   (bit 12 set), the high half `0x47A5` (bit 12 clear). The value read is the
+   *other beat's* value for that bit.
+
+Point 3 is the whole diagnosis. The controller was capturing the first beat
+one `tAC` — 5.4 ns — before the part replaced it with the second, so any DQ
+line slower than its neighbours delivered the second beat's bit instead. It
+can only ever go wrong on bits where the two beats disagree, which is exactly
+what was seen and is why single-bit patterns passed.
+
+The write side had it worse. With `sdram_clk` driven straight from the
+oscillator, the clock edge and the data leave the FPGA together, so the part
+sampled the bus at the moment the design changed it: a full period of setup
+and **no hold at all**.
+
+| At 25 MHz, tCK 40 ns, tAC 5.4 ns | into the window | out of it |
+|---|---|---|
+| Reads, clock aligned, capture at CL | 34.6 ns | **5.4 ns** |
+| Reads, clock 180° out, capture at CL−1 | 14.6 ns | 25.4 ns |
+| Writes, clock aligned | 40 ns | **0 ns** |
+| Writes, clock 180° out | 20 ns | 20 ns |
+
+So `fpga/sdram_clk_out.v` now emits the part's clock from an `ODDRX1F`, half a
+period out, and `rtl/soc/wb_sdram.v` captures a cycle earlier to suit. **They
+are a matched pair** — neither is correct without the other, which is why
+there is no build option to go back to one of them.
+
+**Not yet confirmed on a board.** The arithmetic above is a prediction; the run
+that settles it is the one below. A behavioural model cannot show marginality,
+so simulation passing proves the design is self-consistent and nothing more.
+
 ### Step 1 — the probe, with no CPU in it
 
 ```sh
@@ -362,12 +425,12 @@ the bitstream line.
 | Target | Device | Fmax | LUT | EBR |
 |---|---|---|---|---|
 | `BOARD=ulx3s` | LFE5U-45F | 28.78 MHz † | 29% | **105/108 — 97%** |
-| `BOARD=ulx3s85` | LFE5U-85F | **26.77 MHz** | 20% | 107/208 — 51% |
+| `BOARD=ulx3s85` | LFE5U-85F | **27.41 MHz** | 20% | 107/208 — 51% |
 
 † the 45F number predates the data cache and the SDRAM controller and has not
-been re-measured. The 85F row has: **26.77 MHz, down from 30.77**, which is the
+been re-measured. The 85F row has: **27.41 MHz, down from 30.77**, which is the
 first place-and-route since both landed, so the drop belongs to the pair rather
-than to either one. It still passes at the board's 25 MHz — with 7% margin
+than to either one. It still passes at the board's 25 MHz — with 10% margin
 rather than 23%, which is worth knowing before adding anything else. The
 critical path is in neither: it runs from the CSR write-enable decode to the
 ID/EX register file's load enable, 11.32 ns of logic against 26.03 ns of
@@ -503,7 +566,7 @@ from actually attempting the build at `RAM_BYTES=65536`.
 
 ‡ this table is the measurement made when the framebuffer landed, and the two
 Fmax figures in it predate the data cache and the SDRAM controller. The 85F is
-now 20% LUT, 51% EBR and **26.77 MHz** — see the device table under
+now 20% LUT, 51% EBR and **27.41 MHz** — see the device table under
 [Building for a ULX3S](#building-for-a-ulx3s). The EBR verdicts are unchanged,
 which is what this table is actually for.
 

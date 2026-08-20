@@ -67,11 +67,14 @@ The short version, because the distinction matters more than the list:
 | Surviving a reset | ✅ on silicon |
 | SD card | ❌ CMD0 unanswered |
 | Video scan-out | ❌ not routed |
-| **SDRAM** | ⚠️ **pins placed, bitstream builds, timing closes — never loaded** |
+| **SDRAM** | ⚠️ **run once and failed** — one word in a thousand, diagnosed as clock phase and changed; not re-run |
 
-The SDRAM row is the one to be careful with. Placement and timing closure are
-tool output, not evidence about a chip. `fpga/ulx3s_sdram.v` exists to convert
-one into the other, and `fpga/README.md` has the two-step procedure.
+The SDRAM row is the one to be careful with, and it has already earned that.
+The first bitstream ran, mostly worked, and failed one word in a thousand —
+which turned out to be a clock-phase margin rather than anything simulation
+could have caught. `fpga/README.md` has the log, the arithmetic and the
+two-step procedure; `docs/practices.md` §23 has what it cost to read the
+evidence properly.
 
 ### Place-and-route, as measured
 
@@ -81,13 +84,18 @@ rather than an invented placement.
 
 | Build | Fmax | LUT | FF | Block RAM | IO |
 |---|---|---|---|---|---|
-| `BOARD=ulx3s85-sdramcheck` (full SoC) | **26.77 MHz** — PASS at 25 | 16,926 (20%) | 7,418 (8%) | 107/208 (51%) | 93/365 (25%) |
-| `BOARD=ulx3s-sdram` (probe, no CPU) | **104.50 MHz** | 696 (<1%) | 331 (<1%) | 0 | 56/365 (15%) |
+| `BOARD=ulx3s85-sdramcheck` (full SoC) | **27.41 MHz** — PASS at 25 | 16,831 (20%) | 7,418 (8%) | 107/208 (51%) | 93/365 (25%) |
+| `BOARD=ulx3s-sdram` (probe, no CPU) | **108.83 MHz** | 773 (<1%) | 331 (<1%) | 0 | 56/365 (15%) |
 
-**26.77 MHz is down from the 30.77 MHz** this file's predecessor recorded, and
+(Both figures moved slightly when the SDRAM clock went through an `ODDRX1F`
+instead of being a routed copy of the input clock — the SDRAM pin stopped
+being its own clock domain, which is a cleaner thing for the timing analysis
+to look at as well as the fix for a real hardware failure.)
+
+**27.41 MHz is down from the 30.77 MHz** this file's predecessor recorded, and
 that is the first place-and-route since both the data cache and the SDRAM
 controller landed, so the drop belongs to the pair of them rather than to
-either one. It still passes at the board's 25 MHz, but the margin is now 7%
+either one. It still passes at the board's 25 MHz, but the margin is now 10%
 rather than 23%, which is worth knowing before adding anything else.
 
 The critical path is **not** in the memory controller or in either cache. It

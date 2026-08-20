@@ -65,7 +65,19 @@ module sdram_model #(
     parameter real T_RAS_NS  = 42.0,   // ACTIVE to PRECHARGE, same bank
     parameter real T_WR_NS   = 15.0,   // last write data to PRECHARGE
     parameter real T_INIT_NS = 100_000.0,
-    parameter real T_REFI_NS = 7812.5
+    parameter real T_REFI_NS = 7812.5,
+    // Access time from the clock: how long after its own clock edge the part
+    // actually drives read data onto the bus.
+    //
+    // Not decoration. Without it this model drives read data *at* its clock
+    // edge, which is only indistinguishable from silicon while the part and
+    // the controller share a clock edge. The moment fpga/sdram_clk_out.v
+    // moved the part's clock 180 degrees - which is the fix for a real
+    // hardware failure, see fpga/README.md - a zero-delay model put the data
+    // a full controller-cycle early and reported a working design as broken.
+    // A model that cannot represent the configuration being shipped is not a
+    // check, so this is here and it is the datasheet's number.
+    parameter real T_AC_NS   = 5.4
 )(
     input  wire                clk,
     // A real SDRAM has no reset pin - you re-run the initialisation sequence
@@ -115,10 +127,17 @@ module sdram_model #(
 
     // ---- read return pipeline ----
     // Loaded at the edge a READ is registered, at index cl-1 and cl, and
-    // shifted down one place per clock. Index 0 is what is on the bus now,
-    // so a word loaded at index cl-1 reaches the bus in time to be sampled
-    // cl edges after the command. See the burst walkthrough in
-    // rtl/soc/wb_sdram.v's read states.
+    // shifted down one place per clock, so a word loaded at cl-1 is on the
+    // bus T_AC_NS after the following edge and stays for one period.
+    //
+    // This indexing was changed to cl/cl+1 while chasing the hardware failure
+    // in fpga/README.md, on the reasoning that CAS latency means the data is
+    // *launched* cl edges after the command. That made the configuration the
+    // board actually ran fail catastrophically in simulation - and the board
+    // did not fail catastrophically, it failed one word in a thousand. The
+    // bench is the ground truth and the change was reverted. What the bench
+    // could not have told us, and T_AC_NS below could, is how little margin
+    // that pairing has.
     localparam PIPE = 8;
     reg [15:0] pipe_d [0:PIPE-1];
     reg        pipe_v [0:PIPE-1];
@@ -131,7 +150,7 @@ module sdram_model #(
     // ---- read burst bookkeeping, for the row-crossing check ----
     integer rd_col_check;
 
-    assign dq = pipe_v[0] ? pipe_d[0] : 16'bzzzz_zzzz_zzzz_zzzz;
+    assign #T_AC_NS dq = pipe_v[0] ? pipe_d[0] : 16'bzzzz_zzzz_zzzz_zzzz;
 
     wire [3:0] cmd = {cs_n, ras_n, cas_n, we_n};
     localparam [3:0] C_NOP = 4'b0111, C_ACT = 4'b0011, C_RD = 4'b0101,
