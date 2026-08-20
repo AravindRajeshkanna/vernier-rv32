@@ -68,7 +68,7 @@ The short version, because the distinction matters more than the list:
 | SD card | ❌ CMD0 unanswered |
 | Video scan-out | ❌ not routed |
 | **SDRAM, as data** | ✅ **on silicon** — 256 KB of unique addresses, byte/halfword lanes, refresh |
-| Running code *from* SDRAM | ❌ nothing can load a program there yet |
+| Running code *from* SDRAM | ✅ **on silicon** — 99 KB sent over the serial line by `software/soc/uartload.py` |
 
 The SDRAM rows earned their detail. The first bitstream ran, mostly worked,
 and failed one word in a thousand — a clock-phase margin, and nothing
@@ -78,9 +78,10 @@ cleanly. `fpga/README.md` has both logs, the arithmetic and the two-step
 procedure; `docs/practices.md` §23 has what it cost to read the evidence
 properly.
 
-Running *code* from SDRAM is a different row and still open: a bitstream
-initialises block RAM at configuration time and SDRAM comes up empty, so it
-needs a loader that does not exist.
+Running *code* from SDRAM needed a loader, because a bitstream initialises
+block RAM at configuration time and SDRAM comes up empty. The boot ROM has one
+now — `software/soc/uartload.py`, standard library only — and a 99 KB program
+has been through it onto a board.
 
 ### Place-and-route, as measured
 

@@ -728,9 +728,13 @@ in this project had ever transmitted *to* the SoC, so that half of the UART was
 untested RTL until now.
 
 **Done when:** ~~the SoC runs a program larger than 64 KB from external
-memory~~ — done in simulation, and **the memory itself is proven on silicon**:
-256 KB read and written through the CPU, the caches and the interconnect on a
-ULX3S v3.1.8 / LFE5U-85F.
+memory~~ — **done, on silicon.** A 99 KB program sent over the serial line into
+external SDRAM on a ULX3S v3.1.8 / LFE5U-85F, fetched and executed from there,
+checking 96 KB of its own `.rodata` and sweeping 256 KB — `SDRAM-TEST: PASS`.
+The log is in `fpga/README.md`.
+
+That is the whole phase as it was written at the top of this section: 64 KB of
+block RAM is no longer what stands between this and anything larger.
 
 **Still open**, and worth keeping separate because they are different sizes of
 job — the loader that used to head this list is done:

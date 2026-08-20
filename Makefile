@@ -37,6 +37,7 @@
 #   make sim_sdramboot -> the SoC executing from SDRAM, larger than block RAM
 #   make sim_uartload  -> the boot ROM's UART loader: a host sends a program
 #                         over the serial line and the SoC runs it from SDRAM
+#   make uartload-host -> the host script against a fake board on a pty
 
 IVERILOG      = iverilog
 # Which CPU to build the SoC around. `inorder` is rtl/cpu_core.v, the design
@@ -126,7 +127,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
-        sim_uartload \
+        sim_uartload uartload-host \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -531,6 +532,13 @@ sim/uartimage.hex: software/soc/uartprog.elf software/bin2hex.py Makefile
 sim/sim_uartload.out: sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
 
+# The *host* half of the same protocol, against a fake board on a pty. No
+# board, no toolchain, no simulator - the fastest thing here that can catch a
+# loader bug, and the only thing that tests software/soc/uartload.py at all.
+# It found two on its first run.
+uartload-host:
+	python3 tests/uartload_host.py
+
 sim_uartload: sim/bootrom.hex sim/uartimage.hex sim/sim_uartload.out
 	cd sim && $(VVP) sim_uartload.out $(VVP_DUMP)
 
@@ -579,7 +587,7 @@ verify_ooo:
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
         sim_sdram sim_sdramboot sim_sdramprobe sim_sdramcheck sim_uartload \
-        check-program isa cosim formal
+        uartload-host check-program isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
@@ -593,6 +601,7 @@ clean:
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
 	       sim/sim_uartload.out sim/uartimage.hex sim/wave_uartload.vcd \
+	       tests/build/uartload_case.bin \
 	       software/soc/uartprog.elf software/soc/uartprog.bin \
 	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
