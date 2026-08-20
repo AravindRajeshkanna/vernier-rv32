@@ -66,45 +66,28 @@ module ulx3s_top #(
 
     // General-purpose header, carrying the SoC's GPIO.
     inout  wire [13:0] gp,
-    inout  wire [13:0] gn
+    inout  wire [13:0] gn,
 
-    // ---- what is deliberately NOT here: the SDRAM pins ----
+    // ---- external SDRAM ----
+    // 32 MB, 16-bit SDR, driven by rtl/soc/wb_sdram.v at 0x9000_0000. Names
+    // match fpga/constraints/ulx3s.lpf, which in turn matches the official
+    // ulx3s_v20.lpf verbatim - so the sites are copied rather than
+    // transcribed, and no bit index has to be re-derived anywhere.
     //
-    // `rtl/soc/wb_sdram.v` exists, is verified against `sim/sdram_model.v`
-    // and runs a 102 KB program in `make sim_sdramboot`, and
-    // `fpga/soc_fpga.v` brings its pins out. This file does not route them,
-    // and that is a decision rather than an omission.
-    //
-    // Every pin assignment in this file and in fpga/constraints/ulx3s.lpf was
-    // confirmed on silicon - the header above says so, and the one exception
-    // (the SD pins, wired differently on a v1.7 board) is called out because
-    // a wrong pin here does not fail loudly. It builds, it loads, and it does
-    // not work. Adding thirty ball numbers transcribed from a datasheet
-    // instead of read off a working board would put that claim in the same
-    // file as thirty unverified lines, and the next person would have no way
-    // to tell which was which.
-    //
-    // To wire it, on a board, with the board's own constraint file to hand:
-    //
-    //   1. add these ports here and pass them to soc_fpga.v -
-    //        sdram_clk, sdram_cke, sdram_csn, sdram_wen, sdram_rasn,
-    //        sdram_casn, sdram_a[12:0], sdram_ba[1:0], sdram_dqm[1:0],
-    //        inout sdram_d[15:0]
-    //   2. `assign sdram_d = sdram_dq_oe ? sdram_dq_o : 16'bz;` and feed
-    //      `sdram_d` back as `sdram_dq_i` - the same tristate shape the GPIO
-    //      header uses below, and the only place in the design that needs one
-    //   3. copy the matching LOCATE/IOBUF lines out of the ULX3S's own
-    //      `ulx3s_v20.lpf` into fpga/constraints/ulx3s.lpf
-    //   4. `sdram_clk` is the part that will not be right first time. It
-    //      wants a phase relationship to the internal clock that makes the
-    //      round trip land inside the setup window; at 25 MHz a 40 ns period
-    //      is forgiving enough that driving it straight from `clk_25mhz`
-    //      usually works, and "usually" is not a measurement. A DDR output
-    //      register or a PLL phase tap is the fix if it does not.
-    //
-    // Until someone does that with a board attached, docs/roadmap.md's
-    // Phase 2 is complete in simulation and open on hardware, which is what
-    // it now says.
+    // !! PLACED, NOT YET CONFIRMED ON SILICON !!  Every other pin in this
+    // file has been through a board; these have not. See the LPF, and prove
+    // them with `BOARD=ulx3s-sdram` (fpga/ulx3s_sdram.v) before trusting a
+    // result that involves memory.
+    output wire        sdram_clk,
+    output wire        sdram_cke,
+    output wire        sdram_csn,
+    output wire        sdram_wen,
+    output wire        sdram_rasn,
+    output wire        sdram_casn,
+    output wire [12:0] sdram_a,
+    output wire [1:0]  sdram_ba,
+    output wire [1:0]  sdram_dqm,
+    inout  wire [15:0] sdram_d
 );
     // ---- ESP32 hold-off ----
     // On a ULX3S the ESP32 shares the board's power control. Leaving this pin
@@ -137,6 +120,32 @@ module ulx3s_top #(
     assign sd_d[1] = 1'b1;
     assign sd_d[0] = 1'bz;      // MISO: input, so leave the pin undriven
     assign spi_miso = sd_d[0];
+
+    // ---- SDRAM ----
+    // The one tristate in the whole design. Everything below this file works
+    // in out/enable/in form so that no module beneath a board wrapper has to
+    // contain one - the same split rtl/soc/wb_gpio.v uses, and the reason
+    // rtl/soc/cpu_wb.v and soc_top.v are free of them.
+    wire [15:0] sdram_dq_o;
+    wire        sdram_dq_oe;
+    assign sdram_d = sdram_dq_oe ? sdram_dq_o : 16'bz;
+
+    // The SDRAM clock, driven straight from the board oscillator.
+    //
+    // **This is the line most likely to need changing on a real board.** The
+    // part samples commands and write data on this edge, and returns read
+    // data referenced to it, so what matters is the phase relationship
+    // between the clock arriving at the chip and the clock the FPGA's input
+    // registers use - a round trip over board trace, pad and routing delay.
+    // At 25 MHz that budget is 40 ns against a few nanoseconds of delay, and
+    // driving the same clock out is the usual answer at this speed.
+    //
+    // "Usual" is not measured, and this project does not report unmeasured
+    // things as working. If fpga/ulx3s_sdram.v reads back consistent garbage
+    // while commands are clearly landing, this is the line: a DDR output
+    // register clocked 180 degrees out (ODDRX1F with D0=0, D1=1) or a PLL
+    // phase tap is the fix, and both are local changes to this one net.
+    assign sdram_clk = clk_25mhz;
 
     // ---- GPIO ----
     // The SoC's 16 bidirectional pins go to the header: gpio[13:0] to
@@ -172,6 +181,13 @@ module ulx3s_top #(
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
         .gpio({gn[1:0], gp[13:0]}),
+
+        .sdram_cke(sdram_cke), .sdram_cs_n(sdram_csn),
+        .sdram_ras_n(sdram_rasn), .sdram_cas_n(sdram_casn),
+        .sdram_we_n(sdram_wen),
+        .sdram_a(sdram_a), .sdram_ba(sdram_ba), .sdram_dqm(sdram_dqm),
+        .sdram_dq_o(sdram_dq_o), .sdram_dq_oe(sdram_dq_oe),
+        .sdram_dq_i(sdram_d),
         .led(led[3:0])
     );
 

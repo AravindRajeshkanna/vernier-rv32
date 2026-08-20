@@ -30,7 +30,9 @@ that make it a report about that specific build.
 | newlib `printf` on hardware | ✅ — was a `.data` init bug, not libc |
 | riscv-tests 79/82, Spike co-simulation 82/82, 4 formal proofs | ✅ in CI |
 
-Timing: 30.77 MHz on an 85F, 28.78 MHz on a 45F, against the board's 25 MHz.
+Timing: **26.77 MHz on an 85F** against the board's 25 MHz, as of the data
+cache and the SDRAM controller. It was 30.77 before those two; the 45F's
+28.78 predates them and has not been re-measured. See `docs/toolchain.md` §2.
 
 ---
 
@@ -65,10 +67,13 @@ And the constraints that do not relax while it happens:
   standing bar. `docs/practices.md` §1 applies with force here: a superscalar
   core that passes because the tests never create the hazard is the most
   expensive kind of test that cannot fail.
-- **Timing.** The design closes at 30.77 MHz on an 85F with the critical path
-  running from a block RAM read port through the MMU walk result to the PC. A
-  wakeup/select loop is a classic critical path, and "it is faster in cycles"
-  is not a result until Fmax is measured alongside it.
+- **Timing.** The design closes at **26.77 MHz** on an 85F — 7% margin over
+  the board's 25, down from 23% before the data cache and the SDRAM
+  controller. The critical path now runs from the CSR write-enable decode to
+  the ID/EX register file's load enable, 11.32 ns of logic against 26.03 ns of
+  routing. A wakeup/select loop is a classic critical path, and "it is faster
+  in cycles" is not a result until Fmax is measured alongside it — with less
+  headroom to spend than this section used to assume.
 - **Area.** The 45F is already at 97% block RAM. A physical register file and a
   ROB are not free, and this may become 85F-only.
 
@@ -481,7 +486,7 @@ the stall rather than removing it. The real numbers are lower.
 **Against that, the thing this stage costs.** 1d is a redesign of a
 2,000-line core with no independently verifiable piece (the section above);
 its wakeup/select loop is a classic critical path on a design that closes at
-30.77 MHz today; and a physical register file plus a ROB land on a 45F that is
+26.77 MHz today, with 7% margin over the board's clock; and a physical register file plus a ROB land on a 45F that is
 already at 97% block RAM. Sixty lines in the bus adapter were worth 9.9%.
 
 **Stage 1d is therefore not scheduled.** Not "designed and deferred" — the
@@ -642,21 +647,61 @@ interconnect decodes `addr[31:24]`. That is 256× block RAM and 30× the 521 KB
 anything — but the part is 32 MB and half of it is unreachable until that
 decode grows a per-slave mask.
 
-### Not on hardware
+### Wired to a board, but not yet run on one
 
-`fpga/soc_fpga.v` brings the pins out. `fpga/ulx3s_top.v` **does not route
-them**, and that is a decision: every pin assignment in that file was
-confirmed on silicon, its header says so, and transcribing thirty ball numbers
-out of a datasheet would put unverified lines in the one file whose value is
-that it contains none. The wiring needed is written out in a comment there,
-along with the part most likely to need attention on a real board — the SDRAM
-clock's phase relationship to the internal clock, which at a 40 ns period is
-forgiving enough that driving it straight from the oscillator *usually* works,
-and "usually" is not a measurement.
+The pins are placed. `fpga/constraints/ulx3s.lpf` carries all 39 SDRAM
+signals, copied verbatim from the board's own `ulx3s_v20.lpf` and cross-checked
+line-for-line against litex-boards' `radiona_ulx3s.py` — the same two-source
+rule the SD pins went through, and the two agree on every one, including
+`sdram_a[10]` at N19, the one pin that breaks the otherwise sequential run and
+therefore the one a transcription would get wrong without noticing.
+
+**Measured, on an LFE5U-85F with `--lpf-allow-unconstrained` not set:**
+
+| | Fmax | LUT | Block RAM |
+|---|---|---|---|
+| Full SoC (`BOARD=ulx3s85-sdramcheck`) | **26.77 MHz** — PASS at 25 | 20% | 51% |
+| The probe (`BOARD=ulx3s-sdram`) | 104.50 MHz | <1% | 0% |
+
+26.77 MHz is **down from 30.77**, and this is the first place-and-route since
+both the data cache and this controller landed, so the drop belongs to the pair
+of them. The critical path is in neither: it runs from the CSR write-enable
+decode to the ID/EX register file's load enable, 11.32 ns of logic against
+26.03 ns of routing. Margin at the board's 25 MHz is now 7% rather than 23%.
+
+**None of that is evidence about a chip.** Placement and timing closure are
+tool output. So bring-up is two bitstreams, in the order that narrows the
+problem — `fpga/README.md` has the procedure and the LED table:
+
+| | |
+|---|---|
+| `BOARD=ulx3s-sdram` | `fpga/ulx3s_sdram.v` — no CPU at all. Five cumulative LEDs: power-up, one word, walking ones over the data, one address per address bit, and survival across a ~100 ms idle, which is what proves refresh |
+| `BOARD=ulx3s85-sdramcheck` | `software/soc/sdramcheck.c` — the CPU, caches and interconnect in the path, running from block RAM and hammering 256 KB of SDRAM |
+
+Both have simulations (`make sim_sdramprobe`, `make sim_sdramcheck`) and both
+are gated in CI, because a bring-up instrument that is itself wrong turns "the
+memory does not work" into a hunt through the memory, the pinout and the clock.
+
+**The thing most likely to need attention** is `sdram_clk`, driven straight
+from the oscillator in `ulx3s_top.v`. At a 40 ns period that is usually enough,
+and "usually" is not a measurement: place-and-route puts 7.27 ns of routing
+between the `sdram_d` pad and its capture flop before any board delay. If the
+probe stops with `led[0]` lit and nothing else, that is the line — a DDR output
+register clocked 180° out, or a PLL phase tap.
+
+### Why nothing runs *from* SDRAM on a board yet
+
+A bitstream initialises block RAM at FPGA configuration time. SDRAM is external
+and comes up holding nothing, so `sdramtest.c` — linked at 0x9000_0000 and
+preloaded into the model in simulation — has no way to get there. Running code
+out of SDRAM on hardware needs a loader: the SD path (Phase 7, and CMD0
+currently goes unanswered) or a UART one. Neither exists. That is a separate
+piece of work, not a missing line in this one.
 
 **Done when:** ~~the SoC runs a program larger than 64 KB from external
-memory~~ — done in simulation, above. **Still open:** the same program on a
-board, and Sv32 out of SDRAM.
+memory~~ — done in simulation, above. **Still open:** the two bring-up
+bitstreams on a board, a loader so code can run from SDRAM there, and Sv32 page
+tables in SDRAM.
 
 
 ---

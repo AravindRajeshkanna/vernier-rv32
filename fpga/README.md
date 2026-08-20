@@ -1,9 +1,10 @@
 # FPGA integration — status and honest caveats
 
 **The design builds to a ULX3S bitstream against that board's real pinout,
-closes timing at 25 MHz — 30.77 MHz on an 85F, 28.78 MHz on a 45F — and has
-been loaded onto an LFE5U-85F, where it boots and passes its acceptance
-test.** Those are different claims, and two of them are still open:
+closes timing at 25 MHz — 26.77 MHz on an 85F as of the data cache and the
+SDRAM controller, 30.77 MHz before them — and has been loaded onto an
+LFE5U-85F, where it boots and passes its acceptance test.** Those are
+different claims, and three of them are still open:
 
 | Artifact | Status |
 |---|---|
@@ -12,13 +13,15 @@ test.** Those are different claims, and two of them are still open:
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
 | Resource usage | ✅ **measured** — 27% LUT / 62% EBR on a 45F, 14% / 32% on an 85F |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ✅ **30.77 MHz** (85F) / **28.78 MHz** (45F), PASS at the board's 25 MHz |
+| **Fmax with I/O constrained** | ✅ **26.77 MHz** (85F), PASS at the board's 25 MHz — down from 30.77 before the D-cache and SDRAM |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
 | Surviving a reset | ✅ **fixed** — `.data` is rebuilt at startup; two consecutive board runs are byte-identical |
 | newlib / `printf` on a board | ✅ **works** — `NEWLIB-PROBE: PASS`; the old failure was the `.data` bug above, not libc |
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
+| **SDRAM pins** | ⚠️ **placed and cross-checked, bitstream builds, timing closes — never loaded** |
+| **SDRAM on a board** | ❌ **not run.** `BOARD=ulx3s-sdram` is the probe that would settle it — see below |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
 ## The hardware run
@@ -234,6 +237,100 @@ stdio had run, where a healthy system also reads non-NULL. A diagnostic that
 returns a confident wrong answer is worse than none, which is why
 `make trapcheck` and the simulation baseline exist at all.
 
+## Bringing up the SDRAM, in two steps
+
+`rtl/soc/wb_sdram.v` is verified in simulation against a model that refuses
+illegal protocol (`make sim_sdram`), and the SoC runs a 99 KB program out of it
+(`make sim_sdramboot`). **None of that is evidence about a chip.** The pins are
+placed from the board's own constraint file and cross-checked against
+litex-boards, the bitstream builds, and timing closes — and a wrong SDRAM pin
+does not fail loudly. It builds, it loads, and it quietly does not work.
+
+So there are two bitstreams, in the order that narrows the problem. Both have a
+simulation, because a diagnostic that arrives at a board untested turns "the
+memory does not work" into a hunt through the memory, the pinout and the clock
+when the fault is in the instrument.
+
+### Step 1 — the probe, with no CPU in it
+
+```sh
+make sim_sdramprobe                              # prove the instrument first
+export PATH=~/tools/oss-cad-suite/bin:$PATH
+BOARD=ulx3s-sdram ./fpga/synth/synth_ecp5.sh
+openFPGALoader -b ulx3s fpga/build/ulx3s_sdram.bit
+```
+
+`fpga/ulx3s_sdram.v` drives the controller directly and reports through five
+cumulative LEDs. It runs forever, so a marginal setup flickers rather than
+showing a stable wrong answer:
+
+| | |
+|---|---|
+| `led[7]` blinking | alive. If it is not, nothing else on the display means anything |
+| `led[0]` | the controller finished its 100 µs power-up. Comes on even if all else fails |
+| `led[1]` | one word written and read back |
+| `led[2]` | walking ones — all 32 data bits proved individually |
+| `led[3]` | one address per address bit, 0 up to the top of a 32 MB part |
+| `led[4]` | still correct after ~100 ms idle. **This is the one that proves refresh** |
+
+What each stopping point means:
+
+| Display | Read it as |
+|---|---|
+| heartbeat only | the controller never left power-up. Is `sdram_clk` reaching the pin? |
+| `led[0]` only | commands land, data does not come back. **This is the clock-phase symptom** |
+| `led[0..1]`, not `[2]` | a DQ line stuck, or two swapped |
+| `led[0..2]`, not `[3]` | an address or bank line wrong |
+| `led[0..3]`, not `[4]` | refresh is not reaching the part |
+| `led[0..4]` all lit | the memory works. Go to step 2 |
+
+**If it stops at `led[0]`**, the fix is in `fpga/ulx3s_top.v`'s `sdram_clk`
+assignment, which drives the pin straight from the oscillator. At a 40 ns
+period that is usually enough, and "usually" is not a measurement: place-and-
+route puts 7.27 ns of routing between the `sdram_d` pad and its capture flop,
+before any board delay. A DDR output register clocked 180° out (`ODDRX1F` with
+`D0=0, D1=1`) or a PLL phase tap is the answer, and both are local changes to
+that one net.
+
+### Step 2 — the CPU, the caches and the interconnect
+
+```sh
+make sim_sdramcheck                              # the same image, simulated
+BOARD=ulx3s85-sdramcheck ./fpga/synth/synth_ecp5.sh
+openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
+picocom -b 115200 /dev/cu.usbserial-XXXXXXX      # then tap reset
+```
+
+`software/soc/sdramcheck.c` runs **from block RAM** and hammers SDRAM as data:
+walking ones, 256 KB of unique addresses (four times the block RAM), byte and
+halfword lanes through `cpu_wb.v`'s lane shifting, and a short idle. Expect:
+
+```
+=== external SDRAM check (running from block RAM) ===
+SDRAM window at 0x90000000, sweeping 256 KB against 64 KB of block RAM
+
+  single word                   ok
+  walking ones, 32 bits         ok
+  256 KB unique addresses       ok
+  byte lanes                    ok
+  halfword lanes                ok
+  survives a short idle         ok
+  block RAM still reachable     ok
+
+SDRAM-CHECK: PASS
+```
+
+### Why the program does not run *from* SDRAM on a board
+
+Because nothing can put it there. A bitstream initialises block RAM at FPGA
+configuration time; SDRAM is external and comes up holding nothing. Getting a
+program into it needs a loader — the SD path (Phase 7, and CMD0 currently goes
+unanswered) or a UART one — and neither exists. `make sim_sdramboot` proves
+code execution out of SDRAM in simulation, where the testbench simply preloads
+the model. See `docs/roadmap.md` Phase 2.
+
+---
+
 ## Building for a ULX3S
 
 **The 45F and the 85F both work; the 12F and 25F do not.** The ULX3S ships
@@ -264,17 +361,26 @@ the bitstream line.
 
 | Target | Device | Fmax | LUT | EBR |
 |---|---|---|---|---|
-| `BOARD=ulx3s` | LFE5U-45F | 28.78 MHz | 29% | **105/108 — 97%** |
-| `BOARD=ulx3s85` | LFE5U-85F | **30.77 MHz** | 15% | 105/208 — 50% |
+| `BOARD=ulx3s` | LFE5U-45F | 28.78 MHz † | 29% | **105/108 — 97%** |
+| `BOARD=ulx3s85` | LFE5U-85F | **26.77 MHz** | 20% | 107/208 — 51% |
 
-Both close comfortably at the board's 25 MHz, but they are no longer
-equivalent: **the 45F is now at 97% block RAM** and has room for essentially
-nothing else, while the 85F is at half. That gap is the framebuffer, which
-costs 38 EBR — see [Framebuffer cost](#framebuffer-cost).
+† the 45F number predates the data cache and the SDRAM controller and has not
+been re-measured. The 85F row has: **26.77 MHz, down from 30.77**, which is the
+first place-and-route since both landed, so the drop belongs to the pair rather
+than to either one. It still passes at the board's 25 MHz — with 7% margin
+rather than 23%, which is worth knowing before adding anything else. The
+critical path is in neither: it runs from the CSR write-enable decode to the
+ID/EX register file's load enable, 11.32 ns of logic against 26.03 ns of
+routing.
 
-Four more targets exist and are not general-purpose builds. Three bake a
+The two devices are no longer equivalent for a different reason as well:
+**the 45F is at 97% block RAM** and has room for essentially nothing else,
+while the 85F is at half. That gap is the framebuffer, which costs 38 EBR —
+see [Framebuffer cost](#framebuffer-cost).
+
+Six more targets exist and are not general-purpose builds. Four bake a
 program into the bitstream so the SoC can be exercised without a working card
-(same RTL, same pinout, different `RAM_INIT_FILE`); one drops the CPU
+(same RTL, same pinout, different `RAM_INIT_FILE`); two drop the CPU
 entirely:
 
 | Target | What it runs | Build the image first |
@@ -282,7 +388,9 @@ entirely:
 | `BOARD=ulx3s85-ram` | the acceptance test | `make ramimage` |
 | `BOARD=ulx3s85-probe` | the newlib probe | `make probeimage` |
 | `BOARD=ulx3s85-trapcheck` | one deliberate fault, to prove the trap report | `make sim/trapimage.hex TRAPCHECK=1` |
+| `BOARD=ulx3s85-sdramcheck` | external SDRAM, hammered from block RAM | `make sim/sdramcheckimage.hex` |
 | `BOARD=ulx3s-cmd0` | SD CMD0, in ~60 flip-flops, no CPU | — |
+| `BOARD=ulx3s-sdram` | the SDRAM controller, no CPU, five LEDs | — |
 
 The build refuses to start if the image is missing, and refuses again if the
 image is older than the ELF it came from — a stale preload otherwise sails
@@ -291,8 +399,13 @@ which has already cost one full synthesize-and-flash cycle here. It prints
 which image it took.
 
 **Check your board revision first.** The four SD pins used for SPI mode are
-wired differently on **v1.7** than on v2.0/v3.0, and `constraints/ulx3s.lpf`
-is for the latter:
+wired differently on **v1.7** than on v2.0/v3.0/v3.1, and
+`constraints/ulx3s.lpf` is for the latter. The SDRAM pins are the same across
+v2.0, v3.0.x and v3.1.x — the v3.1 changes were ESP32 JTAG, GPIO0 and the OLED
+header, none of which touched memory — but the *part* varies: v3.1.4 onward is
+an IS42S16160G (32 MB, 9 column bits, which is what `wb_sdram.v` defaults to),
+while some v3.0.x boards carry an AS4C32M16 (64 MB, **10** column bits). See
+`docs/toolchain.md` §2.
 
 | | v2.0 / v3.0 | v1.7 |
 |---|---|---|
@@ -386,7 +499,13 @@ from actually attempting the build at `RAM_BYTES=65536`.
 | LFE5U-12F | 24,288 † | 56 | 28 | 197 | ❌ **needs 67 EBR — 119%** |
 | LFE5U-25F | 24,288 | 56 | 28 | 197 | ❌ **needs 67 EBR — 119%** |
 | LFE5U-45F | 43,848 | 108 | 72 | 245 | ✅ 29% LUT, **97% EBR**, 28.78 MHz |
-| LFE5U-85F | 83,640 | 208 | 156 | 365 | ✅ 15% LUT, 50% EBR, **30.77 MHz** |
+| LFE5U-85F | 83,640 | 208 | 156 | 365 | ✅ 15% LUT, 50% EBR, **30.77 MHz** ‡ |
+
+‡ this table is the measurement made when the framebuffer landed, and the two
+Fmax figures in it predate the data cache and the SDRAM controller. The 85F is
+now 20% LUT, 51% EBR and **26.77 MHz** — see the device table under
+[Building for a ULX3S](#building-for-a-ulx3s). The EBR verdicts are unchanged,
+which is what this table is actually for.
 
 † **nextpnr targets the 25F resource database for `--12k`** — the two are the
 same silicon, with the 12F sold as a reduced-capacity part. So a design that
