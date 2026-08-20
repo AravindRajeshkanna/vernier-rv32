@@ -697,14 +697,35 @@ memory does not work" into a hunt through the memory, the pinout and the clock.
 paragraph used to say a straight assignment "usually works, and usually is not
 a measurement". The measurement arrived and it did not work.
 
-### Why nothing runs *from* SDRAM on a board yet
+### Getting a program into SDRAM on a board
 
 A bitstream initialises block RAM at FPGA configuration time. SDRAM is external
-and comes up holding nothing, so `sdramtest.c` — linked at 0x9000_0000 and
-preloaded into the model in simulation — has no way to get there. Running code
-out of SDRAM on hardware needs a loader: the SD path (Phase 7, and CMD0
-currently goes unanswered) or a UART one. Neither exists. That is a separate
-piece of work, not a missing line in this one.
+and comes up holding nothing, so an image linked at 0x9000_0000 has no way to
+get there — which is why the memory could be proven and still hold no code.
+
+The boot ROM now takes one over the serial line:
+
+```sh
+./software/soc/uartload.py /dev/cu.usbserial-XXXX software/soc/sdramtest.bin
+# then press reset on the board
+```
+
+It listens for a knock for 20 ms after reset, takes a 16-byte header (magic,
+load address, length, CRC32), refuses an address outside RAM or SDRAM, and
+checks the CRC before it jumps. `make sim_uartload` runs the whole path — host,
+ROM, SDRAM, running program — and is gated in CI.
+
+**It is stop-and-wait, a byte at a time**, and that is the interesting part.
+`rtl/uart.v`'s receiver is one byte deep with no FIFO, so a transfer that
+streams depends on the receiver keeping up with the line: true with 31× margin
+at 115200 on a 25 MHz board, false in simulation at four clocks per bit, where
+the ROM is 1.8× too slow. An earlier version acknowledged every 256 bytes and
+believed that removed the dependence; it only divided it by 256.
+`docs/practices.md` §24.
+
+That loader is also the **first user of `rtl/uart.v`'s receive path** — nothing
+in this project had ever transmitted *to* the SoC, so that half of the UART was
+untested RTL until now.
 
 **Done when:** ~~the SoC runs a program larger than 64 KB from external
 memory~~ — done in simulation, and **the memory itself is proven on silicon**:
@@ -712,11 +733,11 @@ memory~~ — done in simulation, and **the memory itself is proven on silicon**:
 ULX3S v3.1.8 / LFE5U-85F.
 
 **Still open**, and worth keeping separate because they are different sizes of
-job:
+job — the loader that used to head this list is done:
 
 | | |
 |---|---|
-| A loader, so code can run *from* SDRAM on a board | a bitstream initialises block RAM at configuration time and SDRAM comes up empty. Needs the SD path (Phase 7) or a UART loader |
+| ~~A loader, so code can run *from* SDRAM on a board~~ | **done** — the boot ROM takes an image over the serial line. See below |
 | Sv32 page tables in SDRAM | `wb_ram.v` carries the walker ports on block RAM's second port, and an SDRAM has none |
 | The 16 MB window | one base byte is one 16 MB slave under this decode; the part is 32 MB |
 

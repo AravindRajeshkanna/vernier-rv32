@@ -137,9 +137,19 @@ module tb_ramboot;
     localparam [31:0] RESULT_FAIL = 32'h4641494C;  // "FAIL"
 
     initial begin
-        $dumpfile("wave_ramboot.vcd");
-        $dumpvars(0, tb_ramboot);
-
+    // Waveforms are opt-in: run with `+dump`, or `make <target> DUMP=1`.
+    //
+    // This used to be unconditional, and the cost scales with how long the
+    // run is - which for the SoC-level tests is millions of cycles over a
+    // whole SoC. `make sim_sdramboot` alone wrote a **6.2 GB** VCD, and
+    // `make sim_uartload` an **18 GB** one, so a single `make verify` filled
+    // a 228 GB disk to 100% and took the machine down with it. Nobody looks
+    // at these files unless they are debugging, and when they are, one
+    // plusarg is not a hardship.
+        if ($test$plusargs("dump")) begin
+            $dumpfile("wave_ramboot.vcd");
+            $dumpvars(0, tb_ramboot);
+        end
         $display("=== preloaded-RAM boot: %s into %0d KB ===",
                  `RAM_IMAGE, RAM_BYTES / 1024);
 

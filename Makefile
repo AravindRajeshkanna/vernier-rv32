@@ -35,6 +35,8 @@
 #
 #   make sim_sdram     -> rtl/soc/wb_sdram.v against sim/sdram_model.v
 #   make sim_sdramboot -> the SoC executing from SDRAM, larger than block RAM
+#   make sim_uartload  -> the boot ROM's UART loader: a host sends a program
+#                         over the serial line and the SoC runs it from SDRAM
 
 IVERILOG      = iverilog
 # Which CPU to build the SoC around. `inorder` is rtl/cpu_core.v, the design
@@ -124,6 +126,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
+        sim_uartload \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -131,17 +134,34 @@ all: sim
 
 sim:
 	$(IVERILOG) $(IVFLAGS) -o sim/sim.out $(TB) $(RTL)
-	cd sim && $(VVP) sim.out
+	cd sim && $(VVP) sim.out $(VVP_DUMP)
 
 # Waveform viewer. GTKWave was discontinued upstream and Homebrew disabled
 # its cask on 2025-10-29, so `surfer` is the default here; VIEWER= overrides
 # it if you still have gtkwave installed from elsewhere.
 VIEWER = surfer
 
-wave: sim
+# Waveforms are opt-in. `make sim DUMP=1` (or any other target here) passes
+# `+dump` to the simulation, which is what makes its testbench write a VCD.
+#
+# They used to be written unconditionally, and the size scales with how long
+# the run is: sim_sdramboot wrote a 6.2 GB VCD and sim_uartload an 18 GB one,
+# so a single `make verify` filled a 228 GB disk to 100%. The `wave` targets
+# below set it for you; nothing else should need it unless you are actually
+# looking at a waveform.
+DUMP ?=
+ifeq ($(DUMP),1)
+VVP_DUMP = +dump
+else
+VVP_DUMP =
+endif
+
+wave:
+	$(MAKE) sim DUMP=1
 	$(VIEWER) sim/wave.vcd &
 
-wave_soc: sim_soc
+wave_soc:
+	$(MAKE) sim_soc DUMP=1
 	$(VIEWER) sim/wave_soc.vcd &
 
 verilator:
@@ -268,7 +288,7 @@ sim/probeimage.hex: software/soc/newlibprobe.elf software/bin2hex.py Makefile
 
 sim_soc: soc
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
-	cd sim && $(VVP) sim_soc.out
+	cd sim && $(VVP) sim_soc.out $(VVP_DUMP)
 
 # ---- the preloaded-RAM boot path, in simulation ----
 # sim_soc boots off the SD card model with 256 KB of RAM. The board that
@@ -280,13 +300,13 @@ sim/sim_ramboot.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_ramboot: sim/bootrom.hex sim/ramimage.hex sim/sim_ramboot.out
-	cd sim && $(VVP) sim_ramboot.out
+	cd sim && $(VVP) sim_ramboot.out $(VVP_DUMP)
 
 sim/sim_probe.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
-	cd sim && $(VVP) sim_probe.out
+	cd sim && $(VVP) sim_probe.out $(VVP_DUMP)
 
 # ---- does the program survive a reset? ----
 # Block RAM is initialised when the FPGA is *configured*, not when the CPU is
@@ -309,7 +329,7 @@ sim/sim_rerun.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_rerun: sim/bootrom.hex sim/probeimage.hex sim/sim_rerun.out
-	@cd sim && $(VVP) sim_rerun.out 2>&1 | tee rerun.log
+	@cd sim && $(VVP) sim_rerun.out $(VVP_DUMP) 2>&1 | tee rerun.log
 	@grep -q "RERUN TEST PASSED" sim/rerun.log || \
 	    { echo "sim_rerun FAILED: the program does not survive a reset"; exit 1; }
 
@@ -464,7 +484,7 @@ sim/sim_sdramprobe.out: sim/tb_ulx3s_sdram.v sim/sdram_model.v \
 	    fpga/ulx3s_sdram.v fpga/sdram_clk_out.v rtl/soc/wb_sdram.v
 
 sim_sdramprobe: sim/sim_sdramprobe.out
-	cd sim && $(VVP) sim_sdramprobe.out
+	cd sim && $(VVP) sim_sdramprobe.out $(VVP_DUMP)
 
 # Same testbench and the same 64 KB block RAM as sim_ramboot - only the
 # preloaded program differs, which is exactly the difference between the two
@@ -484,7 +504,35 @@ sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_sdramcheck: sim/bootrom.hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
-	cd sim && $(VVP) sim_sdramcheck.out
+	cd sim && $(VVP) sim_sdramcheck.out $(VVP_DUMP)
+
+# ---- the boot ROM's UART loader ----
+#
+# The only way a program gets into external SDRAM on a board: a bitstream
+# initialises block RAM at FPGA configuration time and SDRAM comes up empty.
+# software/soc/uartload.py is the host half.
+#
+# The simulated transfer sends software/soc/uartprog.c rather than the 99 KB
+# sdramtest image - at four clocks per bit the big one costs four million
+# cycles before anything is checked, and sim_sdramcheck and sim_sdramboot
+# already cover the size and the memory. On hardware, send the big one.
+UARTPROG_SRCS = $(SOCRT_SRCS) software/soc/uartprog.c
+
+software/soc/uartprog.elf: $(UARTPROG_SRCS) software/soc/link_sdram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_sdram.ld \
+	    -o $@ $(UARTPROG_SRCS)
+
+# --word-size=1: this image travels as bytes over a serial line, not as words
+# into a memory model.
+sim/uartimage.hex: software/soc/uartprog.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/uartprog.elf software/soc/uartprog.bin
+	python3 software/bin2hex.py --word-size=1 software/soc/uartprog.bin > $@
+
+sim/sim_uartload.out: sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
+
+sim_uartload: sim/bootrom.hex sim/uartimage.hex sim/sim_uartload.out
+	cd sim && $(VVP) sim_uartload.out $(VVP_DUMP)
 
 # ---- external SDRAM (Phase 2) ----
 #
@@ -496,7 +544,7 @@ sim/sim_sdram.out: sim/tb_sdram.v sim/sdram_model.v rtl/soc/wb_sdram.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_sdram.v sim/sdram_model.v rtl/soc/wb_sdram.v
 
 sim_sdram: sim/sim_sdram.out
-	cd sim && $(VVP) sim_sdram.out
+	cd sim && $(VVP) sim_sdram.out $(VVP_DUMP)
 
 SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
 
@@ -518,7 +566,7 @@ sim/sim_sdramboot.out: sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_sdramboot: sim/sdramimage.hex sim/sim_sdramboot.out
-	cd sim && $(VVP) sim_sdramboot.out
+	cd sim && $(VVP) sim_sdramboot.out $(VVP_DUMP)
 
 # Everything that can gate a change, in rough order of how fast it fails.
 # Rebuilds from scratch on purpose: the simulation binaries do not encode
@@ -530,7 +578,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
-        sim_sdram sim_sdramboot sim_sdramprobe sim_sdramcheck \
+        sim_sdram sim_sdramboot sim_sdramprobe sim_sdramcheck sim_uartload \
         check-program isa cosim formal
 
 clean:
@@ -544,6 +592,8 @@ clean:
 	       sim/ramimage.hex sim/probeimage.hex \
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
+	       sim/sim_uartload.out sim/uartimage.hex sim/wave_uartload.vcd \
+	       software/soc/uartprog.elf software/soc/uartprog.bin \
 	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \

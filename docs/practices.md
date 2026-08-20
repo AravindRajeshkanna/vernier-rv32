@@ -612,6 +612,51 @@ diagnosis on the next run rather than in another argument.
 
 ---
 
+## 24. An acknowledgement that bounds an assumption has not removed it
+
+The boot ROM's UART loader sends an image in pieces, and the receiver
+acknowledges each one. The first version used 256-byte pieces, and the comment
+above it said - in as many words - that the acknowledgement meant the loader no
+longer depended on the receiver keeping up with the line.
+
+**It did not.** It bounded that dependence to one piece and left it otherwise
+exactly as it was. Inside a piece the host still transmits continuously, and
+`rtl/uart.v`'s receiver is one byte deep: `rx_data_reg` and a valid bit, no
+FIFO. A byte arriving before the previous one is read is simply gone.
+
+The arithmetic that the comment should have contained:
+
+| | cycles per byte |
+|---|---|
+| The ROM: poll, store to SDRAM, fold into a CRC | ~70 |
+| The line at 115200 on a 25 MHz board | 2,170 |
+| The line in simulation, at four clocks per bit | **40** |
+
+So it worked on hardware with 31× of margin and lost bytes inside the first
+piece in simulation — which is the wrong way round, because the simulation is
+what is supposed to catch this before a board does.
+
+Acknowledging every *byte* removes the assumption rather than bounding it: the
+host cannot send byte N+1 until byte N has been read out of the register. It
+costs a round trip per byte, which for a 500 KB image at 115200 is 87 seconds
+instead of 43 — irrelevant for something run once per test cycle.
+
+**The rule.** When a design rests on "A is faster than B", write down both
+numbers. A handshake that fires every N units divides the exposure by N; only
+a handshake every unit removes it. And the ratio that matters is not the one
+on the bench - it is the worst one the design is ever run at, which for
+anything with a simulation is usually the simulation.
+
+The corollary is that this was the *third* protocol bug in the same loader, and
+all three were the same shape: two things sharing a channel with an
+unstated assumption about who speaks when. Console text collided with
+acknowledgements because both used the wire; a probe still in flight became
+the header's first byte because the host could not know when the ROM answered;
+and the transfer outran the receiver. None of them are visible in a diagram of
+the protocol, and all three were found by making a simulation actually run it.
+
+---
+
 ---
 
 ## Conventions

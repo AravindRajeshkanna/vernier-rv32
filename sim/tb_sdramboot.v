@@ -129,9 +129,19 @@ module tb_sdramboot;
     always @(posedge clk) cycles = cycles + 1;
 
     initial begin
-        $dumpfile("wave_sdramboot.vcd");
-        $dumpvars(0, tb_sdramboot);
-
+    // Waveforms are opt-in: run with `+dump`, or `make <target> DUMP=1`.
+    //
+    // This used to be unconditional, and the cost scales with how long the
+    // run is - which for the SoC-level tests is millions of cycles over a
+    // whole SoC. `make sim_sdramboot` alone wrote a **6.2 GB** VCD, and
+    // `make sim_uartload` an **18 GB** one, so a single `make verify` filled
+    // a 228 GB disk to 100% and took the machine down with it. Nobody looks
+    // at these files unless they are debugging, and when they are, one
+    // plusarg is not a hardship.
+        if ($test$plusargs("dump")) begin
+            $dumpfile("wave_sdramboot.vcd");
+            $dumpvars(0, tb_sdramboot);
+        end
         // After time 0, so this lands on top of the model's own initial
         // block rather than under it - Verilog does not order initial blocks,
         // and sim/tb_bench.v learned that the same way.
