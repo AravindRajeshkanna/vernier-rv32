@@ -161,11 +161,11 @@ IOBUF PORT "gn[13]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 ## otherwise sequential run, and therefore the one a transcription would get
 ## wrong without noticing.
 ##
-## !! PLACED, NOT YET CONFIRMED ON SILICON !!  Everything else in this file
-## has been through a board. These have not. A wrong SDRAM pin does not fail
-## loudly: the design builds, loads, and quietly does not work. Prove them
-## with `BOARD=ulx3s-sdram ./fpga/synth/synth_ecp5.sh` - a standalone LED
-## probe with no CPU in it - before trusting any result that involves memory.
+## Confirmed on silicon: a ULX3S v3.1.8 / LFE5U-85F reads and writes 256 KB of
+## external SDRAM through these pins, every address distinct, with byte and
+## halfword lanes and refresh - `SDRAM-CHECK: PASS`, see fpga/README.md. The
+## first run of that test failed one word in a thousand and it was the clock
+## phase, not a pin; the pins were right from the first build.
 ##
 ## Revision: v2.0, v3.0.x and v3.1.x share these. The v3.1 changes were ESP32
 ## JTAG pins, GPIO0 moving to a clock-capable pin, the OLED header going 7->8

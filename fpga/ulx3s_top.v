@@ -74,10 +74,10 @@ module ulx3s_top #(
     // ulx3s_v20.lpf verbatim - so the sites are copied rather than
     // transcribed, and no bit index has to be re-derived anywhere.
     //
-    // !! PLACED, NOT YET CONFIRMED ON SILICON !!  Every other pin in this
-    // file has been through a board; these have not. See the LPF, and prove
-    // them with `BOARD=ulx3s-sdram` (fpga/ulx3s_sdram.v) before trusting a
-    // result that involves memory.
+    // Confirmed on silicon alongside every other pin in this file: 256 KB of
+    // external SDRAM read and written through them on a v3.1.8 / 85F. See
+    // fpga/README.md - the first run failed one word in a thousand, and it
+    // was the clock phase rather than any of these.
     output wire        sdram_clk,
     output wire        sdram_cke,
     output wire        sdram_csn,

@@ -67,14 +67,20 @@ The short version, because the distinction matters more than the list:
 | Surviving a reset | ✅ on silicon |
 | SD card | ❌ CMD0 unanswered |
 | Video scan-out | ❌ not routed |
-| **SDRAM** | ⚠️ **run once and failed** — one word in a thousand, diagnosed as clock phase and changed; not re-run |
+| **SDRAM, as data** | ✅ **on silicon** — 256 KB of unique addresses, byte/halfword lanes, refresh |
+| Running code *from* SDRAM | ❌ nothing can load a program there yet |
 
-The SDRAM row is the one to be careful with, and it has already earned that.
-The first bitstream ran, mostly worked, and failed one word in a thousand —
-which turned out to be a clock-phase margin rather than anything simulation
-could have caught. `fpga/README.md` has the log, the arithmetic and the
-two-step procedure; `docs/practices.md` §23 has what it cost to read the
-evidence properly.
+The SDRAM rows earned their detail. The first bitstream ran, mostly worked,
+and failed one word in a thousand — a clock-phase margin, and nothing
+simulation could have caught. Moving the part's clock half a period and the
+capture point one cycle fixed it, and the re-run reads and writes 256 KB
+cleanly. `fpga/README.md` has both logs, the arithmetic and the two-step
+procedure; `docs/practices.md` §23 has what it cost to read the evidence
+properly.
+
+Running *code* from SDRAM is a different row and still open: a bitstream
+initialises block RAM at configuration time and SDRAM comes up empty, so it
+needs a loader that does not exist.
 
 ### Place-and-route, as measured
 
@@ -85,7 +91,7 @@ rather than an invented placement.
 | Build | Fmax | LUT | FF | Block RAM | IO |
 |---|---|---|---|---|---|
 | `BOARD=ulx3s85-sdramcheck` (full SoC) | **27.41 MHz** — PASS at 25 | 16,831 (20%) | 7,418 (8%) | 107/208 (51%) | 93/365 (25%) |
-| `BOARD=ulx3s-sdram` (probe, no CPU) | **108.83 MHz** | 773 (<1%) | 331 (<1%) | 0 | 56/365 (15%) |
+| `BOARD=ulx3s-sdram` (probe, no CPU) | **95.79 MHz** | 684 (<1%) | 331 (<1%) | 0 | 56/365 (15%) |
 
 (Both figures moved slightly when the SDRAM clock went through an `ODDRX1F`
 instead of being a routed copy of the input clock — the SDRAM pin stopped

@@ -9,8 +9,10 @@
 // talk to this chip?**
 //
 // It runs forever, so the LEDs are a live display rather than a single
-// verdict, and a marginal setup shows up as a pattern that flickers instead
-// of one that is simply wrong.
+// verdict. Each stage flag means "passed on the most recent attempt", so a
+// working part shows **five steady LEDs plus the heartbeat**, and a marginal
+// one shows the same display with a flicker in it - which is a distinction a
+// single-shot verdict cannot make.
 //
 // ---- Reading the LEDs ----
 //
@@ -34,6 +36,12 @@
 //   led[7]  heartbeat, ~1.5 Hz. If this is not blinking the design is not
 //           running and nothing else on the display means anything.
 //
+// led[7] is the *only* one that should be blinking on a working board. An
+// earlier version cleared every flag on each restart, which made led[4]
+// strobe at 3 Hz on hardware that was entirely fine, because it could not
+// re-light until the next 100 ms idle test had finished. That cost a bench
+// session's worth of doubt - see S_DONE.
+//
 // ---- What each failure looks like ----
 //
 //   nothing lit, no heartbeat     bitstream not loaded, or clk/reset wrong
@@ -45,7 +53,11 @@
 //   led[0..1], not led[2]         a DQ line is stuck or two are swapped
 //   led[0..2], not led[3]         an address or bank line is wrong
 //   led[0..3], not led[4]         refresh is not reaching the part
-//   led[0..4] all lit             the memory works. Move on to the SoC.
+//   led[0..4] steady, led[7] only
+//     blinking                    the memory works. Move on to the SoC.
+//   any of led[1..4] flickering   it mostly works. That is a margin, not a
+//                                 wiring fault, and the SoC check below is
+//                                 what quantifies it.
 module ulx3s_sdram #(
     parameter CLK_HZ = 25_000_000,
     // How long to sit idle before re-reading, in cycles. On a board this is
@@ -230,7 +242,11 @@ module ulx3s_sdram #(
                     idx       <= 6'd0;
                     start_op(WALK_ADDR, 32'd1, 1'b1, S_WALK_W);
                 end else begin
-                    state <= S_DONE;
+                    ok_single  <= 1'b0;
+                    ok_walk    <= 1'b0;
+                    ok_spread  <= 1'b0;
+                    ok_refresh <= 1'b0;
+                    state      <= S_DONE;
                 end
             end
 
@@ -240,7 +256,10 @@ module ulx3s_sdram #(
             S_WALK_W: start_op(WALK_ADDR, 32'b0, 1'b0, S_WALK_R);
             S_WALK_R: begin
                 if (wb_dat_r != (32'd1 << idx[4:0])) begin
-                    state <= S_DONE;
+                    ok_walk    <= 1'b0;
+                    ok_spread  <= 1'b0;
+                    ok_refresh <= 1'b0;
+                    state      <= S_DONE;
                 end else if (idx == 6'd31) begin
                     ok_walk <= 1'b1;
                     idx     <= 6'd0;
@@ -266,7 +285,9 @@ module ulx3s_sdram #(
             end
             S_SPR_R: begin
                 if (wb_dat_r != data_of(idx[4:0])) begin
-                    state <= S_DONE;
+                    ok_spread  <= 1'b0;
+                    ok_refresh <= 1'b0;
+                    state      <= S_DONE;
                 end else if (idx == SPREAD - 1) begin
                     ok_spread <= 1'b1;
                     idle_ctr  <= 32'd0;
@@ -290,7 +311,8 @@ module ulx3s_sdram #(
             end
             S_RECHK: begin
                 if (wb_dat_r != data_of(idx[4:0])) begin
-                    state <= S_DONE;
+                    ok_refresh <= 1'b0;
+                    state      <= S_DONE;
                 end else if (idx == SPREAD - 1) begin
                     ok_refresh <= 1'b1;
                     state      <= S_DONE;
@@ -300,18 +322,25 @@ module ulx3s_sdram #(
                 end
             end
 
-            // Hold the result for a moment, then start over. Restarting is
-            // what turns a marginal setup into a visible flicker rather than
-            // a stable wrong answer that looks like a definite verdict.
+            // Hold for a moment, then start over. Restarting is what turns a
+            // marginal setup into a visible flicker rather than a stable wrong
+            // answer that looks like a definite verdict.
+            //
+            // **The flags are not cleared here**, and that is the whole point
+            // of them. Each one means "passed on the most recent attempt": set
+            // on success above, cleared by the failure path that skipped it.
+            // Clearing them all on restart is what this used to do, and it
+            // made a *passing* board look broken - led[1..3] came back within
+            // microseconds and read as steady, but led[4] could not re-light
+            // until the next 100 ms idle test finished, so it strobed at 3 Hz
+            // on a machine where everything worked. The table at the top of
+            // this file promised "all five lit" for a working part and that
+            // state was unreachable.
             S_DONE: begin
                 idle_ctr <= idle_ctr + 1'b1;
                 if (idle_ctr[23]) begin
-                    idle_ctr   <= 32'd0;
-                    ok_single  <= 1'b0;
-                    ok_walk    <= 1'b0;
-                    ok_spread  <= 1'b0;
-                    ok_refresh <= 1'b0;
-                    state      <= S_WAIT;
+                    idle_ctr <= 32'd0;
+                    state    <= S_WAIT;
                 end
             end
 

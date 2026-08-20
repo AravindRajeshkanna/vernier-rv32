@@ -168,12 +168,13 @@ priorities).
 ```
 riscv-tests:             79 passed, 0 failed, 3 xfail   (make isa)
 co-simulation vs Spike:  82/82 traces match             (make cosim)
-formal:                  4 proved, 0 refuted            (make formal)
+formal:                  5 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 SDRAM controller:        against a model that says no    (make sim_sdram)
 SoC out of SDRAM:        99 KB program, 64 KB block RAM  (make sim_sdramboot)
-ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (BOARD=ulx3s   ...synth_ecp5.sh)
-ULX3S 85F bitstream:     30.77 MHz, 15% LUT, 50% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
+SDRAM on a board:        256 KB read/written, ULX3S 85F  (BOARD=ulx3s85-sdramcheck)
+ULX3S 85F bitstream:     27.41 MHz, 20% LUT, 51% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
+ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (predates the D-cache and SDRAM)
 ```
 
 `make verify` runs the lot. `tests/README.md` has the details, including the
@@ -539,7 +540,7 @@ The short version:
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
 | 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs, buffers stores, and completes independent work under a waiting load. Worth 0.05% until the Phase 3 I-cache landed and 7.2% after it, on largely unchanged RTL. **1d (renaming, reorder buffer, LSQ) is designed and not scheduled**: the Phase 3 D-cache took its measured ceiling from 2.9% to 0.56% |
-| 2 | Break the memory ceiling — external DRAM | **SDR SDRAM controller done in simulation**: the SoC runs a 99 KB program from external memory, against 64 KB of block RAM. Not yet routed to a board's pins |
+| 2 | Break the memory ceiling — external DRAM | **SDR SDRAM controller, proven on silicon** — 256 KB read and written on a ULX3S 85F, and a 99 KB program run from it in simulation. A loader is still needed before code can run from it on a board |
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache **1.79×** and D-cache **1.11×** on CoreMark, both in the bus adapter and shared by both cores. Interrupt-driven UART and multi-word lines remain |
 | 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
 | 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot. Phase 2's SDRAM removes the "nowhere to put a 521 KB `fw_jump.bin`" half of that |
@@ -565,7 +566,7 @@ the same as being fixed.
 | | |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
-| [docs/practices.md](docs/practices.md) | The working rules — sixteen of them, each attached to the incident on this repo that produced it |
+| [docs/practices.md](docs/practices.md) | The working rules — twenty-three of them, each attached to the incident on this repo that produced it |
 | [docs/roadmap.md](docs/roadmap.md) | Where this goes next, in phases, in dependency order |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |
