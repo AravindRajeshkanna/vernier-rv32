@@ -28,7 +28,7 @@ that make it a report about that specific build.
 | CLINT, GPIO through real pads, UART, boot ROM, framebuffer memory | ✅ on hardware |
 | Reset and ESP32 hold-off | ✅ on hardware |
 | newlib `printf` on hardware | ✅ — was a `.data` init bug, not libc |
-| riscv-tests 79/82, Spike co-simulation 82/82, 4 formal proofs | ✅ in CI |
+| riscv-tests 79/82, Spike co-simulation 82/82, 5 formal proofs | ✅ in CI |
 
 Timing: **27.41 MHz on an 85F** against the board's 25 MHz, as of the data
 cache and the SDRAM controller. It was 30.77 before those two; the 45F's
@@ -63,7 +63,7 @@ And the constraints that do not relax while it happens:
 - **Co-simulation still compares every retired instruction against Spike.**
   This is the good news: an out-of-order machine still retires in order, so
   82/82 remains exactly the right check, and it is a brutal one.
-- **79/82 architectural tests, 4 formal proofs, and a hardware run** are the
+- **79/82 architectural tests, 5 formal proofs, and a hardware run** are the
   standing bar. `docs/practices.md` §1 applies with force here: a superscalar
   core that passes because the tests never create the hazard is the most
   expensive kind of test that cannot fail.
@@ -661,7 +661,7 @@ therefore the one a transcription would get wrong without noticing.
 | | Fmax | LUT | Block RAM |
 |---|---|---|---|
 | Full SoC (`BOARD=ulx3s85-sdramcheck`) | **27.41 MHz** — PASS at 25 | 20% | 51% |
-| The probe (`BOARD=ulx3s-sdram`) | 108.83 MHz | <1% | 0% |
+| The probe (`BOARD=ulx3s-sdram`) | 95.79 MHz | <1% | 0% |
 
 27.41 MHz is **down from 30.77**, and this is the first place-and-route since
 both the data cache and this controller landed, so the drop belongs to the pair
@@ -669,17 +669,19 @@ of them. The critical path is in neither: it runs from the CSR write-enable
 decode to the ID/EX register file's load enable, 11.32 ns of logic against
 26.03 ns of routing. Margin at the board's 25 MHz is now 10% rather than 23%.
 
-**None of that is evidence about a chip**, and the chip has since said so. The
-first bitstream ran, mostly worked, and returned one wrong word in a thousand —
-a read capture point sitting 5.4 ns before the part swapped one burst beat for
-the next, and a write path with no hold margin at all because the clock and the
-data left the FPGA together. `fpga/sdram_clk_out.v` now clocks the part half a
-period out through an `ODDRX1F` and `rtl/soc/wb_sdram.v` captures a cycle
-earlier to match; the two are a matched pair. The log, the arithmetic and what
-it cost to read the evidence properly are in `fpga/README.md` and
-`docs/practices.md` §23. **Not yet re-run on the board.**
+**None of that was evidence about a chip**, and the chip settled it in two
+runs. The first bitstream mostly worked and returned one wrong word in a
+thousand — a read capture point sitting 5.4 ns before the part swapped one
+burst beat for the next, and a write path with no hold margin at all because
+the clock and the data left the FPGA together. `fpga/sdram_clk_out.v` now
+clocks the part half a period out through an `ODDRX1F` and
+`rtl/soc/wb_sdram.v` captures a cycle earlier to match; the two are a matched
+pair. The re-run reads and writes **256 KB of external SDRAM, every address
+distinct, with byte and halfword lanes and refresh** — `SDRAM-CHECK: PASS`.
+Both logs, the arithmetic and what it cost to read the evidence properly are
+in `fpga/README.md` and `docs/practices.md` §23.
 
-So bring-up is two bitstreams, in the order that narrows the problem —
+Bring-up is two bitstreams, in the order that narrows the problem —
 `fpga/README.md` has the procedure and the LED table:
 
 | | |
@@ -705,9 +707,18 @@ currently goes unanswered) or a UART one. Neither exists. That is a separate
 piece of work, not a missing line in this one.
 
 **Done when:** ~~the SoC runs a program larger than 64 KB from external
-memory~~ — done in simulation, above. **Still open:** the two bring-up
-bitstreams on a board, a loader so code can run from SDRAM there, and Sv32 page
-tables in SDRAM.
+memory~~ — done in simulation, and **the memory itself is proven on silicon**:
+256 KB read and written through the CPU, the caches and the interconnect on a
+ULX3S v3.1.8 / LFE5U-85F.
+
+**Still open**, and worth keeping separate because they are different sizes of
+job:
+
+| | |
+|---|---|
+| A loader, so code can run *from* SDRAM on a board | a bitstream initialises block RAM at configuration time and SDRAM comes up empty. Needs the SD path (Phase 7) or a UART loader |
+| Sv32 page tables in SDRAM | `wb_ram.v` carries the walker ports on block RAM's second port, and an SDRAM has none |
+| The 16 MB window | one base byte is one 16 MB slave under this decode; the part is 32 MB |
 
 
 ---
@@ -879,8 +890,13 @@ the framebuffer.
 OpenSBI **builds** for this core and does not **boot** on it.
 [software/opensbi/README.md](../software/opensbi/README.md) is precise about
 the split and lists what is missing: a platform port for console, timer and
-IPI glue, and more RAM than there is — `fw_jump.bin` is 521 KB, which is
-Phase 2's problem.
+IPI glue, and a way to get a 521 KB `fw_jump.bin` onto the board.
+
+**The memory half of that is answered.** Phase 2's SDRAM is proven on silicon
+and reaches 16 MB, which is thirty times what `fw_jump.bin` needs. What is not
+answered is *loading* it there: a bitstream initialises block RAM at FPGA
+configuration time and SDRAM comes up empty, so this now waits on a boot path
+(Phase 7) or a UART loader rather than on memory that does not exist.
 
 FreeRTOS or Zephyr is the realistic intermediate milestone, and is reachable
 sooner: there is a bus, a timer, an interrupt controller and storage.

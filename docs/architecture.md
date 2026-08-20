@@ -1027,7 +1027,7 @@ runs all of them; `tests/README.md` is the detailed writeup.
 | Directed tests | Does the feature I just wrote work? | `make sim`, `make sim_soc` pass |
 | riscv-tests | Does this implement *RISC-V*, judged by somebody else's suite? | 79 pass, 3 xfail |
 | Spike co-simulation | Did it execute the *same instructions* as the reference model? | 82/82 traces match |
-| Formal (yosys + z3) | Does this module hold for *every* input? | 4 proved, bound 12 cycles |
+| Formal (yosys + z3) | Does this module hold for *every* input? | 5 proved, bound 12 cycles |
 
 The layering is not redundancy. A directed test only catches what its author
 thought to assert. An architectural test catches what the ISA requires but

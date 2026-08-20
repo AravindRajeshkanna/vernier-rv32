@@ -13,7 +13,8 @@ yet *boot* on it. Being precise about that split:
 | OpenSBI builds for rv32ima with `riscv64-unknown-elf-` | ✅ done, `./build-opensbi.sh` |
 | CPU platform features OpenSBI relies on | ✅ done (see below) |
 | Platform port (console / timer / IPI glue) | ❌ not written |
-| RAM large enough (`fw_jump.bin` is 521 KB vs 256 KB) | ❌ parameter not yet raised |
+| Somewhere to put a 521 KB `fw_jump.bin` | ✅ **32 MB of SDRAM, proven on silicon** — 16 MB reachable through the current address decode |
+| A way to *load* it there on a board | ❌ a bitstream initialises block RAM; SDRAM comes up empty |
 | Actually boots and prints a banner | ❌ not attempted |
 
 ## What was fixed in the CPU to get this far
@@ -59,12 +60,23 @@ rot.
    (its threshold/claim registers are at `0x3000`/`0x3004` rather than the
    spec's per-context `0x200000` block), so either the PLIC gets remapped or
    the port skips irqchip init.
-2. **Raise `RAM_BYTES`.** `fw_jump.bin` alone is 521 KB against 256 KB of
-   RAM. It's a parameter, so this is easy in simulation — but it's also the
-   reason this can never run on the current FPGA target, which has no DRAM.
-3. **Preload RAM rather than loading over SPI.** Pulling ~500 KB through the
-   bit-banged SPI/SD path would cost roughly 16 M cycles just for the
-   transfer. `soc_top.v` already has a `RAM_INIT_FILE` parameter for this.
+2. **Link it into SDRAM** at `0x9000_0000`, not block RAM. `fw_jump.bin` is
+   521 KB against 64 KB on the board, and Phase 2 answered that: there are
+   32 MB of SDRAM on a ULX3S and `rtl/soc/wb_sdram.v` reaches 16 MB of them.
+   This used to say DRAM was "the reason this can never run on the current
+   FPGA target", which stopped being true when a board read and wrote 256 KB
+   of it — see `fpga/README.md`.
+
+   What is *not* answered is getting the image there on hardware. A bitstream
+   initialises block RAM at FPGA configuration time and SDRAM comes up
+   holding nothing, so this needs a loader: the SD path (Phase 7) or a UART
+   one. In simulation the testbench preloads the model and the question does
+   not arise, which is exactly the kind of gap `docs/practices.md` §4 is
+   about.
+3. **Preload rather than loading over SPI, in simulation.** Pulling ~500 KB
+   through the bit-banged SPI/SD path would cost roughly 16 M cycles just for
+   the transfer. `sim/tb_sdramboot.v` already does this — it `$readmemh`s the
+   image straight into the SDRAM model and runs a 99 KB program out of it.
 4. **An S-mode payload** for OpenSBI to hand off to, to prove the transition.
 
 ## And to be clear about Linux

@@ -3,8 +3,9 @@
 **The design builds to a ULX3S bitstream against that board's real pinout,
 closes timing at 25 MHz — 27.41 MHz on an 85F as of the data cache and the
 SDRAM controller, 30.77 MHz before them — and has been loaded onto an
-LFE5U-85F, where it boots and passes its acceptance test.** Those are
-different claims, and three of them are still open:
+LFE5U-85F, where it boots, passes its acceptance test, and reads and writes
+256 KB of external SDRAM.** Those are different claims, and two of them are
+still open:
 
 | Artifact | Status |
 |---|---|
@@ -20,8 +21,9 @@ different claims, and three of them are still open:
 | Surviving a reset | ✅ **fixed** — `.data` is rebuilt at startup; two consecutive board runs are byte-identical |
 | newlib / `printf` on a board | ✅ **works** — `NEWLIB-PROBE: PASS`; the old failure was the `.data` bug above, not libc |
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
-| **SDRAM pins** | ⚠️ **placed and cross-checked, bitstream builds, timing closes — never loaded** |
-| **SDRAM on a board** | ⚠️ **run once and failed** — one word in a thousand, diagnosed as a clock-phase problem and changed. The re-run has not happened |
+| **SDRAM pins** | ✅ **confirmed on silicon** — 256 KB of unique addresses, byte and halfword lanes, refresh |
+| **SDRAM as data, on a board** | ✅ **`SDRAM-CHECK: PASS`** — failed first at one word in a thousand; see the clock-phase diagnosis below |
+| Running *code* from SDRAM on a board | ❌ nothing can load it there — needs a boot path, see below |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
 ## The hardware run
@@ -310,9 +312,45 @@ period out, and `rtl/soc/wb_sdram.v` captures a cycle earlier to suit. **They
 are a matched pair** — neither is correct without the other, which is why
 there is no build option to go back to one of them.
 
-**Not yet confirmed on a board.** The arithmetic above is a prediction; the run
-that settles it is the one below. A behavioural model cannot show marginality,
-so simulation passing proves the design is self-consistent and nothing more.
+**Confirmed on the board** — the run is immediately below. The arithmetic
+above was a prediction when it was written, and it is worth keeping in that
+form: a behavioural model cannot show marginality, so simulation passing proved
+the design self-consistent and nothing more. What settled it was silicon.
+
+### The re-run, on the board, with the clock moved
+
+Same bitstream target, same board, after `fpga/sdram_clk_out.v` and the
+matching capture point in `rtl/soc/wb_sdram.v`. Verbatim:
+
+```
+=== external SDRAM check (running from block RAM) ===
+SDRAM window at 0x90000000, sweeping 256 KB against 64 KB of block RAM
+
+  single word                   ok
+  walking ones, 32 bits         ok
+  256 KB unique addresses       ok
+  byte lanes                    ok
+  halfword lanes                ok
+  survives a short idle         ok
+  block RAM still reachable     ok
+
+SDRAM-CHECK: PASS
+```
+
+**262,144 bytes of external SDRAM, every address distinct, through the CPU, the
+caches and the interconnect.** The failing word rate went from one in a
+thousand to none in 65,536, and the two changes that did it were a clock moved
+half a period and a capture point moved one cycle.
+
+The probe agrees, and reading it took one correction of its own. On the board
+it showed `led[0..3]` steady with `led[4]` and `led[7]` blinking at different
+rates, which looked like an intermittent refresh failure and was not: the probe
+cleared every flag on each restart, and `led[4]` alone could not re-light until
+the next 100 ms idle test finished, so it strobed at 3 Hz — exactly twice
+`led[7]`'s rate — on a machine where everything worked. The flags now mean
+"passed on the most recent attempt" and a working part shows five steady LEDs.
+A diagnostic that reports success as a fault is worse than no diagnostic, which
+is the same lesson as the failure rate this file opens with.
 
 ### Step 1 — the probe, with no CPU in it
 
@@ -329,7 +367,7 @@ showing a stable wrong answer:
 
 | | |
 |---|---|
-| `led[7]` blinking | alive. If it is not, nothing else on the display means anything |
+| `led[7]` blinking | alive, ~1.5 Hz. **The only thing that should blink on a working board.** If it is not, nothing else on the display means anything |
 | `led[0]` | the controller finished its 100 µs power-up. Comes on even if all else fails |
 | `led[1]` | one word written and read back |
 | `led[2]` | walking ones — all 32 data bits proved individually |
@@ -345,7 +383,8 @@ What each stopping point means:
 | `led[0..1]`, not `[2]` | a DQ line stuck, or two swapped |
 | `led[0..2]`, not `[3]` | an address or bank line wrong |
 | `led[0..3]`, not `[4]` | refresh is not reaching the part |
-| `led[0..4]` all lit | the memory works. Go to step 2 |
+| `led[0..4]` steady | the memory works. Go to step 2 |
+| any of `led[1..4]` flickering | it mostly works — a margin, not a wiring fault. Step 2 quantifies it |
 
 **If it stops at `led[0]`**, the fix is in `fpga/ulx3s_top.v`'s `sdram_clk`
 assignment, which drives the pin straight from the oscillator. At a 40 ns
@@ -887,9 +926,16 @@ because of an unrelated edit, not because anything was done to it.
 
 ## What is genuinely missing for "boots on hardware"
 
-- **External DRAM.** `wb_ram.v` is 256 KB of on-chip memory. LiteDRAM is the
-  usual answer, and it needs LiteX (a Python generator) plus a board with
-  DDR — neither was available here. `wb_ram.v`'s header marks the seam.
+- **~~External DRAM~~** — done, and on silicon: `rtl/soc/wb_sdram.v` reads and
+  writes the ULX3S's 32 MB SDR part, 256 KB of it proved address-unique on a
+  board. LiteDRAM was the expected answer and was not needed; SDR is a command
+  truth table and six timing numbers, and a hand-written controller is what
+  every verification layer here can actually reach.
+- **A way to load a program into SDRAM on a board.** This is what "external
+  DRAM" turned into rather than something it removed. A bitstream initialises
+  block RAM at FPGA configuration time; SDRAM comes up empty. So code still
+  runs from the 64 KB of block RAM and SDRAM is data only, until the SD path
+  works or a UART loader exists.
 - **JTAG debug.** No RISC-V Debug Module, no TAP. Debugging is UART `printf`
   and the LEDs.
 - **Ethernet.** Not attempted.

@@ -122,7 +122,7 @@ z3. SymbiYosys (`sby`) is the usual driver and is not packaged for Homebrew,
 so the two steps it would wrap are done directly.
 
 ```
-formal: 4 proved, 0 refuted, 0 errored (bound = 12 cycles)
+formal: 5 proved, 0 refuted, 0 errored (bound = 12 cycles)
 ```
 
 | Module | Properties |
@@ -220,6 +220,32 @@ actually programmed. So `SDRAM TEST PASSED` asserts a great deal that the log
 never mentions. `docs/practices.md` §22 is about why that model was written
 from the datasheet rather than from the controller, and what was done to prove
 it can still say no.
+
+## The layer none of this is: a board
+
+Every layer above answers a question the one before it cannot, and the honest
+end of that list is that **the last one is silicon**, and it found something.
+
+`rtl/soc/wb_sdram.v` passed its unit test against a model that refuses illegal
+protocol, passed a 99 KB program executing out of SDRAM, passed the probe,
+passed CI on both cores — and then failed on a board at one word in a
+thousand. The capture edge sat 5.4 ns before the part swapped one burst beat
+for the next, and writes had no hold margin at all because the clock and the
+data left the FPGA together.
+
+**No simulation here could have caught that**, and it is worth being precise
+about why rather than filing it as bad luck. A behavioural model has ideal
+edges: a signal is either sampled in time or it is not, so a margin of 5.4 ns
+and a margin of 25 ns both simply pass. Marginality is a property of real
+silicon at a real temperature, and the only instrument that reports it is a
+board. `docs/practices.md` §23 is what reading that evidence properly took —
+the *rate* carried the diagnosis, and a test that stopped at the first
+mismatch had been throwing it away.
+
+The lesson for this file is not "add another layer". It is that
+`make verify` being green is a statement about self-consistency, and the two
+bring-up bitstreams in `fpga/README.md` exist because that is not the same as
+working.
 
 ## Two cores, the same suites
 
