@@ -79,6 +79,7 @@ sim/
   tb_bench.v          runs CoreMark, ends on the benchmark's own verdict
   tb_sdram.v          the SDRAM controller at the bus, no CPU, no toolchain
   tb_sdramboot.v      the SoC executing a 99 KB program out of external SDRAM
+  tb_uartload.v       a host sends a program over UART; the SoC runs it from SDRAM
   sdram_model.v       a 32 MB SDR part that refuses illegal protocol
   tb_ulx3s.v          board-wrapper wiring test (pin direction, polarity, tie-offs)
   tb_video.v          draws a pattern, captures a frame, compares it back
@@ -173,6 +174,7 @@ CoreMark:                validates its own CRCs         (make coremark)
 SDRAM controller:        against a model that says no    (make sim_sdram)
 SoC out of SDRAM:        99 KB program, 64 KB block RAM  (make sim_sdramboot)
 SDRAM on a board:        256 KB read/written, ULX3S 85F  (BOARD=ulx3s85-sdramcheck)
+UART loader:             host -> ROM -> SDRAM -> running  (make sim_uartload)
 ULX3S 85F bitstream:     27.41 MHz, 20% LUT, 51% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
 ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (predates the D-cache and SDRAM)
 ```
@@ -540,7 +542,7 @@ The short version:
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
 | 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs, buffers stores, and completes independent work under a waiting load. Worth 0.05% until the Phase 3 I-cache landed and 7.2% after it, on largely unchanged RTL. **1d (renaming, reorder buffer, LSQ) is designed and not scheduled**: the Phase 3 D-cache took its measured ceiling from 2.9% to 0.56% |
-| 2 | Break the memory ceiling — external DRAM | **SDR SDRAM controller, proven on silicon** — 256 KB read and written on a ULX3S 85F, and a 99 KB program run from it in simulation. A loader is still needed before code can run from it on a board |
+| 2 | Break the memory ceiling — external DRAM | **SDR SDRAM controller, proven on silicon** — 256 KB read and written on a ULX3S 85F — and the boot ROM now takes a program over the serial line, which is how one gets into SDRAM on a board at all |
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache **1.79×** and D-cache **1.11×** on CoreMark, both in the bus adapter and shared by both cores. Interrupt-driven UART and multi-word lines remain |
 | 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
 | 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot. Phase 2's SDRAM removes the "nowhere to put a 521 KB `fw_jump.bin`" half of that |

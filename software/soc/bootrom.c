@@ -237,6 +237,192 @@ void rom_trap_report(void) {
     for (;;) { }
 }
 
+
+/* ---- UART image loader --------------------------------------------------
+ *
+ * See soc.h for the protocol. This is what lets a program run out of external
+ * SDRAM on a board: nothing else can put one there, because a bitstream
+ * initialises block RAM at configuration time and SDRAM comes up empty.
+ */
+
+#define LE32(p) ((uint32_t)(p)[0]        | ((uint32_t)(p)[1] << 8) | \
+                 ((uint32_t)(p)[2] << 16) | ((uint32_t)(p)[3] << 24))
+
+static uint32_t rdcycle(void) {
+    uint32_t v;
+    __asm__ volatile ("rdcycle %0" : "=r"(v));
+    return v;
+}
+
+/* Receive one byte, or give up after `ms`. Returns -1 on timeout.
+ *
+ * `rdcycle` is 64-bit architecturally and this reads the low half only, which
+ * wraps every ~172 seconds at 25 MHz. Unsigned subtraction makes the wrap
+ * harmless for any interval shorter than that, and every interval here is
+ * measured in milliseconds. */
+static int uart_getc_timeout(uint32_t ms) {
+    uint32_t start = rdcycle();
+    uint32_t limit = ms * (CPU_HZ / 1000u);
+    while ((rdcycle() - start) < limit) {
+        if (UART_STATUS & UART_RX_VALID)
+            return (int)(UART_RXDATA & 0xFFu);
+    }
+    return -1;
+}
+
+/* CRC32, the ordinary reflected one (poly 0xEDB88320), computed a bit at a
+ * time. No table: 1 KB of ROM matters here and 8 iterations per byte does
+ * not, because the per-chunk acknowledgement means the loader is never
+ * racing the line. */
+static uint32_t crc32_step(uint32_t crc, uint8_t b) {
+    int k;
+    crc ^= b;
+    for (k = 0; k < 8; k++)
+        crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+    return crc;
+}
+
+/* Where an image is allowed to land. Block RAM and SDRAM only - a header that
+ * named the ROM, a peripheral or nothing at all would otherwise be obeyed,
+ * and the failure would be a board that writes a UART register 100,000 times
+ * and then jumps into space. */
+static int uartload_addr_ok(uint32_t addr, uint32_t len) {
+    uint32_t end;
+    if (len == 0u) return 0;
+    end = addr + len;
+    if (end < addr) return 0;                                   /* wrapped */
+    if (addr >= RAM_BASE   && end <= RAM_BASE   + RAM_SIZE)   return 1;
+    if (addr >= SDRAM_BASE && end <= SDRAM_BASE + SDRAM_SIZE) return 1;
+    return 0;
+}
+
+/* Returns the entry address, or 0 if no host knocked. Anything that goes
+ * wrong *after* a knock prints a reason and stops, rather than falling
+ * through to the card: at that point a host is definitely there, definitely
+ * trying to load something, and silently booting something else instead is
+ * the least useful thing this could do. */
+static uint32_t uartload(void) {
+    uint8_t  hdr[16];
+    uint32_t magic, addr, len, want_crc, crc = 0xFFFFFFFFu;
+    uint32_t got, i;
+    uint8_t *dst;
+    int c;
+
+    /* 1. the knock */
+    c = uart_getc_timeout(UARTLOAD_WINDOW_MS);
+    if (c != (int)UARTLOAD_PROBE) return 0u;
+    uart_putc((char)UARTLOAD_ACK);
+
+    /* **Nothing is printed from here until the transfer is over.**
+     *
+     * The console and the protocol share one wire, and the host reads the
+     * next byte after each chunk expecting an acknowledgement. A progress
+     * message in between would arrive first and be read as one - and it
+     * cannot be filtered by value either, because 'E' is the NAK byte and
+     * "UART LOAD FAILED" contains one.
+     *
+     * So during a transfer this ROM emits acknowledgements and nothing else.
+     * Every failure below sends its NAK *before* its explanation, so the host
+     * sees the NAK where it is looking for it and a human reads the reason on
+     * the console afterwards. */
+
+    /* 2. the header.
+     *
+     * Skip any further probes first. The host knocks repeatedly and cannot
+     * know the exact moment we answered, so one more is very likely already
+     * on the wire - and would otherwise be read as the magic's first byte,
+     * which is precisely how this failed the first time it ran. The header
+     * begins with 'S' and a probe is 'U', so they cannot be confused. */
+    do {
+        c = uart_getc_timeout(UARTLOAD_BYTE_TIMEOUT_MS);
+        if (c < 0) {
+            uart_putc((char)UARTLOAD_NAK);
+            uart_puts("UART LOAD FAILED: header timed out\r\n");
+            for (;;) { }
+        }
+    } while (c == (int)UARTLOAD_PROBE);
+    hdr[0] = (uint8_t)c;
+
+    for (i = 1; i < sizeof(hdr); i++) {
+        c = uart_getc_timeout(UARTLOAD_BYTE_TIMEOUT_MS);
+        if (c < 0) {
+            uart_putc((char)UARTLOAD_NAK);
+            uart_puts("UART LOAD FAILED: header timed out\r\n");
+            for (;;) { }
+        }
+        hdr[i] = (uint8_t)c;
+    }
+    magic    = LE32(hdr + 0);
+    addr     = LE32(hdr + 4);
+    len      = LE32(hdr + 8);
+    want_crc = LE32(hdr + 12);
+
+    if (magic != UARTLOAD_MAGIC) {
+        uart_putc((char)UARTLOAD_NAK);
+        uart_puts("UART LOAD FAILED: bad magic ");
+        uart_puthex(magic);
+        uart_puts("\r\n");
+        for (;;) { }
+    }
+    if (!uartload_addr_ok(addr, len)) {
+        uart_putc((char)UARTLOAD_NAK);
+        uart_puts("UART LOAD FAILED: ");
+        uart_puthex(len);
+        uart_puts(" bytes at ");
+        uart_puthex(addr);
+        uart_puts(" is not inside RAM or SDRAM\r\n");
+        for (;;) { }
+    }
+    uart_putc((char)UARTLOAD_ACK);
+
+    /* 3. the image, one byte at a time, every one acknowledged.
+     *
+     * Stop-and-wait, because rtl/uart.v's receiver is one byte deep - see
+     * soc.h. The acknowledgement is what stops the host sending byte N+1
+     * before byte N has been read out of the register, and it is the only
+     * thing that makes this independent of how fast the line is relative to
+     * this loop. */
+    BOOT_STAGE_SET(BOOT_STAGE_LOAD);
+    dst = (uint8_t *)(uintptr_t)addr;
+    for (got = 0; got < len; got++) {
+        c = uart_getc_timeout(UARTLOAD_BYTE_TIMEOUT_MS);
+        if (c < 0) {
+            uart_puts("UART LOAD FAILED: stopped after ");
+            uart_puthex(got);
+            uart_puts(" of ");
+            uart_puthex(len);
+            uart_puts(" bytes\r\n");
+            for (;;) { }
+        }
+        dst[got] = (uint8_t)c;
+        crc = crc32_step(crc, (uint8_t)c);
+        uart_putc((char)UARTLOAD_ACK);
+    }
+    crc ^= 0xFFFFFFFFu;
+
+    /* 4. the check. A serial line with no parity and no flow control will
+     * eventually hand over a byte that is not the one that was sent, and a
+     * loader that jumps into it anyway turns that into a wild branch. */
+    if (crc != want_crc) {
+        uart_putc((char)UARTLOAD_NAK);
+        uart_puts("UART LOAD FAILED: CRC ");
+        uart_puthex(crc);
+        uart_puts(" want ");
+        uart_puthex(want_crc);
+        uart_puts("\r\n");
+        for (;;) { }
+    }
+    uart_putc((char)UARTLOAD_ACK);
+
+    /* The wire is ours again. */
+    uart_puts("\r\nUART loader: ");
+    uart_puthex(len);
+    uart_puts(" bytes at ");
+    uart_puthex(addr);
+    uart_puts(", CRC ok\r\n  starting program\r\n\r\n");
+    return addr;
+}
+
 void main(void) {
     uint8_t *hdr = (uint8_t *)(uintptr_t)PROGRAM_LOAD_ADDR;  /* scratch */
     uint8_t *dst;
@@ -273,6 +459,24 @@ void main(void) {
             uart_puts(")\r\n  skipping SD, starting it\r\n\r\n");
             install_rom_trap_vector();
             entry = (void (*)(void))(uintptr_t)PROGRAM_LOAD_ADDR;
+            entry();
+            for (;;) { }
+        }
+    }
+
+    /* A host on the serial line outranks the card. It is the only way to get
+     * a program into external SDRAM - see soc.h - and if somebody is actively
+     * trying to load one, booting whatever happens to be on an SD card
+     * instead would be the wrong answer. Costs one short window on every boot
+     * that nobody knocks at. */
+    {
+        uint32_t uart_entry = uartload();
+        if (uart_entry != 0u) {
+            install_rom_trap_vector();
+            /* Same reason as the card path below: the image arrived through
+             * the data side and is about to be fetched. */
+            __asm__ volatile ("fence.i" ::: "memory");
+            entry = (void (*)(void))(uintptr_t)uart_entry;
             entry();
             for (;;) { }
         }

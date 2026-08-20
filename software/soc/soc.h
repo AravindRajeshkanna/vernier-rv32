@@ -140,6 +140,67 @@
 #define FB_RGB(r, g, b) \
     ((uint8_t)((((r) & 0xE0u)) | (((g) & 0xE0u) >> 3) | (((b) & 0xC0u) >> 6)))
 
+/* ---- UART image loader ----
+ *
+ * How a program gets into SDRAM on a board. It is the only way, and that is
+ * the point of it: a bitstream initialises block RAM at FPGA configuration
+ * time, and external SDRAM comes up holding nothing, so until this existed
+ * the 32 MB proven in fpga/README.md could hold data and never code.
+ *
+ * Protocol, host -> board unless stated. Everything little-endian.
+ *
+ *   1. host sends UARTLOAD_PROBE repeatedly; the ROM answers UARTLOAD_ACK
+ *      once, and only inside a short window after reset (below)
+ *   2. host sends the 16-byte header: magic, load address, length, CRC32
+ *   3. ROM answers UARTLOAD_ACK, or UARTLOAD_NAK and a printed reason
+ *   4. host sends the image **one byte at a time**, waiting for an
+ *      UARTLOAD_ACK after each
+ *   5. ROM checks the CRC over everything received, then jumps
+ *
+ * ---- Why stop-and-wait, a byte at a time ----
+ *
+ * Because rtl/uart.v's receiver is one byte deep: `rx_data_reg` plus a valid
+ * bit, no FIFO. A byte that arrives before the previous one has been read is
+ * simply lost.
+ *
+ * This started as 256-byte chunks with an acknowledgement after each, on the
+ * reasoning that the acknowledgement removed any assumption about the
+ * receiver keeping up with the line. **It did not.** It bounded the
+ * assumption to one chunk and left it otherwise intact - inside a chunk the
+ * host still sends continuously, and the ROM needs roughly 70 cycles a byte
+ * to poll, store to SDRAM and fold the byte into a CRC. At 115200 on a 25 MHz
+ * board a byte arrives every 2,170 cycles, so there is 31x of margin and it
+ * works; in simulation the testbench runs the UART at four clocks per bit, a
+ * byte arrives every 40 cycles, and the ROM is 1.8x too slow. The first run
+ * lost bytes inside the first chunk and stalled.
+ *
+ * Acknowledging every byte removes the assumption instead of bounding it: the
+ * host cannot send byte N+1 until byte N has been read out of the register.
+ * It costs a round trip per byte - roughly 87 seconds for a 500 KB image at
+ * 115200 instead of 43 - which is nothing for something run once per test
+ * cycle, and it is correct at any line rate on any receiver.
+ */
+#define UARTLOAD_MAGIC    0x55434F53u   /* 'S','O','C','U' little-endian */
+#define UARTLOAD_PROBE    0x55u         /* 'U' - host knocking            */
+#define UARTLOAD_ACK      0x4Bu         /* 'K'                            */
+#define UARTLOAD_NAK      0x45u         /* 'E'                            */
+
+/* How long after reset the ROM listens for a knock, in milliseconds.
+ *
+ * Short on purpose. Every boot that is *not* loading pays it - including
+ * `make sim_soc`, which goes on to the card - and the host is expected to be
+ * probing continuously, so it only has to be wide enough to catch a knock,
+ * not wide enough for a human to start a script. If you miss it, press reset;
+ * that is the same gesture the rest of this board's bring-up already uses.
+ *
+ * Timed from `rdcycle` rather than the CLINT, so it needs nothing brought up
+ * first and does not depend on the timebase agreeing with CPU_HZ. */
+#define UARTLOAD_WINDOW_MS  20u
+
+/* Abort a transfer that stops mid-way rather than hanging with the console
+ * silent. practices.md section 13: fail fast, and say what to do. */
+#define UARTLOAD_BYTE_TIMEOUT_MS 200u
+
 /* ---- SD card image layout ----
  * Block 0 is a header written by software/soc/mkcard.py; the program image
  * itself starts at block 1. The boot ROM checks the magic and uses the

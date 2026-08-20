@@ -75,9 +75,19 @@ module tb_ulx3s_sdram;
     endtask
 
     initial begin
-        $dumpfile("wave_ulx3s_sdram.vcd");
-        $dumpvars(0, tb_ulx3s_sdram);
-
+    // Waveforms are opt-in: run with `+dump`, or `make <target> DUMP=1`.
+    //
+    // This used to be unconditional, and the cost scales with how long the
+    // run is - which for the SoC-level tests is millions of cycles over a
+    // whole SoC. `make sim_sdramboot` alone wrote a **6.2 GB** VCD, and
+    // `make sim_uartload` an **18 GB** one, so a single `make verify` filled
+    // a 228 GB disk to 100% and took the machine down with it. Nobody looks
+    // at these files unless they are debugging, and when they are, one
+    // plusarg is not a hardship.
+        if ($test$plusargs("dump")) begin
+            $dumpfile("wave_ulx3s_sdram.vcd");
+            $dumpvars(0, tb_ulx3s_sdram);
+        end
         $display("");
         $display("=== hardware SDRAM probe, in simulation ===");
 

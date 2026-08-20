@@ -422,14 +422,46 @@ SDRAM window at 0x90000000, sweeping 256 KB against 64 KB of block RAM
 SDRAM-CHECK: PASS
 ```
 
-### Why the program does not run *from* SDRAM on a board
+### Step 3 — run a program *out of* SDRAM
 
-Because nothing can put it there. A bitstream initialises block RAM at FPGA
-configuration time; SDRAM is external and comes up holding nothing. Getting a
-program into it needs a loader — the SD path (Phase 7, and CMD0 currently goes
-unanswered) or a UART one — and neither exists. `make sim_sdramboot` proves
-code execution out of SDRAM in simulation, where the testbench simply preloads
-the model. See `docs/roadmap.md` Phase 2.
+Nothing in a bitstream can put one there: block RAM is initialised at FPGA
+configuration time and SDRAM comes up holding nothing. The boot ROM takes an
+image over the serial line instead.
+
+```sh
+make soc                       # the ROM, with the loader in it
+make sim/sdramimage.hex        # builds software/soc/sdramtest.bin on the way
+BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh
+openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
+
+pip install pyserial
+./software/soc/uartload.py /dev/cu.usbserial-XXXXXXX software/soc/sdramtest.bin
+# then press reset on the board
+```
+
+The order matters: the ROM listens for a knock for only 20 ms after reset, so
+the script has to be running already and you reset into it. Miss it and press
+reset again — nothing on the host side needs restarting.
+
+It sends a 16-byte header (magic, load address, length, CRC32), the ROM
+refuses any address outside RAM or SDRAM, and the CRC is checked before it
+jumps. Then the script hands the console over, so a load and its output are
+one command:
+
+```
+99 KB -> 0x90000000 (SDRAM), CRC32 7A0D53AC
+knocking - press reset on the board
+  ROM answered
+  sent 102040/102040 (100%)
+  accepted; the board is running it
+```
+
+**A 500 KB image takes about 87 seconds** at 115200. It is stop-and-wait, one
+byte at a time, because `rtl/uart.v`'s receiver is one byte deep — see
+`docs/practices.md` §24 for why the chunked version that was twice as fast was
+also wrong.
+
+`make sim_uartload` runs this whole path in simulation and is gated in CI.
 
 ---
 

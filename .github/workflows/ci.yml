@@ -200,6 +200,17 @@ jobs:
       - name: Check SDRAM check verdict
         run: grep -q "RAMBOOT TEST PASSED" sdramcheck.log
 
+      # The boot ROM's UART loader, end to end: a host sends a program over
+      # the serial line and the SoC runs it out of external SDRAM. This is the
+      # only way a program gets there on a board - a bitstream initialises
+      # block RAM at configuration time and SDRAM comes up empty - so it is
+      # also the only test that covers rtl/uart.v's *receive* path, which had
+      # no user at all before this loader existed.
+      - name: Boot ROM UART loader
+        run: make sim_uartload | tee uartload.log
+      - name: Check UART loader verdict
+        run: grep -q "UARTLOAD TEST PASSED" uartload.log
+
   # ---------------------------------------------------------------------
   # Architectural tests: somebody else's suite, pinned to a commit.
   # ---------------------------------------------------------------------
