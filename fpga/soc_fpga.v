@@ -84,6 +84,27 @@ module soc_fpga #(
     output wire       vid_hsync,
     output wire       vid_vsync,
 
+    // ---- external SDRAM ----
+    // Brought out the same way the video pins are: the controller is inside
+    // soc_top and always built, but whether these reach a real part is the
+    // board wrapper's business. Left unconnected, synthesis keeps the
+    // controller (its Wishbone side is reachable) and drops only the pads.
+    //
+    // The data bus is split into out/enable/in rather than being an `inout`,
+    // so this file stays free of tristates - fpga/ulx3s_top.v instantiates
+    // the one IO buffer, exactly as it does for the GPIO header.
+    output wire        sdram_cke,
+    output wire        sdram_cs_n,
+    output wire        sdram_ras_n,
+    output wire        sdram_cas_n,
+    output wire        sdram_we_n,
+    output wire [12:0] sdram_a,
+    output wire [1:0]  sdram_ba,
+    output wire [1:0]  sdram_dqm,
+    output wire [15:0] sdram_dq_o,
+    output wire        sdram_dq_oe,
+    input  wire [15:0] sdram_dq_i,
+
     output wire [3:0] led
 );
     localparam UART_CLKS_PER_BIT = CLK_HZ / BAUD_RATE;
@@ -141,6 +162,7 @@ module soc_fpga #(
         .ROM_INIT_FILE("bootrom.hex"),
         .RAM_INIT_FILE(RAM_INIT),
         .UART_CLKS_PER_BIT(UART_CLKS_PER_BIT),
+        .CLK_HZ(CLK_HZ),
         .GPIO_WIDTH(GPIO_WIDTH)
     ) SOC (
         .clk(clk), .rst(rst),
@@ -150,6 +172,12 @@ module soc_fpga #(
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
         .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
         .vid_de(vid_de), .vid_hsync(vid_hsync), .vid_vsync(vid_vsync),
+        .sdram_cke(sdram_cke), .sdram_cs_n(sdram_cs_n),
+        .sdram_ras_n(sdram_ras_n), .sdram_cas_n(sdram_cas_n),
+        .sdram_we_n(sdram_we_n),
+        .sdram_a(sdram_a), .sdram_ba(sdram_ba), .sdram_dqm(sdram_dqm),
+        .sdram_dq_o(sdram_dq_o), .sdram_dq_oe(sdram_dq_oe),
+        .sdram_dq_i(sdram_dq_i),
         .trap(trap)
     );
 

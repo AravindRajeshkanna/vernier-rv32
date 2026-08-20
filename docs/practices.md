@@ -501,6 +501,74 @@ survives without being re-measured is a plan nobody is checking.
 
 ---
 
+## 22. When you write both sides, the model must encode the spec
+
+`rtl/soc/wb_sdram.v` is checked against `sim/sdram_model.v`. Both were written
+here, in the same afternoon, by the same author. That is a specific and
+dangerous shape: **the natural failure mode is a model that agrees with the
+controller, and a green test that means nothing.**
+
+It is the same trap as [§1](#1-a-test-that-cannot-fail-is-testing-the-testbench)
+and it is worse, because a model looks like an independent authority. A test
+that cannot fail at least looks suspicious when you read it. A model that
+happens to implement exactly what the controller does looks like a second
+opinion.
+
+**What kept it honest here** was writing the model as the *datasheet's* rules
+rather than as the controller's behaviour:
+
+- **Timing in nanoseconds, not cycles.** The controller derives cycle counts
+  from `CLK_HZ`; the model checks tRCD, tRP, tRC, tRFC and the refresh
+  interval against `$realtime`. Neither can quietly redefine the other, and
+  running the controller at a different clock is a real test rather than a
+  rescaling of both sides of one assumption.
+- **The model reads the mode register.** CAS latency and burst length come
+  from what the controller *programmed*, not from what the model would prefer.
+  A controller that sets CL=3 and reads at CL=2 gets shifted data here,
+  exactly as it would on silicon.
+- **The model refuses rather than tolerates.** A read before tRCD, a refresh
+  with a bank open, a burst that would cross a row, A[10] set on a column
+  address: each stops the run with the rule named. None of those corrupt data
+  in simulation. All of them corrupt data on a board, at temperature, weeks
+  later — which is the entire reason to have a model instead of just a memory.
+
+That last point is what a memory model is *for*. Storage that returns what was
+written is the easy half and catches almost nothing; the value is in the half
+that says no.
+
+**And it was checked.** Four deliberate breaks in the controller, each red,
+each naming itself:
+
+| Break | What it printed |
+|---|---|
+| Power-up wait cut from 100 µs to 10 µs | `command issued before the 100 us power-up interval` |
+| Refresh never becomes due | `no AUTO REFRESH within 2x tREFI - rows are losing data` |
+| Read captured one cycle early | `[00000000] = beefzzzz, expected deadbeef` |
+| High beat masked by the low byte lanes | `[00000200] = 11xx3399, expected 11223399` |
+
+### And the model still did not find everything
+
+The one real bug in the controller was found by reading it, not by running it.
+The refresh interval timer and the state machine both wrote `refresh_due`, and
+because the clear lived in the state machine it won — so an interval expiring
+on the exact cycle a refresh was being issued dropped the newly-owed refresh.
+One cycle in 195, and the model's tREFI check would only have caught a
+systematic version of it, never the occasional one.
+
+That is not a gap in the model, it is the shape of what a model can see. It
+watches the wire. It has no opinion about whether the controller *meant* to
+refresh and lost track — only about whether a refresh arrived in time, which
+on any given run it did.
+
+**The rule.** When the model and the thing it checks come from the same hand,
+the model has to be written from the specification and in the specification's
+own units, and then it has to be falsified — because "my controller passes my
+model" is a statement about consistency, not about correctness, until
+something makes it go red. And a model that says no to everything on the wire
+still says nothing about the state behind it.
+
+---
+
 ---
 
 ## Conventions

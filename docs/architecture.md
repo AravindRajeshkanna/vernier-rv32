@@ -718,7 +718,8 @@ because `sim/tb_top.v`'s hand-assembled regression test runs against
 | `0x0500_0000` | GPIO |
 | `0x0600_0000` | SPI |
 | `0x0700_0000` | Framebuffer |
-| `0x8000_0000` | Main RAM |
+| `0x8000_0000` | Main RAM (block RAM) |
+| `0x9000_0000` | External SDRAM |
 
 Decoded on `addr[31:24]`. CLINT/PLIC/UART keep the bases they already had,
 so the drivers in `software/` work unchanged; RAM sits at `0x8000_0000`

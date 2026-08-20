@@ -43,6 +43,17 @@ module soc_top #(
     parameter GPIO_WIDTH      = 16,
     parameter RESET_PC        = 32'h0000_0000,
 
+    // The clock actually driving `clk`, in Hz. Only the SDRAM controller
+    // reads it - the UART takes a divisor instead, because every testbench
+    // here runs the UART far faster than a real one to keep simulations
+    // short, and SDRAM has no equivalent freedom: its intervals are physics.
+    // Too low is safe (it refreshes more often than needed); too high loses
+    // data, so the safe direction of error is downward.
+    parameter CLK_HZ          = 25_000_000,
+    parameter SDRAM_ROW_BITS  = 13,
+    parameter SDRAM_COL_BITS  = 9,
+    parameter SDRAM_BA_BITS   = 2,
+
     // Framebuffer geometry. This is what decides the block-RAM cost of the
     // video subsystem, and therefore which ECP5 the whole design still fits
     // on - see fpga/README.md's device table.
@@ -76,16 +87,49 @@ module soc_top #(
     output wire        vid_hsync,
     output wire        vid_vsync,
 
+    // ---- external SDRAM ----
+    // Split rather than `inout`, so nothing below the board wrapper needs a
+    // tristate: fpga/ulx3s_top.v is the only place a real IO buffer appears,
+    // exactly as it is for the GPIO header. A simulation that does not model
+    // SDRAM leaves the outputs unconnected and ties `sdram_dq_i` low.
+    output wire        sdram_cke,
+    output wire        sdram_cs_n,
+    output wire        sdram_ras_n,
+    output wire        sdram_cas_n,
+    output wire        sdram_we_n,
+    output wire [SDRAM_ROW_BITS-1:0] sdram_a,
+    output wire [SDRAM_BA_BITS-1:0]  sdram_ba,
+    output wire [1:0]  sdram_dqm,
+    output wire [15:0] sdram_dq_o,
+    output wire        sdram_dq_oe,
+    input  wire [15:0] sdram_dq_i,
+
     output wire trap
 );
-    localparam NUM_SLAVES = 8;
+    localparam NUM_SLAVES = 9;
 
     // Slave index assignment (also the bit position in the vectors below).
     localparam S_ROM = 0, S_CLINT = 1, S_PLIC = 2, S_UART = 3,
-               S_GPIO = 4, S_SPI = 5, S_FB = 6, S_RAM = 7;
+               S_GPIO = 4, S_SPI = 5, S_FB = 6, S_RAM = 7, S_SDRAM = 8;
 
     // addr[31:24] each slave answers to, packed 8 bits per slave.
+    //
+    // SDRAM sits at 0x90 rather than replacing block RAM at 0x80, and that is
+    // a deliberate staging decision rather than an accident of address space.
+    // `wb_ram.v` carries the two page-table walker ports on its second block
+    // RAM port - an SDRAM has no second port, and giving the walkers one here
+    // means arbitrating three requesters into one controller. Keeping both
+    // memories means this lands as an addition that cannot regress anything,
+    // with Sv32-out-of-SDRAM named as the next step rather than attempted in
+    // the same change. See docs/roadmap.md Phase 2.
+    //
+    // The window is 16 MB, not 32: `wb_interconnect.v` decodes addr[31:24]
+    // alone, so one base byte is one 16 MB slave. The part is 32 MB and the
+    // top half is unreachable until that decode grows a mask. 16 MB is 256x
+    // what block RAM offers and 30x `fw_jump.bin`, so it is not the binding
+    // constraint on anything this phase is for.
     wire [NUM_SLAVES*8-1:0] s_base = {
+        8'h90, // S_SDRAM
         8'h80, // S_RAM
         8'h07, // S_FB
         8'h06, // S_SPI
@@ -193,6 +237,25 @@ module soc_top #(
         .ptw_gnt(ptw_gnt),   .ptw_rdata(ptw_rdata),
         .iptw_req(iptw_req), .iptw_addr(iptw_addr),
         .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata)
+    );
+
+    wb_sdram #(
+        .CLK_HZ(CLK_HZ),
+        .ROW_BITS(SDRAM_ROW_BITS),
+        .COL_BITS(SDRAM_COL_BITS),
+        .BA_BITS(SDRAM_BA_BITS)
+    ) SDRAM (
+        .clk(clk), .rst(rst),
+        .wb_cyc(s_cyc), .wb_stb(s_stb[S_SDRAM]), .wb_we(s_we), .wb_adr(s_adr),
+        .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        .wb_dat_r(s_dat_r[32*S_SDRAM +: 32]), .wb_ack(s_ack[S_SDRAM]),
+        .sdram_cke(sdram_cke), .sdram_cs_n(sdram_cs_n),
+        .sdram_ras_n(sdram_ras_n), .sdram_cas_n(sdram_cas_n),
+        .sdram_we_n(sdram_we_n),
+        .sdram_a(sdram_a), .sdram_ba(sdram_ba), .sdram_dqm(sdram_dqm),
+        .sdram_dq_o(sdram_dq_o), .sdram_dq_oe(sdram_dq_oe),
+        .sdram_dq_i(sdram_dq_i),
+        .sdram_ready()
     );
 
     // ---- CLINT behind a bridge ----

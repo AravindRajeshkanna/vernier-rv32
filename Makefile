@@ -28,6 +28,13 @@
 #   make sim_rerun    -> run it twice with a reset between, as a board does
 #   make sim_probe    -> the newlib probe: which rung of libc actually fails
 #   make trapcheck    -> provoke known faults, check the trap reports come out
+#
+# External memory (docs/roadmap.md Phase 2). Two layers, in the order they
+# fail: the controller against an SDRAM model at the bus, then the whole SoC
+# running a 96 KB program out of it with block RAM untouched.
+#
+#   make sim_sdram     -> rtl/soc/wb_sdram.v against sim/sdram_model.v
+#   make sim_sdramboot -> the SoC executing from SDRAM, larger than block RAM
 
 IVERILOG      = iverilog
 # Which CPU to build the SoC around. `inorder` is rtl/cpu_core.v, the design
@@ -77,7 +84,7 @@ SOC_RTL = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
           rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
-          rtl/soc/soc_top.v $(CORE_RTL)
+          rtl/soc/wb_sdram.v rtl/soc/soc_top.v $(CORE_RTL)
 SOC_TB  = sim/tb_soc.v sim/sd_card_model.v
 
 SOFTWARE_SRCS = software/crt0.S software/syscalls.c software/uart.c software/main.c
@@ -116,6 +123,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
+        sim_sdram sim_sdramboot sdramimage \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -436,6 +444,40 @@ sim/sim_bench.out: $(BENCH_TB) $(SOC_RTL)
 coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
+# ---- external SDRAM (Phase 2) ----
+#
+# Two layers. sim_sdram drives rtl/soc/wb_sdram.v directly and is where a
+# protocol bug is named; sim_sdramboot runs the SoC out of SDRAM and is where
+# "larger than 64 KB" is actually demonstrated. The unit test needs no RISC-V
+# toolchain at all, which is why CI can run it in the `rtl` job.
+sim/sim_sdram.out: sim/tb_sdram.v sim/sdram_model.v rtl/soc/wb_sdram.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_sdram.v sim/sdram_model.v rtl/soc/wb_sdram.v
+
+sim_sdram: sim/sim_sdram.out
+	cd sim && $(VVP) sim_sdram.out
+
+SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
+
+software/soc/sdramtest.elf: $(SDRAMTEST_SRCS) software/soc/link_sdram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_sdram.ld \
+	    -o $@ $(SDRAMTEST_SRCS)
+
+# --word-size=2 because sim/sdram_model.v is a 16-bit part: one entry per
+# SDRAM word, little-endian. The default 4 would load every 32-bit word into
+# one 16-bit column and put the rest of the image half an address space away,
+# so the CPU would execute garbage from its first instruction.
+sim/sdramimage.hex: software/soc/sdramtest.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/sdramtest.elf software/soc/sdramtest.bin
+	python3 software/bin2hex.py --word-size=2 software/soc/sdramtest.bin > $@
+
+sdramimage: sim/sdramimage.hex
+
+sim/sim_sdramboot.out: sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
+
+sim_sdramboot: sim/sdramimage.hex sim/sim_sdramboot.out
+	cd sim && $(VVP) sim_sdramboot.out
+
 # Everything that can gate a change, in rough order of how fast it fails.
 # Rebuilds from scratch on purpose: the simulation binaries do not encode
 # which core they were built with, and running a stale one would report the
@@ -446,7 +488,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
-        check-program isa cosim formal
+        sim_sdram sim_sdramboot check-program isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
@@ -457,6 +499,9 @@ clean:
 	       sim/program.rebuilt.hex sim/program.rebuilt.elf sim/program.rebuilt.bin \
 	       sim/wave_ramboot.vcd sim/rerun.log \
 	       sim/ramimage.hex sim/probeimage.hex \
+	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
+	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
+	       software/soc/sdramtest.elf software/soc/sdramtest.bin \
 	       software/soc/bootrom.elf software/soc/bootrom.bin \
 	       software/soc/socprog.elf software/soc/socprog.bin \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \

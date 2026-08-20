@@ -18,6 +18,15 @@
 #define SPI_BASE    0x06000000u
 #define FB_BASE     0x07000000u
 #define RAM_BASE    0x80000000u
+/* External SDRAM. Must match the S_SDRAM base byte in rtl/soc/soc_top.v and
+ * the ORIGIN addresses in software/soc/link_sdram.ld. The window the
+ * interconnect gives it is 16 MB, because wb_interconnect.v decodes
+ * addr[31:24] alone; the part is 32 MB and the upper half is unreachable
+ * until that decode grows a mask. Safe direction of error: a program linked
+ * below this lands in unmapped space, which the interconnect acks with
+ * zeros, so the CPU executes a zero word and traps immediately. */
+#define SDRAM_BASE  0x90000000u
+#define SDRAM_SIZE  0x01000000u
 /* 64 KB. This is the size the *firmware* is built for, and it is
  * deliberately smaller than soc_top.v's 256 KB simulation default: 256 KB of
  * on-chip RAM costs 244 ECP5 block RAMs, more than the largest ECP5 has, so a

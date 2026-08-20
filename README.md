@@ -70,12 +70,16 @@ rtl/
     wb_spi.v           SPI master (the one slave with real wait states)
     video_timing.v     640x480@60 raster timing generator
     wb_framebuffer.v   320x240 8bpp framebuffer + scan-out (0x0700_0000)
+    wb_sdram.v         SDR SDRAM controller (0x9000_0000, external memory)
 sim/
   tb_top.v            self-checking testbench (hand-assembled program.hex)
   tb_software.v       runs the real compiled firmware, decodes UART to the console
   tb_soc.v            boots the SoC from a simulated SD card
   tb_isa.v            runs the official RISC-V architectural tests on the SoC
   tb_bench.v          runs CoreMark, ends on the benchmark's own verdict
+  tb_sdram.v          the SDRAM controller at the bus, no CPU, no toolchain
+  tb_sdramboot.v      the SoC executing a 99 KB program out of external SDRAM
+  sdram_model.v       a 32 MB SDR part that refuses illegal protocol
   tb_ulx3s.v          board-wrapper wiring test (pin direction, polarity, tie-offs)
   tb_video.v          draws a pattern, captures a frame, compares it back
   tracer.v            retired-instruction tracer (drives the Spike co-simulation)
@@ -166,6 +170,8 @@ riscv-tests:             79 passed, 0 failed, 3 xfail   (make isa)
 co-simulation vs Spike:  82/82 traces match             (make cosim)
 formal:                  4 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
+SDRAM controller:        against a model that says no    (make sim_sdram)
+SoC out of SDRAM:        99 KB program, 64 KB block RAM  (make sim_sdramboot)
 ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (BOARD=ulx3s   ...synth_ecp5.sh)
 ULX3S 85F bitstream:     30.77 MHz, 15% LUT, 50% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
 ```
@@ -533,10 +539,10 @@ The short version:
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
 | 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs, buffers stores, and completes independent work under a waiting load. Worth 0.05% until the Phase 3 I-cache landed and 7.2% after it, on largely unchanged RTL. **1d (renaming, reorder buffer, LSQ) is designed and not scheduled**: the Phase 3 D-cache took its measured ceiling from 2.9% to 0.56% |
-| 2 | Break the memory ceiling — external DRAM | 64 KB of block RAM is what stands between this and anything Linux-shaped |
+| 2 | Break the memory ceiling — external DRAM | **SDR SDRAM controller done in simulation**: the SoC runs a 99 KB program from external memory, against 64 KB of block RAM. Not yet routed to a board's pins |
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache **1.79×** and D-cache **1.11×** on CoreMark, both in the bus adapter and shared by both cores. Interrupt-driven UART and multi-word lines remain |
 | 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
-| 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot |
+| 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot. Phase 2's SDRAM removes the "nowhere to put a 521 KB `fw_jump.bin`" half of that |
 | 6 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
 | 7 | Close the boot path — the SD card | the only untested link in the boot chain — and the only phase nothing else is waiting on |
 

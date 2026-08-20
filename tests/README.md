@@ -197,6 +197,30 @@ placement cannot quietly move a published figure.
 
 ---
 
+## External memory
+
+`make sim_sdram` and `make sim_sdramboot` are two layers rather than one, in
+the order they fail.
+
+`sim_sdram` drives `rtl/soc/wb_sdram.v` directly from a testbench against
+`sim/sdram_model.v`. No CPU, no toolchain, no program — Wishbone transactions
+in, data out, and a failure names the word, the address and the value. It runs
+in CI's `rtl` job for that reason: it is the fastest thing here that can catch
+a memory-controller bug.
+
+`sim_sdramboot` runs the whole SoC out of SDRAM on a 99 KB program. That is
+the layer that answers "does it actually work", and it is also the slow one at
+2.2 M cycles.
+
+The model is where most of the checking lives, and it is worth knowing that
+when reading either test's output: it refuses illegal protocol — tRCD, tRP,
+tRC, tRFC, the 100 µs power-up interval, the refresh interval, row ownership,
+burst containment, and CAS latency taken from the mode register the controller
+actually programmed. So `SDRAM TEST PASSED` asserts a great deal that the log
+never mentions. `docs/practices.md` §22 is about why that model was written
+from the datasheet rather than from the controller, and what was done to prove
+it can still say no.
+
 ## Two cores, the same suites
 
 `make verify` runs everything against `rtl/cpu_core.v`, the in-order design
