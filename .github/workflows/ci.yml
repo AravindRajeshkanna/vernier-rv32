@@ -98,6 +98,16 @@ jobs:
       - name: Check SDRAM controller verdict
         run: grep -q "SDRAM TEST PASSED" sdram.log
 
+      # The hardware probe (fpga/ulx3s_sdram.v), simulated. It is a bring-up
+      # instrument that reports through five LEDs on a board nobody can
+      # single-step, so the one thing it must not be is itself wrong - a
+      # broken probe turns "the memory does not work" into a hunt through the
+      # memory, the pinout and the clock when the fault is in the instrument.
+      - name: SDRAM hardware probe, in simulation
+        run: make sim_sdramprobe | tee sdramprobe.log
+      - name: Check probe verdict
+        run: grep -q "SDRAM PROBE TEST PASSED" sdramprobe.log
+
   # ---------------------------------------------------------------------
   # Everything that needs firmware built.
   #
@@ -180,6 +190,15 @@ jobs:
         run: make sim_sdramboot | tee sdramboot.log
       - name: Check SDRAM boot verdict
         run: grep -q "SDRAMBOOT TEST PASSED" sdramboot.log
+
+      # The image `BOARD=ulx3s85-sdramcheck` bakes into a bitstream, run in
+      # the configuration the board has: 64 KB of block RAM, program preloaded,
+      # SDRAM behind the window it hammers. Gated here so the thing that gets
+      # flashed is the thing that was tested.
+      - name: SDRAM checked from block RAM (the board's bitstream image)
+        run: make sim_sdramcheck | tee sdramcheck.log
+      - name: Check SDRAM check verdict
+        run: grep -q "RAMBOOT TEST PASSED" sdramcheck.log
 
   # ---------------------------------------------------------------------
   # Architectural tests: somebody else's suite, pinned to a commit.

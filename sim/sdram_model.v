@@ -68,6 +68,13 @@ module sdram_model #(
     parameter real T_REFI_NS = 7812.5
 )(
     input  wire                clk,
+    // A real SDRAM has no reset pin - you re-run the initialisation sequence
+    // instead. This model has one anyway, because it models a part *in a
+    // system*, and the system's reset is the only way it can be told that the
+    // 100 us power-up is about to happen again. Without it the refresh-gap
+    // check below fires part-way through every re-initialisation, which is
+    // exactly what `make sim_rerun` does on purpose.
+    input  wire                rst,
     input  wire                cke,
     input  wire                cs_n,
     input  wire                ras_n,
@@ -179,6 +186,26 @@ module sdram_model #(
         wr_bank        = {BA_BITS{1'b0}};
         wr_col         = {COL_BITS{1'b0}};
         rd_col_check   = 0;
+    end
+
+    // Re-initialisation. Storage survives, as it does on a board; the
+    // protocol state does not, because the controller is about to redo the
+    // power-up sequence and everything it programmed is gone. `refresh_count`
+    // is deliberately cumulative - it is a statistic the testbenches print,
+    // not part of the protocol.
+    always @(posedge rst) begin
+        for (i = 0; i < NBANKS; i = i + 1) begin
+            bank_active[i] = 1'b0;
+            t_precharge[i] = $realtime;
+            t_active[i]    = 0.0;
+            t_write_end[i] = 0.0;
+        end
+        for (i = 0; i < PIPE; i = i + 1) pipe_v[i] = 1'b0;
+        mr_programmed  = 1'b0;
+        wr_left        = 0;
+        t_last_refresh = $realtime;
+        t_refresh_done = 0.0;
+        t_mrs_done     = 0.0;
     end
 
     // A row that is never refreshed keeps its contents forever in a model and

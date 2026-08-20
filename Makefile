@@ -123,7 +123,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -276,14 +276,14 @@ sim_soc: soc
 # bitstream and the RAM is 64 KB. Those are the two things that differed
 # between "passes in simulation" and "dies on hardware", and until now nothing
 # simulated them - so this testbench is that path, at that size.
-sim/sim_ramboot.out: sim/tb_ramboot.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+sim/sim_ramboot.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_ramboot: sim/bootrom.hex sim/ramimage.hex sim/sim_ramboot.out
 	cd sim && $(VVP) sim_ramboot.out
 
-sim/sim_probe.out: sim/tb_ramboot.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+sim/sim_probe.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
 	cd sim && $(VVP) sim_probe.out
@@ -304,9 +304,9 @@ sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
 # The probe rather than the acceptance test, deliberately: the acceptance test
 # keeps its state in .bss, which _start has always zeroed, so it passes twice
 # either way and would not have caught this.
-sim/sim_rerun.out: sim/tb_ramboot.v $(SOC_RTL)
+sim/sim_rerun.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -DRERUN \
-	    -o $@ sim/tb_ramboot.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_rerun: sim/bootrom.hex sim/probeimage.hex sim/sim_rerun.out
 	@cd sim && $(VVP) sim_rerun.out 2>&1 | tee rerun.log
@@ -323,8 +323,8 @@ sim/trapimage.hex: software/soc/trapcheck.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/trapcheck.bin > $@
 
-sim/sim_trap.out: sim/tb_ramboot.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"trapimage.hex"' -o $@ sim/tb_ramboot.v $(SOC_RTL)
+sim/sim_trap.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"trapimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 trapcheck: sim/bootrom.hex sim/sim_trap.out
 	./sim/trapcheck.sh
@@ -444,6 +444,48 @@ sim/sim_bench.out: $(BENCH_TB) $(SOC_RTL)
 coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
 
+# ---- hardware bring-up (docs/roadmap.md Phase 2, on a board) ----
+#
+# Two steps, in the order they narrow the problem. Both have a simulation
+# here, because a diagnostic that arrives at a board untested turns "the
+# memory does not work" into a hunt through the memory, the pinout and the
+# clock when the fault is in the instrument.
+#
+#   make sim_sdramprobe -> fpga/ulx3s_sdram.v, the no-CPU LED probe
+#   make sim_sdramcheck -> software/soc/sdramcheck.c, from block RAM
+#
+# and the bitstreams they become:
+#
+#   BOARD=ulx3s-sdram        ./fpga/synth/synth_ecp5.sh
+#   BOARD=ulx3s85-sdramcheck ./fpga/synth/synth_ecp5.sh
+sim/sim_sdramprobe.out: sim/tb_ulx3s_sdram.v sim/sdram_model.v \
+                        fpga/ulx3s_sdram.v rtl/soc/wb_sdram.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ulx3s_sdram.v sim/sdram_model.v \
+	    fpga/ulx3s_sdram.v rtl/soc/wb_sdram.v
+
+sim_sdramprobe: sim/sim_sdramprobe.out
+	cd sim && $(VVP) sim_sdramprobe.out
+
+# Same testbench and the same 64 KB block RAM as sim_ramboot - only the
+# preloaded program differs, which is exactly the difference between the two
+# bitstreams as well.
+software/soc/sdramcheck.elf: $(SOCRT_SRCS) software/soc/sdramcheck.c \
+                              software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
+	    -o $@ $(SOCRT_SRCS) software/soc/sdramcheck.c
+
+sim/sdramcheckimage.hex: software/soc/sdramcheck.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/sdramcheck.elf software/soc/sdramcheck.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/sdramcheck.bin > $@
+
+sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"sdramcheckimage.hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+
+sim_sdramcheck: sim/bootrom.hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
+	cd sim && $(VVP) sim_sdramcheck.out
+
 # ---- external SDRAM (Phase 2) ----
 #
 # Two layers. sim_sdram drives rtl/soc/wb_sdram.v directly and is where a
@@ -488,7 +530,8 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
-        sim_sdram sim_sdramboot check-program isa cosim formal
+        sim_sdram sim_sdramboot sim_sdramprobe sim_sdramcheck \
+        check-program isa cosim formal
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
@@ -500,6 +543,8 @@ clean:
 	       sim/wave_ramboot.vcd sim/rerun.log \
 	       sim/ramimage.hex sim/probeimage.hex \
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
+	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
+	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \
 	       software/soc/bootrom.elf software/soc/bootrom.bin \

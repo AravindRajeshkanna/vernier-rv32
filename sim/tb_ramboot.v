@@ -62,6 +62,32 @@ module tb_ramboot;
     // path, it would fail there rather than appearing to work.
     assign spi_miso = 1'b1;
 
+    // ---- external SDRAM ----
+    // Attached here, not only in sim/tb_sdramboot.v, and it costs almost
+    // nothing: the SoC never touches 0x90 in these runs, so all the model
+    // does is assert that the controller keeps issuing AUTO REFRESH on
+    // schedule while the CPU is busy doing something else entirely. Nothing
+    // else checks that, and `make sim_rerun` additionally puts a reset
+    // through it - which is why sim/sdram_model.v has a reset input at all.
+    //
+    // It is also what makes `make sim_sdramcheck` work: same testbench, same
+    // 64 KB block RAM, a different RAM_IMAGE, and a real memory behind the
+    // window that image is about to hammer.
+    wire        sd_cke, sd_cs_n, sd_ras_n, sd_cas_n, sd_we_n;
+    wire [12:0] sd_a;
+    wire [1:0]  sd_ba, sd_dqm;
+    wire [15:0] sd_dq_o;
+    wire        sd_dq_oe;
+
+    wire [15:0] dq;
+    assign dq = sd_dq_oe ? sd_dq_o : 16'bz;
+
+    sdram_model #(.MEM_WORDS(1 << 20)) SDRAMCHIP (
+        .clk(clk), .rst(rst), .cke(sd_cke), .cs_n(sd_cs_n),
+        .ras_n(sd_ras_n), .cas_n(sd_cas_n), .we_n(sd_we_n),
+        .a(sd_a), .ba(sd_ba), .dqm(sd_dqm), .dq(dq)
+    );
+
     soc_top #(
         .RAM_BYTES(RAM_BYTES),
         .ROM_INIT_FILE("bootrom.hex"),
@@ -73,10 +99,10 @@ module tb_ramboot;
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
-        // No SDRAM in this simulation: the controller inside soc_top still
-        // initialises and refreshes an imaginary part, which costs nothing and
-        // keeps one SoC rather than two. Nothing here decodes to 0x90.
-        .sdram_dq_i(16'b0),
+        .sdram_cke(sd_cke), .sdram_cs_n(sd_cs_n),
+        .sdram_ras_n(sd_ras_n), .sdram_cas_n(sd_cas_n), .sdram_we_n(sd_we_n),
+        .sdram_a(sd_a), .sdram_ba(sd_ba), .sdram_dqm(sd_dqm),
+        .sdram_dq_o(sd_dq_o), .sdram_dq_oe(sd_dq_oe), .sdram_dq_i(dq),
         .trap(trap)
     );
 

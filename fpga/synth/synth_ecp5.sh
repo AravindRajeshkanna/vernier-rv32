@@ -45,6 +45,12 @@ BUILD=fpga/build
 # differing only in which program (see the cases below):
 #
 #   BOARD=ulx3s85-ram        the acceptance test
+#   BOARD=ulx3s85-sdramcheck the SDRAM check, run from block RAM
+#
+# and one that is not a SoC at all - a standalone SDRAM probe with no CPU,
+# for proving the memory before anything else is in the path:
+#
+#   BOARD=ulx3s-sdram        fpga/ulx3s_sdram.v, five LEDs
 #   BOARD=ulx3s85-probe      the newlib probe
 #   BOARD=ulx3s85-trapcheck  the trap handler's own calibration
 #
@@ -101,6 +107,40 @@ case "$BOARD" in
         PNR_EXTRA=${PNR_EXTRA:-}
         BOARD_RTL="fpga/ulx3s_cmd0.v"
         DIAG_ONLY=1
+        ;;
+    ulx3s-sdram)
+        # Hardware SDRAM probe: exercises rtl/soc/wb_sdram.v against the
+        # board's real memory chip with no CPU anywhere, and reports through
+        # five cumulative LEDs. **Flash this before the SoC.** With the full
+        # SoC, "it does not work" covers the pinout, the clock phase, the
+        # controller, the interconnect, the caches and the firmware at once;
+        # this narrows it to whether the controller talks to the chip.
+        #
+        # 85F because that is the board in hand. DEVICE=45k works too - the
+        # design is a few hundred LUTs either way.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_sdram}
+        LPF=${LPF:-fpga/constraints/ulx3s_sdram.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_sdram.v rtl/soc/wb_sdram.v"
+        DIAG_ONLY=1
+        ;;
+    ulx3s85-sdramcheck)
+        # 85F with software/soc/sdramcheck.c preloaded into *block* RAM,
+        # hammering external SDRAM as data. The step after the probe above:
+        # the CPU, the interconnect and the caches are now in the path, but
+        # the program still runs from block RAM, because nothing can preload
+        # SDRAM - a bitstream initialises block RAM at configuration time and
+        # SDRAM comes up empty. Running *code* out of SDRAM needs a loader
+        # that does not exist yet; see docs/roadmap.md Phase 2.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v"
+        PRELOAD_RAM=1
+        RAM_IMAGE=sim/sdramcheckimage.hex
+        RAM_ELF=software/soc/sdramcheck.elf
         ;;
     ulx3s85-ram)
         # 85F with the acceptance-test program preloaded into RAM, so the
@@ -169,7 +209,8 @@ case "$BOARD" in
         ;;
     *)
         echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s85-ram," >&2
-        echo "       ulx3s85-probe, ulx3s85-trapcheck, ulx3s-diag, ulx3s-cmd0, or unset)" >&2
+        echo "       ulx3s85-probe, ulx3s85-trapcheck, ulx3s85-sdramcheck," >&2
+        echo "       ulx3s-diag, ulx3s-cmd0, ulx3s-sdram, or unset)" >&2
         exit 1
         ;;
 esac
@@ -210,6 +251,7 @@ RTL="rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
      rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
+     rtl/soc/wb_sdram.v \
      rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
 fi
 
@@ -285,7 +327,7 @@ if [ "$PRELOAD_RAM" = "1" ]; then
     echo "  carries:  $RAM_IMAGE  (stamped as $TOP.bit.ramimage.hex)"
 fi
 case "$BOARD" in
-    ulx3s|ulx3s85|ulx3s85-ram|ulx3s85-probe|ulx3s85-trapcheck|ulx3s-diag|ulx3s-cmd0)
+    ulx3s|ulx3s85|ulx3s85-ram|ulx3s85-probe|ulx3s85-trapcheck|ulx3s85-sdramcheck|ulx3s-diag|ulx3s-cmd0|ulx3s-sdram)
         echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
     *)             echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
 esac

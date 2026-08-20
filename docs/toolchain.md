@@ -19,7 +19,85 @@ Nothing in the project is macOS-specific. Two things about this host do leak
 into the setup, both called out below: Homebrew has no `nextpnr` formula, and
 macOS ships GNU Make 3.81.
 
-## 2. Versions, as measured
+## 2. Hardware under test
+
+The board every hardware claim in this project refers to. Recorded here
+because "it works on a board" is not a portable statement: the ULX3S ships
+with four different FPGAs, three SDRAM parts across its revisions, and a
+pinout that changed between v1.7 and v2.0.
+
+| | |
+|---|---|
+| Board | **ULX3S v3.1.8** (Radiona/emard, made by Intergalaktik) |
+| FPGA | **Lattice LFE5U-85F**, CABGA381 |
+| Oscillator | 25 MHz, no PLL — the design's Fmax has never needed one |
+| SDRAM | **IS42S16160G-7TL** — 32 MB, 16-bit, 4 banks x 8192 rows x 512 columns |
+| Console | on-board FTDI FT231X, 115200 8N1, appears as `/dev/cu.usbserial-*` |
+| Flashing | `openFPGALoader -b ulx3s fpga/build/<top>.bit` |
+| Card slot | tested with a 64 GB SDXC card, which never answers CMD0 |
+
+**The SDRAM part is the detail worth knowing.** `rtl/soc/wb_sdram.v` defaults
+to `ROW_BITS=13`, `COL_BITS=9`, `BA_BITS=2`, which is exactly the
+IS42S16160G's geometry — v3.1.4 onward standardised on it. Earlier v3.0.x
+boards shipped a mix, and some carried an **AS4C32M16**: 64 MB with *ten*
+column bits, which needs `COL_BITS=10`. The controller would still be correct
+with the wrong value — the mapping stays injective, it just addresses half the
+part — so this is a silent capacity loss rather than a failure, which is
+exactly why it is written down.
+
+**Pins** come from the board's own [`ulx3s_v20.lpf`][lpf], cross-checked
+line-for-line against [litex-boards' `radiona_ulx3s.py`][litex]. That file
+covers v2.0, v3.0.x and v3.1.x alike: the v3.1 changes were ESP32 JTAG pins,
+GPIO0 moving to a clock-capable pin, the OLED header going 7->8 and SERDES
+pairs, none of which touched the memory. **It is not valid for v1.7**, which
+wires the SD card's four SPI-mode pins to different sites entirely.
+
+[lpf]: https://github.com/emard/ulx3s/blob/master/doc/constraints/ulx3s_v20.lpf
+[litex]: https://github.com/litex-hub/litex-boards/blob/master/litex_boards/platforms/radiona_ulx3s.py
+
+### What has actually been on this board, and what has not
+
+`fpga/README.md` is the authority and carries the console output verbatim.
+The short version, because the distinction matters more than the list:
+
+| | |
+|---|---|
+| SoC boots, acceptance test passes | ✅ on silicon |
+| newlib / `printf` | ✅ on silicon |
+| Surviving a reset | ✅ on silicon |
+| SD card | ❌ CMD0 unanswered |
+| Video scan-out | ❌ not routed |
+| **SDRAM** | ⚠️ **pins placed, bitstream builds, timing closes — never loaded** |
+
+The SDRAM row is the one to be careful with. Placement and timing closure are
+tool output, not evidence about a chip. `fpga/ulx3s_sdram.v` exists to convert
+one into the other, and `fpga/README.md` has the two-step procedure.
+
+### Place-and-route, as measured
+
+Run on this host with the oss-cad-suite in §3, against the real pinout with
+`--lpf-allow-unconstrained` **not** set — so an unplaced pin is an error
+rather than an invented placement.
+
+| Build | Fmax | LUT | FF | Block RAM | IO |
+|---|---|---|---|---|---|
+| `BOARD=ulx3s85-sdramcheck` (full SoC) | **26.77 MHz** — PASS at 25 | 16,926 (20%) | 7,418 (8%) | 107/208 (51%) | 93/365 (25%) |
+| `BOARD=ulx3s-sdram` (probe, no CPU) | **104.50 MHz** | 696 (<1%) | 331 (<1%) | 0 | 56/365 (15%) |
+
+**26.77 MHz is down from the 30.77 MHz** this file's predecessor recorded, and
+that is the first place-and-route since both the data cache and the SDRAM
+controller landed, so the drop belongs to the pair of them rather than to
+either one. It still passes at the board's 25 MHz, but the margin is now 7%
+rather than 23%, which is worth knowing before adding anything else.
+
+The critical path is **not** in the memory controller or in either cache. It
+runs from the CSR write-enable decode to the ID/EX register file's load
+enable — 11.32 ns of logic against 26.03 ns of routing, which is the same
+routing-dominated shape every measurement of this design has had.
+
+---
+
+## 3. Versions, as measured
 
 | Tool | Version | Source |
 |---|---|---|
@@ -77,7 +155,7 @@ macOS still ships the 2006 release. The `Makefile` is written to work with
 it. If you add rules, avoid `.ONESHELL`, `!=` shell assignment, and grouped
 targets (`&:`) — none of which 3.81 has.
 
-## 3. What each flow uses
+## 4. What each flow uses
 
 | `make` target | Tools |
 |---|---|
@@ -112,7 +190,7 @@ Version 3.12.12, and the scripts (`tests/cosim.py`, `software/bin2hex.py`,
 `os`, `re`, `struct`, `subprocess`, `sys`. There is no `requirements.txt`,
 no virtualenv, and nothing to install. Any Python 3.8+ should do.
 
-## 4. Compiler flags that are load-bearing
+## 5. Compiler flags that are load-bearing
 
 The target is RV32IMA, but the *compiler* is only ever asked for `rv32im`:
 
@@ -134,7 +212,7 @@ OpenSBI builds with `PLATFORM=generic`, `PLATFORM_RISCV_XLEN=32`,
 `PLATFORM_RISCV_ISA=rv32ima_zicsr_zifencei`, `PLATFORM_RISCV_ABI=ilp32`,
 `FW_PIC=n`.
 
-## 5. Pinned upstream sources
+## 6. Pinned upstream sources
 
 Neither suite is vendored. Both are somebody else's project with their own
 licence, and the whole value of running them is that this project did not
@@ -151,7 +229,7 @@ OpenSBI is the exception and is not pinned, because it is not part of any
 pass/fail gate — it builds, it does not yet boot. See
 `software/opensbi/README.md`.
 
-## 6. Installing from scratch
+## 7. Installing from scratch
 
 ```bash
 # Simulation, verification and the RISC-V toolchain
@@ -179,7 +257,7 @@ make soc && ./fpga/synth/synth_ecp5.sh   # bitstream; needs oss-cad-suite on PAT
 than only a simulation one. Both synthesis scripts refuse to start without
 it.
 
-## 7. Installed but not used by this project
+## 8. Installed but not used by this project
 
 Worth listing so nobody assumes a dependency that isn't one.
 
@@ -193,9 +271,9 @@ Worth listing so nobody assumes a dependency that isn't one.
   second-opinion simulator on the flat `top.v` design; no gate depends on it,
   and the SoC is not wired up for it.
 
-## 8. Not used at all
+## 9. Not used at all
 
-- **SymbiYosys (`sby`)** — not installed; see §3.
+- **SymbiYosys (`sby`)** — not installed; see §4.
 - **Vivado** — `fpga/synth/vivado.tcl` exists and has **never been
   executed**. There is no Xilinx toolchain on this machine.
 - **LiteX / LiteDRAM** — named throughout the docs as the path to external
@@ -203,7 +281,7 @@ Worth listing so nobody assumes a dependency that isn't one.
 - **CI** — there is none. No `.github/`, no pipeline config. `make verify` is
   run by hand.
 
-## 9. Reproducibility caveats
+## 10. Reproducibility caveats
 
 Two things are not deterministic across machines, and both matter when
 comparing numbers against `fpga/README.md`:
@@ -212,7 +290,7 @@ comparing numbers against `fpga/README.md`:
    has already recorded a 26.61-vs-28.25 MHz swing that was placement noise
    either side of the same design. Treat a single run's Fmax as approximate,
    and read the critical-path report rather than the headline number.
-2. **Yosys version affects area and timing.** See §2 — the published numbers
+2. **Yosys version affects area and timing.** See §3 — the published numbers
    come from the oss-cad-suite build specifically.
 
 Simulation is deterministic: iverilog, Spike co-simulation and the formal

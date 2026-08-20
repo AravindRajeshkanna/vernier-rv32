@@ -34,12 +34,27 @@ module tb_ulx3s;
     assign gp[0] = gp0_drive;
     assign gn[0] = gn0_drive;
 
+    // The SDRAM pins. Wired to nothing but this testbench: what is being
+    // checked here is the *wrapper*, not the memory - that the pins are
+    // driven at all, that the clock reaches its pad, and that the data bus is
+    // released when the controller is not writing. The memory itself is
+    // checked in sim/tb_sdram.v and sim/tb_ulx3s_sdram.v.
+    wire        sdram_clk, sdram_cke, sdram_csn, sdram_wen;
+    wire        sdram_rasn, sdram_casn;
+    wire [12:0] sdram_a;
+    wire [1:0]  sdram_ba, sdram_dqm;
+    wire [15:0] sdram_d;
+
     ulx3s_top DUT (
         .clk_25mhz(clk),
         .ftdi_rxd(ftdi_rxd), .ftdi_txd(1'b1),
         .sd_clk(sd_clk), .sd_cmd(sd_cmd), .sd_d(sd_d), .sd_cdn(1'b0),
         .btn(btn), .led(led), .wifi_gpio0(wifi_gpio0),
-        .gp(gp), .gn(gn)
+        .gp(gp), .gn(gn),
+        .sdram_clk(sdram_clk), .sdram_cke(sdram_cke), .sdram_csn(sdram_csn),
+        .sdram_wen(sdram_wen), .sdram_rasn(sdram_rasn),
+        .sdram_casn(sdram_casn), .sdram_a(sdram_a), .sdram_ba(sdram_ba),
+        .sdram_dqm(sdram_dqm), .sdram_d(sdram_d)
     );
 
     // wb_gpio's synchronized view of the pins: gpio[0] <- gp[0],
@@ -89,6 +104,18 @@ module tb_ulx3s;
         check("sd_cmd follows the SoC's MOSI", sd_cmd, DUT.spi_mosi);
         check("sd_clk follows the SoC's SCK",  sd_clk, DUT.spi_sck);
         check("sd_d[3] follows the SoC's chip select", sd_d[3], DUT.spi_cs_n);
+
+        // ---- SDRAM pins ----
+        // Not a memory test. These are the three ways the *wrapper* can be
+        // wrong: a clock pin left undriven (the part sees nothing and the
+        // symptom is indistinguishable from a dead controller), CKE tied low
+        // (the part stays in standby and never accepts a command), and a data
+        // bus held by the FPGA (the part can never drive read data back, which
+        // looks exactly like a clock-phase problem and is not).
+        check("sdram_clk driven from the board oscillator", sdram_clk, clk);
+        check("sdram_cke asserted", sdram_cke, 1'b1);
+        check("sdram_d released while not writing",
+              DUT.sdram_dq_oe ? 1'b1 : (sdram_d === 16'bz), 1'b1);
 
         // ---- GPIO must be bidirectional ----
         // GPIO_DIR resets to all-inputs, so every header pin is an input.
