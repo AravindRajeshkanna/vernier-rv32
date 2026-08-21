@@ -48,6 +48,11 @@
 //   +uart_clks=N      clock cycles per UART bit (default 4). Must match what
 //                     the UART is actually running at - a driver that
 //                     programs the ns16550 divisor changes it.
+//   +watchpc=ADDR     dump the integer registers the first time the PC
+//                     reaches ADDR. For firmware that gives up without a
+//                     console: the error code it decided to hang on is still
+//                     in a register at the point it branches to its hang
+//                     loop, and there is no other way to read it.
 //   +quiet            suppress the UART stream (keep the summary)
 //   +dump[=FILE]      write a VCD. Only works if built with --trace; see the
 //                     Makefile's VTRACE knob, and note that the reason it is
@@ -622,6 +627,21 @@ int main(int argc, char **argv) {
     // firmware image prints nothing at all.
     long         traps      = 0;
     long         first_trap = -1;
+    uint32_t     first_trap_pc = 0, first_trap_cause = 0;
+    uint32_t     first_trap_epc = 0, first_trap_tval = 0;
+    bool         capture_trap_next = false;
+    const uint32_t watch_pc = (uint32_t)plusarg_long(argc, argv, "watchpc", 0);
+    bool         watch_hit = false;
+    uint32_t     watch_regs[32] = {0};
+    static const int BRANCH_RING = 16;
+    uint32_t     branch_from[BRANCH_RING] = {0}, branch_to[BRANCH_RING] = {0};
+    long         branch_n = 0;
+    uint32_t     prev_pc = 0;
+    uint32_t     pc_lo = 0xFFFFFFFFu, pc_hi = 0;
+    // Only the tail of the run: early PCs are startup and say nothing about
+    // where it ended up.
+    const long   pc_window_from = plusarg_long(argc, argv, "pcwindow",
+                                               max_cycles > 2000 ? max_cycles - 2000 : 0);
     long         verdict_at = -1;
     uint32_t     result     = 0;
     double       now_ns     = 0.0;
@@ -641,9 +661,73 @@ int main(int argc, char **argv) {
 
         uart.sample(top->uart_tx != 0);
 
+        // `trap` is a combinational pulse in EX; mcause/mepc/mtval are
+        // written by the same edge, so reading them on the pulse cycle
+        // returns the *previous* trap's values - which for the first trap is
+        // three zeros, and looks exactly like "cause 0, misaligned fetch at
+        // address 0". Sample one cycle later instead.
+        if (capture_trap_next) {
+            capture_trap_next = false;
+            first_trap_cause  = root->soc_top__DOT__CPU__DOT__CSR__DOT__mcause_r;
+            first_trap_epc    = root->soc_top__DOT__CPU__DOT__CSR__DOT__mepc_r;
+            first_trap_tval   = root->soc_top__DOT__CPU__DOT__CSR__DOT__mtval_r;
+        }
         if (top->trap) {
             traps++;
-            if (first_trap < 0) first_trap = cycles;
+            if (first_trap < 0) {
+                first_trap        = cycles;
+                first_trap_pc     = root->soc_top__DOT__CPU__DOT__pc;
+                capture_trap_next = true;
+            }
+        }
+
+        if (watch_pc && !watch_hit &&
+            root->soc_top__DOT__CPU__DOT__pc == watch_pc) {
+            watch_hit = true;
+            for (int r = 0; r < 32; r++)
+                watch_regs[r] = root->soc_top__DOT__CPU__DOT__RF__DOT__regs[r];
+        }
+
+        // ---- a ring of the last control transfers ----
+        //
+        // "It stopped and will not say why" is the characteristic failure of
+        // bringing up firmware that owns the console, and a PC alone answers
+        // only half of it: `sbi_hart_hang()` tells you OpenSBI gave up, not
+        // which check gave up. The jump *into* it does.
+        //
+        // So: remember every non-sequential PC change, keep the last few, and
+        // print them at the end. Two addresses per entry, straight into
+        // addr2line. Cheap - one compare per cycle - and it is the difference
+        // between a guess and a name.
+        {
+            const uint32_t pc_now = root->soc_top__DOT__CPU__DOT__pc;
+            if (pc_now != prev_pc + 4 && pc_now != prev_pc) {
+                // Collapse a repeat of the immediately previous transfer.
+                // Without this a two-instruction `wfi` spin overwrites the
+                // whole ring within a microsecond and the trace shows only
+                // the hang - which is the one thing already known.
+                const long last = branch_n ? (branch_n - 1) % BRANCH_RING : -1;
+                if (last < 0 || branch_from[last] != prev_pc ||
+                    branch_to[last] != pc_now) {
+                    branch_from[branch_n % BRANCH_RING] = prev_pc;
+                    branch_to  [branch_n % BRANCH_RING] = pc_now;
+                    branch_n++;
+                }
+            }
+            prev_pc = pc_now;
+        }
+
+        // A rolling low/high water mark of the PC over the last stretch of the
+        // run. A firmware that has wedged is almost always in a tight loop,
+        // and the *range* it is looping over identifies the loop far better
+        // than any single sample: a two-instruction `wfi` spin and a
+        // thousand-instruction search look nothing alike.
+        {
+            const uint32_t pc_now = root->soc_top__DOT__CPU__DOT__pc;
+            if (cycles >= pc_window_from) {
+                if (pc_now < pc_lo) pc_lo = pc_now;
+                if (pc_now > pc_hi) pc_hi = pc_now;
+            }
         }
 
         // Loopback on the pins the SoC is driving, which is what the board's
@@ -711,10 +795,40 @@ int main(int argc, char **argv) {
 
     printf("\n---------------------------------------------\n");
     printf("cycles: %ld\n", cycles);
-    if (traps)
+    if (traps) {
         printf("traps taken: %ld (first at cycle %ld)\n", traps, first_trap);
-    else
+        printf("  first trap: pc=0x%08x mcause=0x%08x mepc=0x%08x mtval=0x%08x\n",
+               first_trap_pc, first_trap_cause, first_trap_epc, first_trap_tval);
+    } else {
         printf("traps taken: none\n");
+    }
+    if (pc_hi >= pc_lo)
+        printf("pc over the last %ld cycles: 0x%08x .. 0x%08x\n",
+               cycles - pc_window_from, pc_lo, pc_hi);
+    if (watch_pc) {
+        if (!watch_hit) {
+            printf("watchpc 0x%08x: never reached\n", watch_pc);
+        } else {
+            static const char *abi[32] = {
+                "zero","ra","sp","gp","tp","t0","t1","t2","s0","s1","a0","a1",
+                "a2","a3","a4","a5","a6","a7","s2","s3","s4","s5","s6","s7",
+                "s8","s9","s10","s11","t3","t4","t5","t6"};
+            printf("registers at pc 0x%08x:\n", watch_pc);
+            for (int r = 0; r < 32; r += 4) {
+                printf("  ");
+                for (int c = 0; c < 4; c++)
+                    printf("%-4s 0x%08x  ", abi[r + c], watch_regs[r + c]);
+                printf("\n");
+            }
+        }
+    }
+    if (branch_n) {
+        printf("last control transfers (oldest first):\n");
+        const long first = branch_n > BRANCH_RING ? branch_n - BRANCH_RING : 0;
+        for (long i = first; i < branch_n; i++)
+            printf("  0x%08x -> 0x%08x\n",
+                   branch_from[i % BRANCH_RING], branch_to[i % BRANCH_RING]);
+    }
     printf("SDRAM refreshes issued: %ld\n", sdram.refreshes());
     printf("SDRAM read setup margin: %.1f ns\n", sdram.ac_setup_ns());
     printf("result word (expect \"PASS\"): 0x%08x\n", result);

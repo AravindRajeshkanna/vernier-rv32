@@ -600,7 +600,7 @@ the same as being fixed.
 | | |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
-| [docs/practices.md](docs/practices.md) | The working rules — twenty-six of them, each attached to the incident on this repo that produced it |
+| [docs/practices.md](docs/practices.md) | The working rules — twenty-seven of them, each attached to the incident on this repo that produced it |
 | [docs/roadmap.md](docs/roadmap.md) | Where this goes next, in phases, in dependency order |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |

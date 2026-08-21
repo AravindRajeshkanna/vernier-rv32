@@ -981,6 +981,31 @@ Two of the three hard blockers are now closed:
    answers to `0x90` and `0x91` alike. `wb_sdram.v` needed no change — it
    always took its row from `wb_adr[24:12]`.
 
+### The kernel is blocked on OpenSBI, not on hardware
+
+An rv32ima Sv32 Linux runs in S-mode and asks M-mode firmware for its timer
+through `sbi_set_timer` — this core has no Sstc, so there is no way for the
+kernel to program `stimecmp` itself. `earlycon=uart8250,mmio32,0x04000000`
+would give it a console without SBI, but nothing gives it a timer, and a
+kernel that cannot schedule does not get as far as printing about it.
+
+So the order is fixed: OpenSBI has to hand off before a kernel is worth
+building. Nothing has been added here for it yet, deliberately — a build
+script and a defconfig that have never produced a booting kernel would be
+scaffolding nothing builds, which section 14 is about.
+
+What it will need, once OpenSBI hands off:
+
+- a kernel built `rv32ima` with **no C extension** (this core does not
+  implement it) and `CONFIG_MMU=y` with Sv32;
+- an initramfs, because there is no block device driver for the SPI card and
+  the SD path is the boot ROM's, not the kernel's;
+- `fw_payload` rather than `fw_jump`, or a loader that places the kernel where
+  `fw_jump` expects it;
+- roughly 3×10⁸ cycles per boot attempt, which is about a minute under
+  Verilator and seven hours under Icarus. That ratio is why the harness was
+  built first.
+
 Then: ~~an ns16550-compatible UART~~ (**done** — `rtl/uart.v` is one, with the
 divisor latch, IIR and an interrupt into PLIC source 1; `make sim_uart16550`),
 ~~a device tree~~ (**done** — `dts/soc.dts` describes the two-context PLIC and
@@ -989,12 +1014,19 @@ device tree *is* the platform port), an rv32ima kernel with no `C`, and an
 initramfs. Hardware PTE A/D auto-update is absent and Linux does not strictly
 need it to boot.
 
-**OpenSBI now runs rather than merely building**, and stops in a specific
-place: one trap at cycle 7192 and then a `wfi` loop, before console init, so
-it never says why. `software/opensbi/README.md` records exactly what is
-established and what is still a hypothesis — the leading candidate is the
-absence of PMP, which `fw_jump` wants for the next stage, but that has not
-been measured and §20 applies.
+**OpenSBI runs, and three real defects have been fixed getting it there** —
+a missing `mstatush` (RV32-required, and the core genuinely lacked it), a load
+address that violated OpenSBI's own alignment precondition, and a build script
+that silently built the wrong thing twice. It now gets through FDT parsing and
+hart feature detection before `sbi_hart_init()` returns an error and hangs.
+
+**PMP is ruled out**, which was the stated hypothesis last round and was
+wrong: `sbi_hart_pmp_init()` returns success when the hart has no PMP regions.
+`software/opensbi/README.md` records the method as well as the findings,
+because the method is the reusable part: OpenSBI owns the console and brings
+it up late, so every failure before that is identical silence, and the way
+through was instrumenting the *hardware* - PC, trap CSRs, a branch-transfer
+ring, and a register watchpoint, all in `sim/verilator_soc.cpp`.
 
 ### What turning translation on for the first time cost
 
