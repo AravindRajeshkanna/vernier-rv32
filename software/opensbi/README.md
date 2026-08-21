@@ -12,10 +12,61 @@ yet *boot* on it. Being precise about that split:
 |---|---|
 | OpenSBI builds for rv32ima with `riscv64-unknown-elf-` | ✅ done, `./build-opensbi.sh` |
 | CPU platform features OpenSBI relies on | ✅ done (see below) |
-| Platform port (console / timer / IPI glue) | ❌ not written |
-| Somewhere to put a 521 KB `fw_jump.bin` | ✅ **32 MB of SDRAM, proven on silicon** — 16 MB reachable through the current address decode |
-| A way to *load* it there on a board | ❌ a bitstream initialises block RAM; SDRAM comes up empty |
-| Actually boots and prints a banner | ❌ not attempted |
+| Platform port | ✅ **not needed** — `PLATFORM=generic` is entirely FDT-driven, so the port *is* `dts/soc.dts` plus hardware the stock drivers recognise |
+| An ns16550 console for it to find | ✅ `rtl/uart.v`, `make sim_uart16550` |
+| A PLIC with an S-mode context at the standard offsets | ✅ `rtl/plic.v`, `make sim_plic` |
+| Somewhere to put a 517 KB `fw_jump.bin` | ✅ **32 MB of SDRAM, proven on silicon**, all of it now reachable |
+| Linked to run from SDRAM | ✅ `FW_TEXT_START=0x90010000` |
+| Packed with a device tree and entered correctly | ✅ `make sbiimage`, `sbi_stub.S` |
+| **Actually runs** | ⚠️ **starts, takes one trap at cycle 7192, then hangs before console init** |
+| Prints a banner | ❌ not yet |
+
+## Where it actually stops, as of the ns16550/PLIC work
+
+This is now a *running* firmware image rather than one that merely compiles,
+which is the part that changed. `make sbiimage` packs three things into one
+SDRAM image - a four-instruction stub at the reset vector, the device tree at
+`0x9000_8000`, and OpenSBI at `0x9001_0000` - and the Verilator harness runs
+it:
+
+```
+cd sim && ../obj_dir_soc_inorder/Vsoc_top \
+        +sdram=sbiimage.hex +uart_clks=208 +maxcycles=8000000
+```
+
+What that produces today:
+
+```
+traps taken: 1 (first at cycle 7192)
+... 8 million cycles, no console output
+```
+
+What is established:
+
+- The image is entered and executes: the SDRAM controller programs its mode
+  register and the run proceeds for millions of cycles.
+- The device tree is where the stub says it is - `d0 0d fe ed` at
+  `0x9000_8000`, length `0x94a` - so "OpenSBI cannot find an FDT" is ruled
+  out.
+- Exactly **one** trap, early, and then nothing. No further traps over eight
+  million cycles is the signature of `sbi_hart_hang()`, which is a `wfi`
+  loop: OpenSBI decided it could not continue and stopped, *before* the
+  console was up, so it had no way to say why.
+
+What is not established: which check it failed. The obvious candidate is
+**PMP** - this core implements none, and `fw_jump` wants to configure a
+region for the next stage - but that is a hypothesis, not a measurement, and
+this project has a rule about the difference (docs/practices.md §20). The way
+to find out is to get a console up *before* the failing check, which means
+either an OpenSBI build with early debug output or a stub that pre-programs
+the UART so anything OpenSBI prints has somewhere to land.
+
+`+uart_clks=208` is not a detail to skip: OpenSBI reads `clock-frequency`
+from the device tree and programs the ns16550 divisor to
+25e6/(16*115200) = 13, so the line runs at 208 clocks per bit instead of the
+4 every testbench here uses. A harness decoding at 4 sees nothing at all,
+which is indistinguishable from a firmware that never printed - and was, for
+one debugging round.
 
 ## What was fixed in the CPU to get this far
 

@@ -17,11 +17,22 @@
  * Anything here that would need to change before real supervisor software
  * could use it is called out in a comment rather than quietly fudged.
  *
- * Frequencies assume a 50 MHz board clock. That is a placeholder - see
- * fpga/README.md. The `timebase-frequency` in particular must match what the
- * CLINT's mtime actually counts at, and in this design mtime increments once
- * per *system clock* (rtl/clint.v, a documented simplification versus a real
- * separate always-on reference clock), so the two are the same number here.
+ * Frequencies are 25 MHz, which is what the ULX3S build actually runs at
+ * (soc_top.v's CLK_HZ, and fpga/README.md's measured Fmax of 25.37 MHz gives
+ * it 1.5% of margin). They used to say 50 MHz, which was a placeholder from
+ * before the design had ever been on a board.
+ *
+ * `timebase-frequency` must match what the CLINT's mtime actually counts at,
+ * and in this design mtime increments once per *system clock* (rtl/clint.v, a
+ * documented simplification versus a real separate always-on reference
+ * clock), so the two are the same number here.
+ *
+ * The UART's `clock-frequency` is the input to its baud divisor, and 25 MHz
+ * does not divide evenly to 115200: a driver computing 25e6/(16*115200) gets
+ * 13.56 and will write 14, for 111607 baud - 3.1% slow. That is inside the
+ * roughly 5% a UART frame tolerates, but it is a real error rather than zero,
+ * and it is the kind of thing that shows up as occasional framing errors on a
+ * long cable rather than as an obvious failure.
  */
 
 / {
@@ -56,7 +67,7 @@
             riscv,isa-base = "rv32i";
             riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei";
             mmu-type = "riscv,sv32";
-            clock-frequency = <50000000>;
+            clock-frequency = <25000000>;
             status = "okay";
 
             cpu0_intc: interrupt-controller {
@@ -114,26 +125,47 @@
 
         plic0: plic@3000000 {
             compatible = "riscv,plic0";
-            reg = <0x03000000 0x00010000>;
-            /* Single M-mode context. Real supervisor software generally
-             * wants an S-mode context (cpu0_intc 9) as well; rtl/plic.v
-             * implements only the M-mode one, and that limitation is
-             * described in its header. */
-            interrupts-extended = <&cpu0_intc 11>;
+            /* 4 MB, not 64 KB: the standard register map puts context c's
+             * threshold and claim at 0x200000 + 0x1000*c, so a window that
+             * stopped at 64 KB would not contain the registers a driver
+             * actually uses. rtl/plic.v implements that map; the
+             * interconnect gives this slave 16 MB and this declares the part
+             * of it that answers. */
+            reg = <0x03000000 0x00400000>;
+            /* Two contexts, in the order rtl/plic.v numbers them: context 0
+             * is this hart's M-mode (cause 11, MEI) and context 1 is its
+             * S-mode (cause 9, SEI). The ordering is the interface - a driver
+             * derives the context index from position in this list - and
+             * nothing checks it against PLIC_CTX_M/PLIC_CTX_S in
+             * software/soc/soc.h. Getting it backwards points every driver at
+             * the other privilege level's threshold register and fails
+             * silently, by never delivering. */
+            interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
             interrupt-controller;
             #interrupt-cells = <1>;
             riscv,ndev = <8>;
         };
 
         uart0: serial@4000000 {
-            /* Not a 16550 - this is rtl/uart.v, a three-register polled
-             * design with its own layout (txdata/rxdata/status). A driver
-             * would have to match on this compatible string specifically;
-             * claiming ns16550a here would be a lie that loads a driver
-             * which then talks to the wrong registers. */
-            compatible = "riscv-fpga-cpu,uart0";
+            /* This claim used to be a lie and is now true: rtl/uart.v is an
+             * ns16550. It was three registers of this project's own design,
+             * and the comment here said so, because naming a compatible
+             * string you do not implement loads a driver that talks to the
+             * wrong registers - a worse failure than having no driver.
+             *
+             * reg-shift 2 puts register n at offset 4n, which is how this
+             * word-addressed bus wants it and what rtl/uart.v decodes.
+             *
+             * No FIFOs: `fifo-size` is deliberately absent and IIR reports
+             * bits 7:6 = 00, so a driver that checks will stay in 16450 mode.
+             */
+            compatible = "ns16550a";
             reg = <0x04000000 0x00010000>;
-            clock-frequency = <50000000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            interrupt-parent = <&plic0>;
+            interrupts = <1>;
+            clock-frequency = <25000000>;
             current-speed = <115200>;
             status = "okay";
         };

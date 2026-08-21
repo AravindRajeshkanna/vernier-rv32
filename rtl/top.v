@@ -30,8 +30,13 @@ module top #(
     input  wire uart_rx
 );
     localparam CLINT_BASE_HI = 16'h0200; // addresses 0x0200_0000-0x0200_FFFF
-    localparam PLIC_BASE_HI  = 16'h0300; // addresses 0x0300_0000-0x0300_FFFF
     localparam UART_BASE_HI  = 16'h0400; // addresses 0x0400_0000-0x0400_FFFF
+    // The PLIC needs more than the 64 KB the others get: the standard
+    // register map puts context 0's threshold and claim at 0x200000 and
+    // context 1's at 0x201000, so a 16-bit compare would decode the whole
+    // context block to main memory instead. Decoded on addr[31:24] here, the
+    // same 16 MB granularity rtl/soc/wb_interconnect.v uses.
+    localparam PLIC_BASE_HI8 = 8'h03;    // addresses 0x0300_0000-0x03FF_FFFF
 
     wire [31:0] imem_addr, imem_rdata;
     wire [31:0] dmem_addr, dmem_wdata, dmem_rdata;
@@ -42,11 +47,12 @@ module top #(
     wire        ptw_req, ptw_gnt, iptw_req, iptw_gnt;
     wire [31:0] ptw_addr, ptw_rdata;
     wire [31:0] iptw_addr, iptw_rdata;
-    wire        mtip, msip, meip;
+    wire        mtip, msip;
+    wire [1:0]  plic_eip;   // [0] M-mode context, [1] S-mode context
     wire [63:0] mtime;
 
     wire is_clint = (dmem_addr[31:16] == CLINT_BASE_HI);
-    wire is_plic  = (dmem_addr[31:16] == PLIC_BASE_HI);
+    wire is_plic  = (dmem_addr[31:24] == PLIC_BASE_HI8);
     wire is_uart  = (dmem_addr[31:16] == UART_BASE_HI);
     wire [31:0] dmem_rdata_raw, clint_rdata, plic_rdata, uart_rdata;
     assign dmem_rdata = is_clint ? clint_rdata :
@@ -84,7 +90,8 @@ module top #(
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata),
         .iptw_req(iptw_req), .iptw_addr(iptw_addr),
         .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata),
-        .mtip(mtip), .msip_in(msip), .meip(meip), .mtime_in(mtime),
+        .mtip(mtip), .msip_in(msip), .meip(plic_eip[0]), .seip(plic_eip[1]),
+        .mtime_in(mtime),
         .fence_i(), // no instruction buffer on this top level - nothing to flush
         .trap(trap)
     );
@@ -113,7 +120,7 @@ module top #(
         .we(dmem_we && is_plic), .re(dmem_re && is_plic),
         .rdata(plic_rdata),
         .irq_sources(irq_sources),
-        .eip(meip)
+        .eip(plic_eip)
     );
 
     uart #(.CLKS_PER_BIT(UART_CLKS_PER_BIT)) UART (
@@ -121,6 +128,12 @@ module top #(
         .addr(dmem_addr), .wdata(dmem_wdata),
         .we(dmem_we && is_uart), .re(dmem_re && is_uart),
         .rdata(uart_rdata),
-        .tx(uart_tx), .rx(uart_rx)
+        .tx(uart_tx), .rx(uart_rx),
+        // Left unconnected here on purpose: this design takes `irq_sources`
+        // as a top-level input, so there is nowhere to OR a peripheral's own
+        // interrupt in without changing what that port means to every
+        // testbench that drives it. rtl/soc/soc_top.v wires it to PLIC
+        // source 1, which is where it is exercised.
+        .irq()
     );
 endmodule

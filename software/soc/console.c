@@ -4,8 +4,8 @@
 #include "console.h"
 
 void put_char(char c) {
-    while (UART_STATUS & UART_TX_BUSY) { }
-    UART_TXDATA = (uint32_t)(unsigned char)c;
+    while (!(UART_LSR & UART_LSR_THRE)) { }
+    UART_THR = (uint32_t)(unsigned char)c;
 }
 
 void put_str(const char *s) {

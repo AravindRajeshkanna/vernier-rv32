@@ -17,8 +17,21 @@
 // this design, so SSIP/STIP are ordinary software-writable storage (an
 // M-mode handler is expected to service the real MTI and then manually
 // set mip.STIP before `mret`, exactly how real systems emulate an S-mode
-// timer interrupt without the Sstc extension). SEIP is hardwired 0 - the
-// PLIC (see rtl/plic.v) only delivers to M-mode this round.
+// timer interrupt without the Sstc extension).
+//
+// SEIP is the one bit here with genuinely two-sided semantics, and the spec
+// is specific about it: mip.SEIP is the logical OR of a *software-writable*
+// bit and the signal from the external interrupt controller. M-mode writes
+// to mip set the software half; the PLIC's S-mode context (rtl/plic.v
+// context 1) drives the hardware half. A read of mip returns the OR, and the
+// interrupt-pending logic uses the OR, so either source can raise it.
+//
+// The software half is not decoration: it is how an M-mode SBI implementation
+// injects an external interrupt into S-mode without a device behind it, and
+// it is why the bit cannot simply be wired to the PLIC pin. Only M-mode can
+// write it: the `sip` write path below reaches SSIP and nothing else, because
+// S-mode clearing its own external-interrupt pending bit would let it drop an
+// interrupt the PLIC is still asserting.
 module csr_file (
     input  wire        clk,
     input  wire        rst,
@@ -56,6 +69,9 @@ module csr_file (
     input  wire        mtip,
     input  wire        msip_in,
     input  wire        meip_in,
+    // The PLIC's S-mode context. ORed with the software-writable SEIP bit to
+    // form mip.SEIP; see the header.
+    input  wire        seip_in,
     output wire [31:0] mie_out,
     output wire [31:0] mip_out,
     output wire [31:0] mideleg_out,
@@ -135,6 +151,10 @@ module csr_file (
     reg [31:0] stvec_r, sscratch_r, sepc_r, scause_r, stval_r;
     reg [31:0] medeleg_r, mideleg_r;
     reg        ssip_r, stip_r;
+    // The software-writable half of mip.SEIP. Separate from the PLIC's pin so
+    // a read can return the OR without the write having clobbered hardware
+    // state, which is exactly the distinction the spec draws.
+    reg        seip_sw_r;
     reg [31:0] satp_r;
 
     // ---- performance counters ----
@@ -206,7 +226,8 @@ module csr_file (
     // S-level target in this design.
     localparam [31:0] MIDELEG_MASK = 32'h0000_0222;
 
-    wire [31:0] mip_live = {20'b0, meip_in, 1'b0, 1'b0, 1'b0, mtip, 1'b0,
+    wire        seip_live = seip_sw_r | seip_in;
+    wire [31:0] mip_live = {20'b0, meip_in, 1'b0, seip_live, 1'b0, mtip, 1'b0,
                              stip_r, 1'b0, msip_in, 1'b0, ssip_r, 1'b0};
 
     assign mie_out          = mie_r;
@@ -340,6 +361,7 @@ module csr_file (
             mideleg_r    <= 32'b0;
             ssip_r       <= 1'b0;
             stip_r       <= 1'b0;
+            seip_sw_r    <= 1'b0;
             satp_r       <= 32'b0;
             mcounteren_r <= 32'b0;
             mcountinhibit_r <= 32'b0;
@@ -429,7 +451,15 @@ module csr_file (
                 12'h341: mepc_r     <= {wdata[31:1], 1'b0};
                 12'h342: mcause_r   <= wdata;
                 12'h343: mtval_r    <= wdata;
-                12'h344: begin ssip_r <= wdata[1]; stip_r <= wdata[5]; end
+                // SEIP's software half is writable here and only here: a
+                // write through `sip` (0x144) must not reach it, because
+                // S-mode clearing its own external-interrupt pending bit
+                // would let it drop an interrupt the PLIC is still asserting.
+                12'h344: begin
+                    ssip_r    <= wdata[1];
+                    stip_r    <= wdata[5];
+                    seip_sw_r <= wdata[9];
+                end
                 default: ; // read-only / unimplemented - decode should have flagged illegal
             endcase
         end

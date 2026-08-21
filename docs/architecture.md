@@ -569,10 +569,27 @@ state) which privilege a given trap actually lands in.
 
 ## 9. `plic.v` — prioritized, claimable external interrupts
 
-A simplified real PLIC: `NUM_SOURCES` (default 8) level-triggered sources,
-numbered 1..N (0 doesn't exist, matching the real convention), each with a
-3-bit priority, feeding a single M-mode context through the standard
-enable/threshold/claim-complete model. The piece a naive design tends to
+A real PLIC's register map, with `NUM_SOURCES` (default 8) level-triggered
+sources numbered 1..N (0 doesn't exist, matching the convention), each with a
+3-bit priority, feeding **two** contexts through the standard
+enable/threshold/claim-complete model: context 0 is hart 0's M-mode and
+context 1 its S-mode.
+
+Both of those are recent and they had to land together. This was one M-mode
+context at offsets of its own invention (threshold `0x3000`, claim `0x3004`),
+and each half of that was individually fatal for anything but firmware
+written against this SoC. Linux takes external interrupts in S-mode, so one
+M-mode context has nowhere to deliver them; and a stock driver computes
+`0x200000 + 0x1000*ctx` from the base address in the device tree, so the
+standard layout with one context would still be undrivable. The third piece
+is `mip.SEIP` in `csr_file.v` — hardwired to zero before, so context 1 had
+nowhere to arrive even once it existed. It is now the spec's OR of a
+software-writable bit and the controller's pin, which is what lets an M-mode
+SBI implementation inject an S-mode external interrupt with no device behind
+it.
+
+Enables and thresholds are per-context; `in_service` is per *source*, which
+is what stops M-mode and S-mode both servicing one source. The piece a naive design tends to
 omit: an `in_service` bit per source, set on claim and cleared on the
 matching `complete` write — without it, a still-asserted level source
 would look pending again immediately after claim, before software even

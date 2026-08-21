@@ -37,6 +37,10 @@
 #   make sim_sdramboot -> the SoC executing from SDRAM, larger than block RAM
 #   make sim_mmusdram  -> Sv32 page tables *in* SDRAM, walked from S-mode,
 #                         with the mapped pages in the part's top 16 MB
+#   make sim_plic      -> the PLIC's standard register map, and an external
+#                         interrupt delivered to S-mode through context 1
+#   make sim_uart16550 -> the ns16550 map: DLAB, the divisor latch, IIR, and
+#                         the UART's interrupt arriving through PLIC source 1
 #   make sim_uartload  -> the boot ROM's UART loader: a host sends a program
 #                         over the serial line and the SoC runs it from SDRAM
 #   make uartload-host -> the host script against a fake board on a pty
@@ -140,8 +144,8 @@ SD_BLOCKS = 128
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
-        sim_mmusdram \
-        sim_uartload uartload-host \
+        sim_mmusdram sim_plic sim_uart16550 \
+        sim_uartload uartload-host sbiimage \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -606,6 +610,84 @@ sim/sdramcheckimage.hex: software/soc/sdramcheck.elf software/bin2hex.py Makefil
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/sdramcheck.bin > $@
 
+# ---- OpenSBI, packed into an SDRAM image ----
+#
+# Not part of `verify`: it needs OpenSBI's source tree, which
+# software/opensbi/build-opensbi.sh clones, and a network is not a build
+# dependency this project is willing to have. Run it by hand:
+#
+#   ./software/opensbi/build-opensbi.sh          # once, clones and builds
+#   make sbiimage
+#   cd sim && ../obj_dir_soc_inorder/Vsoc_top \
+#            +sdram=sbiimage.hex +uart_clks=208 +maxcycles=8000000
+#
+# `+uart_clks=208` is not arbitrary: OpenSBI reads `clock-frequency` from
+# dts/soc.dts and programs the ns16550 divisor to 25e6/(16*115200) = 13, so
+# the line runs at 208 clocks per bit rather than the testbenches' 4. See
+# software/opensbi/README.md for how far this currently gets.
+OPENSBI_FW = software/opensbi/build/opensbi/build/platform/generic/firmware/fw_jump.bin
+
+software/opensbi/build/sbi_stub.bin: software/opensbi/sbi_stub.S
+	$(RISCV_CC) -march=rv32im_zicsr -mabi=ilp32 -nostdlib -nostartfiles \
+	    -Wl,-Ttext=0x90000000 -o software/opensbi/build/sbi_stub.elf $<
+	$(RISCV_OBJCOPY) -O binary software/opensbi/build/sbi_stub.elf $@
+
+sim/sbiimage.hex: software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+                   software/opensbi/mkimage.py Makefile
+	@test -f $(OPENSBI_FW) || { \
+	    echo "$(OPENSBI_FW) is missing - run ./software/opensbi/build-opensbi.sh first"; \
+	    exit 1; }
+	python3 software/opensbi/mkimage.py software/opensbi/build/sbi_stub.bin \
+	    dts/soc.dtb $(OPENSBI_FW) > $@
+
+sbiimage: sim/sbiimage.hex
+
+# ---- the ns16550 register map, and the UART's interrupt ----
+#
+# The surface a *driver* touches that no program here did: DLAB, the divisor
+# latch, IIR, MSR, and an interrupt reaching mip through PLIC source 1.
+UARTTEST_SRCS = $(SOCRT_SRCS) software/soc/uarttest.c
+
+software/soc/uarttest.elf: $(UARTTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	    -o $@ $(UARTTEST_SRCS)
+
+sim/uart16550image.hex: software/soc/uarttest.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/uarttest.elf software/soc/uarttest.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/uarttest.bin > $@
+
+sim/sim_uart16550.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uart16550image.hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+
+sim_uart16550: sim/bootrom.hex sim/uart16550image.hex sim/sim_uart16550.out
+	cd sim && $(VVP) sim_uart16550.out $(VVP_DUMP)
+
+# ---- the PLIC: standard layout, two contexts, S-mode delivery ----
+#
+# The first program here that ever takes an external interrupt. sim/program.S
+# pokes the PLIC's registers and the formal properties prove its claim
+# encoder, but nothing had ever checked that a hart sees the line - in either
+# privilege mode. software/soc/plictest.c explains what that missed.
+PLICTEST_SRCS = $(SOCRT_SRCS) software/soc/plictest.c
+
+software/soc/plictest.elf: $(PLICTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	    -o $@ $(PLICTEST_SRCS)
+
+sim/plicimage.hex: software/soc/plictest.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/plictest.elf software/soc/plictest.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/plictest.bin > $@
+
+sim/sim_plic.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"plicimage.hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+
+sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
+	cd sim && $(VVP) sim_plic.out $(VVP_DUMP)
+
 # ---- Sv32 with the page tables in external SDRAM ----
 #
 # The test for the two changes that let a page table live in DRAM at all:
@@ -732,7 +814,7 @@ verify_ooo:
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
-        sim_mmusdram sim_uartload \
+        sim_mmusdram sim_plic sim_uart16550 sim_uartload \
         uartload-host check-program isa cosim formal
 
 clean:
@@ -749,6 +831,12 @@ clean:
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
 	       sim/sim_mmusdram.out sim/mmuimage.hex \
+	       sim/sim_plic.out sim/plicimage.hex \
+	       sim/sim_uart16550.out sim/uart16550image.hex \
+	       sim/sbiimage.hex software/opensbi/build/sbi_stub.elf \
+	       software/opensbi/build/sbi_stub.bin \
+	       software/soc/uarttest.elf software/soc/uarttest.bin \
+	       software/soc/plictest.elf software/soc/plictest.bin \
 	       software/soc/mmutest.elf software/soc/mmutest.bin \
 	       sim/sim_uartload.out sim/uartimage.hex sim/wave_uartload.vcd \
 	       tests/build/uartload_case.bin \

@@ -140,16 +140,22 @@ trap_vector:
     /* Last resort: one byte, straight at the UART, then stop. Anything that
      * involved a call or a memory structure could fault a third time.
      *
-     * 0x04000000 is UART_BASE_A and +0x08 is its status register, with
-     * UART_TX_BUSY in bit 0 - see software/soc/soc.h, which cannot be
-     * included here because its register macros are C. Nothing checks that
-     * these agree; the cost of them not agreeing is that this prints nothing,
-     * which is the situation it already exists to improve on.
+     * 0x04000000 is UART_BASE_A. The UART is an ns16550 with reg-shift 2, so
+     * +0x14 is LSR and bit 5 is THRE ("holding register empty") - see
+     * software/soc/soc.h, which cannot be included here because its register
+     * macros are C. Nothing checks that these agree; the cost of them not
+     * agreeing is that this prints nothing, which is the situation it already
+     * exists to improve on.
+     *
+     * Note the polarity flipped with the register map: the old STATUS bit 0
+     * was tx_*busy* and this waits for THRE to go *high*. A mechanical
+     * search-and-replace that kept `bnez` would spin forever here, in the one
+     * path that only runs when everything else has already failed.
      */
     li    t0, 0x04000000
-1:  lw    t1, 8(t0)
-    andi  t1, t1, 1
-    bnez  t1, 1b
+1:  lw    t1, 0x14(t0)
+    andi  t1, t1, 0x20
+    beqz  t1, 1b
     li    t1, '!'
     sw    t1, 0(t0)
 2:  j     2b

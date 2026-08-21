@@ -159,7 +159,8 @@ module soc_top #(
     wire        ibus_wait, dbus_wait;
     wire        ptw_req, ptw_gnt, iptw_req, iptw_gnt;
     wire [31:0] ptw_addr, ptw_rdata, iptw_addr, iptw_rdata;
-    wire        mtip, msip, meip;
+    wire        mtip, msip;
+    wire [1:0]  plic_eip;   // [0] M-mode context, [1] S-mode context
     wire [63:0] mtime;
     wire        fence_i;
 
@@ -199,7 +200,8 @@ module soc_top #(
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata),
         .iptw_req(iptw_req), .iptw_addr(iptw_addr),
         .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata),
-        .mtip(mtip), .msip_in(msip), .meip(meip), .mtime_in(mtime),
+        .mtip(mtip), .msip_in(msip), .meip(plic_eip[0]), .seip(plic_eip[1]),
+        .mtime_in(mtime),
         .fence_i(fence_i), .trap(trap)
     );
 
@@ -302,8 +304,11 @@ module soc_top #(
     // ---- PLIC behind a bridge ----
     localparam NUM_IRQ = 8;
     wire        gpio_irq;
-    wire [NUM_IRQ-1:0] irq_sources = {5'b0, 1'b0, gpio_irq, 1'b0};
-    //                                spare  src3  src2      src1(UART, polled)
+    wire        uart_irq;
+    wire [NUM_IRQ-1:0] irq_sources = {5'b0, 1'b0, gpio_irq, uart_irq};
+    //                                spare  src3  src2      src1
+    // Source 1 was reserved for the UART and tied low for as long as the UART
+    // had no interrupt to raise. rtl/uart.v is an ns16550 now and does.
 
     wire [31:0] plic_addr, plic_wdata, plic_rdata;
     wire        plic_we, plic_re;
@@ -315,10 +320,13 @@ module soc_top #(
         .p_addr(plic_addr), .p_wdata(plic_wdata),
         .p_we(plic_we), .p_re(plic_re), .p_rdata(plic_rdata)
     );
-    plic #(.NUM_SOURCES(NUM_IRQ)) PLIC (
+    // Two contexts: 0 is hart 0 M-mode, 1 is hart 0 S-mode, which is what
+    // dts/soc.dts declares in `interrupts-extended` and what every stock
+    // PLIC driver assumes.
+    plic #(.NUM_SOURCES(NUM_IRQ), .NUM_CONTEXTS(2)) PLIC (
         .clk(clk), .rst(rst),
         .addr(plic_addr), .wdata(plic_wdata), .we(plic_we), .re(plic_re),
-        .rdata(plic_rdata), .irq_sources(irq_sources), .eip(meip)
+        .rdata(plic_rdata), .irq_sources(irq_sources), .eip(plic_eip)
     );
 
     // ---- UART behind a bridge ----
@@ -335,7 +343,7 @@ module soc_top #(
     uart #(.CLKS_PER_BIT(UART_CLKS_PER_BIT)) UART (
         .clk(clk), .rst(rst),
         .addr(uart_addr), .wdata(uart_wdata), .we(uart_we), .re(uart_re),
-        .rdata(uart_rdata), .tx(uart_tx), .rx(uart_rx)
+        .rdata(uart_rdata), .tx(uart_tx), .rx(uart_rx), .irq(uart_irq)
     );
 
     // ---- native Wishbone peripherals ----
