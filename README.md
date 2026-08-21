@@ -539,11 +539,11 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   driver for.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
   runtime) → U-Boot → Linux kernel → a root filesystem (often built with
-  Buildroot). The first link exists — `software/soc/bootrom.c` is a genuine
-  first-stage loader — and **OpenSBI now builds for this core**
-  (`software/opensbi/`), with the platform features it depends on
-  implemented. It does not yet boot: it still needs a platform port and
-  more RAM than 256 KB. See `software/opensbi/README.md`.
+  Buildroot). The first two links exist: `software/soc/bootrom.c` is a
+  genuine first-stage loader, and **OpenSBI now boots** — it prints its
+  banner, detects this platform from `dts/soc.dts`, and prepares to hand
+  off to S-mode. `make sim_opensbi`. See `software/opensbi/README.md` for
+  the five defects between "builds" and "boots".
 - Performance that isn't so slow it's unusable — this core is pipelined
   and now has a branch predictor, but it's still single-issue and
   in-order, with no cache; real Linux-capable FPGA cores typically add
@@ -567,7 +567,7 @@ The short version:
 | 2 | Break the memory ceiling — external DRAM | ✅ **done, on silicon** — a 99 KB program sent over the serial line into external SDRAM on a ULX3S 85F and executed from there. 64 KB of block RAM is no longer the ceiling |
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache **1.79×** and D-cache **1.11×** on CoreMark, both in the bus adapter and shared by both cores. Interrupt-driven UART and multi-word lines remain |
 | 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
-| 5 | Run software this project did not write — OpenSBI, Zephyr | OpenSBI builds, does not boot. Phase 2's SDRAM removes the "nowhere to put a 521 KB `fw_jump.bin`" half of that |
+| 5 | Run software this project did not write — OpenSBI, Zephyr | ✅ **OpenSBI boots** — banner, platform detected from the device tree, root domain built, prepared to enter S-mode. `make sim_opensbi`. A kernel to hand off to is the remaining half |
 | 6 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
 | 7 | Close the boot path — the SD card | the only untested link in the boot chain — and the only phase nothing else is waiting on |
 

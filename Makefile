@@ -148,7 +148,7 @@ SD_BLOCKS = 128
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         sim_mmusdram sim_plic sim_uart16550 \
-        sim_uartload uartload-host sbiimage \
+        sim_uartload uartload-host sbiimage sim_opensbi \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -620,7 +620,8 @@ sim/sdramcheckimage.hex: software/soc/sdramcheck.elf software/bin2hex.py Makefil
 # dependency this project is willing to have. Run it by hand:
 #
 #   ./software/opensbi/build-opensbi.sh          # once, clones and builds
-#   make sbiimage
+#   make sbiimage      -> pack stub + device tree + OpenSBI into an SDRAM image
+#   make sim_opensbi   -> boot it, and check the banner and platform detection
 #   cd sim && ../obj_dir_soc_inorder/Vsoc_top \
 #            +sdram=sbiimage.hex +uart_clks=208 +maxcycles=8000000
 #
@@ -647,6 +648,28 @@ sim/sbiimage.hex: software/opensbi/build/sbi_stub.bin dts/soc.dtb \
 	    $(OPENSBI_FW) $(OPENSBI_ELF) > $@
 
 sbiimage: sim/sbiimage.hex
+
+# Boot it. Not part of `verify` for the same reason `sbiimage` is not: it
+# needs OpenSBI's cloned source tree.
+#
+# `+uart_clks=224` is not a guess. OpenSBI reads `clock-frequency` from
+# dts/soc.dts and programs the ns16550 divisor, rounding rather than
+# truncating: (25e6 + 8*115200) / (16*115200) = 14, so 224 clocks per bit and
+# not the 208 that 25e6/(16*115200) suggests. The harness prints the divisor
+# the UART is actually running at and says so when it disagrees, because a
+# mismatch prints convincing garbage rather than nothing - which reads as a
+# firmware fault instead of a decoding one, and did for one round.
+#
+# 4 M words is 8 MB of modelled SDRAM: FW_JUMP_FDT_ADDR is 0x9020_0000 and
+# FW_JUMP_ADDR is 0x9040_0000, both of which have to be backed.
+sim_opensbi: sim/sbiimage.hex $(VERILATOR_BIN)
+	@cd sim && ../$(VERILATOR_BIN) +sdram=sbiimage.hex +uart_clks=224 \
+	    +maxcycles=40000000 +sdram_words=4194304 | tee opensbi.log
+	@grep -q "Boot HART Base ISA          : rv32ima" sim/opensbi.log && \
+	    grep -q "Platform Console Device     : uart8250" sim/opensbi.log && \
+	    echo "OPENSBI BOOT PASSED" || \
+	    { echo "OPENSBI BOOT FAILED - no banner, or the platform was not detected"; \
+	      exit 1; }
 
 # ---- the ns16550 register map, and the UART's interrupt ----
 #
@@ -839,7 +862,7 @@ clean:
 	       sim/sim_mmusdram.out sim/mmuimage.hex \
 	       sim/sim_plic.out sim/plicimage.hex \
 	       sim/sim_uart16550.out sim/uart16550image.hex \
-	       sim/sbiimage.hex software/opensbi/build/sbi_stub.elf \
+	       sim/sbiimage.hex sim/opensbi.log software/opensbi/build/sbi_stub.elf \
 	       software/opensbi/build/sbi_stub.bin \
 	       software/soc/uarttest.elf software/soc/uarttest.bin \
 	       software/soc/plictest.elf software/soc/plictest.bin \

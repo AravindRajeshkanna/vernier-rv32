@@ -48,11 +48,19 @@
 //   +uart_clks=N      clock cycles per UART bit (default 4). Must match what
 //                     the UART is actually running at - a driver that
 //                     programs the ns16550 divisor changes it.
-//   +watchpc=ADDR     dump the integer registers the first time the PC
-//                     reaches ADDR. For firmware that gives up without a
+//   +watchpc=ADDR     dump the integer registers the first time a *retired*
+//                     instruction is at ADDR. `+watchlast` takes the last
+//                     occurrence instead, which is what you want when the
+//                     address is inside a loop and only the final pass
+//                     failed. For firmware that gives up without a
 //                     console: the error code it decided to hang on is still
 //                     in a register at the point it branches to its hang
 //                     loop, and there is no other way to read it.
+//   +peek=ADDR        print the 32-bit word at ADDR when the run ends, up to
+//                     four times. For reading a firmware's own globals - an
+//                     allocator's high-water mark, a status flag - when it has
+//                     no way to print them itself. Reads the SDRAM model, so
+//                     the address must be in the SDRAM window.
 //   +quiet            suppress the UART stream (keep the summary)
 //   +dump[=FILE]      write a VCD. Only works if built with --trace; see the
 //                     Makefile's VTRACE knob, and note that the reason it is
@@ -517,6 +525,21 @@ static size_t load_hex(const char *path, T *dst, size_t capacity) {
     return n;
 }
 
+// Every occurrence of a repeated plusarg, in order. `+peek` is the only user:
+// one address is rarely enough when the question is "which of these grew".
+static std::vector<std::string> plusargs_all(int argc, char **argv,
+                                             const char *name) {
+    std::vector<std::string> out;
+    const size_t len = strlen(name);
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] != '+') continue;
+        const char *s = argv[i] + 1;
+        if (strncmp(s, name, len) == 0 && s[len] == '=')
+            out.push_back(s + len + 1);
+    }
+    return out;
+}
+
 static const char *plusarg(int argc, char **argv, const char *name) {
     const size_t len = strlen(name);
     for (int i = 1; i < argc; i++) {
@@ -632,6 +655,8 @@ int main(int argc, char **argv) {
     bool         capture_trap_next = false;
     const uint32_t watch_pc = (uint32_t)plusarg_long(argc, argv, "watchpc", 0);
     bool         watch_hit = false;
+    const bool   watch_last = plusarg(argc, argv, "watchlast") != nullptr;
+    long         watch_count = 0;
     uint32_t     watch_regs[32] = {0};
     static const int BRANCH_RING = 16;
     uint32_t     branch_from[BRANCH_RING] = {0}, branch_to[BRANCH_RING] = {0};
@@ -676,14 +701,22 @@ int main(int argc, char **argv) {
             traps++;
             if (first_trap < 0) {
                 first_trap        = cycles;
-                first_trap_pc     = root->soc_top__DOT__CPU__DOT__pc;
+                first_trap_pc     = root->soc_top__DOT__CPU__DOT__id_ex_pc;
                 capture_trap_next = true;
             }
         }
 
-        if (watch_pc && !watch_hit &&
-            root->soc_top__DOT__CPU__DOT__pc == watch_pc) {
+        // The *retired* PC, not the fetch PC. See sim/verilator_soc.vlt: a
+        // probe on the fetch PC fires on speculative addresses the pipeline
+        // later squashes, and reports register values from a context that
+        // never ran.
+        const bool     retired = root->soc_top__DOT__CPU__DOT__instret_retire;
+        const uint32_t ret_pc  = root->soc_top__DOT__CPU__DOT__id_ex_pc;
+
+        if (watch_pc && (watch_last || !watch_hit) && retired &&
+            ret_pc == watch_pc) {
             watch_hit = true;
+            watch_count++;
             for (int r = 0; r < 32; r++)
                 watch_regs[r] = root->soc_top__DOT__CPU__DOT__RF__DOT__regs[r];
         }
@@ -699,8 +732,8 @@ int main(int argc, char **argv) {
         // print them at the end. Two addresses per entry, straight into
         // addr2line. Cheap - one compare per cycle - and it is the difference
         // between a guess and a name.
-        {
-            const uint32_t pc_now = root->soc_top__DOT__CPU__DOT__pc;
+        if (retired) {
+            const uint32_t pc_now = ret_pc;
             if (pc_now != prev_pc + 4 && pc_now != prev_pc) {
                 // Collapse a repeat of the immediately previous transfer.
                 // Without this a two-instruction `wfi` spin overwrites the
@@ -722,8 +755,8 @@ int main(int argc, char **argv) {
         // and the *range* it is looping over identifies the loop far better
         // than any single sample: a two-instruction `wfi` spin and a
         // thousand-instruction search look nothing alike.
-        {
-            const uint32_t pc_now = root->soc_top__DOT__CPU__DOT__pc;
+        if (retired) {
+            const uint32_t pc_now = ret_pc;
             if (cycles >= pc_window_from) {
                 if (pc_now < pc_lo) pc_lo = pc_now;
                 if (pc_now > pc_hi) pc_hi = pc_now;
@@ -813,7 +846,8 @@ int main(int argc, char **argv) {
                 "zero","ra","sp","gp","tp","t0","t1","t2","s0","s1","a0","a1",
                 "a2","a3","a4","a5","a6","a7","s2","s3","s4","s5","s6","s7",
                 "s8","s9","s10","s11","t3","t4","t5","t6"};
-            printf("registers at pc 0x%08x:\n", watch_pc);
+            printf("registers at pc 0x%08x (%s of %ld visits):\n", watch_pc,
+                   watch_last ? "last" : "first", watch_count);
             for (int r = 0; r < 32; r += 4) {
                 printf("  ");
                 for (int c = 0; c < 4; c++)
@@ -822,12 +856,39 @@ int main(int argc, char **argv) {
             }
         }
     }
+    {
+        const std::vector<std::string> peeks = plusargs_all(argc, argv, "peek");
+        for (size_t i = 0; i < peeks.size() && i < 4; i++) {
+            const uint32_t addr = (uint32_t)strtoul(peeks[i].c_str(), nullptr, 0);
+            if ((addr >> 24) != 0x90 && (addr >> 24) != 0x91) {
+                printf("peek 0x%08x: not in the SDRAM window\n", addr);
+                continue;
+            }
+            const uint32_t w = (addr - 0x90000000u) >> 1;   // 16-bit words
+            if (w + 1 >= sdram.words()) {
+                printf("peek 0x%08x: past the modelled storage\n", addr);
+                continue;
+            }
+            const uint32_t v = sdram.storage()[w] |
+                               ((uint32_t)sdram.storage()[w + 1] << 16);
+            printf("peek 0x%08x = 0x%08x (%u)\n", addr, v, v);
+        }
+    }
     if (branch_n) {
         printf("last control transfers (oldest first):\n");
         const long first = branch_n > BRANCH_RING ? branch_n - BRANCH_RING : 0;
         for (long i = first; i < branch_n; i++)
             printf("  0x%08x -> 0x%08x\n",
                    branch_from[i % BRANCH_RING], branch_to[i % BRANCH_RING]);
+    }
+    {
+        const uint32_t div = root->soc_top__DOT__UART__DOT__divisor_r;
+        const long actual = div ? 16L * div : uart_clks_per_bit;
+        printf("UART divisor: %u -> %ld clocks/bit", div, actual);
+        if (actual != uart_clks_per_bit)
+            printf("  ** decoding at %d, output will be garbage: "
+                   "re-run with +uart_clks=%ld **", uart_clks_per_bit, actual);
+        printf("\n");
     }
     printf("SDRAM refreshes issued: %ld\n", sdram.refreshes());
     printf("SDRAM read setup margin: %.1f ns\n", sdram.ac_setup_ns());

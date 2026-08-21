@@ -786,6 +786,18 @@ Two details that were not obvious and cost a round each:
 - **Collapse repeated entries in a branch trace.** A two-instruction `wfi`
   spin overwrites a sixteen-entry ring in a microsecond, so the trace shows
   only the hang, which is the one thing already known.
+- **Probe a *retired* signal, never a speculative one.** The first version of
+  all of this watched `cpu_core.pc` — the fetch PC. It is speculative: the BTB
+  predicts, the pipeline fetches, a mispredict squashes it. So the probe
+  reported addresses the machine never executed, and dumped registers from a
+  context that never ran. It produced a completely coherent, completely wrong
+  diagnosis — "the scratch allocator is failing" — supported by a register
+  dump, and the only reason it was caught is that the registers *disagreed
+  with the code*: arriving at that branch would have left `a0` holding a lock
+  address, and it held 64. Watching `id_ex_pc` qualified by `instret_retire`
+  instead, the address in question turns out never to be reached at all.
+
+  A probe on a speculative signal does not fail loudly. It invents a story.
 
 **The rule.** The console is a peripheral, not a debugger. When the software
 under test owns it, or has not reached it, the simulator is the instrument —
