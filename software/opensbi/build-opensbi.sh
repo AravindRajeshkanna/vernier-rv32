@@ -69,13 +69,26 @@ fi
 # error rather than eight million silent cycles.
 FW_TEXT_START=${FW_TEXT_START:-0x90080000}
 
+# Where fw_jump hands off, and where it puts the device tree for the next
+# stage. Both default, in OpenSBI, to offsets from FW_TEXT_START -
+# FW_JUMP_FDT_ADDR is FW_TEXT_START + 0x2200000, which here is 0x9228_0000
+# and lands *outside* the 32 MB this SoC decodes. That matters more than it
+# looks: `fdt_get_address()` returns the root domain's next_arg1, so OpenSBI
+# reads its *own* device tree through that pointer. Pointed at unmapped
+# space it reads zeros, fdt_path_offset() returns -FDT_ERR_BADMAGIC, and the
+# firmware stops with no console - having been perfectly capable of parsing
+# the same tree at its original address minutes earlier.
+FW_JUMP_FDT_ADDR=${FW_JUMP_FDT_ADDR:-0x90200000}
+FW_JUMP_ADDR=${FW_JUMP_ADDR:-0x90400000}
+
 # The generated linker script caches FW_TEXT_START, and `make clean` does not
 # remove it - so changing the address without this silently rebuilds at the
 # old one. That cost a debugging round: the symbols said 0x9001_0000 after a
 # build that had asked for 0x9008_0000.
-STAMP="build/.fw_text_start"
-if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$FW_TEXT_START" ]; then
-    echo "FW_TEXT_START is $FW_TEXT_START (was $(cat "$STAMP" 2>/dev/null || echo none)) - rebuilding from scratch"
+STAMP="build/.fw_addrs"
+WANT="$FW_TEXT_START $FW_JUMP_FDT_ADDR $FW_JUMP_ADDR"
+if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$WANT" ]; then
+    echo "addresses are [$WANT] (were [$(cat "$STAMP" 2>/dev/null || echo none)]) - rebuilding from scratch"
     rm -rf build
 fi
 
@@ -83,9 +96,11 @@ make -j4 PLATFORM=generic CROSS_COMPILE="$CROSS" FW_PIC=n \
      PLATFORM_RISCV_XLEN=32 \
      PLATFORM_RISCV_ISA=rv32ima_zicsr_zifencei \
      PLATFORM_RISCV_ABI=ilp32 \
-     FW_TEXT_START="$FW_TEXT_START"
+     FW_TEXT_START="$FW_TEXT_START" \
+     FW_JUMP_FDT_ADDR="$FW_JUMP_FDT_ADDR" \
+     FW_JUMP_ADDR="$FW_JUMP_ADDR"
 
-mkdir -p build && printf '%s' "$FW_TEXT_START" > "$STAMP"
+mkdir -p build && printf '%s' "$WANT" > "$STAMP"
 
 echo
 echo "built:"

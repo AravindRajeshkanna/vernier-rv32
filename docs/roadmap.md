@@ -929,6 +929,13 @@ sooner: there is a bus, a timer, an interrupt controller and storage.
 
 **Done when:** OpenSBI prints its banner and hands off to an S-mode payload.
 
+**The banner half is done.** `make sim_opensbi` boots OpenSBI v1.9 on this
+SoC: it parses `dts/soc.dts`, finds the ns16550 console, the CLINT as
+`aclint-mtimer`/`aclint-mswi` at the right frequency and the PLIC's window,
+detects the hart as `rv32ima` with no PMP, builds its root domain, and stops
+prepared to enter S-mode at `0x9040_0000`. What is missing is something to be
+*at* that address.
+
 ### The debug loop had to be fixed first
 
 Everything under `sim/tb_*.v` runs on Icarus, at about **11.3 thousand cycles
@@ -981,18 +988,17 @@ Two of the three hard blockers are now closed:
    answers to `0x90` and `0x91` alike. `wb_sdram.v` needed no change — it
    always took its row from `wb_adr[24:12]`.
 
-### The kernel is blocked on OpenSBI, not on hardware
+### The kernel is now the next thing, and is unblocked
 
-An rv32ima Sv32 Linux runs in S-mode and asks M-mode firmware for its timer
-through `sbi_set_timer` — this core has no Sstc, so there is no way for the
-kernel to program `stimecmp` itself. `earlycon=uart8250,mmio32,0x04000000`
-would give it a console without SBI, but nothing gives it a timer, and a
-kernel that cannot schedule does not get as far as printing about it.
+It was blocked on OpenSBI: an rv32ima Sv32 Linux runs in S-mode and asks
+M-mode firmware for its timer through `sbi_set_timer`, since this core has no
+Sstc. OpenSBI now provides that — `time` is in its advertised extension list
+and `aclint-mtimer` is running at the right frequency.
 
-So the order is fixed: OpenSBI has to hand off before a kernel is worth
-building. Nothing has been added here for it yet, deliberately — a build
-script and a defconfig that have never produced a booting kernel would be
-scaffolding nothing builds, which section 14 is about.
+Nothing has been added here for a kernel yet, deliberately — a build script
+and a defconfig that have never produced a booting kernel would be scaffolding
+nothing builds, which section 14 is about. But the blocker is gone, and
+`Domain0 Next Address` is where the kernel goes.
 
 What it will need, once OpenSBI hands off:
 
@@ -1014,19 +1020,20 @@ device tree *is* the platform port), an rv32ima kernel with no `C`, and an
 initramfs. Hardware PTE A/D auto-update is absent and Linux does not strictly
 need it to boot.
 
-**OpenSBI runs, and three real defects have been fixed getting it there** —
-a missing `mstatush` (RV32-required, and the core genuinely lacked it), a load
-address that violated OpenSBI's own alignment precondition, and a build script
-that silently built the wrong thing twice. It now gets through FDT parsing and
-hart feature detection before `sbi_hart_init()` returns an error and hangs.
+**OpenSBI boots.** Five defects stood between "builds" and "boots": a missing
+`mstatush`, a load address violating OpenSBI's own alignment precondition, a
+build script that built the wrong thing two different ways, a
+`FW_JUMP_FDT_ADDR` default that landed outside this SoC's 32 MB — which
+matters because `fdt_get_address()` returns the root domain's `next_arg1`, so
+OpenSBI reads its *own* device tree through it — and a `timebase-frequency`
+in `dts/soc.dts` that was twice the real one.
 
-**PMP is ruled out**, which was the stated hypothesis last round and was
-wrong: `sbi_hart_pmp_init()` returns success when the hart has no PMP regions.
 `software/opensbi/README.md` records the method as well as the findings,
 because the method is the reusable part: OpenSBI owns the console and brings
-it up late, so every failure before that is identical silence, and the way
-through was instrumenting the *hardware* - PC, trap CSRs, a branch-transfer
-ring, and a register watchpoint, all in `sim/verilator_soc.cpp`.
+it up late, so every failure before that is identical silence. The way through
+was instrumenting the *hardware* - retired PC, trap CSRs, a branch-transfer
+ring, a register watchpoint and a memory peek, all in
+`sim/verilator_soc.cpp`.
 
 ### What turning translation on for the first time cost
 

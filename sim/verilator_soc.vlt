@@ -46,8 +46,39 @@
 
 public_flat_rd -module "wb_ram" -var "mem"
 public_flat_rd -module "wb_rom" -var "mem"
+// `pc` is the *fetch* PC and is speculative: the BTB predicts, the pipeline
+// fetches, and a mispredict squashes it. A probe watching it reports
+// addresses the machine never executed - which it duly did, sending one
+// debugging round after a branch that was fetched and thrown away. What the
+// probes want is the *retired* instruction, so they use id_ex_pc qualified by
+// instret_retire instead. `pc` is kept only for the trace's own use.
+// Both cores, because both get built: `make verify` runs the in-order one and
+// CI matrixes over both, so a .vlt naming only `cpu_core` compiles fine
+// locally and fails the wide core's leg of CI with "no member named
+// soc_top__DOT__CPU__DOT__instret_retire". It did exactly that.
+//
+// The C++ needs no #ifdef: Verilator's flattened names come from the
+// *instance* path, and both cores are instantiated as `CPU` with a register
+// file called `RF`, so the symbols are identical either way. Only the module
+// names differ, and those only appear here.
+//
+// One asymmetry worth knowing when reading a trace from the wide core: it
+// dual-issues, and `instret_retire`/`id_ex_pc` describe slot 0 only. Slot 1
+// retires through `instret1_retire`, so a branch trace taken from the wide
+// core is a sample of control flow rather than all of it.
 public_flat_rd -module "cpu_core" -var "pc"
+public_flat_rd -module "cpu_core" -var "id_ex_pc"
+public_flat_rd -module "cpu_core" -var "instret_retire"
+public_flat_rd -module "core_ooo" -var "pc"
+public_flat_rd -module "core_ooo" -var "id_ex_pc"
+public_flat_rd -module "core_ooo" -var "instret_retire"
 public_flat_rd -module "csr_file" -var "mcause_r"
 public_flat_rd -module "csr_file" -var "mepc_r"
 public_flat_rd -module "csr_file" -var "mtval_r"
 public_flat_rd -module "regfile" -var "regs"
+public_flat_rd -module "regfile_wide" -var "regs"
+// What rate the UART is *actually* running at. A driver that programs
+// the ns16550 divisor changes it out from under `+uart_clks`, and a
+// mismatch prints garbage - which looks like a firmware fault rather
+// than a decoding one.
+public_flat_rd -module "uart" -var "divisor_r"

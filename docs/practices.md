@@ -744,6 +744,18 @@ actually run before you count them as covering a feature — and when a feature
 has no test that turns it *on*, say so in the place a reader would look for
 reassurance, rather than letting a green suite imply it.
 
+**The same rule applies to your own gate.** `make verify` builds `CORE=inorder`
+only; `make verify_ooo` is a separate target and CI matrixes over both. A
+change that added debug probes reaching into `cpu_core`'s internals passed a
+green `verify` locally and failed CI's wide-core leg, because the probes named
+a module the other core does not have. Nothing was subtly wrong — it did not
+compile. It simply had never been compiled.
+
+So: **anything touching a core, or anything reaching into one, needs
+`verify_ooo` before it is pushed.** A green `verify` is evidence about one of
+the two machines this repository builds, and the commit message should not
+imply otherwise.
+
 The corollary is about where these were found. Neither bug is subtle once the
 path runs: one hangs the machine outright, the other writes the wrong word.
 They survived because writing the twenty-line program that enables `satp` was
@@ -786,6 +798,18 @@ Two details that were not obvious and cost a round each:
 - **Collapse repeated entries in a branch trace.** A two-instruction `wfi`
   spin overwrites a sixteen-entry ring in a microsecond, so the trace shows
   only the hang, which is the one thing already known.
+- **Probe a *retired* signal, never a speculative one.** The first version of
+  all of this watched `cpu_core.pc` — the fetch PC. It is speculative: the BTB
+  predicts, the pipeline fetches, a mispredict squashes it. So the probe
+  reported addresses the machine never executed, and dumped registers from a
+  context that never ran. It produced a completely coherent, completely wrong
+  diagnosis — "the scratch allocator is failing" — supported by a register
+  dump, and the only reason it was caught is that the registers *disagreed
+  with the code*: arriving at that branch would have left `a0` holding a lock
+  address, and it held 64. Watching `id_ex_pc` qualified by `instret_retire`
+  instead, the address in question turns out never to be reached at all.
+
+  A probe on a speculative signal does not fail loudly. It invents a story.
 
 **The rule.** The console is a peripheral, not a debugger. When the software
 under test owns it, or has not reached it, the simulator is the instrument —

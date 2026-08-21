@@ -54,7 +54,17 @@
     cpus {
         #address-cells = <1>;
         #size-cells = <0>;
-        timebase-frequency = <50000000>;
+        /* Must match what rtl/clint.v's mtime actually counts at, which is
+         * once per system clock - 25 MHz, the same number as the CPU's
+         * clock-frequency below.
+         *
+         * This said 50000000 until OpenSBI printed
+         * "aclint-mtimer @ 50000000Hz" and made it obvious. Everything an SBI
+         * implementation does with time is derived from here, so a factor of
+         * two wrong is a factor of two wrong in every timer a kernel sets -
+         * and it shows up as a system that runs at half speed rather than as
+         * an error. */
+        timebase-frequency = <25000000>;
 
         cpu0: cpu@0 {
             device_type = "cpu";
