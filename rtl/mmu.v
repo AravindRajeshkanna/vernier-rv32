@@ -58,6 +58,17 @@ module mmu (
     output wire         resolved,  // answer valid this cycle (hit, or a walk just concluded)
     output wire         fault,     // valid when resolved: 1 = page fault
     output wire [31:0]  pa,        // valid when resolved && !fault
+    // Which virtual address `pa` is the translation *of*.
+    //
+    // Usually that is `va` and asking would be absurd. It is not always: a
+    // walk takes several cycles and answers from the `va_r` it latched when
+    // the walk began, so if the requester's `va` has moved in the meantime,
+    // this answer belongs to the old one. A caller that can move - and the
+    // instruction fetch can, because a mispredict redirect overrides the PC
+    // freeze that a fetch stall would otherwise hold - has to be able to
+    // tell. See the note above `pa_hit`/`walk_pa` for why the walk cannot
+    // simply use the live `va` instead.
+    output wire [31:0]  pa_va,
     output wire         busy,      // mid-walk (drives the pipeline stall)
 
     output wire         ptw_req,
@@ -188,6 +199,10 @@ module mmu (
     wire [33:0] walk_pa_normal_wide = {pte2[31:10], va_r[11:0]};
     wire [31:0] walk_pa    = l1_conclusive ? walk_pa_super_wide[31:0]
                                             : walk_pa_normal_wide[31:0];
+
+    // A TLB hit answers the live `va`; a concluded walk answers the `va_r`
+    // it started with. Anything but S_IDLE is a walk.
+    assign pa_va    = (state == S_IDLE) ? va : va_r;
 
     assign busy     = (state != S_IDLE);
 

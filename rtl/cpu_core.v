@@ -220,6 +220,7 @@ module cpu_core #(
     wire itlb_req = ifetch_mmu_active;
     wire itlb_resolved, itlb_fault, itlb_busy;
     wire [31:0] itlb_pa;
+    wire [31:0] itlb_pa_va;
 
     mmu IMMU (
         .clk(clk), .rst(rst),
@@ -230,13 +231,50 @@ module cpu_core #(
         // for fetch by the spec, and MXR only widens loads.
         .is_user(current_priv == PRIV_U), .sum(1'b0), .mxr(1'b0),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
-        .resolved(itlb_resolved), .fault(itlb_fault), .pa(itlb_pa), .busy(itlb_busy),
+        .resolved(itlb_resolved), .fault(itlb_fault), .pa(itlb_pa),
+        .pa_va(itlb_pa_va), .busy(itlb_busy),
         .ptw_req(iptw_req), .ptw_addr(iptw_addr),
         .ptw_gnt(iptw_gnt), .ptw_rdata(iptw_rdata)
     );
 
-    wire itlb_wait_stall = itlb_req && !itlb_resolved;
-    wire itlb_fault_now  = itlb_req && itlb_resolved && itlb_fault;
+    // A walk that resolves for a PC the fetch has since moved away from must
+    // not answer the *current* fetch.
+    //
+    // The ITLB is handed the live `pc`, and a walk latches it and answers,
+    // several cycles later, for the address it latched. Nothing stops `pc`
+    // changing in between: `redirect_valid` deliberately overrides the PC
+    // freeze, so a branch resolving in EX moves the PC while a fetch-side
+    // walk is in flight. The walk then completes and hands back the
+    // *mispredicted* path's physical address, cpu_wb.v fetches from it - a
+    // real instruction, at a real address, so nothing downstream objects -
+    // and the IF/ID register pairs that instruction with the corrected PC.
+    //
+    // The result is one instruction executed in place of another, silently.
+    // It cost a Linux boot: a `ret` whose BTB target was stale redirected
+    // correctly to `li a5,1`, the ITLB walk in flight answered for the
+    // mispredicted target instead, and the core executed `li a4,3` from
+    // there under the right PC. `a5` kept a stale value, the `bne` two
+    // instructions later took a branch it must not take, and
+    // unflatten_device_tree() reported a malformed device tree that was
+    // perfectly well formed.
+    //
+    // Rejecting the answer costs a re-walk. It cannot livelock: the walk
+    // still installs its TLB entry, and the next request is for the settled
+    // PC. Nothing here caught it before because it needs an ITLB miss and a
+    // mispredict in flight at the same moment - and every bare-metal program
+    // in this repository is small enough that the ITLB stops missing after
+    // the first pass.
+    // The *whole* address, not just the page number. A physical address is
+    // {ppn, va[11:0]}, so the offset comes from the virtual address too - and
+    // a walk that started one instruction earlier in the same page produces a
+    // perfectly valid translation of the wrong word. Comparing [31:12] caught
+    // 32 of the 35 wrong decodes in a Linux boot and left three, all of them
+    // a redirect within a single page.
+    wire itlb_answer_stale = itlb_pa_va != pc;
+    wire itlb_ok           = itlb_resolved && !itlb_answer_stale;
+
+    wire itlb_wait_stall = itlb_req && !itlb_ok;
+    wire itlb_fault_now  = itlb_req && itlb_ok && itlb_fault;
 
     // ---- what to fetch while the ITLB is still walking ----
     //
@@ -266,7 +304,7 @@ module cpu_core #(
     // the core cannot yet compute has no business ahead of it.
     reg [31:0] itlb_pa_hold;
     wire [31:0] fetch_phys_addr =
-        itlb_req ? (itlb_resolved ? itlb_pa : itlb_pa_hold) : pc;
+        itlb_req ? (itlb_ok ? itlb_pa : itlb_pa_hold) : pc;
 
     always @(posedge clk or posedge rst) begin
         if (rst)
@@ -823,7 +861,13 @@ module cpu_core #(
         .is_user(effective_priv_for_data == PRIV_U),
         .sum(csr_mstatus_sum), .mxr(csr_mstatus_mxr),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
-        .resolved(mmu_resolved), .fault(mmu_fault), .pa(mmu_pa), .busy(mmu_busy),
+        .resolved(mmu_resolved), .fault(mmu_fault), .pa(mmu_pa),
+        // The data address cannot move under a stall the way the PC can -
+        // mmu.v snapshots it for exactly that reason - so the data side has
+        // no use for this. Named rather than left off, so the port is
+        // accounted for.
+        .pa_va(),
+        .busy(mmu_busy),
         .ptw_req(ptw_req), .ptw_addr(ptw_addr),
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata)
     );
