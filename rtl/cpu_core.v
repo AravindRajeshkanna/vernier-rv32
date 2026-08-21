@@ -392,6 +392,21 @@ module cpu_core #(
                 12'h100, 12'h104, 12'h105, 12'h106, 12'h140, 12'h141, 12'h142,
                 12'h143, 12'h144, 12'h180,
                 12'h300, 12'h301, 12'h302, 12'h303, 12'h304, 12'h305, 12'h306,
+                // mstatush. RV32-only, and required: it holds MBE and SBE,
+                // the big-endian controls. This core is little-endian only,
+                // so both are read-only zero - which the spec allows, they
+                // are WARL - but the CSR has to *exist*, because RV32
+                // firmware clears them unconditionally in its assembly
+                // startup, before it has installed a handler that could
+                // survive an illegal-instruction trap.
+                //
+                // OpenSBI does exactly that, at fw_base.S, and this core
+                // trapped it. mtvec at that point still points at
+                // `_start_hang`, so the machine stopped in a `wfi` loop with
+                // no console and no message - eight million cycles of silence
+                // that took a PC readout from the Verilator harness to
+                // explain.
+                12'h310,
                 12'h320,
                 12'h340, 12'h341, 12'h342, 12'h343, 12'h344,
                 12'hB00, 12'hB02, 12'hB80, 12'hB82,

@@ -752,6 +752,56 @@ test in this repository is still the one nobody has written yet.
 
 ---
 
+## 27. When the firmware owns the console, instrument the machine
+
+Bringing up OpenSBI produced the least informative failure this project has
+had: eight million cycles, no output, no trap, no clue. Every technique that
+had worked before was unavailable, because they all end in *printing
+something*, and the thing that had failed was the code that brings up the
+console. OpenSBI initialises its console late and deliberately — a firmware
+that could print before it knows what its console is would have to guess.
+
+The way out was to stop asking the firmware and start asking the hardware. The
+Verilator harness gained four things, none of them clever:
+
+| | what it answers |
+|---|---|
+| trap count + `mcause`/`mepc`/`mtval` | did it fault, and on what |
+| PC range over the last N cycles | if it is looping, which loop |
+| a ring of non-sequential PC changes | how it *got* to that loop |
+| `+watchpc=ADDR` register dump | what it was carrying when it gave up |
+
+Every address goes into `addr2line` against the firmware's ELF and comes back
+a function name and a source line. Three bugs fell out in three iterations —
+a missing CSR, a load address violating an alignment rule nobody had written
+down, and a build script quietly building the wrong tree.
+
+Two details that were not obvious and cost a round each:
+
+- **Sample trap CSRs one cycle after the trap.** `trap` is a combinational
+  pulse; `mcause`/`mepc`/`mtval` are written by the same edge. Reading them on
+  the pulse returns the *previous* trap's values, which for the first trap is
+  three zeros — and "cause 0, address 0" is a plausible-looking wrong answer
+  rather than an obviously missing one.
+- **Collapse repeated entries in a branch trace.** A two-instruction `wfi`
+  spin overwrites a sixteen-entry ring in a microsecond, so the trace shows
+  only the hang, which is the one thing already known.
+
+**The rule.** The console is a peripheral, not a debugger. When the software
+under test owns it, or has not reached it, the simulator is the instrument —
+and a few registers exposed through a `.vlt` file will out-argue any amount of
+reasoning about what the firmware "must" be doing. Build that before the third
+round of guessing, not after.
+
+The corollary is about speed. This only works because an iteration is under
+two seconds: at 4.4 M cycles/s a full attempt is 1.35 s, so adding a probe and
+re-running costs less than thinking about it. The same loop under Icarus would
+be ten minutes an iteration, and nobody runs an experiment they have to wait
+ten minutes for — they guess instead. Section 26's lesson was that untested
+paths hide bugs; this one is that untestable *speeds* hide them just as well.
+
+---
+
 ---
 
 ## Conventions

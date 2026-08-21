@@ -90,6 +90,9 @@ VERILATOR     = verilator
 # rv32im/ilp32 multilib.
 RISCV_CC      ?= riscv64-unknown-elf-gcc
 RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
+# Only software/opensbi/mkimage.py uses this: it reads OpenSBI's own
+# symbols to check the load address before packing an image.
+RISCV_NM      ?= riscv64-unknown-elf-nm
 
 RTL = rtl/regfile.v rtl/imem.v rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v \
       rtl/clint.v rtl/plic.v rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v $(CORE_RTL)
@@ -625,7 +628,9 @@ sim/sdramcheckimage.hex: software/soc/sdramcheck.elf software/bin2hex.py Makefil
 # dts/soc.dts and programs the ns16550 divisor to 25e6/(16*115200) = 13, so
 # the line runs at 208 clocks per bit rather than the testbenches' 4. See
 # software/opensbi/README.md for how far this currently gets.
-OPENSBI_FW = software/opensbi/build/opensbi/build/platform/generic/firmware/fw_jump.bin
+OPENSBI_DIR = software/opensbi/build/opensbi/build/platform/generic/firmware
+OPENSBI_FW  = $(OPENSBI_DIR)/fw_jump.bin
+OPENSBI_ELF = $(OPENSBI_DIR)/fw_jump.elf
 
 software/opensbi/build/sbi_stub.bin: software/opensbi/sbi_stub.S
 	$(RISCV_CC) -march=rv32im_zicsr -mabi=ilp32 -nostdlib -nostartfiles \
@@ -637,8 +642,9 @@ sim/sbiimage.hex: software/opensbi/build/sbi_stub.bin dts/soc.dtb \
 	@test -f $(OPENSBI_FW) || { \
 	    echo "$(OPENSBI_FW) is missing - run ./software/opensbi/build-opensbi.sh first"; \
 	    exit 1; }
-	python3 software/opensbi/mkimage.py software/opensbi/build/sbi_stub.bin \
-	    dts/soc.dtb $(OPENSBI_FW) > $@
+	python3 software/opensbi/mkimage.py --nm=$(RISCV_NM) \
+	    software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+	    $(OPENSBI_FW) $(OPENSBI_ELF) > $@
 
 sbiimage: sim/sbiimage.hex
 

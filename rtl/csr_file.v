@@ -319,6 +319,11 @@ module csr_file (
             12'h301: rdata = MISA;
             12'h302: rdata = medeleg_r;
             12'h303: rdata = mideleg_r;
+            // mstatush: MBE and SBE, both read-only zero on a little-endian
+            // -only implementation. Writes are discarded (WARL) by the write
+            // decode's default case. See cpu_core.v's csr_addr_ok for why it
+            // has to exist at all.
+            12'h310: rdata = 32'b0;
             12'h304: rdata = mie_r;
             12'h305: rdata = mtvec_r;
             12'h340: rdata = mscratch_r;
