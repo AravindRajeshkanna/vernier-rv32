@@ -58,43 +58,101 @@ and the oops handler faults reading kallsyms while trying to report it.
 
 `unflatten_device_tree()` walks the blob **twice** - once to size the result,
 once to build it. With `memblock=debug` the log shows the *first* walk
-completing and the kernel allocating 8068 bytes for the result, then the
-*second* walk over the same bytes failing with `-FDT_ERR_BADOFFSET`. Same
-traversal, same input, different answer.
+completing and the kernel allocating 8068 bytes for what it measured, then the
+*second* walk over the same bytes failing. Same traversal, same input,
+different answer.
 
-Ruled out, each by measurement rather than by reading:
+The second round of instrumentation localised that a long way further. The
+failing call is exactly:
 
-- **The blob.** `+savemem` pulls it out of SDRAM and `dtc -I dtb` decodes all
-  126 lines of it, including the `reserved-memory` nodes OpenSBI added.
-- **Where the blob is.** It failed identically with the device tree at
-  `0x9020_0000` and at `0x91E0_0000`. (It is at `0x91E0_0000` now for a
-  separate and real reason - see below.)
-- **The kernel image.** `+savemem` of all 3.5 MB and `cmp` against the file:
-  every byte of executable text identical, and every difference in `.data`,
-  `.init.data` or the `kallsyms` sequence table, all of which the kernel
-  legitimately writes.
-- **The two-level page walk.** This was the strongest suspect, because
-  nothing in this repository had ever made the hardware read a second PTE -
-  `make sim_mmusdram` mapped megapages only, and riscv-tests never enables
-  paging. `software/soc/mmutest.c` now covers 4 KB pages, VPN[0] at 0, 512
-  and 1023, per-page permissions, an invalid level-2 entry, three pages in
-  one megapage to catch a TLB that tags at the wrong granularity, and a
-  sweep over four times the TLB's eight entries read back in reverse, so
-  every hit is on an entry that was evicted and walked again. That last one
-  matters here specifically: on rv32 the whole linear map is 4 KB pages, so
-  Linux runs permanently in TLB eviction in a way nothing else on this SoC
-  does. All pass.
-- **A timing race.** The in-order and wide cores fail at byte-identical
-  faulting addresses. Two unrelated pipelines do not produce the same wrong
-  values by coincidence.
-- **The memory map.** Removing the block-RAM `memory` node changes nothing.
-- **Write-back cache holding a PTE the walker cannot see.** `cpu_wb.v`'s data
-  cache is write-through, and its header says this is why.
+```
+fdt_next_node(blob = 0x9de00000, offset = 0, &depth)  ->  -FDT_ERR_BADOFFSET
+```
 
-So it is deterministic, it is not the blob, not the image, not the walker,
-not the pipeline. The next thing to instrument is which *read* differs
-between the two passes, which needs a watchpoint on the FDT's physical page
-rather than on a PC.
+- `blob` is `dtb_early_va`, the fixmap address of the device tree, and it is
+  correct.
+- `offset` is 0, the root node, so this is the *first* step of the second
+  pass - it fails immediately, not part-way through.
+- libfdt can only return that from `fdt_check_node_offset_()`, which means
+  `fdt_next_tag()` did not report `FDT_BEGIN_NODE` for the root.
+- Every memory read that call makes is verified correct (below), and the tag
+  it reads at struct offset 0 is `0x00000001` - `FDT_BEGIN_NODE`.
+
+So the data is right and the answer is wrong.
+
+### What has been ruled out, and how
+
+Nothing here is an argument from reading the RTL. Each line is a measurement
+over a whole boot.
+
+| Suspect | Instrument | Result |
+|---|---|---|
+| The blob on disk | `dtc -I dtb` on what `+savemem` pulled out of SDRAM | 126 lines, valid |
+| The blob at the failing moment | `+savemem` at 30M and at 200M cycles, `cmp` | byte-identical; nothing writes it |
+| The blob's structure | an independent walker in Python implementing libfdt's own `fdt_next_tag` rules | 20 nodes, well-formed, walk completes |
+| Where the blob is | ran with the tree at `0x9020_0000` and at `0x91E0_0000` | identical failure |
+| The kernel image | `+savemem` of all 3.5 MB, `cmp` against the file | every byte of executable text identical |
+| **What memory hands back** | `+checkreads` | **19,911,640 SDRAM reads, all matched the part** |
+| **What the core executes** | `+checkfetch` | **133,755,481 fetches, all matched memory** |
+| **Address translation** | `+checkmmu`, walking the page tables in C++ | **125,322,100 translations, all agreed** |
+| The two-level page walk | `software/soc/mmutest.c`, extended | passes |
+| TLB refill under pressure | same, 4x the entry count | passes |
+| A timing race | both cores | byte-identical faulting addresses |
+| The memory map | dropped the block-RAM `memory` node | no change |
+| A write-back cache hiding a PTE | `cpu_wb.v` is write-through, and SDRAM is not even in `dc_cacheable` | n/a |
+
+The three self-checking probes are the substantial part. Between them they say
+that for the whole of a Linux boot, this SoC delivered the right word from the
+right address for every instruction and every load. That is a strong statement
+about the memory system and the MMU, and it is now a repeatable one.
+
+### Where it actually stops: a register write that does not arrive
+
+The instruction sequence is three long. `fdt_next_tag()` returns, `a5` is set
+to 1, and the result is compared against it:
+
+```
+c02205b4:  jal   c0220224 <fdt_next_tag>
+c02205b8:  li    a5,1
+c02205bc:  bne   a0,a5,c02205ec <.L144>     <- .L144 is `li s0,-4`
+```
+
+`fdt_next_tag` returns `FDT_BEGIN_NODE`, which is 1, so `a0 == a5` and the
+branch must not be taken. It is taken exactly once, on the 53rd and last
+execution, and that is where `-FDT_ERR_BADOFFSET` comes from.
+
+At that execution `a5` holds **0x38** - the value it had inside
+`fdt_offset_ptr`, before `li a5,1`. The write did not arrive.
+
+That claim is only worth making because the probe reading it is calibrated at
+the *same PC*:
+
+| | `a0` | `a5` | branch |
+|---|---|---|---|
+| first execution of `0xc02205bc` | 1 | **1** | not taken, correct |
+| last (53rd) execution | 1 | **0x38** | taken, wrong |
+
+Same instruction, same probe, same sampling skew - so the probe can read `a5`
+there, and on the last pass the register genuinely does not hold what the
+instruction before it wrote. `li a5,1` retires 53 times, the same count as the
+`jal` before it and the `bne` after it, so it is not being skipped.
+
+And nothing interrupts the sequence: `+traptrace` logs all 215 traps of the
+boot, and **none of them fall within 20,000 cycles** of that instruction.
+
+### What is not yet known
+
+The mechanism. Forcing `predicted_taken` low in `rtl/btb.v` moves the failure
+somewhere else entirely - the kernel stops earlier, in a spin, with no FDT
+error at all - but that experiment proves nothing: removing branch prediction
+changes the timing of everything, so *any* timing-sensitive defect would move.
+It is recorded here as a thing tried, not as evidence.
+
+Worth correcting from the previous round, too: "both cores fail identically"
+was over-read. The identical oops addresses are all downstream of
+`of_root == NULL`, so they only show that both cores end up with a failed
+unflatten - not that the same instruction misbehaved in each. A
+timing-sensitive bug was never actually excluded.
 
 ### One real bug this did find
 
