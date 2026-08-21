@@ -1,0 +1,25 @@
+# The whole root filesystem, as a gen_init_cpio(1) spec.
+#
+# A spec rather than a directory, for one reason: /dev/console has to be a
+# character device node, and creating one on the host needs root. This format
+# describes the node and gen_init_cpio writes it into the archive, so an
+# unprivileged build produces a filesystem with device nodes in it.
+#
+# That node is not decoration. init/main.c opens /dev/console to give PID 1
+# its stdin, stdout and stderr; without it the kernel prints "unable to open
+# an initial console", carries on, and /init runs with no file descriptors -
+# so every write() in init.c fails with EBADF and a boot that worked prints
+# nothing at all.
+#
+# @INIT@ is substituted by software/linux/build-linux.sh with the absolute
+# path of the built init, because CONFIG_INITRAMFS_SOURCE is read from the
+# kernel's build directory and a relative path would resolve there.
+
+dir     /dev            0755 0 0
+nod     /dev/console    0600 0 0 c 5 1
+nod     /dev/null       0666 0 0 c 1 3
+
+dir     /proc           0755 0 0
+dir     /sys            0755 0 0
+
+file    /init           @INIT@ 0755 0 0

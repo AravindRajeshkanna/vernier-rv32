@@ -29,6 +29,9 @@ software/firmware_data.bin
 # OpenSBI: its cloned source tree and everything built from it
 software/opensbi/build/
 
+# Linux: the kernel tree is fetched, not vendored, and the Image is built
+software/linux/build/
+
 # SoC build artifacts
 software/soc/*.elf
 software/soc/*.bin

@@ -185,6 +185,10 @@ SoC out of SDRAM:        99 KB program, 64 KB block RAM  (make sim_sdramboot)
 SDRAM on a board:        256 KB read/written, ULX3S 85F  (BOARD=ulx3s85-sdramcheck)
 UART loader:             host -> ROM -> SDRAM -> running  (make sim_uartload)
   ...and its host script:  against a fake board on a pty    (make uartload-host)
+Sv32, megapages and 4 KB: page tables in SDRAM, both levels (make sim_mmusdram)
+OpenSBI:                 boots, detects the platform, hands off (make sim_opensbi)
+Linux 6.18 rv32ima:      boots to userspace under QEMU; on this
+                         SoC it stops in unflatten_device_tree  (make sim_linux)
 99 KB program from SDRAM: on a ULX3S 85F, over the serial line
 ULX3S 85F bitstream:     27.41 MHz, 20% LUT, 51% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
 ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (predates the D-cache and SDRAM)
@@ -539,11 +543,17 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   driver for.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
   runtime) → U-Boot → Linux kernel → a root filesystem (often built with
-  Buildroot). The first two links exist: `software/soc/bootrom.c` is a
-  genuine first-stage loader, and **OpenSBI now boots** — it prints its
-  banner, detects this platform from `dts/soc.dts`, and prepares to hand
-  off to S-mode. `make sim_opensbi`. See `software/opensbi/README.md` for
-  the five defects between "builds" and "boots".
+  Buildroot). Three of those four links exist. `software/soc/bootrom.c` is
+  a genuine first-stage loader; **OpenSBI boots**, detects this platform
+  from `dts/soc.dts` and hands off to S-mode (`make sim_opensbi`); and
+  there is now **an rv32ima Linux with an initramfs**, built from source by
+  `software/linux/build-linux.sh`, which **boots to userspace under
+  `qemu-system-riscv32`**. On this SoC that kernel gets through the device
+  tree, `earlycon`, memblock and Sv32 paging and then stops in
+  `unflatten_device_tree()` — one named failure, not a category.
+  `software/linux/README.md` is precise about what has been eliminated and
+  how. U-Boot is skipped: `mkimage.py` packs the kernel where `fw_jump`
+  expects it, so there is nothing for it to do.
 - Performance that isn't so slow it's unusable — this core is pipelined
   and now has a branch predictor, but it's still single-issue and
   in-order, with no cache; real Linux-capable FPGA cores typically add

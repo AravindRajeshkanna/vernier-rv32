@@ -43,6 +43,17 @@
 //   +ram=FILE         block RAM image, one 32-bit word per line
 //   +sdram_words=N    16-bit words of modelled SDRAM (default 2^21 = 4 MB)
 //   +maxcycles=N      give up after this many cycles
+//   +stopon=TEXT      stop once TEXT has come out of the UART, then drain.
+//                     The verdict word in block RAM is how a bare-metal
+//                     program here says it is finished, and software this
+//                     project did not write does not write it: Linux ends a
+//                     boot by printing something, not by storing a magic
+//                     number. Without this a kernel run costs +maxcycles
+//                     every time, whatever happens - and +maxcycles has to
+//                     be set for the slowest plausible boot.
+//                     TEXT cannot contain a space, because a plusarg is one
+//                     shell word; the markers it is meant for are hyphenated
+//                     for that reason.
 //   +drain=N          cycles to keep running after the verdict word appears,
 //                     so the last of the UART output gets out
 //   +uart_clks=N      clock cycles per UART bit (default 4). Must match what
@@ -56,6 +67,14 @@
 //                     console: the error code it decided to hang on is still
 //                     in a register at the point it branches to its hang
 //                     loop, and there is no other way to read it.
+//   +savemem=ADDR:LEN:FILE
+//                     write LEN bytes of SDRAM starting at ADDR to FILE when
+//                     the run ends. +peek reads a word; this reads a
+//                     structure. It exists because the useful question about
+//                     a device tree, a page table or a kernel image in memory
+//                     is not "what is that word" but "is this still the thing
+//                     it is supposed to be" - and the tools that answer that
+//                     (dtc, objdump, cmp) take a file.
 //   +peek=ADDR        print the 32-bit word at ADDR when the run ends, up to
 //                     four times. For reading a firmware's own globals - an
 //                     allocator's high-water mark, a status flag - when it has
@@ -107,6 +126,13 @@ static const double CLK_HALF_NS   = CLK_PERIOD_NS / 2.0;
 // cycles and a banner costs a million, which is a quarter of a second here
 // and a minute and a half under Icarus.
 static int uart_clks_per_bit = 4;
+
+// `+stopon=TEXT`: the text to watch the console for, and whether it has been
+// seen. A rolling suffix compare rather than a line-based one, so a marker
+// still matches when it shares a line with something else - kernel output is
+// interleaved with whatever else is printing.
+static std::string uart_stop_on;
+static bool        uart_stop_hit = false;
 
 // ---------------------------------------------------------------------------
 // A 16-bit SDR SDRAM, ported from sim/sdram_model.v
@@ -485,6 +511,12 @@ public:
                 if (++bit_ == 8) {
                     idle_ = true;
                     if (!quiet_) { putchar((int)byte_); fflush(stdout); }
+                    if (!uart_stop_on.empty() && !uart_stop_hit) {
+                        tail_ += (char)byte_;
+                        if (tail_.size() > uart_stop_on.size())
+                            tail_.erase(0, tail_.size() - uart_stop_on.size());
+                        if (tail_ == uart_stop_on) uart_stop_hit = true;
+                    }
                 }
             }
         }
@@ -498,6 +530,7 @@ private:
     int     cnt_  = 0;
     int     bit_  = 0;
     uint8_t byte_ = 0;
+    std::string tail_;      // the last uart_stop_on.size() bytes received
 };
 
 // ---------------------------------------------------------------------------
@@ -575,6 +608,7 @@ int main(int argc, char **argv) {
     // Long enough for the last line of output to clear a 4-clocks-per-bit
     // UART, which is what the Verilog testbenches wait too.
     uart_clks_per_bit = (int)plusarg_long(argc, argv, "uart_clks", 4);
+    if (const char *v = plusarg(argc, argv, "stopon")) uart_stop_on = v;
     const long   drain       = plusarg_long(argc, argv, "drain",
                                             200L * uart_clks_per_bit * 10);
 
@@ -668,6 +702,7 @@ int main(int argc, char **argv) {
     const long   pc_window_from = plusarg_long(argc, argv, "pcwindow",
                                                max_cycles > 2000 ? max_cycles - 2000 : 0);
     long         verdict_at = -1;
+    long         stop_at    = -1;   // cycle +stopon's text completed
     uint32_t     result     = 0;
     double       now_ns     = 0.0;
 
@@ -791,7 +826,12 @@ int main(int argc, char **argv) {
         if (verdict_at < 0 && (result == RESULT_PASS || result == RESULT_FAIL))
             verdict_at = cycles;
 
+        // A console marker ends the run the same way the verdict word does,
+        // drain included - the marker is usually not the last thing printed.
+        if (uart_stop_hit && stop_at < 0) stop_at = cycles;
+
         if (verdict_at >= 0 && cycles >= verdict_at + drain) break;
+        if (stop_at    >= 0 && cycles >= stop_at    + drain) break;
         if (cycles >= max_cycles) break;
 
         // ---- the part's rising edge, half a period later ----
@@ -828,6 +868,14 @@ int main(int argc, char **argv) {
 
     printf("\n---------------------------------------------\n");
     printf("cycles: %ld\n", cycles);
+    if (!uart_stop_on.empty()) {
+        if (stop_at >= 0)
+            printf("stopon \"%s\": seen at cycle %ld\n",
+                   uart_stop_on.c_str(), stop_at);
+        else
+            printf("stopon \"%s\": never seen in %ld cycles\n",
+                   uart_stop_on.c_str(), cycles);
+    }
     if (traps) {
         printf("traps taken: %ld (first at cycle %ld)\n", traps, first_trap);
         printf("  first trap: pc=0x%08x mcause=0x%08x mepc=0x%08x mtval=0x%08x\n",
@@ -855,6 +903,37 @@ int main(int argc, char **argv) {
                 printf("\n");
             }
         }
+    }
+    for (const std::string &spec : plusargs_all(argc, argv, "savemem")) {
+        // ADDR:LEN:FILE
+        const size_t c1 = spec.find(':');
+        const size_t c2 = (c1 == std::string::npos) ? c1 : spec.find(':', c1 + 1);
+        if (c2 == std::string::npos) {
+            printf("savemem \"%s\": expected ADDR:LEN:FILE\n", spec.c_str());
+            continue;
+        }
+        const uint32_t addr = (uint32_t)strtoul(spec.substr(0, c1).c_str(), nullptr, 0);
+        const uint32_t len  = (uint32_t)strtoul(spec.substr(c1 + 1, c2 - c1 - 1).c_str(),
+                                                nullptr, 0);
+        const std::string path = spec.substr(c2 + 1);
+
+        if ((addr >> 24) != 0x90 && (addr >> 24) != 0x91) {
+            printf("savemem 0x%08x: not in the SDRAM window\n", addr);
+            continue;
+        }
+        const uint32_t w0 = (addr - 0x90000000u) >> 1;
+        if (w0 + (len + 1) / 2 > sdram.words()) {
+            printf("savemem 0x%08x+%u: past the modelled storage\n", addr, len);
+            continue;
+        }
+        FILE *f = fopen(path.c_str(), "wb");
+        if (!f) { printf("savemem: cannot write %s\n", path.c_str()); continue; }
+        for (uint32_t i = 0; i < len; i++) {
+            const uint16_t word = sdram.storage()[w0 + i / 2];
+            fputc((i & 1) ? (word >> 8) : (word & 0xFF), f);
+        }
+        fclose(f);
+        printf("savemem 0x%08x+%u -> %s\n", addr, len, path.c_str());
     }
     {
         const std::vector<std::string> peeks = plusargs_all(argc, argv, "peek");

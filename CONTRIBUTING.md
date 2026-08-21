@@ -45,6 +45,18 @@ touches either core, or reaches into one (a debug probe, a formal wrapper),
 run `verify_ooo` too. A change that compiled against one core and not the
 other has already slipped through a green `verify` once.
 
+**Neither `verify` covers the firmware targets**, because they need things off
+the network: `make sim_opensbi` needs OpenSBI's cloned tree and `make
+sim_linux` needs a 150 MB kernel tarball. Both build `CORE=inorder` by
+default, and that gap is not theoretical — `mstatush` was added to
+`rtl/cpu_core.v` and not to `rtl/ooo/core_ooo.v`, and OpenSBI could not boot
+on the wide core *at all* for two releases without anything going red. If you
+touch a CSR, a privilege check or the MMU, run:
+
+```sh
+make sim_opensbi CORE=ooo
+```
+
 A green `verify` is the baseline, not the bar. The bar is:
 
 1. **A new test that fails without your change.** If you fixed something, show

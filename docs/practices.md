@@ -826,6 +826,103 @@ paths hide bugs; this one is that untestable *speeds* hide them just as well.
 
 ---
 
+## 28. A build system that accepts a request has not granted it
+
+Two of the five things that stood between "a kernel exists" and "a kernel
+boots" were the build believing it had done what it was asked, and saying
+nothing.
+
+`software/linux/vernier_rv32.config` asks for `# CONFIG_RISCV_ISA_C is not
+set`, because this core has no compressed instructions. Kconfig accepts that
+and then turns it back on, because `CONFIG_EFI` is `default y` on riscv and
+`select RISCV_ISA_C`. No warning, no error — a kernel full of instructions the
+hardware cannot decode, which would have surfaced as an illegal-instruction
+trap in S-mode before any console existed.
+
+Worse, configuration would not have been sufficient even if it had been
+honoured. `arch/riscv/Makefile` appends `_zacas` and `_zabha` to `-march`
+whenever the *toolchain* supports them, keyed on `TOOLCHAIN_HAS_*` symbols
+that have no prompt and cannot be turned off. There is no Kconfig option that
+stops the compiler emitting an `amocas`.
+
+So the request is checked and so is the artifact, and they are different
+checks:
+
+- `kconfig-merge.py check` re-reads `.config` *after* `olddefconfig` and fails
+  when an option the fragment asked for did not survive. It caught EFI on its
+  first run, along with `CONFIG_HZ_100` losing to a `choice` default that had
+  not been cleared, and `CONFIG_BLOCK` needing `CONFIG_EXPERT` before it could
+  be answered at all. Five of the thirty options in the fragment's first
+  version were dropped without a word, and a sixth request —
+  `CONFIG_RISCV_ALTERNATIVE` — turned out to be one kconfig will never
+  grant, because `config RISCV` selects it unconditionally. The fragment
+  says so now instead of asking again.
+- `isacheck.py` disassembles the finished `vmlinux` — 641,785 instructions —
+  and checks every mnemonic against what `rtl/` implements. That is the one
+  that cannot be fooled by a Makefile, because it reads what was actually
+  emitted.
+
+The general form: when a tool lets you *ask* for a property, the ask is not
+the property. If the property matters, read it back off the output. This is
+section 11's "nothing checks that the four agree" pointed at a build system
+instead of at a memory map.
+
+There is a second-order benefit worth naming. `isacheck.py` finds four
+Svinval instructions in every build, unreachable because `dts/soc.dts` does
+not advertise the extension and `has_svinval()` is therefore false. They are
+listed by name and counted rather than waved through, so the day that count
+changes, somebody sees it.
+
+---
+
+## 29. Two microarchitectures failing identically is a measurement
+
+Halfway through a bug hunt with no obvious cause, the cheapest question left
+was: does the *other* core do this too?
+
+It did — at byte-identical faulting addresses. That is not a small thing to
+learn. The in-order five-stage core and the wide out-of-order one share no
+pipeline logic at all; they share `mmu.v`, `csr_file.v`, `cpu_wb.v`,
+`wb_ptw.v`, the interconnect and the software. Identical wrong values from two
+unrelated pipelines rules out a timing race, an issue-order hazard, a
+forwarding bug and a speculation bug in one run, and narrows the search to
+shared modules or to the software itself.
+
+It also, incidentally, found a different bug: the wide core could not run
+OpenSBI at all, because `mstatush` had been added to one core and not the
+other. Which is section 26 for the second time — and the first time,
+`CONTRIBUTING.md` gained a line about running `verify_ooo`, which did not
+help here because the firmware targets are not in either `verify`. It now
+says to run `make sim_opensbi CORE=ooo` when a change touches a CSR, a
+privilege check or the MMU. A rule that names the suite is weaker than one
+that names the thing the suite does not cover.
+
+The wider habit is to keep a list of the discriminators that are cheap in this
+project and reach for them before theorising:
+
+| Question | How | What it separates |
+|---|---|---|
+| Is it this core? | `CORE=ooo` | pipeline vs shared modules vs software |
+| Is it the hardware at all? | `qemu-system-riscv32` | our SoC vs the software stack |
+| Is the data in memory what we think? | `+savemem` and a real tool (`dtc`, `cmp`) | corruption vs interpretation |
+| Is it where it is loaded? | move the address, re-run | layout vs logic |
+| Is it deterministic? | run twice | race vs cause |
+
+Every one of those is minutes. The failure they were pointed at had already
+cost hours of reading RTL that turned out to be correct.
+
+The corollary is that elimination is a deliverable. The strongest hypothesis
+in this hunt was that the two-level Sv32 walk was broken — nothing in this
+repository had ever made the hardware read a second PTE, since
+`make sim_mmusdram` mapped megapages only and riscv-tests never enables
+paging. Testing it meant extending that program to 4 KB pages, VPN[0] across
+its range, per-page permissions and a TLB-aliasing check. The answer was that
+the walker was already right. The test stays anyway: the gap it closed was
+real whether or not it held the bug, and Linux depends on that path for every
+page of userspace.
+
+---
+
 ---
 
 ## Conventions

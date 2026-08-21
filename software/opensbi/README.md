@@ -70,8 +70,25 @@ returns the *root domain's* `next_arg1` — OpenSBI reads its **own** device
 tree through that pointer. Pointed at unmapped space it read zeros,
 `fdt_path_offset(fdt, "/cpus")` returned `-FDT_ERR_BADMAGIC` (-9), and the
 firmware stopped, having parsed the same tree successfully at its original
-address minutes earlier. `FW_JUMP_FDT_ADDR=0x9020_0000` and
-`FW_JUMP_ADDR=0x9040_0000` now, both set by `build-opensbi.sh`.
+address minutes earlier.
+
+`FW_JUMP_ADDR=0x9040_0000` now, which is not a choice: the rv32 Linux Image
+header asks to run at RAM + 0x400000 because `setup_vm()` maps the kernel with
+Sv32 megapages, and `mkimage.py` reads that field out of the built Image and
+refuses a mismatch.
+
+**`FW_JUMP_FDT_ADDR` then had to move a second time**, to `0x91E0_0000`, and
+the reason was invisible until a kernel actually ran. `0x9020_0000` is *below*
+`FW_JUMP_ADDR`, and `arch/riscv` sets `phys_ram_base` to the kernel's own load
+address and drops every memory range beneath it — the boot log says so,
+`Ignoring memory range 0x90000000 - 0x90400000`. A device tree there is in
+memory the kernel has decided does not exist.
+
+It half works, which is what makes it expensive. Linux's *early* parse reads
+the blob through the fixmap and succeeds — machine model, command line, memory
+nodes, reserved regions all correct. It is `unflatten_device_tree()`, later,
+that fails. `0x91E0_0000` is 30 MB into the part and mirrors where QEMU's virt
+machine puts it: top of RAM minus 2 MB.
 
 **5. The device tree's `timebase-frequency` was twice the real one.** OpenSBI
 printed `aclint-mtimer @ 50000000Hz` against a 25 MHz `mtime`. Everything an

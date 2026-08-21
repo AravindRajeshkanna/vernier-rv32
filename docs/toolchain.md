@@ -128,6 +128,9 @@ routing-dominated shape every measurement of this design has had.
 | **Surfer** | 0.7.0 | Homebrew `surfer` |
 | **dtc** | installed | Homebrew `dtc` |
 | **openFPGALoader** | installed | Homebrew `openfpgaloader` |
+| **LLVM `ld.lld`** | 21.1.8 | Homebrew `lld`. Used *only* to build the Linux kernel: the vDSO needs `-shared` and `riscv64-unknown-elf-ld` cannot do it, the same shape of problem as OpenSBI's `-pie`. |
+| **GNU sed (`gsed`)** | installed | Homebrew `gnu-sed`. Required for a kernel build, not optional: `arch/riscv/kernel/vdso/gen_vdso_offsets.sh` uses `\\+`, which BSD sed does not support, and the result is an *empty* generated header rather than an error. |
+| **QEMU** | 10.2.0 | Homebrew `qemu`. `qemu-system-riscv32` is how a kernel is separated from this SoC: if it boots there and not here, the software is not the problem. |
 | **Python** | 3.12.12 | system |
 | **GNU Make** | 3.81 | macOS system |
 | **git** | 2.54.0 | — |
