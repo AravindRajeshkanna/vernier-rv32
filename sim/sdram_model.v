@@ -57,6 +57,16 @@ module sdram_model #(
     // simulation. Raising it costs simulator memory and nothing else.
     parameter MEM_WORDS = (1 << 20),
     // Timing, nanoseconds. Winbond W9825G6KH-6 / equivalent -6 speed grade.
+    //
+    // These numbers exist twice: here, and in SdramModel in
+    // sim/verilator_soc.cpp, which is a port of this model for a simulator
+    // that cannot run it (Verilator has no `#delay` and no real-valued time).
+    // Verilog and C++ cannot share a constant, so practices.md section 11
+    // applies - and the direction of safe error is *long*. Too long makes
+    // this model stricter than the part, so a controller that passes here
+    // still works on silicon; too short makes it permissive, which is how a
+    // protocol violation reaches a board. `make verilator_check` is what
+    // notices if the two copies stop agreeing.
     parameter real T_RCD_NS  = 18.0,
     parameter real T_RP_NS   = 18.0,
     parameter real T_RC_NS   = 60.0,

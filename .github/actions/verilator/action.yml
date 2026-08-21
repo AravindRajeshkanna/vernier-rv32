@@ -1,0 +1,41 @@
+name: verilator
+description: >-
+  Install Verilator from apt, with retries and a bounded failure.
+
+# The same shape as .github/actions/iverilog, for the same reason: a runner
+# whose package mirror stops answering should fail in four minutes with a
+# message, not hang for six hours holding a runner. A CI run on PR #9 did the
+# latter across three jobs before anyone looked. docs/practices.md section 13.
+#
+# Why apt's Verilator is good enough here, when apt's yosys was not (see
+# .github/actions/oss-cad-suite): nothing about the result depends on the
+# version. This front end is used to build sim/verilator_soc.cpp and then
+# check its answer against the Icarus one, so a Verilator that behaves
+# differently shows up as the two simulators disagreeing - which is a failure
+# this repository wants reported, not hidden behind a pinned bundle.
+runs:
+  using: composite
+  steps:
+    - name: Install Verilator
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        for attempt in 1 2 3; do
+          echo "::group::apt attempt $attempt"
+          if timeout 240 sudo apt-get update -o Acquire::Retries=3 \
+             && timeout 240 sudo apt-get install -y --no-install-recommends \
+                  -o Acquire::Retries=3 verilator; then
+            echo "::endgroup::"
+            verilator --version
+            exit 0
+          fi
+          echo "::endgroup::"
+          echo "apt attempt $attempt failed or timed out"
+          sleep $((attempt * 15))
+        done
+
+        echo "Could not install verilator after 3 attempts."
+        echo "This is an apt/mirror failure on the runner, not a repository"
+        echo "problem - re-run the job."
+        exit 1

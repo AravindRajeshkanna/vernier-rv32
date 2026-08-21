@@ -19,7 +19,7 @@ macOS (Homebrew) or Linux. You need Icarus Verilog and a RISC-V toolchain for
 everything; the rest is per-layer.
 
 ```bash
-brew install icarus-verilog surfer
+brew install icarus-verilog verilator surfer
 brew install riscv-software-src/riscv/riscv-tools   # gcc + spike
 
 make sim          # hand-assembled core regression — fastest thing that can fail

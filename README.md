@@ -85,7 +85,11 @@ sim/
   tb_video.v          draws a pattern, captures a frame, compares it back
   tracer.v            retired-instruction tracer (drives the Spike co-simulation)
   sd_card_model.v     SD card in SPI mode (CMD0/8/55/58, ACMD41, CMD17)
-  verilator_main.cpp  optional Verilator harness
+  verilator_main.cpp  Verilator harness for the flat rtl/top.v
+  verilator_soc.cpp   Verilator harness for the whole SoC - ~390x faster than
+                      Icarus, with the SDRAM model ported to C++
+  verilator_soc.vlt   what the harness is allowed to reach inside the design
+  verilator_compare.py  requires both simulators to agree, cycle for cycle
   program.hex         hand-assembled RV32IMA test program
 tests/
   fetch.sh            clone riscv-tests at a pinned commit (not vendored)
@@ -250,7 +254,11 @@ described — but please still treat `make sim` as the real check, not my
 word for it.
 
 `make verilator` runs the same design through Verilator instead, producing
-`sim/wave_verilator.vcd`.
+`sim/wave_verilator.vcd`. `make verilator_sdramboot` runs the whole **SoC**
+that way — the same test `make sim_sdramboot` runs, in about half a second
+instead of three minutes — and `make verilator_check` runs it under both and
+requires them to agree on the cycle count, the refresh count and every byte
+the program printed.
 
 ## 2. Run real compiled C on it
 
@@ -510,11 +518,13 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   logic.
 - **A real memory controller** driving actual DRAM — Linux plus a minimal
   root filesystem needs tens of megabytes at least; FPGA block RAM alone
-  (tens of KB–a few MB) isn't enough. **This is now the single biggest
-  gap.** The SoC has 64 KB of on-chip RAM behind a Wishbone slave (256 KB
-  in simulation, which does not fit any ECP5 — see `fpga/README.md`); the
-  seam where a LiteDRAM controller would go is marked in `wb_ram.v`, but
-  wiring one up needs LiteX and a board with DDR.
+  (tens of KB–a few MB) isn't enough. **This one is now done, on silicon**:
+  `rtl/soc/wb_sdram.v` drives the ULX3S's 32 MB SDR part, and a 99 KB
+  program has been sent over the serial line into it and executed from
+  there on an LFE5U-85F. No LiteX, no LiteDRAM. What is still missing is
+  narrower and specific: the page-table walkers reach block RAM only, the
+  interconnect decodes 16 MB per slave against a 32 MB part, and
+  `mip.SEIP` is hardwired to zero with a single M-mode PLIC context.
 - **A UART** (for a console) and **SPI/SD or similar storage** — the SoC
   now has both, and actually boots off the SD card.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
@@ -551,6 +561,16 @@ The short version:
 | 6 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
 | 7 | Close the boot path — the SD card | the only untested link in the boot chain — and the only phase nothing else is waiting on |
 
+Before any of Phase 5's RTL, the SoC now builds under **Verilator** as well as
+Icarus (`sim/verilator_soc.cpp`). That is not a nicety: a Linux boot is order
+10⁸ cycles, which is seven hours per attempt under Icarus and about a minute
+under Verilator — roughly **390×**, measured on the same image and the same
+core. On a bring-up whose characteristic failure is a silent hang, the length
+of that loop is what decides whether the work takes weeks or months.
+`make verilator_check` runs `sim_sdramboot` under both and requires the same
+cycle count, the same refresh count and the same output, so the fast path
+cannot quietly drift from the slow one.
+
 Phase 1 is first because it replaces the machine every later phase builds on,
 and is cheaper to do before they widen the surface it has to preserve — but it
 is the largest thing on the list by a wide margin, and `docs/roadmap.md` is
@@ -570,7 +590,7 @@ the same as being fixed.
 | | |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
-| [docs/practices.md](docs/practices.md) | The working rules — twenty-three of them, each attached to the incident on this repo that produced it |
+| [docs/practices.md](docs/practices.md) | The working rules — twenty-five of them, each attached to the incident on this repo that produced it |
 | [docs/roadmap.md](docs/roadmap.md) | Where this goes next, in phases, in dependency order |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |

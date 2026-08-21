@@ -1,0 +1,693 @@
+// A Verilator harness for the whole SoC.
+//
+// ---- Why this exists ----
+//
+// Everything in sim/tb_*.v runs under Icarus, and Icarus runs this SoC at
+// about 11.3 thousand cycles per second - measured: sim_sdramboot, 2,108,456
+// cycles in 187 s. That is fine for every test in the suite; the longest is
+// under four minutes.
+//
+// It stops being fine at the next milestone. Booting Linux is order 10^8
+// cycles, which is seven hours or more per attempt under Icarus - one
+// attempt per working day, on a bring-up whose characteristic failure is a
+// silent hang with no output at all. The same design through this harness
+// measures 4.44 M cycles/s, roughly 390x, which turns that attempt into
+// about a minute. That ratio, not any RTL, is what decides whether the Linux
+// bring-up takes weeks or months, so it is worth building first.
+//
+// ---- What it is not ----
+//
+// It is not a replacement for the Icarus testbenches, and specifically it is
+// not the protocol authority for SDRAM. `make verify` still runs sim_sdram
+// and sim_sdramboot against sim/sdram_model.v, and that file remains the
+// definition of what the part will and will not accept. What is here is a
+// port of that model, checked against it by running the same program and
+// requiring the same cycle count, refresh count and output (see
+// `make verilator_check`). If the two ever disagree, the Verilog one is
+// right and this one has a bug.
+//
+// The reason for porting rather than reusing: sim/sdram_model.v is written in
+// nanoseconds, with `#T_AC_NS` on the data path and real-valued timing
+// comparisons. Verilator has no notion of either. So the model is
+// re-expressed here as a cycle-accurate object that carries an explicit
+// nanosecond clock, and the one genuinely sub-cycle thing it modelled - the
+// access time from the part's clock edge - becomes a static margin check at
+// startup rather than a delay (see SdramModel::check_ac_margin).
+//
+// ---- Usage ----
+//
+//   obj_dir_soc_inorder/Vsoc_top +sdram=sdramimage.hex +drain=8000
+//
+//   +sdram=FILE       $readmemh-format image, one 16-bit word per line
+//   +rom=FILE         boot ROM image, one 32-bit word per line
+//   +ram=FILE         block RAM image, one 32-bit word per line
+//   +sdram_words=N    16-bit words of modelled SDRAM (default 2^21 = 4 MB)
+//   +maxcycles=N      give up after this many cycles
+//   +drain=N          cycles to keep running after the verdict word appears,
+//                     so the last of the UART output gets out
+//   +quiet            suppress the UART stream (keep the summary)
+//   +dump[=FILE]      write a VCD. Only works if built with --trace; see the
+//                     Makefile's VTRACE knob, and note that the reason it is
+//                     opt-in is a 228 GB disk that a previous unconditional
+//                     dump filled to 100%.
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <cinttypes>
+#include <string>
+#include <vector>
+#include <chrono>
+
+#include "Vsoc_top.h"
+#include "Vsoc_top___024root.h"
+#include "verilated.h"
+#if VM_TRACE
+# include "verilated_vcd_c.h"
+#endif
+
+// ---------------------------------------------------------------------------
+// Clock
+// ---------------------------------------------------------------------------
+// 40 ns, matching soc_top's CLK_HZ default of 25 MHz and sim/tb_sdramboot.v's
+// CLK_PERIOD. This is load-bearing rather than cosmetic: the SDRAM model
+// checks tRCD, tRP, tRFC and the refresh interval in nanoseconds, and
+// wb_sdram.v derives its cycle counts from CLK_HZ. Running the clock faster
+// here than CLK_HZ claims would violate real timing while the controller
+// believed it was compliant.
+static const double CLK_PERIOD_NS = 40.0;
+static const double CLK_HALF_NS   = CLK_PERIOD_NS / 2.0;
+
+// Must match soc_top's UART_CLKS_PER_BIT, which every testbench here runs far
+// faster than a real UART to keep simulations short.
+static const int UART_CLKS_PER_BIT = 4;
+
+// ---------------------------------------------------------------------------
+// A 16-bit SDR SDRAM, ported from sim/sdram_model.v
+// ---------------------------------------------------------------------------
+// The header of that file explains at length why a *strict* model is the
+// point: every interesting SDRAM bug is a protocol bug, and none of them
+// corrupt data in simulation in a way a write-then-read test would notice.
+// They corrupt data on a board, at temperature, weeks later. So this refuses
+// the same eleven things the Verilog one refuses, with the same messages.
+class SdramModel {
+public:
+    // Timing, nanoseconds. Winbond W9825G6KH-6 / equivalent -6 speed grade.
+    //
+    // The same numbers as sim/sdram_model.v's defaults, and unavoidably a
+    // second copy of them - Verilog and C++ cannot share a constant, so
+    // practices.md section 11 applies. If one moves, both must. The direction
+    // of safe error is *long*: too long makes the model stricter than the
+    // part, so a controller that passes still works on silicon; too short
+    // makes it permissive, which is how a protocol violation reaches a board.
+    // `make verilator_check` fails if the two copies stop agreeing.
+    static constexpr double T_RCD_NS  = 18.0;
+    static constexpr double T_RP_NS   = 18.0;
+    static constexpr double T_RC_NS   = 60.0;
+    static constexpr double T_RFC_NS  = 60.0;
+    static constexpr double T_MRD_NS  = 12.0;
+    static constexpr double T_RAS_NS  = 42.0;
+    static constexpr double T_WR_NS   = 15.0;
+    static constexpr double T_INIT_NS = 100000.0;
+    static constexpr double T_REFI_NS = 7812.5;
+    static constexpr double T_AC_NS   = 5.4;
+
+    static const int PIPE    = 8;
+    // sim/sdram_model.v parameterises the bank count; this does not, because
+    // every part this SoC has ever addressed has four banks and a parameter
+    // nothing varies is a parameter nothing tests. BA_BITS is the width the
+    // address mapping needs, and the two must stay consistent.
+    static const int BA_BITS = 2;
+    static const int NBANKS  = 1 << BA_BITS;
+
+    SdramModel(int row_bits, int col_bits, size_t mem_words)
+        : row_bits_(row_bits), col_bits_(col_bits),
+          ncols_(1u << col_bits), mem_(mem_words, 0) {
+        reset_state(0.0);
+        // Outside reset_state() because the Verilog keeps it cumulative: it
+        // is a statistic the testbenches print, not part of the protocol.
+        refresh_count_ = 0;
+    }
+
+    // ---- the sub-cycle thing this model can no longer represent ----
+    //
+    // sim/sdram_model.v drives read data `#T_AC_NS` after its own clock edge,
+    // and that delay is not decoration: it is what made the model able to
+    // represent the 180-degree-shifted clock that fpga/sdram_clk_out.v
+    // actually ships, after an aligned clock failed on the bench (one word in
+    // a thousand - see fpga/README.md). A cycle-based model has nowhere to
+    // put 5.4 ns.
+    //
+    // What it can do is check that the delay stays invisible. The part's
+    // clock edge is half a period before the controller's sampling edge, so
+    // the data is valid (half - T_AC) before it is sampled. If that ever goes
+    // negative, this harness is quietly simulating a machine that would not
+    // work, and it says so instead.
+    void check_ac_margin() const {
+        const double setup = CLK_HALF_NS - T_AC_NS;
+        if (setup <= 0.0) {
+            fprintf(stderr,
+                    "\nSDRAM: read data arrives %.1f ns after the part's clock "
+                    "edge but is sampled %.1f ns after it.\n"
+                    "  There is no setup margin, and a cycle-based model cannot "
+                    "represent that. Use the Icarus\n"
+                    "  path (make sim_sdramboot), whose model carries the delay "
+                    "properly.\n", T_AC_NS, CLK_HALF_NS);
+            exit(1);
+        }
+    }
+    double ac_setup_ns() const { return CLK_HALF_NS - T_AC_NS; }
+
+    // sim/sdram_model.v also has a `rst` input, because the system's reset is
+    // the only way it can be told the 100 us power-up is about to happen
+    // again - which is what `make sim_rerun` does on purpose. There is no
+    // equivalent here, deliberately: this harness asserts reset once and
+    // never again, so a re-initialisation path would be code nothing builds,
+    // and section 14 of docs/practices.md is about what happens to that.
+    // Adding a rerun means calling reset_state() on the rising edge of rst.
+
+    size_t words() const { return mem_.size(); }
+    long   refreshes() const { return refresh_count_; }
+    uint16_t *storage() { return mem_.data(); }
+
+    // One rising edge of the part's clock - which is the *falling* edge of
+    // the controller's, because the board clocks it 180 degrees out.
+    void edge(double now, bool cke, bool cs_n, bool ras_n, bool cas_n,
+              bool we_n, uint32_t a, uint32_t ba, uint32_t dqm,
+              uint16_t dq_in, bool dq_driven) {
+        now_ = now;
+
+        // A row that is never refreshed keeps its contents forever in a model
+        // and loses them on a board, so the gap is checked here instead.
+        if (mr_programmed_ && (now_ - t_last_refresh_) > 2.0 * T_REFI_NS)
+            fail("no AUTO REFRESH within 2x tREFI - rows are losing data");
+
+        // ---- read pipeline shifts every cycle ----
+        // The Verilog does this with non-blocking assignments and then lets
+        // the command below overwrite the same indices, so the command wins.
+        // Reproduced here by shifting into a scratch copy first.
+        uint16_t nd[PIPE];
+        bool     nv[PIPE];
+        for (int i = 0; i < PIPE - 1; i++) { nv[i] = pipe_v_[i+1]; nd[i] = pipe_d_[i+1]; }
+        nv[PIPE-1] = false; nd[PIPE-1] = 0;
+
+        // ---- a write burst already under way takes the bus data ----
+        int      next_wr_left = wr_left_;
+        uint32_t next_wr_col  = wr_col_;
+        if (wr_left_ > 0) {
+            if (!dq_driven)
+                fail("write burst continued with the data bus not driven");
+            uint32_t widx = flat_addr(wr_bank_, bank_row_[wr_bank_], wr_col_);
+            if (widx >= mem_.size())
+                fail("write beyond the modelled storage - raise +sdram_words");
+            store(widx, dq_in, dqm);
+            next_wr_left = wr_left_ - 1;
+            t_write_end_[wr_bank_] = now_;
+            if (wr_col_ == (ncols_ - 1) && wr_left_ > 1)
+                fail("write burst crossed a row boundary");
+            next_wr_col = (wr_col_ + 1) & (ncols_ - 1);
+        }
+
+        const int cmd = (cs_n ? 8 : 0) | (ras_n ? 4 : 0) | (cas_n ? 2 : 0) | (we_n ? 1 : 0);
+        const bool selected = !cs_n;
+
+        if (cke && selected && cmd != C_NOP) {
+            if (now_ < T_INIT_NS)
+                fail("command issued before the 100 us power-up interval");
+
+            switch (cmd) {
+            case C_MRS: {
+                if (any_bank_active())
+                    fail("LOAD MODE REGISTER with a bank still active");
+                const uint32_t burst_code = a & 0x7;
+                const bool     burst_type = (a >> 3) & 1;
+                const uint32_t mr_cas     = (a >> 4) & 0x7;
+                if (((a >> 10) & 1) || ((a >> 9) & 1))
+                    fail("LOAD MODE REGISTER with reserved bits set");
+                switch (burst_code) {
+                    case 0: bl_ = 1; break;
+                    case 1: bl_ = 2; break;
+                    case 2: bl_ = 4; break;
+                    case 3: bl_ = 8; break;
+                    default: fail("mode register: reserved burst length");
+                }
+                if (mr_cas != 2 && mr_cas != 3)
+                    fail("mode register: CAS latency must be 2 or 3");
+                cl_ = (int)mr_cas;
+                mr_programmed_ = true;
+                t_mrs_done_ = now_ + T_MRD_NS;
+                printf("SDRAM: mode register programmed - CL=%d BL=%d %s\n",
+                       cl_, bl_, burst_type ? "interleaved" : "sequential");
+                fflush(stdout);
+                break;
+            }
+            case C_ACT: {
+                if (!mr_programmed_) fail("ACTIVE before the mode register was set");
+                if (now_ < t_mrs_done_)     fail("ACTIVE within tMRD of LOAD MODE REGISTER");
+                if (now_ < t_refresh_done_) fail("ACTIVE within tRFC of AUTO REFRESH");
+                if (bank_active_[ba])       fail("ACTIVE to a bank that already has a row open");
+                if (now_ < t_precharge_[ba] + T_RP_NS)
+                    fail("ACTIVE within tRP of the PRECHARGE that closed this bank");
+                if (now_ < t_active_[ba] + T_RC_NS)
+                    fail("ACTIVE within tRC of the previous ACTIVE on this bank");
+                bank_active_[ba] = true;
+                bank_row_[ba]    = a & ((1u << row_bits_) - 1);
+                t_active_[ba]    = now_;
+                break;
+            }
+            case C_RD: {
+                if (!bank_active_[ba]) fail("READ to a bank with no row open");
+                if (now_ < t_active_[ba] + T_RCD_NS) fail("READ within tRCD of ACTIVE");
+                if ((a >> 10) & 1)
+                    fail("READ with A[10] set: that is read auto-precharge, and this "
+                         "controller believes the row stays open");
+                const uint32_t col  = a & (ncols_ - 1);
+                const uint32_t bidx = flat_addr(ba, bank_row_[ba], col);
+                if (bidx + (uint32_t)bl_ > mem_.size())
+                    fail("read beyond the modelled storage - raise +sdram_words");
+                if (col + (uint32_t)bl_ > ncols_)
+                    fail("read burst would cross a row boundary");
+                for (int i = 0; i < bl_; i++) {
+                    // cl-1, not cl. That indexing was changed to cl while
+                    // chasing the hardware failure in fpga/README.md, on the
+                    // reasoning that CAS latency means the data is *launched*
+                    // cl edges after the command. It made the configuration
+                    // the board actually ran fail catastrophically in
+                    // simulation, and the board did not fail catastrophically
+                    // - it failed one word in a thousand. The bench is the
+                    // ground truth and the change was reverted, there and
+                    // therefore here.
+                    const int slot = cl_ - 1 + i;
+                    nv[slot] = true;
+                    nd[slot] = mem_[bidx + i];
+                }
+                break;
+            }
+            case C_WR: {
+                if (!bank_active_[ba]) fail("WRITE to a bank with no row open");
+                if (now_ < t_active_[ba] + T_RCD_NS) fail("WRITE within tRCD of ACTIVE");
+                if ((a >> 10) & 1)
+                    fail("WRITE with A[10] set - that is write auto-precharge");
+                if (!dq_driven)
+                    fail("WRITE issued with the data bus not driven");
+                const uint32_t col  = a & (ncols_ - 1);
+                const uint32_t cidx = flat_addr(ba, bank_row_[ba], col);
+                if (cidx + (uint32_t)bl_ > mem_.size())
+                    fail("write beyond the modelled storage - raise +sdram_words");
+                if (col + (uint32_t)bl_ > ncols_)
+                    fail("write burst would cross a row boundary");
+                // The first word of a write burst is on the bus in the same
+                // cycle as the command, which is what makes writes and reads
+                // asymmetric and is a classic off-by-one in a controller.
+                store(cidx, dq_in, dqm);
+                t_write_end_[ba] = now_;
+                wr_bank_     = ba;
+                next_wr_col  = (col + 1) & (ncols_ - 1);
+                next_wr_left = bl_ - 1;
+                break;
+            }
+            case C_PRE: {
+                // tRAS and tWR are the two intervals a controller gets wrong
+                // by closing a row as soon as it has what it wanted. Neither
+                // shows up as bad data in simulation.
+                if ((a >> 10) & 1) {
+                    for (int i = 0; i < NBANKS; i++) {
+                        if (bank_active_[i]) {
+                            if (now_ < t_active_[i] + T_RAS_NS)
+                                fail("PRECHARGE ALL within tRAS of an ACTIVE");
+                            if (now_ < t_write_end_[i] + T_WR_NS)
+                                fail("PRECHARGE ALL within tWR of a write");
+                            t_precharge_[i] = now_;
+                        }
+                        bank_active_[i] = false;
+                    }
+                } else {
+                    if (bank_active_[ba]) {
+                        if (now_ < t_active_[ba] + T_RAS_NS)
+                            fail("PRECHARGE within tRAS of the ACTIVE on this bank");
+                        if (now_ < t_write_end_[ba] + T_WR_NS)
+                            fail("PRECHARGE within tWR of a write to this bank");
+                        t_precharge_[ba] = now_;
+                    }
+                    bank_active_[ba] = false;
+                }
+                break;
+            }
+            case C_REF: {
+                if (any_bank_active()) fail("AUTO REFRESH with a bank still active");
+                if (now_ < t_refresh_done_)
+                    fail("AUTO REFRESH within tRFC of the previous one");
+                refresh_count_++;
+                t_last_refresh_ = now_;
+                t_refresh_done_ = now_ + T_RFC_NS;
+                break;
+            }
+            case C_BST:
+                break;   // burst terminate: legal, and this controller never uses it
+            default:
+                fail("unrecognised command on the SDRAM bus");
+            }
+        }
+
+        memcpy(pipe_d_, nd, sizeof(pipe_d_));
+        memcpy(pipe_v_, nv, sizeof(pipe_v_));
+        wr_left_ = next_wr_left;
+        wr_col_  = next_wr_col;
+    }
+
+    // What the part is driving after the edge above. Valid T_AC_NS later on a
+    // board; check_ac_margin() is what makes ignoring that legitimate here.
+    bool     driving() const { return pipe_v_[0]; }
+    uint16_t data()     const { return pipe_d_[0]; }
+
+private:
+    enum { C_NOP = 0x7, C_ACT = 0x3, C_RD = 0x5, C_WR = 0x4,
+           C_PRE = 0x2, C_REF = 0x1, C_MRS = 0x0, C_BST = 0x6 };
+
+    void reset_state(double now) {
+        for (int i = 0; i < NBANKS; i++) {
+            bank_active_[i] = false;
+            bank_row_[i]    = 0;
+            t_active_[i]    = 0.0;
+            t_precharge_[i] = now;
+            t_write_end_[i] = 0.0;
+        }
+        for (int i = 0; i < PIPE; i++) { pipe_v_[i] = false; pipe_d_[i] = 0; }
+        mr_programmed_  = false;
+        cl_ = 0; bl_ = 0;
+        t_last_refresh_ = now;
+        t_refresh_done_ = 0.0;
+        t_mrs_done_     = 0.0;
+        wr_left_ = 0; wr_bank_ = 0; wr_col_ = 0;
+        now_ = now;
+    }
+
+    bool any_bank_active() const {
+        for (int i = 0; i < NBANKS; i++) if (bank_active_[i]) return true;
+        return false;
+    }
+
+    void store(uint32_t idx, uint16_t d, uint32_t dqm) {
+        if (!(dqm & 1)) mem_[idx] = (uint16_t)((mem_[idx] & 0xFF00) | (d & 0x00FF));
+        if (!(dqm & 2)) mem_[idx] = (uint16_t)((mem_[idx] & 0x00FF) | (d & 0xFF00));
+    }
+
+    // Must be the inverse of the mapping in rtl/soc/wb_sdram.v. Written out
+    // rather than shared, so that a change on one side shows up as a failing
+    // test instead of following the other side silently.
+    uint32_t flat_addr(uint32_t b, uint32_t r, uint32_t c) const {
+        return (r << (col_bits_ + BA_BITS)) | (b << col_bits_) | c;
+    }
+
+    [[noreturn]] void fail(const char *why) const {
+        printf("\n");
+        printf("SDRAM PROTOCOL ERROR at %.0f ns: %s\n", now_, why);
+        printf("  bank states: %d %d %d %d  refreshes so far: %ld\n",
+               bank_active_[0], bank_active_[1], bank_active_[2],
+               bank_active_[3], refresh_count_);
+        fflush(stdout);
+        exit(1);
+    }
+
+    int      row_bits_, col_bits_;
+    uint32_t ncols_;
+    std::vector<uint16_t> mem_;
+
+    bool     bank_active_[NBANKS];
+    uint32_t bank_row_[NBANKS];
+    double   t_active_[NBANKS], t_precharge_[NBANKS], t_write_end_[NBANKS];
+
+    bool   mr_programmed_;
+    int    cl_, bl_;
+    double t_last_refresh_, t_refresh_done_, t_mrs_done_;
+    long   refresh_count_;
+
+    uint16_t pipe_d_[PIPE];
+    bool     pipe_v_[PIPE];
+
+    int      wr_left_;
+    uint32_t wr_bank_, wr_col_;
+
+    double now_;
+};
+
+// ---------------------------------------------------------------------------
+// UART receiver, same shape as the SoC testbenches: hunt for the start bit,
+// then sample each of the eight data bits in the middle of its window.
+// ---------------------------------------------------------------------------
+class UartRx {
+public:
+    explicit UartRx(bool quiet) : quiet_(quiet) {}
+
+    void sample(bool tx) {
+        if (idle_) {
+            if (prev_ && !tx) { idle_ = false; cnt_ = 0; bit_ = 0; byte_ = 0; }
+        } else {
+            cnt_++;
+            // Start bit spans cnt 0..3, data bit b spans 4+4b..7+4b, so the
+            // middle of bit b is 6+4b - which is what the Verilog testbenches
+            // reach by waiting half a bit and then one bit per sample.
+            if (cnt_ == 6 + 4 * bit_) {
+                if (tx) byte_ |= (uint8_t)(1u << bit_);
+                if (++bit_ == 8) {
+                    idle_ = true;
+                    if (!quiet_) { putchar((int)byte_); fflush(stdout); }
+                }
+            }
+        }
+        prev_ = tx;
+    }
+
+private:
+    bool    quiet_;
+    bool    idle_ = true;
+    bool    prev_ = true;
+    int     cnt_  = 0;
+    int     bit_  = 0;
+    uint8_t byte_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// $readmemh, enough of it for the images software/bin2hex.py writes: one
+// hexadecimal word per line, no addresses, no comments.
+// ---------------------------------------------------------------------------
+template <typename T>
+static size_t load_hex(const char *path, T *dst, size_t capacity) {
+    FILE *f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "cannot open image '%s'\n", path); exit(1); }
+    char line[256];
+    size_t n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\n' || *p == '\r' || *p == '\0' || *p == '/') continue;
+        if (n >= capacity) {
+            fprintf(stderr, "image '%s' is larger than the %zu words it loads into\n",
+                    path, capacity);
+            exit(1);
+        }
+        dst[n++] = (T)strtoull(p, nullptr, 16);
+    }
+    fclose(f);
+    return n;
+}
+
+static const char *plusarg(int argc, char **argv, const char *name) {
+    const size_t len = strlen(name);
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] != '+') continue;
+        const char *s = argv[i] + 1;
+        if (strncmp(s, name, len) != 0) continue;
+        if (s[len] == '=') return s + len + 1;
+        if (s[len] == '\0') return "";
+    }
+    return nullptr;
+}
+
+static long plusarg_long(int argc, char **argv, const char *name, long dflt) {
+    const char *v = plusarg(argc, argv, name);
+    return (v && *v) ? strtol(v, nullptr, 0) : dflt;
+}
+
+// ---------------------------------------------------------------------------
+int main(int argc, char **argv) {
+    Verilated::commandArgs(argc, argv);
+
+    const char *sdram_img = plusarg(argc, argv, "sdram");
+    const char *rom_img   = plusarg(argc, argv, "rom");
+    const char *ram_img   = plusarg(argc, argv, "ram");
+    const char *dump      = plusarg(argc, argv, "dump");
+    const bool  quiet     = plusarg(argc, argv, "quiet") != nullptr;
+
+    // 4 MB of modelled storage by default, matching sim/tb_sdramboot.v: the
+    // program's LOAD and RUN regions occupy the first megabyte and
+    // sdramtest.c's sweep runs from 0x9010_0000 for 256 KB.
+    const size_t sdram_words = (size_t)plusarg_long(argc, argv, "sdram_words", 1L << 21);
+    const long   max_cycles  = plusarg_long(argc, argv, "maxcycles", 40000000L);
+    // Long enough for the last line of output to clear a 4-clocks-per-bit
+    // UART, which is what the Verilog testbenches wait too.
+    const long   drain       = plusarg_long(argc, argv, "drain", 200L * UART_CLKS_PER_BIT * 10);
+
+    // The verdict lives in block RAM, not in the memory under test, exactly
+    // as sim/tb_sdramboot.v arranges it: a broken SDRAM then shows up as a
+    // timeout with whatever output got out, not as a corrupt magic word that
+    // might read "PASS" by luck.
+    const uint32_t RESULT_PASS = 0x50415353;   // "PASS"
+    const uint32_t RESULT_FAIL = 0x4641494C;   // "FAIL"
+
+    Vsoc_top *top = new Vsoc_top;
+    auto     *root = top->rootp;
+
+    SdramModel sdram(13, 9, sdram_words);
+    sdram.check_ac_margin();
+    UartRx uart(quiet);
+
+#if VM_TRACE
+    VerilatedVcdC *tfp = nullptr;
+    if (dump) {
+        Verilated::traceEverOn(true);
+        tfp = new VerilatedVcdC;
+        top->trace(tfp, 99);
+        tfp->open(*dump ? dump : "wave_verilator_soc.vcd");
+    }
+#else
+    if (dump) {
+        fprintf(stderr, "+dump needs a build with tracing: make verilator_soc VTRACE=1\n");
+        exit(1);
+    }
+#endif
+
+    if (sdram_img) {
+        size_t n = load_hex(sdram_img, sdram.storage(), sdram.words());
+        printf("SDRAM image: %zu 16-bit words from %s\n", n, sdram_img);
+    }
+    if (rom_img) {
+        size_t n = load_hex(rom_img, &root->soc_top__DOT__ROM__DOT__mem[0],
+                            sizeof(root->soc_top__DOT__ROM__DOT__mem) / sizeof(uint32_t));
+        printf("ROM image: %zu words from %s\n", n, rom_img);
+    }
+    if (ram_img) {
+        size_t n = load_hex(ram_img, &root->soc_top__DOT__RAM__DOT__mem[0],
+                            sizeof(root->soc_top__DOT__RAM__DOT__mem) / sizeof(uint32_t));
+        printf("RAM image: %zu words from %s\n", n, ram_img);
+    }
+
+    top->rst      = 1;
+    top->uart_rx  = 1;
+    top->spi_miso = 1;      // no card; MISO idles high
+    top->gpio_in  = 0;
+    top->sdram_dq_i = 0;
+
+    // Settle at time 0 with the clock low and reset asserted, before the
+    // first rising edge - which is what `reg clk = 0; reg rst = 1;` gives the
+    // Verilog testbenches for free, and what an eval-free start does not.
+    // Without this the design's asynchronous resets have not reached the
+    // output pins on the first rising edge, and uart_tx spends that one cycle
+    // low: a falling edge on an idle-high line, which the receiver below
+    // dutifully decodes as a start bit and reports as a 0xFF byte that no
+    // program sent.
+    top->clk = 0;
+    top->eval();
+
+    printf("=== SoC running from external SDRAM (Verilator) ===\n");
+    fflush(stdout);
+
+    const auto   wall_start = std::chrono::steady_clock::now();
+    long         cycles     = 0;
+    long         verdict_at = -1;
+    uint32_t     result     = 0;
+    double       now_ns     = 0.0;
+
+    for (;;) {
+        // ---- the controller's rising edge ----
+        now_ns = CLK_HALF_NS + CLK_PERIOD_NS * (double)cycles;
+        top->clk = 1;
+        top->eval();
+        cycles++;
+#if VM_TRACE
+        if (tfp) tfp->dump((uint64_t)now_ns);
+#endif
+
+        // sim/tb_sdramboot.v releases reset after four posedges.
+        if (cycles == 4) top->rst = 0;
+
+        uart.sample(top->uart_tx != 0);
+
+        // Loopback on the pins the SoC is driving, which is what the board's
+        // GPIO header does when nothing is plugged into it.
+        top->gpio_in = top->gpio_out & top->gpio_dir;
+
+        // ---- the verdict ----
+        //
+        // Read straight after eval(), which is the natural thing for a
+        // cycle-based harness: the non-blocking write has already landed.
+        //
+        // sim/tb_sdramboot.v cannot see it at quite the same moment. It
+        // watches the word from an `initial` block sitting on
+        // `@(posedge clk)`, which resumes in the active region - before this
+        // edge's non-blocking assignments - and counts cycles in a *second*
+        // process on the same edge, whose ordering against the first is not
+        // something Verilog defines. So the two simulators' totals can differ
+        // by one cycle, in either direction.
+        //
+        // An earlier version of this file "corrected" for that with a
+        // constant offset, fitted to the in-order core, where it produced an
+        // exact match. Running the same check against the wide core showed
+        // the offset there was zero, not one, and the correction turned a
+        // clean run into a false failure. It is not a constant, and it is not
+        // worth modelling: see verilator_compare.py, which allows the one
+        // cycle explicitly and requires everything else to match exactly.
+        result = root->soc_top__DOT__RAM__DOT__mem[0];
+        if (verdict_at < 0 && (result == RESULT_PASS || result == RESULT_FAIL))
+            verdict_at = cycles;
+
+        if (verdict_at >= 0 && cycles >= verdict_at + drain) break;
+        if (cycles >= max_cycles) break;
+
+        // ---- the part's rising edge, half a period later ----
+        //
+        // fpga/sdram_clk_out.v drives the SDRAM's clock from an ODDRX1F so
+        // its rising edge lands on the internal clock's falling edge. Clocking
+        // the model from the controller's own edge here would simulate a
+        // machine no board is - and would be the *aligned* configuration that
+        // hardware rejected.
+        now_ns += CLK_HALF_NS;
+        top->clk = 0;
+        top->eval();
+#if VM_TRACE
+        if (tfp) tfp->dump((uint64_t)now_ns);
+#endif
+
+        sdram.edge(now_ns,
+                   top->sdram_cke != 0, top->sdram_cs_n != 0,
+                   top->sdram_ras_n != 0, top->sdram_cas_n != 0,
+                   top->sdram_we_n != 0,
+                   top->sdram_a, top->sdram_ba, top->sdram_dqm,
+                   (uint16_t)top->sdram_dq_o, top->sdram_dq_oe != 0);
+
+        top->sdram_dq_i = sdram.driving() ? sdram.data() : 0;
+        top->eval();     // let the captured word settle before the next edge
+    }
+
+    const auto   wall_end = std::chrono::steady_clock::now();
+    const double secs = std::chrono::duration<double>(wall_end - wall_start).count();
+
+#if VM_TRACE
+    if (tfp) { tfp->close(); delete tfp; }
+#endif
+
+    printf("\n---------------------------------------------\n");
+    printf("cycles: %ld\n", cycles);
+    printf("SDRAM refreshes issued: %ld\n", sdram.refreshes());
+    printf("SDRAM read setup margin: %.1f ns\n", sdram.ac_setup_ns());
+    printf("result word (expect \"PASS\"): 0x%08x\n", result);
+    printf("wall clock: %.2f s  (%.0f cycles/s)\n", secs, secs > 0 ? cycles / secs : 0.0);
+    if (result == RESULT_PASS)      printf("VERILATOR SOC TEST PASSED\n");
+    else if (result == RESULT_FAIL) printf("VERILATOR SOC TEST FAILED\n");
+    else printf("VERILATOR SOC TEST FAILED (timed out after %ld cycles)\n", cycles);
+    printf("---------------------------------------------\n");
+
+    delete top;
+    return (result == RESULT_PASS) ? 0 : 1;
+}

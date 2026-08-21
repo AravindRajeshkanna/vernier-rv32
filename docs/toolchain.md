@@ -117,7 +117,7 @@ routing-dominated shape every measurement of this design has had.
 | Tool | Version | Source |
 |---|---|---|
 | **Icarus Verilog** | 14.0 (devel), `s20260301-330-gb8b6e225f-dirty` | Homebrew `icarus-verilog` |
-| **Verilator** | 5.051 devel, `v5.050-124-ga3e7f5103` (mod) | Homebrew `verilator` |
+| **Verilator** | 5.050, `2026-07-01` | Homebrew `verilator` |
 | **Yosys** (formal) | 0.67+post, `b8e7da6f` | Homebrew `yosys` |
 | **Yosys** (synthesis) | 0.67+137, `41a4b5a03-dirty` | oss-cad-suite |
 | **nextpnr-ecp5** | `nextpnr-0.10-109-g90b9be48` | oss-cad-suite |
@@ -180,15 +180,73 @@ targets (`&:`) — none of which 3.81 has.
 | `formal` | **Yosys** + `yosys-smtbmc` + **z3** |
 | `coremark` | riscv64-unknown-elf-gcc + iverilog |
 | `software`, `soc` | riscv64-unknown-elf-gcc/objcopy + Python |
-| `verilator` | Verilator + a C++ toolchain (AppleClang) |
+| `verilator` | Verilator + a C++ toolchain (AppleClang) — the flat `rtl/top.v` |
+| `verilator_soc`, `verilator_sdramboot` | the same, on the **SoC** (`sim/verilator_soc.cpp`) |
+| `verilator_check` | both simulators at once: iverilog + vvp **and** Verilator |
 | `wave`, `wave_soc` | **Surfer** (`VIEWER=` overrides) |
 | `dtb` | `dtc` |
 | *(script)* `fpga/synth/synth_ecp5.sh` | oss-cad-suite Yosys + nextpnr-ecp5 + ecppack |
 | *(script)* `software/opensbi/build-opensbi.sh` | riscv64-unknown-elf-* + GNU Make |
 
-`make verify` runs `sim`, `sim_software`, `sim_soc`, `isa`, `cosim` and
-`formal` — so a full gate needs iverilog, the RISC-V GCC toolchain, Spike,
-Yosys and z3. It does **not** need the FPGA toolchain.
+`make verify` runs `sim`, `sim_software`, `sim_soc`, `isa`, `cosim`,
+`verilator_check` and `formal` — so a full gate needs iverilog, **Verilator**,
+the RISC-V GCC toolchain, Spike, Yosys and z3. It does **not** need the FPGA
+toolchain.
+
+Verilator became a hard dependency of `verify` when the SoC harness landed,
+for the reason in practices §14: a file nothing in `verify` builds will rot,
+and `sim/verilator_soc.cpp` is about to be the main instrument for the Linux
+bring-up. `verilator_check` reuses the `sim_sdramboot` run rather than
+repeating it, so it costs about a second on top of a suite that already runs
+for many minutes.
+
+### Two simulators on the same SoC, and why
+
+Everything under `sim/tb_*.v` runs on Icarus, and Icarus runs this SoC at
+about **11 thousand cycles per second** (measured: `sim_sdramboot`, 2,108,456
+cycles in 187 s). That is fine for every test in the suite — the longest is
+under four minutes.
+
+It stops being fine at Phase 5. A Linux boot is order 10⁸ cycles, which is
+**seven hours or more per attempt** on Icarus, on a bring-up whose
+characteristic failure is a silent hang with no output at all. So `soc_top`
+is also built under Verilator, by `sim/verilator_soc.cpp`:
+
+| | cycles/s | `sim_sdramboot` | a ~3×10⁸-cycle Linux boot |
+|---|---|---|---|
+| Icarus + `vvp` | ~11.3 k | 187 s | ~7.4 hours |
+| Verilator | ~4.44 M | **0.47 s** | **~1.1 minutes** |
+
+Roughly **390×**, on the same machine, same image, same core.
+
+The catch is that Verilator cannot run `sim/sdram_model.v`: that model is
+written in nanoseconds, with `#T_AC_NS` on the data path, and Verilator has
+no notion of either. So the harness carries a C++ port of it — which means
+there are now two memory models that could disagree, and a fast simulator
+that quietly lies is worse than a slow one that does not.
+
+`make verilator_check` is the answer to that. It runs `sim_sdramboot` under
+both and compares the **cycle count** — not merely that both say `PASS`,
+which two quite different machines could do — along with the refresh count
+and every byte the program printed. Measured, on both cores:
+
+| | Icarus | Verilator | |
+|---|---|---|---|
+| in-order, cycles | 2,108,456 | 2,108,457 | +1 |
+| in-order, refreshes | 10,754 | 10,754 | exact |
+| wide, cycles | 1,688,890 | 1,688,890 | exact |
+| wide, refreshes | 8,613 | 8,613 | exact |
+
+The cycle count is allowed to differ by one and nothing else is allowed to
+differ at all. That one cycle is a testbench artefact — Icarus watches the
+verdict word from a process that resumes before the edge's non-blocking
+assignments land, and a cycle-based harness has no such region — and it is
+*slack*, not a correction, because the offset is +1 on one core and 0 on the
+other. An earlier version fitted a constant to the in-order measurement and
+turned the wide core's clean run into a false failure; practices §25.
+
+`sim/sdram_model.v` remains the authority on what the part will accept; the
+C++ port is checked against it, not the other way round.
 
 ### Formal is driven directly, not through SymbiYosys
 
@@ -282,9 +340,6 @@ Worth listing so nobody assumes a dependency that isn't one.
   switched. `VIEWER=gtkwave` still works if you have it from elsewhere.
 - **riscv-pk** — pulled in by the `riscv-tools` formula. Nothing here uses
   it; Spike is invoked directly.
-- **Verilator** — genuinely optional. `make verilator` exists as a
-  second-opinion simulator on the flat `top.v` design; no gate depends on it,
-  and the SoC is not wired up for it.
 
 ## 9. Not used at all
 
@@ -293,8 +348,6 @@ Worth listing so nobody assumes a dependency that isn't one.
   executed**. There is no Xilinx toolchain on this machine.
 - **LiteX / LiteDRAM** — named throughout the docs as the path to external
   DRAM, not currently a dependency.
-- **CI** — there is none. No `.github/`, no pipeline config. `make verify` is
-  run by hand.
 
 ## 10. Reproducibility caveats
 

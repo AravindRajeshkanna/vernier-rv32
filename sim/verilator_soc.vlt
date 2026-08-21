@@ -1,0 +1,39 @@
+// Configuration for the Verilator SoC harness (sim/verilator_soc.cpp).
+//
+// Two jobs, both narrow on purpose.
+//
+// ---- 1. The verdict word ----
+//
+// sim/tb_sdramboot.v reads its pass/fail word out of block RAM with a
+// hierarchical reference (`DUT.RAM.mem[0]`), deliberately: the verdict must
+// not live in the memory under test, or a broken SDRAM could read back
+// "PASS" by luck. The C++ harness has to reach the same word, and Verilator
+// optimises internal signals away unless told not to.
+//
+// `--public-flat-rd` on the command line would do it for *every* signal in
+// the design, which costs simulation speed - the whole point of this build.
+// These name the two arrays that are actually touched.
+//
+// ---- 2. The images ----
+//
+// The Verilog testbenches preload memory with $readmemh through the same
+// kind of hierarchical reference. The harness does it by writing these
+// arrays directly before reset is released, which is why the ROM is here
+// too even though nothing reads it back. `rd` rather than `rw` because the
+// distinction governs VPI access, not the plain C++ member access used
+// here; what the directive is needed for is stopping the optimiser from
+// dissolving the array.
+//
+// ---- 3. Waivers ----
+//
+// None yet. If something rtl/ does legitimately gets refused, waive it here
+// with a comment saying why, rather than by weakening the lint on the
+// command line where it would apply to code nobody has read.
+//
+// (Careful: a `//` comment whose first word is the simulator's own name is
+// parsed as a pragma, not as prose. That is why none of these lines start
+// with it.)
+`verilator_config
+
+public_flat_rd -module "wb_ram" -var "mem"
+public_flat_rd -module "wb_rom" -var "mem"
