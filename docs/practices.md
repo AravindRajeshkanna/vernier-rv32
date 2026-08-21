@@ -923,6 +923,72 @@ page of userspace.
 
 ---
 
+## 30. A probe that reports state needs calibrating; a probe that checks itself does not
+
+Two kinds of instrument came out of one bug hunt, and they behaved completely
+differently.
+
+**The reporting kind.** `+watchpc` dumps the integer registers when a given PC
+retires, and you read them. It has now produced a confident wrong answer three
+times in this project. Once it watched the *fetch* PC and reported registers
+from a speculative path (section 27). This time it read the register file in
+the cycle the watched instruction retired - when the one or two instructions
+*before* it are still in flight and have not written back. At a function entry
+that is exactly the argument registers, so it reported the previous call's
+arguments: `a0 = 0x9de0003c` two instructions after `mv a0,s3` with
+`s3 = 0x9de00000`. That reads as a lost register write, which is a thrilling
+and completely fictional bug. `+watchskew=N` fixes that one.
+
+The pattern is that every reading needs a theory of what the probe means, the
+theory is usually implicit, and when it is wrong the output is not obviously
+wrong - it is plausible.
+
+**What to do about it: calibrate against a case where you already know the
+answer, at the same PC.** The reading that eventually mattered in that hunt
+was that `a5` held `0x38` at a `bne a0,a5` two instructions after `li a5,1`.
+On its own that is exactly the kind of too-good-to-be-true result that had
+already been wrong twice. What made it usable was watching the *first*
+execution of the same instruction, with the same probe and the same skew,
+where the branch demonstrably falls through and `a5` therefore must be 1 - and
+it reads 1. A probe that gets the known case right at the same PC is one you
+can quote on the unknown case; nothing weaker is.
+
+**The self-checking kind.** `+checkreads`, `+checkfetch` and `+checkmmu` do
+not report anything for a human to interpret. Each one compares the hardware
+against an independent model of what the answer should be, and is silent
+unless they disagree:
+
+| | Compares | Against |
+|---|---|---|
+| `+checkreads` | every word the interconnect acknowledges | the modelled SDRAM's contents |
+| `+checkfetch` | every instruction the core consumes | the same, at the fetch address |
+| `+checkmmu` | every address both TLBs resolve | an Sv32 walk written from the spec |
+
+Over one Linux boot that is 19.9 million reads, 133.8 million fetches and
+125.3 million translations, and the output is three lines. There is no reading
+to misinterpret: either something disagreed or nothing did.
+
+They are also *cheap to be sure of*, because a false positive announces itself
+immediately. `+checkmmu`'s first version compared against the live `va`, and
+mmu.v answers a concluded walk from the `va_r` it latched when the walk
+started - so it reported 741 disagreements, every one of them its own. That
+was ten minutes to find, because 741 out of 125 million with a common shape is
+obviously a bug in the checker. The same error in a reporting probe would have
+been one register dump that looked fine.
+
+The rule that follows: **when you can state what the right answer is, check it
+instead of printing it.** A probe that prints needs a person to be right about
+what it means, every time it is read. A probe that checks needs someone to be
+right once, when it is written - and it tells you when they were not.
+
+The corollary is about what elimination is worth. None of the three checks
+found the bug. What they bought is that the memory system and the MMU are no
+longer suspects - not by argument, but by measurement over hundreds of
+millions of events - and they stay in the tree, so the next person to suspect
+them can re-run the question in a minute instead of a week.
+
+---
+
 ---
 
 ## Conventions

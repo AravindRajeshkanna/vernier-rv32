@@ -1009,11 +1009,35 @@ size the result and once to build it. The first walk completes and the kernel
 allocates 8068 bytes for what it measured; the second, over the same bytes,
 fails. Same traversal, same input, different answer.
 
-`software/linux/README.md` lists what has been eliminated and how — the blob
-(pulled out of SDRAM with `+savemem` and decoded by `dtc`), its address, the
-kernel image (3.5 MB `cmp`'d against the file, all executable text identical),
-the two-level page walk, a timing race, the memory map, and the cache. It is
-deterministic, and it is none of those.
+The failure is now three instructions wide. `fdt_next_tag()` returns
+`FDT_BEGIN_NODE`, `li a5,1` sets the value it is compared against, and
+`bne a0,a5` takes a branch it must not take — because on that one execution
+`a5` still holds `0x38`, the value it had inside the callee. **The register
+write does not arrive.** No trap falls within 20,000 cycles of it, and the
+probe reading `a5` is calibrated at the same PC: the first execution of that
+same `bne` reads `a5 = 1` correctly.
+
+Three self-checking probes say the machine underneath is behaving, which is
+what makes that reading interesting rather than just another suspect.
+
+Three self-checking probes now say the machine underneath it is behaving. Over
+one boot: **19,911,640 SDRAM reads all matched the part**, **133,755,481
+instruction fetches all matched memory**, and **125,322,100 address
+translations all agreed with a walk of the page tables written from the spec**.
+Those are `+checkreads`, `+checkfetch` and `+checkmmu`, and they stay in the
+tree — the memory system and the MMU are no longer suspects by measurement
+rather than by argument. `software/linux/README.md` has the rest of the
+elimination table and the calibration behind the `a5` reading.
+
+The mechanism is not known. Forcing `predicted_taken` low in `rtl/btb.v` moves
+the failure elsewhere, but that proves nothing — removing branch prediction
+retimes everything, so any timing-sensitive defect would move. It is recorded
+as a thing tried.
+
+One earlier claim is withdrawn: "both cores fail identically" was over-read.
+The identical oops addresses are downstream of `of_root == NULL`, so they show
+only that both end up with a failed unflatten, not that the same instruction
+misbehaved in each. A timing-sensitive bug was never excluded.
 
 Two real defects fell out of the hunt, which is the argument for doing it:
 
