@@ -731,7 +731,14 @@ sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
 	@cd sim && ../$(VERILATOR_BIN) +sdram=linuximage.hex +uart_clks=224 \
 	    +sdram_words=16777216 +maxcycles=400000000 \
 	    +stopon=$(LINUX_MARKER) | tee linux.log
-	@grep -q "$(LINUX_MARKER)" sim/linux.log && \
+# The `===` are load-bearing and this gate was wrong without them. The
+# harness reports what +stopon was looking for - `stopon "MARKER": never seen
+# in 400000000 cycles` - so a grep for the bare marker matches the harness
+# telling you it never appeared, and a failing boot reports success. It did,
+# on the first run of this target. docs/practices.md section 26: a suite that
+# passes is not a suite that ran the code. Only
+# software/linux/initramfs/init.c prints the delimited form.
+	@grep -q "=== $(LINUX_MARKER) ===" sim/linux.log && \
 	    echo "LINUX BOOT PASSED - reached userspace" || \
 	    { echo "LINUX BOOT FAILED - never reached /init"; exit 1; }
 
