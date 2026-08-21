@@ -76,8 +76,11 @@ module dmem #(
     // relevant byte/halfword and sign/zero-extends as needed.
     assign rdata = {mem[a+3], mem[a+2], mem[a+1], mem[a]};
 
-    // Dedicated ports, so a request is always accepted; the data lands the
-    // cycle after, as wb_ram.v's shared port does.
+    // Dedicated ports, so a request is always accepted and the data lands the
+    // cycle after. This is the flat design's answer to the walker handshake;
+    // the SoC's is rtl/soc/wb_ptw.v, which puts both walkers on the bus so a
+    // page table can live in SDRAM. Same contract either way - mmu.v cannot
+    // tell them apart, which is the point of it being a handshake.
     wire [31:0] a2 = addr2;
     wire [31:0] a3 = addr3;
     assign gnt2 = req2;

@@ -958,22 +958,61 @@ along with the refresh counts and every byte of program output, both exactly.
 
 ### What is actually left, for Linux specifically
 
-Beyond OpenSBI's platform port, in rough order of how much RTL each needs:
+Two of the three hard blockers are now closed:
 
-1. **The page-table walkers cannot reach SDRAM.** They sit on `wb_ram.v`'s
-   second block RAM port, and an SDRAM has no second port. Page tables for a
-   real kernel have to live in DRAM, so the walkers need to become bus
-   masters. This is the largest of the three.
+1. ~~**The page-table walkers cannot reach SDRAM.**~~ **Done.** They sat on
+   `wb_ram.v`'s second block RAM port, and an SDRAM has no second port, so
+   page tables could live in block RAM and nowhere else. `rtl/soc/wb_ptw.v`
+   arbitrates both walkers into a third Wishbone master, so a PTE can come
+   from any slave the interconnect decodes. `mmu.v` did not have to change:
+   the module asserts the walker's grant in the bus's *ack* cycle and
+   registers the returning word on the same edge, which reproduces the
+   one-cycle-later contract the walkers were written against, whatever the
+   slave's latency.
 2. **`mip.SEIP` is hardwired to zero and the PLIC has one M-mode context.**
    Linux takes external interrupts in S-mode. The PLIC also puts
    threshold/claim at `0x3000`/`0x3004` rather than the spec's per-context
-   `0x200000` stride, which a stock driver will not find.
-3. **The interconnect decodes `addr[31:24]`** — 16 MB per slave, against a
-   32 MB part.
+   `0x200000` stride, which a stock driver will not find. **This is now the
+   largest remaining item.**
+3. ~~**The interconnect decodes `addr[31:24]`** — 16 MB per slave.~~ **Done.**
+   The decode compares through a per-slave mask; the SDRAM's is `0xFE`, so it
+   answers to `0x90` and `0x91` alike. `wb_sdram.v` needed no change — it
+   always took its row from `wb_adr[24:12]`.
 
 Then: an ns16550-compatible UART (or a driver that is not), a device tree, an
 rv32ima kernel with no `C`, and an initramfs. Hardware PTE A/D auto-update is
 absent and Linux does not strictly need it to boot.
+
+### What turning translation on for the first time cost
+
+`make sim_mmusdram` builds an Sv32 identity map of 4 MB megapages with the
+root table at `0x9100_0000` — in SDRAM, above the old decode ceiling — enters
+S-mode, and checks that fetch and data both translate, that a read-only
+megapage still reads, and that storing to it takes a store page fault.
+
+It is the first thing in this repository ever to write a non-zero `satp`.
+riscv-tests' supervisor set is `rv32si-p-*`, the **physical** variant: it
+exercises S-mode CSRs and traps and never enables paging. So 79 passing
+architectural tests and 82 of 82 matching Spike traces had between them never
+run a single page-table walk driven by hardware translation.
+
+It found two core bugs on its first run, both present since the MMU landed:
+
+- **The fetch address is `X` while the ITLB walks**, because `mmu.v` derives
+  it from a PTE register that has not been read yet. `cpu_wb.v` indexes its
+  I-cache with it, so `fetch_hit` goes `X`, so `iwb_cyc` goes `X` — and
+  `wb_ram.v`'s `ack_r <= a_en && !ack_r` latches that `X` permanently, since
+  `!x` is `x`. One unresolved fetch wedges main memory for the rest of the
+  run. Both cores now hold the last resolved address instead, which is also
+  free: that address is still in the I-cache, so no bus cycle is issued at
+  all — and the walker is now competing for the same bus.
+- **A translated store used the previous instruction's data on a TLB hit.**
+  `store_data_latched` is a register; selecting it unconditionally hands a
+  store that never stalled the operand as of the end of the *previous* cycle.
+  Correct under a walk, which is the only path that had ever run.
+
+docs/practices.md section 26 is about the shape of that: a suite that passes
+is not a suite that ran the code.
 
 ---
 

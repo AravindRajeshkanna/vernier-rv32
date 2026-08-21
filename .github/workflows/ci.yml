@@ -231,6 +231,19 @@ jobs:
       - name: Check SDRAM check verdict
         run: grep -q "RAMBOOT TEST PASSED" sdramcheck.log
 
+      # docs/roadmap.md Phase 5: Sv32 page tables living in external SDRAM,
+      # walked from S-mode, with the root table above the old 16 MB decode
+      # ceiling. Two RTL changes make it possible - the walkers became a bus
+      # master (rtl/soc/wb_ptw.v) and the interconnect decode grew a per-slave
+      # mask - and it is the first test in this repository that ever turns
+      # instruction-fetch translation on: riscv-tests' rv32si suite is the
+      # `-p` (physical) variant and never does. It found two core bugs on its
+      # first run, both of which had been reachable since the MMU landed.
+      - name: Sv32 with page tables in SDRAM
+        run: make sim_mmusdram | tee mmusdram.log
+      - name: Check Sv32-in-SDRAM verdict
+        run: grep -q "RAMBOOT TEST PASSED" mmusdram.log
+
       # The boot ROM's UART loader, end to end: a host sends a program over
       # the serial line and the SoC runs it out of external SDRAM. This is the
       # only way a program gets there on a board - a bitstream initialises

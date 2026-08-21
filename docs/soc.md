@@ -46,19 +46,24 @@ none of this applies to it.
 
 Two things this diagram is making a point about:
 
-- **`wb_ram` has a second port that never touches the bus.** The MMU's two
-  page-table walkers read PTEs through it directly. Page tables live in
-  ordinary RAM, so putting the walkers on the bus would buy nothing and cost
-  arbitration.
-- **The framebuffer's scan-out is also off-bus**, on its own block RAM's
-  second port. That is why adding video introduced no third bus master.
+- **The page-table walkers are a bus master.** They used to read PTEs through
+  a second port on `wb_ram`'s block RAM, on the reasoning that page tables
+  live in ordinary RAM so putting them on the bus would buy nothing and cost
+  arbitration. That reasoning had an expiry date: an SDRAM has one port, and
+  Linux puts page tables in DRAM. `wb_ptw.v` arbitrates the two walkers into
+  one Wishbone master, and a PTE can now come from any slave the interconnect
+  decodes.
+- **The framebuffer's scan-out is still off-bus**, on its own block RAM's
+  second port. That is why adding video introduced no bus master.
 
 ---
 
 ## 2. Address map
 
-Decoded on `addr[31:24]` only, so every slave owns a 16 MB window regardless
-of how little of it it uses.
+Decoded on `addr[31:24]` through a per-slave mask. A mask of `0xFF` is one
+16 MB window, which is what every slave has except the SDRAM: its mask is
+`0xFE`, so it ignores bit 24 and answers to `0x90` and `0x91` alike — 32 MB,
+the size of the part on the board.
 
 | Base | Slave | Size used | Wait states |
 |---|---|---|---|
@@ -70,7 +75,7 @@ of how little of it it uses.
 | `0x0600_0000` | SPI | 12 B | 0 → many |
 | `0x0700_0000` | Framebuffer | 75 KB | 1 |
 | `0x8000_0000` | Main RAM (block) | 64 KB (FPGA) / 256 KB (sim) | 1 |
-| `0x9000_0000` | External SDRAM | 16 MB of a 32 MB part | ~6 on a row hit |
+| `0x9000_0000` | External SDRAM | 32 MB (mask `0xFE`) | ~6 on a row hit |
 
 `software/soc/soc.h` is the single source of truth for software and **must be
 kept in step by hand** with `soc_top.v`'s `s_base` table, `dts/soc.dts`, and
@@ -102,13 +107,19 @@ issued as one burst-of-2 command; byte lanes become DQM. The controller keeps
 **one** row open, refreshes every 7.8 µs, and takes about six cycles on a row
 hit and eight on a miss.
 
-It sits *beside* block RAM rather than replacing it, because `wb_ram.v` carries
-the two page-table walker ports on its second block RAM port and an SDRAM has
-no second port. Sv32 page tables therefore still have to live in block RAM.
-See docs/roadmap.md Phase 2 for what that leaves open.
+It sits *beside* block RAM rather than replacing it, which was a staging
+decision: keeping both memories meant external DRAM landed as an addition that
+could not regress anything.
 
-The window is 16 MB rather than the part's 32, because one base byte is one
-16 MB slave under this decode.
+Sv32 page tables can live here. They could not while the walkers read PTEs
+through `wb_ram`'s second block RAM port — an SDRAM has no second port — which
+is why `wb_ptw.v` exists. `make sim_mmusdram` is the proof: a root page table
+at `0x9100_0000`, walked from S-mode for both instruction fetch and data.
+
+The window is the full 32 MB. It was 16 MB while the decode was a bare
+equality on `addr[31:24]`; the per-slave mask is what widened it, and
+`wb_sdram.v` always took its row from `wb_adr[24:12]` so the controller needed
+no change at all.
 
 Verified two ways: `make sim_sdram` drives the controller directly against
 `sim/sdram_model.v`, which refuses illegal protocol rather than tolerating it,
@@ -121,12 +132,10 @@ could not have been loaded into block RAM at all.
 enables, synchronous read, **one wait state** — that is what a block RAM
 costs, and the pipeline's `dbus_wait` absorbs it.
 
-Port B is shared by the data and instruction MMU walkers through a
-fixed-priority arbiter (data first). No starvation: a walk is a finite number
-of reads, and while the data walker is walking the pipeline is frozen anyway.
-
-This is the marked seam for external DRAM. Everything above it speaks
-Wishbone and knows only a base address and a size.
+Single-ported now. It used to carry the two MMU walkers on port B, which is
+what confined page tables to block RAM; they are on the bus instead (see
+`wb_ptw` below), and the block RAM's second port is simply unused — which
+costs nothing, since block RAMs come with two either way.
 
 ### `clint` — timer and software interrupts, `0x0200_0000`
 
@@ -365,15 +374,18 @@ UART and stops, because anything more could fault a third time.
 
 1. Write it as a Wishbone B4 classic slave. Ack combinationally if you can;
    if you need wait states, hold `ack` low and the CPU will wait.
-2. In `soc_top.v`: bump `NUM_SLAVES`, add an `S_*` index, add its
-   `addr[31:24]` to the `s_base` concatenation **in the right position** —
-   slave `i` occupies bits `[8*i +: 8]`, and the concatenation lists the
-   highest index first.
+2. In `soc_top.v`: bump `NUM_SLAVES`, add an `S_*` index, and add entries to
+   **both** the `s_base` and `s_mask` concatenations **in the right
+   position** — slave `i` occupies bits `[8*i +: 8]` of each, and the
+   concatenations list the highest index first. A mask of `0xFF` gives the
+   usual 16 MB window; narrower masks give more, in powers of two, and must
+   not overlap another slave.
 3. Instantiate it, wiring `s_stb[S_YOURS]` and `s_dat_r[32*S_YOURS +: 32]`.
 4. Add it to `software/soc/soc.h`, `dts/soc.dts`, and the `SOC_RTL` list in
    the `Makefile` and `fpga/synth/synth_ecp5.sh`. Note that the decode is on
-   `addr[31:24]` alone, so your slave answers to a whole 16 MB window and
-   anything past the end of it aliases back rather than faulting.
+   `addr[31:24]`, so your slave answers to at least a whole 16 MB window and
+   anything past the end of what it implements aliases back rather than
+   faulting.
 5. If it has a read side effect, gate the read strobe on `s_data_master`.
 6. Add a case to `software/soc/main.c`'s acceptance test.
 
@@ -383,11 +395,14 @@ Step 4 is the one that bites — five places, none of which check each other.
 
 ## 7. What is not here
 
-- **No caches.** Every fetch and every load goes to the bus, so a load costs
-  the fetch behind it a cycle.
-- **No DMA, no second bus master** beyond fetch and data.
-- **No external DRAM.** The board has 32 MB of SDRAM; there is no controller,
-  so it is unreachable.
+- **No DMA.** The three bus masters are instruction fetch, data, and the
+  page-table walkers; nothing else moves data on its own.
+- **Caches are in the bus adapter, not here.** `cpu_wb.v` carries a
+  direct-mapped I-cache and D-cache, one word per line. SDRAM is deliberately
+  *not* cacheable, so every access to it reaches the chip.
+- **The walkers do not go through either cache.** A PTE read is a plain bus
+  transaction, which is what makes `SFENCE.VMA` sufficient — there is no
+  cached copy of a PTE for it to have to invalidate.
 - **No PMP**, no debug module, no JTAG. See `docs/debug.md`.
 - **The UART interrupt is wired to the PLIC but unused** — the driver polls.
 

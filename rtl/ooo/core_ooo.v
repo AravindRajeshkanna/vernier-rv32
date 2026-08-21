@@ -297,7 +297,33 @@ module core_ooo #(
 
     wire itlb_wait_stall = itlb_req && !itlb_resolved;
     wire itlb_fault_now  = itlb_req && itlb_resolved && itlb_fault;
-    wire [31:0] fetch_phys_addr = itlb_req ? itlb_pa : pc;
+    // ---- what to fetch while the ITLB is still walking ----
+    //
+    // `itlb_pa` only means anything once the walk resolves; before that mmu.v
+    // derives it from a PTE that has not been read yet, so it is X. cpu_wb.v
+    // indexes its instruction cache with whatever is on this wire, an X index
+    // makes `fetch_hit` X, and that X reaches the shared bus - where
+    // wb_ram.v's `ack_r <= a_en && !ack_r` latches it permanently, because
+    // `!x` is `x`. One unresolved fetch address wedges main memory for the
+    // rest of the simulation.
+    //
+    // Holding the last address that *was* valid keeps the wire defined and,
+    // because that address was fetched moments ago and is still in the
+    // instruction cache, issues no bus cycle at all - which matters now that
+    // the page-table walkers are a bus master competing for the same
+    // interconnect. See rtl/cpu_core.v for the full account and
+    // software/soc/mmutest.c for the test that found it.
+    reg [31:0] itlb_pa_hold;
+    wire [31:0] fetch_phys_addr =
+        itlb_req ? (itlb_resolved ? itlb_pa : itlb_pa_hold) : pc;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            itlb_pa_hold <= RESET_PC;
+        else if (!itlb_req || itlb_resolved)
+            itlb_pa_hold <= fetch_phys_addr;
+    end
+
     assign imem_addr = fetch_phys_addr;
 
     // ---- branch target buffer: consulted every fetch, trained at EX ----
@@ -1304,7 +1330,14 @@ module core_ooo #(
         if (rst) store_data_latched <= 32'b0;
         else if (need_translate && !mmu_busy) store_data_latched <= op2_reg;
     end
-    wire [31:0] store_data_final = need_translate ? store_data_latched : op2_reg;
+    // `mmu_busy` in the select, not just `need_translate`. The snapshot is a
+    // register, so it holds op2_reg as of the *end* of the cycle it was taken
+    // in - right when a walk follows and keeps the instruction in EX, wrong on
+    // a TLB hit where the instruction leaves EX the same cycle and the
+    // register still holds the previous instruction's operand. rtl/cpu_core.v
+    // carries the measurement; the fix is identical because the bug is.
+    wire [31:0] store_data_final =
+        (need_translate && mmu_busy) ? store_data_latched : op2_reg;
 
     // CSR read/write (RMW in one cycle - see csr_file.v)
     wire [31:0] csr_rdata;

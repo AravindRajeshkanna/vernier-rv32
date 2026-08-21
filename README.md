@@ -62,8 +62,10 @@ rtl/
   soc/
     soc_top.v          the SoC: CPU on a Wishbone bus, unified address space
     wb_interconnect.v  2-master/7-slave shared bus, priority arbitration
-    cpu_wb.v           core's native ports -> two Wishbone masters
-    wb_ram.v           RAM slave (+ direct read ports for the MMU walkers)
+    cpu_wb.v           core's native ports -> two Wishbone masters (+I/D caches)
+    wb_ptw.v           the two Sv32 walkers -> a third Wishbone master, so a
+                       page table can live in SDRAM
+    wb_ram.v           RAM slave
     wb_rom.v           boot ROM slave
     wb_periph_bridge.v adapts clint/plic/uart onto the bus unchanged
     wb_gpio.v          GPIO with per-pin interrupts
@@ -120,6 +122,9 @@ software/
     newlibprobe.c  the ladder that found the .data bug: one dependency per
                    rung, heap RAM -> _sbrk -> malloc -> snprintf -> printf
     trapcheck.c  provokes known faults, so the handler is calibrated not assumed
+    mmutest.c    Sv32 with the page tables in SDRAM, walked from S-mode - the
+                 first program here ever to enable translation, and it found
+                 two core bugs on its first run
     crt0_rom.S / crt0_ram.S, link_rom.ld / link_ram.ld
     mkcard.py    builds the SD card image (header block + program)
   bench/
@@ -515,16 +520,19 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   timer/software interrupt, and a real PLIC (multiple prioritized,
   claimable sources) in place of the single wire it used to have — wired
   through real `mie`/`mip`/`mideleg` and privilege-aware interrupt-priority
-  logic.
+  logic. What it does *not* have is S-mode external interrupt delivery:
+  `mip.SEIP` is hardwired to zero and the PLIC has one M-mode context,
+  which is the largest single item between here and a kernel.
 - **A real memory controller** driving actual DRAM — Linux plus a minimal
   root filesystem needs tens of megabytes at least; FPGA block RAM alone
   (tens of KB–a few MB) isn't enough. **This one is now done, on silicon**:
   `rtl/soc/wb_sdram.v` drives the ULX3S's 32 MB SDR part, and a 99 KB
   program has been sent over the serial line into it and executed from
-  there on an LFE5U-85F. No LiteX, no LiteDRAM. What is still missing is
-  narrower and specific: the page-table walkers reach block RAM only, the
-  interconnect decodes 16 MB per slave against a 32 MB part, and
-  `mip.SEIP` is hardwired to zero with a single M-mode PLIC context.
+  there on an LFE5U-85F. No LiteX, no LiteDRAM. Sv32 page tables can live
+  in it too, walked from S-mode for both fetch and data — the walkers are a
+  bus master now, and the decode reaches all 32 MB. What is still missing
+  is narrower and specific: `mip.SEIP` is hardwired to zero, and the PLIC
+  has a single M-mode context at a non-standard register layout.
 - **A UART** (for a console) and **SPI/SD or similar storage** — the SoC
   now has both, and actually boots off the SD card.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
@@ -590,7 +598,7 @@ the same as being fixed.
 | | |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
-| [docs/practices.md](docs/practices.md) | The working rules — twenty-five of them, each attached to the incident on this repo that produced it |
+| [docs/practices.md](docs/practices.md) | The working rules — twenty-six of them, each attached to the incident on this repo that produced it |
 | [docs/roadmap.md](docs/roadmap.md) | Where this goes next, in phases, in dependency order |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |
