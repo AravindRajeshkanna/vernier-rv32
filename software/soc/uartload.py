@@ -46,7 +46,11 @@ NAK   = 0x45                # 'E'
 # before a board has been reset, with a message that names both.
 REGIONS = {
     "block RAM": (0x80000000, 0x00010000),
-    "SDRAM":     (0x90000000, 0x01000000),
+    # 32 MB, the whole part. This said 16 MB until a kernel image needed the
+    # upper half: wb_interconnect.v decoded addr[31:24] by equality then, so
+    # one base byte bought one 16 MB slave. It decodes through a per-slave
+    # mask now and dts/soc.dts declares the full 0x02000000.
+    "SDRAM":     (0x90000000, 0x02000000),
 }
 
 
@@ -195,6 +199,15 @@ def main():
     crc = binascii.crc32(payload) & 0xFFFFFFFF
     print(f"{len(payload)} bytes -> 0x{args.addr:08X} ({where}), "
           f"CRC32 {crc:08X}")
+
+    # Stop-and-wait costs a round trip per byte: one frame out, one frame
+    # back, ten bits each. Worth printing for anything large, because a
+    # multi-megabyte image is twenty minutes and a progress bar that has not
+    # moved for a while is otherwise indistinguishable from a hang.
+    secs = len(payload) * 20.0 / args.baud
+    if secs > 60:
+        print(f"  at {args.baud} baud that is about {secs / 60:.0f} minutes - "
+              f"it is stop-and-wait,\n  a round trip per byte (see below)")
 
     port = Serial(args.port, args.baud)
 

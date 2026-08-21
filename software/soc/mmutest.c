@@ -57,6 +57,31 @@
  * PTE layout: PPN[1] (31:20) | PPN[0] (19:10) | RSW (9:8) | D A G U X W R V.
  * A megapage needs PPN[0] == 0, which mmu.v checks (`misaligned1`) and faults
  * on if it is not.
+ *
+ * ---- The second level ----
+ *
+ * One megapage is deliberately *not* a megapage: it is a pointer to a
+ * second-level table of 4 KB pages. Step 2b builds it and the second half of
+ * s_mode_main() walks it.
+ *
+ * That was added because a Linux boot found the gap. Everything above maps
+ * with level-1 leaves, so until then this repository had never made the
+ * hardware read a *second* PTE - `l1_conclusive` in mmu.v was true on every
+ * walk that had ever run. riscv-tests never enables paging at all
+ * (rv32si-p-* is the physical variant), so 79 architectural tests and 82
+ * matching Spike traces did not cover it either.
+ *
+ * Linux does not have that option. Its linear map is megapages, which is why
+ * a kernel gets as far as running at all here, but the fixmap, vmalloc and
+ * every ioremap are 4 KB pages reached through a level-2 table. So is every
+ * page of userspace.
+ *
+ * The two-pages-in-one-megapage check is the pointed one. mmu.v's TLB tags
+ * an entry with va[31:12] and compares only va[31:22] when `tlb_super` is
+ * set; get that backwards and two 4 KB pages inside one megapage alias to
+ * whichever was walked first. The failure is a *wrong address*, not a fault -
+ * reads succeed and return the wrong page - which is the hardest shape of
+ * bug to see from software.
  */
 #define PTE_V (1u << 0)
 #define PTE_R (1u << 1)
@@ -93,8 +118,43 @@
 #define RW_VA (SDRAM_BASE + 0x00400000u)   /* 0x9040_0000 */
 #define RO_VA (SDRAM_BASE + 0x00800000u)   /* 0x9080_0000, the next megapage but one */
 
+/* The megapage reached through a second-level table instead of directly.
+ * Identity-mapped like the rest, so a page's contents can be seeded
+ * physically before translation is on and checked through the walk after.
+ *
+ * The level-2 table goes immediately above the root table. Both are inside
+ * the 16 MB + 128 KB that sim/tb_ramboot.v's model backs (SDRAM_WORDS in the
+ * Makefile) - sdram_model.v errors on an access past MEM_WORDS rather than
+ * returning zeros, so a table placed past it fails loudly. */
+#define PT_VA   (SDRAM_BASE + 0x00C00000u)   /* 0x90C0_0000, mapped by 4 KB pages */
+#define L2_PA   (ROOT_PA + 0x1000u)          /* 0x9100_1000, just above the root */
+
+#define PAGE_SHIFT 12
+#define PAGE_SIZE  (1u << PAGE_SHIFT)
+
+/* Three pages inside that one megapage, chosen to move VPN[0] across its
+ * whole range rather than just off zero: index 0, index 512 and index 1023.
+ * A walker that indexed the level-2 table with the wrong field, or a TLB
+ * that compared the wrong half of the tag, gets at most one of them right. */
+#define PT_VA_LOW  (PT_VA + 0u * PAGE_SIZE)
+#define PT_VA_MID  (PT_VA + 512u * PAGE_SIZE)
+#define PT_VA_HIGH (PT_VA + 1023u * PAGE_SIZE)
+/* And one more that is deliberately left read-only, and one left invalid. */
+#define PT_VA_RO   (PT_VA + 200u * PAGE_SIZE)
+#define PT_VA_BAD  (PT_VA + 300u * PAGE_SIZE)
+
+/* Four times the TLB's eight entries, spread three pages apart so the sweep
+ * covers a wide slice of VPN[0] rather than one contiguous block. The last is
+ * page 3*31 = 93, comfortably clear of PT_VA_RO and PT_VA_BAD. */
+#define TLB_PAGES  32u
+#define TLB_STRIDE 3u
+
 #define MAGIC_RW 0x5A7A5A7Au
 #define MAGIC_RO 0xC0DEFACEu
+#define MAGIC_LOW  0x11112222u
+#define MAGIC_MID  0x33334444u
+#define MAGIC_HIGH 0x55556666u
+#define MAGIC_PTRO 0x77778888u
 
 static int failures = 0;
 
@@ -109,6 +169,19 @@ static void report(const char *name, int ok)
 static inline uint32_t megapage_index(uint32_t va)
 {
     return va >> MEGAPAGE_SHIFT;
+}
+
+/* The k'th page of the TLB-pressure sweep, and the value it should hold. The
+ * index appears twice in the value so a wrong-page read names the page it
+ * actually reached instead of merely failing. */
+static inline volatile uint32_t *page_at(unsigned k)
+{
+    return (volatile uint32_t *)(PT_VA + (k * TLB_STRIDE) * PAGE_SIZE);
+}
+
+static inline uint32_t tlb_magic(unsigned k)
+{
+    return 0xAB000000u | (k << 12) | k;
 }
 
 /* satp: MODE (31) | ASID (30:22) | PPN (21:0). MODE 1 is Sv32. */
@@ -159,6 +232,92 @@ static void s_mode_main(void)
     *ro = 0xDEADBEEFu;
     report("store to read-only faults", TRAP_EXPECT == 0 && TRAP_MCAUSE == 15);
     report("read-only page unchanged", *ro == MAGIC_RO);
+
+    /* ---- the two-level walk ----
+     *
+     * Everything above resolved at level 1. These do not: the root entry for
+     * PT_VA is a pointer, so each of these costs two PTE reads out of SDRAM.
+     */
+    {
+        volatile uint32_t *lo = (volatile uint32_t *)PT_VA_LOW;
+        volatile uint32_t *mid = (volatile uint32_t *)PT_VA_MID;
+        volatile uint32_t *hi = (volatile uint32_t *)PT_VA_HIGH;
+        volatile uint32_t *pro = (volatile uint32_t *)PT_VA_RO;
+        volatile uint32_t *bad = (volatile uint32_t *)PT_VA_BAD;
+
+        report("4 KB page loads (VPN0=0)",    *lo  == MAGIC_LOW);
+        report("4 KB page loads (VPN0=512)",  *mid == MAGIC_MID);
+        report("4 KB page loads (VPN0=1023)", *hi  == MAGIC_HIGH);
+
+        /* All three live in one megapage. Reading them in turn and then
+         * reading the first one *again* is what separates a correct TLB from
+         * one that tags 4 KB entries at megapage granularity: the second
+         * read of `lo` is a hit on an entry installed after two other pages
+         * in the same megapage were walked. */
+        report("4 KB pages do not alias",
+               *lo == MAGIC_LOW && *mid == MAGIC_MID && *hi == MAGIC_HIGH &&
+               *lo == MAGIC_LOW);
+
+        *mid = ~MAGIC_MID;
+        report("4 KB page stores", *mid == ~MAGIC_MID);
+
+        /* One page in the middle of the table is read-only. Its neighbours
+         * are writable, so this is a per-4-KB-page permission check rather
+         * than a per-megapage one. */
+        report("4 KB read-only page reads", *pro == MAGIC_PTRO);
+        TRAP_EXPECT = 1;
+        TRAP_MCAUSE = 0;
+        *pro = 0xDEADBEEFu;
+        report("4 KB read-only store faults",
+               TRAP_EXPECT == 0 && TRAP_MCAUSE == 15);
+        report("4 KB read-only unchanged", *pro == MAGIC_PTRO);
+
+        /* And one entry is invalid, which must fault at level 2 rather than
+         * fall back to the level-1 entry's permissions. */
+        TRAP_EXPECT = 1;
+        TRAP_MCAUSE = 0;
+        (void)*bad;
+        report("invalid level-2 PTE faults",
+               TRAP_EXPECT == 0 && TRAP_MCAUSE == 13);
+
+        /* ---- more distinct pages than the TLB can hold ----
+         *
+         * mmu.v's TLB is eight entries with a round-robin replacement
+         * pointer, and everything above fits in it: three pages plus two
+         * megapages never evict anything. So the checks above prove the walk
+         * and prove the tag, and prove nothing at all about *refill*.
+         *
+         * That gap matters more than it looks. On rv32 Linux the linear map
+         * is 4 KB pages throughout - arch/riscv/mm/init.c's best_map_size()
+         * returns PMD_SIZE only under CONFIG_64BIT - so the kernel's own
+         * text, its stack and every allocation it touches are each a
+         * separate TLB entry, and eight is nothing. Real code there runs
+         * permanently in eviction.
+         *
+         * TLB_PAGES is four times the entry count, and the second pass reads
+         * them back in the opposite order from the one that installed them,
+         * so every hit is on an entry that has been evicted and walked
+         * again. Each page holds a value derived from its own index, so a
+         * refill that installs the right PPN against the wrong tag returns a
+         * number that names the page it actually reached.
+         */
+        {
+            unsigned k;
+            int seq_ok = 1, rev_ok = 1;
+
+            for (k = 0; k < TLB_PAGES; k++)
+                *page_at(k) = tlb_magic(k);
+
+            for (k = 0; k < TLB_PAGES; k++)
+                if (*page_at(k) != tlb_magic(k)) seq_ok = 0;
+
+            for (k = TLB_PAGES; k-- > 0; )
+                if (*page_at(k) != tlb_magic(k)) rev_ok = 0;
+
+            report("4x the TLB, in order", seq_ok);
+            report("4x the TLB, reversed", rev_ok);
+        }
+    }
 
     put_str("\n");
     if (failures == 0) {
@@ -213,6 +372,39 @@ int main(void)
         root[i] = (i << (MEGAPAGE_SHIFT - 12 + 10)) | PTE_LEAF_RW;
     root[megapage_index(RO_VA)] =
         (megapage_index(RO_VA) << (MEGAPAGE_SHIFT - 12 + 10)) | PTE_LEAF_RO;
+
+    /* ---- 2b. one megapage replaced by a second-level table ----
+     *
+     * The root entry for PT_VA becomes a *pointer*: V set, R/W/X all clear.
+     * mmu.v reads that as non-leaf (`leaf1` is false) and walks on, which is
+     * the path nothing in this repository exercised until a kernel needed it.
+     */
+    {
+        volatile uint32_t *l2 = (volatile uint32_t *)L2_PA;
+        uint32_t base_ppn = PT_VA >> PAGE_SHIFT;
+
+        ((volatile uint32_t *)PT_VA_LOW)[0]  = MAGIC_LOW;
+        ((volatile uint32_t *)PT_VA_MID)[0]  = MAGIC_MID;
+        ((volatile uint32_t *)PT_VA_HIGH)[0] = MAGIC_HIGH;
+        ((volatile uint32_t *)PT_VA_RO)[0]   = MAGIC_PTRO;
+
+        for (i = 0; i < PTE_COUNT; i++)
+            l2[i] = ((base_ppn + i) << 10) | PTE_LEAF_RW;
+        l2[(PT_VA_RO  - PT_VA) >> PAGE_SHIFT] =
+            ((base_ppn + ((PT_VA_RO - PT_VA) >> PAGE_SHIFT)) << 10) | PTE_LEAF_RO;
+        l2[(PT_VA_BAD - PT_VA) >> PAGE_SHIFT] = 0;
+
+        /* A pointer PTE: PPN of the table, V set, no R/W/X. A and D are
+         * meaningless on a non-leaf and are left clear - mmu.v only applies
+         * perm_ok() to the level it decides is a leaf, and setting A here
+         * would hide it if that were wrong. */
+        root[megapage_index(PT_VA)] = ((L2_PA >> 12) << 10) | PTE_V;
+
+        report("level-2 table reads back",
+               l2[0] == ((base_ppn << 10) | PTE_LEAF_RW) &&
+               l2[PTE_COUNT - 1] ==
+                   (((base_ppn + PTE_COUNT - 1) << 10) | PTE_LEAF_RW));
+    }
 
     /* Read one back through the same physical path that just wrote it, so a
      * broken *table* is separated from a broken *walk* before satp goes on. */

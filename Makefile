@@ -149,6 +149,7 @@ SD_BLOCKS = 128
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         sim_mmusdram sim_plic sim_uart16550 \
         sim_uartload uartload-host sbiimage sim_opensbi \
+        linuximage linuxpayload sim_linux \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -660,16 +661,86 @@ sbiimage: sim/sbiimage.hex
 # mismatch prints convincing garbage rather than nothing - which reads as a
 # firmware fault instead of a decoding one, and did for one round.
 #
-# 4 M words is 8 MB of modelled SDRAM: FW_JUMP_FDT_ADDR is 0x9020_0000 and
-# FW_JUMP_ADDR is 0x9040_0000, both of which have to be backed.
+# 16 M words is the whole 32 MB part. It used to be 8 MB, which was enough
+# while FW_JUMP_FDT_ADDR was 0x9020_0000; that address is 0x91E0_0000 now,
+# because arch/riscv drops every memory range below the kernel and a device
+# tree underneath it is in memory Linux has decided does not exist. See
+# software/opensbi/build-opensbi.sh.
 sim_opensbi: sim/sbiimage.hex $(VERILATOR_BIN)
 	@cd sim && ../$(VERILATOR_BIN) +sdram=sbiimage.hex +uart_clks=224 \
-	    +maxcycles=40000000 +sdram_words=4194304 | tee opensbi.log
+	    +maxcycles=40000000 +sdram_words=16777216 | tee opensbi.log
 	@grep -q "Boot HART Base ISA          : rv32ima" sim/opensbi.log && \
 	    grep -q "Platform Console Device     : uart8250" sim/opensbi.log && \
 	    echo "OPENSBI BOOT PASSED" || \
 	    { echo "OPENSBI BOOT FAILED - no banner, or the platform was not detected"; \
 	      exit 1; }
+
+# ---- Linux, packed into the same SDRAM image ----
+#
+# Not part of `verify`, for the same reason OpenSBI is not: building it needs
+# a 150 MB kernel tarball off the network. Run it by hand:
+#
+#   ./software/opensbi/build-opensbi.sh    # once
+#   ./software/linux/build-linux.sh        # once, fetches and builds Linux
+#   make linuximage                        # pack stub + dtb + OpenSBI + Image
+#   make sim_linux                         # boot it under Verilator
+#
+# `make linuxpayload` writes the same bytes as a flat binary, which is what
+# software/soc/uartload.py sends to a board. One script emits both so the
+# simulated image and the hardware image cannot drift apart.
+LINUX_IMAGE = software/linux/build/Image
+
+#
+# $(wildcard) rather than a plain prerequisite: it expands to nothing when the
+# kernel has not been built, so the `test -f` below gets to say which script to
+# run instead of make saying "no rule to make target" - and to the path once it
+# exists, so rebuilding the kernel repacks the image.
+sim/linuximage.hex: software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+                     software/opensbi/mkimage.py Makefile \
+                     $(wildcard $(LINUX_IMAGE))
+	@test -f $(OPENSBI_FW) || { \
+	    echo "$(OPENSBI_FW) is missing - run ./software/opensbi/build-opensbi.sh first"; \
+	    exit 1; }
+	@test -f $(LINUX_IMAGE) || { \
+	    echo "$(LINUX_IMAGE) is missing - run ./software/linux/build-linux.sh first"; \
+	    exit 1; }
+	python3 software/opensbi/mkimage.py --nm=$(RISCV_NM) \
+	    --kernel=$(LINUX_IMAGE) --bin=software/linux/build/sdram.bin \
+	    software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+	    $(OPENSBI_FW) $(OPENSBI_ELF) > $@
+
+linuximage: sim/linuximage.hex
+
+linuxpayload: sim/linuximage.hex
+	@ls -la software/linux/build/sdram.bin | \
+	    awk '{printf "  %s  %.1f KB\n", $$9, $$5/1024}'
+	@echo "  send with: ./software/soc/uartload.py /dev/cu.usbserial-XXXX \\"
+	@echo "                 software/linux/build/sdram.bin"
+
+# The whole 32 MB is modelled because the kernel runs from 0x9040_0000 and
+# OpenSBI puts its device tree at 0x91E0_0000.
+#
+# `+stopon` is what makes this affordable. A bare-metal program here ends by
+# storing a magic word in block RAM; Linux ends a boot by *printing*, so
+# without a console trigger every run - passing or failing - costs the full
+# +maxcycles. The marker is the last line software/linux/initramfs/init.c
+# prints, so seeing it means everything before it also ran.
+LINUX_MARKER = VERNIER-RV32-LINUX-BOOT-OK
+
+sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
+	@cd sim && ../$(VERILATOR_BIN) +sdram=linuximage.hex +uart_clks=224 \
+	    +sdram_words=16777216 +maxcycles=400000000 \
+	    +stopon=$(LINUX_MARKER) | tee linux.log
+# The `===` are load-bearing and this gate was wrong without them. The
+# harness reports what +stopon was looking for - `stopon "MARKER": never seen
+# in 400000000 cycles` - so a grep for the bare marker matches the harness
+# telling you it never appeared, and a failing boot reports success. It did,
+# on the first run of this target. docs/practices.md section 26: a suite that
+# passes is not a suite that ran the code. Only
+# software/linux/initramfs/init.c prints the delimited form.
+	@grep -q "=== $(LINUX_MARKER) ===" sim/linux.log && \
+	    echo "LINUX BOOT PASSED - reached userspace" || \
+	    { echo "LINUX BOOT FAILED - never reached /init"; exit 1; }
 
 # ---- the ns16550 register map, and the UART's interrupt ----
 #
@@ -862,7 +933,9 @@ clean:
 	       sim/sim_mmusdram.out sim/mmuimage.hex \
 	       sim/sim_plic.out sim/plicimage.hex \
 	       sim/sim_uart16550.out sim/uart16550image.hex \
-	       sim/sbiimage.hex sim/opensbi.log software/opensbi/build/sbi_stub.elf \
+	       sim/sbiimage.hex sim/opensbi.log sim/linuximage.hex sim/linux.log \
+	       software/linux/build/sdram.bin \
+	       software/opensbi/build/sbi_stub.elf \
 	       software/opensbi/build/sbi_stub.bin \
 	       software/soc/uarttest.elf software/soc/uarttest.bin \
 	       software/soc/plictest.elf software/soc/plictest.bin \

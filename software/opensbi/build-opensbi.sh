@@ -1,10 +1,14 @@
 #!/bin/sh
 # Fetch and build OpenSBI for this core.
 #
-# STATUS: this script is verified to *build* OpenSBI for rv32ima with the
-# riscv64-unknown-elf toolchain. It does NOT yet produce something that boots
-# on this SoC - a platform port (console/timer/ipi glue) is still needed. See
-# software/opensbi/README.md for exactly what is and isn't done.
+# STATUS: this builds an OpenSBI that boots on this SoC and hands off to a
+# Linux kernel in S-mode. `make sim_opensbi` checks the banner and the
+# platform detection. There is no platform port: PLATFORM=generic is entirely
+# FDT-driven, so dts/soc.dts *is* the port.
+#
+# The kernel it hands off to does not reach userspace yet - it stops in
+# unflatten_device_tree(). That is a defect in front of this script rather
+# than in it; software/linux/README.md is precise about where.
 #
 # The one non-obvious part is the PIE patch below. Modern OpenSBI hard-errors
 # unless the linker can create position-independent executables, and the
@@ -78,8 +82,33 @@ FW_TEXT_START=${FW_TEXT_START:-0x90080000}
 # space it reads zeros, fdt_path_offset() returns -FDT_ERR_BADMAGIC, and the
 # firmware stops with no console - having been perfectly capable of parsing
 # the same tree at its original address minutes earlier.
-FW_JUMP_FDT_ADDR=${FW_JUMP_FDT_ADDR:-0x90200000}
+#
+# FW_JUMP_ADDR is fixed by Linux rather than chosen: the rv32 Image header
+# asks to run at RAM + 0x400000, because setup_vm() maps the kernel with Sv32
+# 4 MB megapages. software/opensbi/mkimage.py reads that field out of the
+# built Image and refuses a mismatch.
 FW_JUMP_ADDR=${FW_JUMP_ADDR:-0x90400000}
+
+# The device tree has to go *above* the kernel, and this is the second
+# address it has been at for a reason that was invisible until a kernel ran.
+#
+# arch/riscv sets phys_ram_base to the kernel's own load address and drops
+# every memory range below it - the boot log says so, "Ignoring memory range
+# 0x90000000 - 0x90400000" - so the linear map starts at FW_JUMP_ADDR. A
+# device tree below that is in memory the kernel has decided does not exist.
+#
+# It half works, which is what makes it expensive. The early parse reads the
+# blob through the fixmap and succeeds: the machine model, the command line,
+# the memory nodes and the reserved regions all come out right. It is
+# unflatten_device_tree(), later and through the linear map, that reads
+# nothing and fails with "Error -4 processing FDT" - by which point the
+# console is up and the failure looks like memory corruption rather than a
+# load address.
+#
+# 0x91E0_0000 is 30 MB into the part, out of the kernel's way, and mirrors
+# where QEMU's virt machine puts it (top of RAM minus 2 MB). Anything above
+# FW_JUMP_ADDR plus the kernel's runtime size would do.
+FW_JUMP_FDT_ADDR=${FW_JUMP_FDT_ADDR:-0x91E00000}
 
 # The generated linker script caches FW_TEXT_START, and `make clean` does not
 # remove it - so changing the address without this silently rebuilds at the

@@ -927,7 +927,9 @@ blocker any more.
 FreeRTOS or Zephyr is the realistic intermediate milestone, and is reachable
 sooner: there is a bus, a timer, an interrupt controller and storage.
 
-**Done when:** OpenSBI prints its banner and hands off to an S-mode payload.
+**Done when:** OpenSBI prints its banner and hands off to an S-mode payload —
+**done**, and the payload now exists and boots in QEMU. The remaining gap is
+this SoC, and it is one named failure rather than a category.
 
 **The banner half is done.** `make sim_opensbi` boots OpenSBI v1.9 on this
 SoC: it parses `dts/soc.dts`, finds the ns16550 console, the CLINT as
@@ -988,26 +990,85 @@ Two of the three hard blockers are now closed:
    answers to `0x90` and `0x91` alike. `wb_sdram.v` needed no change — it
    always took its row from `wb_adr[24:12]`.
 
-### The kernel is now the next thing, and is unblocked
+### The kernel: built, booting in QEMU, and not yet reaching userspace here
 
-It was blocked on OpenSBI: an rv32ima Sv32 Linux runs in S-mode and asks
-M-mode firmware for its timer through `sbi_set_timer`, since this core has no
-Sstc. OpenSBI now provides that — `time` is in its advertised extension list
-and `aclint-mtimer` is running at the right frequency.
+`software/linux/build-linux.sh` fetches Linux 6.18.45 and builds an rv32ima
+kernel with an initramfs in it. **In `qemu-system-riscv32 -M virt` it boots to
+userspace** — `/init` prints its banner, `uname`, its pid and `/proc/cpuinfo`.
+That proves the config, the ISA restriction, the cpio format, `/dev/console`
+and the libc-free `/init` all the way through, with only the hardware left.
 
-Nothing has been added here for a kernel yet, deliberately — a build script
-and a defconfig that have never produced a booting kernel would be scaffolding
-nothing builds, which section 14 is about. But the blocker is gone, and
-`Domain0 Next Address` is where the kernel goes.
+**On this SoC it stops at `unflatten_device_tree()`**, and the stopping point
+is exact rather than a hang. OpenSBI hands off, the kernel runs, parses the
+device tree, brings up `earlycon=sbi`, builds memblock, turns Sv32 on, runs at
+`0xC000_0000` and builds the whole linear map — then
+`OF: fdt: Error -4 processing FDT`, and everything after that is a cascade.
+
+The interesting part is the shape: that function walks the blob twice, once to
+size the result and once to build it. The first walk completes and the kernel
+allocates 8068 bytes for what it measured; the second, over the same bytes,
+fails. Same traversal, same input, different answer.
+
+`software/linux/README.md` lists what has been eliminated and how — the blob
+(pulled out of SDRAM with `+savemem` and decoded by `dtc`), its address, the
+kernel image (3.5 MB `cmp`'d against the file, all executable text identical),
+the two-level page walk, a timing race, the memory map, and the cache. It is
+deterministic, and it is none of those.
+
+Two real defects fell out of the hunt, which is the argument for doing it:
+
+- **`mstatush` was missing from the wide core.** `rtl/cpu_core.v` gained CSR
+  `0x310` when OpenSBI first needed it and `rtl/ooo/core_ooo.v` never did,
+  because `make sim_opensbi` builds `CORE=inorder`. **OpenSBI had never run
+  on the wide core at all** — pointed at it, the firmware took an
+  illegal-instruction trap on `csrc mstatush, t0` at cycle 6050 and hung in
+  `_start_hang` with no console. Section 26 again, and the second time this
+  exact gap has bitten.
+- **`FW_JUMP_FDT_ADDR` was below the kernel.** `arch/riscv` sets
+  `phys_ram_base` to the kernel's own load address and drops every memory
+  range beneath it, so a device tree there sits in memory the kernel has
+  decided does not exist. Moved to `0x91E0_0000`. This did not fix the
+  failure above — it is a separate defect that would have bitten the moment
+  the first one was cleared.
+
+### Turning translation on had never included a second level
+
+`make sim_mmusdram` mapped 4 MB megapages and nothing else, by explicit
+design, so `l1_conclusive` in `mmu.v` was true on every walk this project had
+ever run. riscv-tests does not cover it either — `rv32si-p-*` is the physical
+variant and never enables paging. So the hardware had never read a *second*
+PTE.
+
+Linux has no such option: its linear map is megapages, which is why a kernel
+runs here at all, but the fixmap, vmalloc, every `ioremap` and every page of
+userspace are 4 KB pages behind a level-2 table.
+
+`software/soc/mmutest.c` now covers it — VPN[0] at 0, 512 and 1023,
+per-4-KB-page permissions, an invalid level-2 entry, three pages inside one
+megapage to catch a TLB that tags at the wrong granularity, and a sweep over
+four times the TLB's eight entries read back in reverse so every hit is on an
+entry that was evicted and walked again. The aliasing check is the pointed
+one: getting it wrong returns the *wrong page* rather than faulting, which is
+the hardest shape of bug to see from software. The pressure check is there
+because `best_map_size()` returns `PMD_SIZE` only under `CONFIG_64BIT`, so on
+rv32 the entire linear map is 4 KB pages and Linux runs permanently in
+eviction — a regime nothing else on this SoC enters. All pass —
+the walker was already right, which is worth knowing rather than assuming.
 
 What it will need, once OpenSBI hands off:
 
-- a kernel built `rv32ima` with **no C extension** (this core does not
-  implement it) and `CONFIG_MMU=y` with Sv32;
-- an initramfs, because there is no block device driver for the SPI card and
-  the SD path is the boot ROM's, not the kernel's;
-- `fw_payload` rather than `fw_jump`, or a loader that places the kernel where
-  `fw_jump` expects it;
+- ~~a kernel built `rv32ima` with **no C extension** (this core does not
+  implement it) and `CONFIG_MMU=y` with Sv32~~ — **done**, and harder than it
+  reads: `CONFIG_EFI` is `default y` on riscv and `select RISCV_ISA_C`, so
+  turning C off is not enough on its own and kconfig reports nothing;
+- ~~an initramfs, because there is no block device driver for the SPI card and
+  the SD path is the boot ROM's, not the kernel's~~ — **done**, built into the
+  Image, with a `/init` that makes raw `ecall`s because there is no rv32 Linux
+  userspace toolchain on this host;
+- ~~`fw_payload` rather than `fw_jump`, or a loader that places the kernel
+  where `fw_jump` expects it~~ — **done**: `software/opensbi/mkimage.py`
+  packs the Image at `FW_JUMP_ADDR` in the same blob as the firmware, and
+  checks the RISC-V Image header's `text_offset` against where it put it;
 - roughly 3×10⁸ cycles per boot attempt, which is about a minute under
   Verilator and seven hours under Icarus. That ratio is why the harness was
   built first.

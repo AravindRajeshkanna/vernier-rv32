@@ -42,9 +42,25 @@
     model = "From-scratch RV32IMA Wishbone SoC";
 
     chosen {
-        /* No bootargs: there is no kernel to pass them to yet. stdout-path
-         * is honored by U-Boot/OpenSBI-style firmware to pick a console. */
+        /* stdout-path is honored by U-Boot/OpenSBI-style firmware to pick a
+         * console; bootargs is what Linux reads as its command line.
+         *
+         * `earlycon=sbi` prints through OpenSBI's own console driver from
+         * the first line of the kernel until the 8250 driver probes, which
+         * covers the window this SoC is worst at: no output at all, and no
+         * way to tell a kernel that died early from one that never started.
+         * It costs nothing - OpenSBI's console is already up by then.
+         *
+         * Both consoles end up driving the same ns16550. Linux reprograms
+         * the divisor when it takes over, and computes it the same way
+         * OpenSBI does - (clock + 8*baud) / (16*baud), rounding rather than
+         * truncating - so 25 MHz and 115200 give 14 in both cases and the
+         * line does not change speed at the handover. A driver that
+         * truncated would give 13 and everything after the handover would
+         * be garbage rather than silence.
+         */
         stdout-path = "serial0:115200n8";
+        bootargs = "console=ttyS0,115200 earlycon=sbi";
     };
 
     aliases {
