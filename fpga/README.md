@@ -1,8 +1,9 @@
 # FPGA integration — status and honest caveats
 
 **The design builds to a ULX3S bitstream against that board's real pinout,
-closes timing at 25 MHz — 27.41 MHz on an 85F as of the data cache and the
-SDRAM controller, 30.77 MHz before them — and has been loaded onto an
+closes timing at 25 MHz — 25.37 MHz on an 85F as of the page-table walkers
+moving onto the bus, 26.07 MHz without that change on the same toolchain,
+27.41 MHz on the older one — and has been loaded onto an
 LFE5U-85F, where it boots, passes its acceptance test, and runs a 99 KB
 program out of external SDRAM that was sent to it over the serial line.**
 Those are different claims, and two of them are
@@ -13,9 +14,9 @@ still open:
 | Full SoC synthesis (yosys) | ✅ **runs, ~19 s** |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs** — 4 min on an 85F, 11 min on a 45F |
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
-| Resource usage | ✅ **measured** — 27% LUT / 62% EBR on a 45F, 14% / 32% on an 85F |
+| Resource usage | ✅ **measured** — 14,260 LUT4 / 80 EBR (38%) on an 85F; the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ✅ **27.41 MHz** (85F), PASS at the board's 25 MHz — down from 30.77 before the D-cache and SDRAM |
+| **Fmax with I/O constrained** | ✅ **25.37 MHz** (85F), PASS at the board's 25 MHz — **1.5% margin**, see the breakdown below before adding anything to the fetch or MMU path |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
@@ -534,24 +535,67 @@ wrong command line. Both targets share the same pinout, wrapper and LPF and
 differ only in the chip. The build prints its target up front and again on
 the bitstream line.
 
-| Target | Device | Fmax | LUT | EBR |
+| Target | Device | Fmax | LUT4 | EBR |
 |---|---|---|---|---|
-| `BOARD=ulx3s` | LFE5U-45F | 28.78 MHz † | 29% | **105/108 — 97%** |
-| `BOARD=ulx3s85` | LFE5U-85F | **27.41 MHz** | 20% | 107/208 — 51% |
+| `BOARD=ulx3s` | LFE5U-45F | 28.78 MHz † | 29% | 105/108 — 97% † |
+| `BOARD=ulx3s85` | LFE5U-85F | **25.37 MHz** | 14,260 | **80/208 — 38%** |
 
-† the 45F number predates the data cache and the SDRAM controller and has not
-been re-measured. The 85F row has: **27.41 MHz, down from 30.77**, which is the
-first place-and-route since both landed, so the drop belongs to the pair rather
-than to either one. It still passes at the board's 25 MHz — with 10% margin
-rather than 23%, which is worth knowing before adding anything else. The
-critical path is in neither: it runs from the CSR write-enable decode to the
-ID/EX register file's load enable, 11.32 ns of logic against 26.03 ns of
-routing.
+† the 45F row has not been re-measured since the data cache landed and is
+stale in both columns. Its EBR figure in particular should improve by roughly
+the same 27 blocks the 85F just gained; at 97% it had room for nothing, and
+that is the number to re-measure first if the 45F matters to you.
 
-The two devices are no longer equivalent for a different reason as well:
-**the 45F is at 97% block RAM** and has room for essentially nothing else,
-while the 85F is at half. That gap is the framebuffer, which costs 38 EBR —
-see [Framebuffer cost](#framebuffer-cost).
+### Where 27.41 went, and why the answer needed two runs
+
+The 85F was **27.41 MHz** when the D-cache and SDRAM landed. It is now
+**25.37 MHz**, and that is a 7.4% drop with **two** causes in it. Attributing
+it to the RTL alone would have been wrong:
+
+| | oss-cad-suite | Fmax |
+|---|---|---|
+| as recorded when the D-cache + SDRAM landed | `20260802` | 27.41 MHz |
+| `main`, re-measured | `20260821` | **26.07 MHz** |
+| walkers on the bus + 32 MB decode | `20260821` | **25.37 MHz** |
+
+So **−1.34 MHz is the toolchain** (nextpnr `0.10-109` → `0.11.1-8`, yosys
+`0.67+137` → `0.68+118`) and **−0.70 MHz is the design change**. Measuring
+only the new branch against the old recorded number would have blamed the RTL
+for twice what it cost. The rule this is an instance of is
+docs/practices.md §20 — do not reason from a measurement whose conditions you
+have already changed.
+
+**Margin is now 1.5%** over the board's 25 MHz, down from 10%. That is thin
+enough that the next change to touch the fetch or MMU path should re-measure
+before it is flashed, not after.
+
+The critical path moved, which is worth knowing because it means the new bus
+master is *not* on it:
+
+| | path | logic / routing |
+|---|---|---|
+| `main` | `ex_mem_mem_we` → `ex_mem_reg_we` | 10.24 / 28.12 ns |
+| branch | PC register → instruction-MMU permission check → `id_ex_trap_cause` | 7.76 / 31.65 ns |
+
+Both are **routing-dominated** — 73% and 80% of the total. That has been true
+of every measurement here, and it is the reason logic-level micro-optimisation
+of the critical path has never bought anything: the delay is in getting across
+the die, not in the LUTs.
+
+### The walkers leaving block RAM freed a quarter of it
+
+Removing `wb_ram`'s second port — the one the page-table walkers used before
+they became a bus master — took the 85F from **107 EBR to 80**, a 25%
+reduction, for 114 more LUT4 and 40 more flip-flops. A true-dual-port memory
+has to be built out of narrower block RAMs than a single-ported one of the
+same capacity, so giving the port up buys the width back.
+
+That is the opposite of what "add a third bus master" sounds like it should
+cost, and it matters most for the device that is not measured here: the 45F
+was at **97%** block RAM.
+
+The two devices are no longer equivalent for a different reason as well: the
+45F's remaining gap is the framebuffer, which costs 38 EBR — see
+[Framebuffer cost](#framebuffer-cost).
 
 Six more targets exist and are not general-purpose builds. Four bake a
 program into the bitstream so the SoC can be exercised without a working card

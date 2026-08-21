@@ -119,9 +119,9 @@ routing-dominated shape every measurement of this design has had.
 | **Icarus Verilog** | 14.0 (devel), `s20260301-330-gb8b6e225f-dirty` | Homebrew `icarus-verilog` |
 | **Verilator** | 5.050, `2026-07-01` | Homebrew `verilator` |
 | **Yosys** (formal) | 0.67+post, `b8e7da6f` | Homebrew `yosys` |
-| **Yosys** (synthesis) | 0.67+137, `41a4b5a03-dirty` | oss-cad-suite |
-| **nextpnr-ecp5** | `nextpnr-0.10-109-g90b9be48` | oss-cad-suite |
-| **ecppack** (Project Trellis) | 1.4-79-g56bb170 | oss-cad-suite |
+| **Yosys** (synthesis) | 0.68+118, `144c707b7-dirty` | oss-cad-suite |
+| **nextpnr-ecp5** | `nextpnr-0.11.1-8-g7c0c1c40` | oss-cad-suite |
+| **ecppack** (Project Trellis) | 1.4-82-g3afe7b5 | oss-cad-suite |
 | **riscv64-unknown-elf-gcc** | 15.1.0 (`g1b306039a`) | Homebrew `riscv-gnu-toolchain` |
 | **Spike** | 1.1.1-dev | Homebrew `riscv-isa-sim` |
 | **z3** | 4.15.4 (64-bit) | Homebrew `z3` |
@@ -131,7 +131,7 @@ routing-dominated shape every measurement of this design has had.
 | **Python** | 3.12.12 | system |
 | **GNU Make** | 3.81 | macOS system |
 | **git** | 2.54.0 | — |
-| **oss-cad-suite** | `20260802` | YosysHQ prebuilt bundle |
+| **oss-cad-suite** | `20260821` | YosysHQ prebuilt bundle |
 
 ### Two Yosys installations, and why it matters
 
@@ -329,6 +329,16 @@ make soc && ./fpga/synth/synth_ecp5.sh   # bitstream; needs oss-cad-suite on PAT
 `$readmemh` at elaboration time, which makes it a **synthesis** input rather
 than only a simulation one. Both synthesis scripts refuse to start without
 it.
+
+### The synthesis toolchain version is part of the result
+
+`fpga/README.md`'s Fmax figures name the bundle they came from, and they have
+to. Moving from `20260802` to `20260821` — nextpnr `0.10-109` → `0.11.1-8`,
+yosys `0.67+137` → `0.68+118` — cost the 85F build **1.34 MHz** on unchanged
+RTL, which is twice what the design change measured alongside it cost. A
+place-and-route number compared against one from a different bundle is not a
+comparison. Re-measure the baseline on the same tools, or say which bundle
+each figure came from; docs/practices.md §20.
 
 ## 8. Installed but not used by this project
 
