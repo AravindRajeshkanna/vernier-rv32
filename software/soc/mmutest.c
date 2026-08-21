@@ -143,6 +143,12 @@
 #define PT_VA_RO   (PT_VA + 200u * PAGE_SIZE)
 #define PT_VA_BAD  (PT_VA + 300u * PAGE_SIZE)
 
+/* Four times the TLB's eight entries, spread three pages apart so the sweep
+ * covers a wide slice of VPN[0] rather than one contiguous block. The last is
+ * page 3*31 = 93, comfortably clear of PT_VA_RO and PT_VA_BAD. */
+#define TLB_PAGES  32u
+#define TLB_STRIDE 3u
+
 #define MAGIC_RW 0x5A7A5A7Au
 #define MAGIC_RO 0xC0DEFACEu
 #define MAGIC_LOW  0x11112222u
@@ -163,6 +169,19 @@ static void report(const char *name, int ok)
 static inline uint32_t megapage_index(uint32_t va)
 {
     return va >> MEGAPAGE_SHIFT;
+}
+
+/* The k'th page of the TLB-pressure sweep, and the value it should hold. The
+ * index appears twice in the value so a wrong-page read names the page it
+ * actually reached instead of merely failing. */
+static inline volatile uint32_t *page_at(unsigned k)
+{
+    return (volatile uint32_t *)(PT_VA + (k * TLB_STRIDE) * PAGE_SIZE);
+}
+
+static inline uint32_t tlb_magic(unsigned k)
+{
+    return 0xAB000000u | (k << 12) | k;
 }
 
 /* satp: MODE (31) | ASID (30:22) | PPN (21:0). MODE 1 is Sv32. */
@@ -260,6 +279,44 @@ static void s_mode_main(void)
         (void)*bad;
         report("invalid level-2 PTE faults",
                TRAP_EXPECT == 0 && TRAP_MCAUSE == 13);
+
+        /* ---- more distinct pages than the TLB can hold ----
+         *
+         * mmu.v's TLB is eight entries with a round-robin replacement
+         * pointer, and everything above fits in it: three pages plus two
+         * megapages never evict anything. So the checks above prove the walk
+         * and prove the tag, and prove nothing at all about *refill*.
+         *
+         * That gap matters more than it looks. On rv32 Linux the linear map
+         * is 4 KB pages throughout - arch/riscv/mm/init.c's best_map_size()
+         * returns PMD_SIZE only under CONFIG_64BIT - so the kernel's own
+         * text, its stack and every allocation it touches are each a
+         * separate TLB entry, and eight is nothing. Real code there runs
+         * permanently in eviction.
+         *
+         * TLB_PAGES is four times the entry count, and the second pass reads
+         * them back in the opposite order from the one that installed them,
+         * so every hit is on an entry that has been evicted and walked
+         * again. Each page holds a value derived from its own index, so a
+         * refill that installs the right PPN against the wrong tag returns a
+         * number that names the page it actually reached.
+         */
+        {
+            unsigned k;
+            int seq_ok = 1, rev_ok = 1;
+
+            for (k = 0; k < TLB_PAGES; k++)
+                *page_at(k) = tlb_magic(k);
+
+            for (k = 0; k < TLB_PAGES; k++)
+                if (*page_at(k) != tlb_magic(k)) seq_ok = 0;
+
+            for (k = TLB_PAGES; k-- > 0; )
+                if (*page_at(k) != tlb_magic(k)) rev_ok = 0;
+
+            report("4x the TLB, in order", seq_ok);
+            report("4x the TLB, reversed", rev_ok);
+        }
     }
 
     put_str("\n");

@@ -1044,10 +1044,15 @@ runs here at all, but the fixmap, vmalloc, every `ioremap` and every page of
 userspace are 4 KB pages behind a level-2 table.
 
 `software/soc/mmutest.c` now covers it — VPN[0] at 0, 512 and 1023,
-per-4-KB-page permissions, an invalid level-2 entry, and three pages inside
-one megapage to catch a TLB that tags at the wrong granularity. That last one
-is the pointed check: getting it wrong returns the *wrong page* rather than
-faulting, which is the hardest shape of bug to see from software. All pass —
+per-4-KB-page permissions, an invalid level-2 entry, three pages inside one
+megapage to catch a TLB that tags at the wrong granularity, and a sweep over
+four times the TLB's eight entries read back in reverse so every hit is on an
+entry that was evicted and walked again. The aliasing check is the pointed
+one: getting it wrong returns the *wrong page* rather than faulting, which is
+the hardest shape of bug to see from software. The pressure check is there
+because `best_map_size()` returns `PMD_SIZE` only under `CONFIG_64BIT`, so on
+rv32 the entire linear map is 4 KB pages and Linux runs permanently in
+eviction — a regime nothing else on this SoC enters. All pass —
 the walker was already right, which is worth knowing rather than assuming.
 
 What it will need, once OpenSBI hands off:

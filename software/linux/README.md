@@ -77,9 +77,13 @@ Ruled out, each by measurement rather than by reading:
   nothing in this repository had ever made the hardware read a second PTE -
   `make sim_mmusdram` mapped megapages only, and riscv-tests never enables
   paging. `software/soc/mmutest.c` now covers 4 KB pages, VPN[0] at 0, 512
-  and 1023, per-page permissions, an invalid level-2 entry, and three pages
-  in one megapage to catch a TLB that tags at the wrong granularity. All
-  pass.
+  and 1023, per-page permissions, an invalid level-2 entry, three pages in
+  one megapage to catch a TLB that tags at the wrong granularity, and a
+  sweep over four times the TLB's eight entries read back in reverse, so
+  every hit is on an entry that was evicted and walked again. That last one
+  matters here specifically: on rv32 the whole linear map is 4 KB pages, so
+  Linux runs permanently in TLB eviction in a way nothing else on this SoC
+  does. All pass.
 - **A timing race.** The in-order and wide cores fail at byte-identical
   faulting addresses. Two unrelated pipelines do not produce the same wrong
   values by coincidence.
