@@ -744,6 +744,18 @@ actually run before you count them as covering a feature — and when a feature
 has no test that turns it *on*, say so in the place a reader would look for
 reassurance, rather than letting a green suite imply it.
 
+**The same rule applies to your own gate.** `make verify` builds `CORE=inorder`
+only; `make verify_ooo` is a separate target and CI matrixes over both. A
+change that added debug probes reaching into `cpu_core`'s internals passed a
+green `verify` locally and failed CI's wide-core leg, because the probes named
+a module the other core does not have. Nothing was subtly wrong — it did not
+compile. It simply had never been compiled.
+
+So: **anything touching a core, or anything reaching into one, needs
+`verify_ooo` before it is pushed.** A green `verify` is evidence about one of
+the two machines this repository builds, and the commit message should not
+imply otherwise.
+
 The corollary is about where these were found. Neither bug is subtle once the
 path runs: one hangs the machine outright, the other writes the wrong word.
 They survived because writing the twenty-line program that enables `satp` was

@@ -39,6 +39,12 @@ boot path, the SoC on the board's preloaded path, a reset-and-rerun, the trap
 handler calibration, video, the board wrapper, the SD probe, the architectural
 tests, Spike co-simulation, and formal.
 
+`make verify` builds the **in-order** core. `make verify_ooo` runs the same
+suite against `rtl/ooo/core_ooo.v`, and CI runs both — so if your change
+touches either core, or reaches into one (a debug probe, a formal wrapper),
+run `verify_ooo` too. A change that compiled against one core and not the
+other has already slipped through a green `verify` once.
+
 A green `verify` is the baseline, not the bar. The bar is:
 
 1. **A new test that fails without your change.** If you fixed something, show
