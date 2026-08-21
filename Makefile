@@ -281,9 +281,26 @@ verilator_sdramboot: sim/sdramimage.hex $(VERILATOR_BIN)
 #
 # It reuses the Icarus run rather than repeating it - that run is three
 # minutes and `verify` does it anyway.
+# The self-checking probes ride along free: this run already happens, and
+# each is a compare per event against an independent model of the answer.
+# +checkdecode is the one that matters most - it is what caught a core
+# executing an instruction from a mispredicted path under the corrected PC,
+# and no other check here can see that. sim_sdramboot runs with paging off,
+# so it exercises the untranslated half; the translated half is reached by
+# `make sim_linux`, which is not in `verify` because it needs a kernel.
 verilator_check: sim_sdramboot $(VERILATOR_BIN)
-	@cd sim && ../$(VERILATOR_BIN) +sdram=sdramimage.hex | tee verilator_soc.log
+	@cd sim && ../$(VERILATOR_BIN) +sdram=sdramimage.hex \
+	    +checkreads +checkfetch +checkdecode +checkmmu | tee verilator_soc.log
 	@python3 sim/verilator_compare.py sim/sdramboot.log sim/verilator_soc.log
+	@grep -q "were not the instruction at their own PC" sim/verilator_soc.log && \
+	    { echo "FAILED: the core decoded an instruction that is not at its PC"; \
+	      exit 1; } || true
+	@grep -q "returned the wrong word" sim/verilator_soc.log && \
+	    { echo "FAILED: a read returned something the memory does not hold"; \
+	      exit 1; } || true
+	@grep -q "disagreed with the page tables" sim/verilator_soc.log && \
+	    { echo "FAILED: a translation disagreed with the page tables"; \
+	      exit 1; } || true
 
 software: sim/firmware_imem.hex sim/firmware_dmem.hex
 
