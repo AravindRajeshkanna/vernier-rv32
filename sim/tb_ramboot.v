@@ -36,6 +36,16 @@
 `define RAM_IMAGE "ramimage.hex"
 `endif
 
+// 16-bit words of modelled SDRAM. 1 M words is 2 MB, which is all the tests
+// that only *touch* SDRAM need. `make sim_mmusdram` overrides it because its
+// whole point is the top half of a 32 MB part: its page table maps addresses
+// above 0x9100_0000, and sdram_model.v errors on an access past MEM_WORDS
+// rather than aliasing, so a model too small fails loudly instead of
+// pretending the upper half is there.
+`ifndef SDRAM_WORDS
+`define SDRAM_WORDS (1 << 20)
+`endif
+
 module tb_ramboot;
     localparam CLKS_PER_BIT = 4;   // must match soc_top's UART_CLKS_PER_BIT
 
@@ -87,7 +97,7 @@ module tb_ramboot;
     // its rising edge lands on the internal clock's falling edge. Clocking
     // the model from `clk` here would simulate a machine no board is, and
     // would be the *aligned* configuration that hardware rejected.
-    sdram_model #(.MEM_WORDS(1 << 20)) SDRAMCHIP (
+    sdram_model #(.MEM_WORDS(`SDRAM_WORDS)) SDRAMCHIP (
         .clk(~clk), .rst(rst), .cke(sd_cke), .cs_n(sd_cs_n),
         .ras_n(sd_ras_n), .cas_n(sd_cas_n), .we_n(sd_we_n),
         .a(sd_a), .ba(sd_ba), .dqm(sd_dqm), .dq(dq)

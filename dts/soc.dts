@@ -69,10 +69,28 @@
 
     memory@80000000 {
         device_type = "memory";
-        /* 256 KB of on-chip block RAM. This is the node that would grow to
-         * the DRAM size if wb_ram.v were swapped for a real memory
-         * controller - see docs/architecture.md's SoC section. */
+        /* 256 KB of on-chip block RAM - the simulation figure; a board build
+         * has 64 KB (see software/soc/soc.h's RAM_SIZE for why). Kept as a
+         * separate node from the SDRAM below rather than merged, because they
+         * are separate slaves at separate bases with very different latency,
+         * and nothing in this system relocates either of them. */
         reg = <0x80000000 0x00040000>;
+    };
+
+    memory@90000000 {
+        device_type = "memory";
+        /* The external SDR SDRAM: the whole 32 MB part. This node did not
+         * exist while the interconnect decoded addr[31:24] by equality, which
+         * capped the slave at 16 MB; the per-slave mask in soc_top.v's
+         * `s_mask` is what makes the second half addressable.
+         *
+         * This size is duplicated in software/soc/soc.h (SDRAM_SIZE), in
+         * soc_top.v's s_base/s_mask pair, and in the ORIGIN of
+         * software/soc/link_sdram.ld. Nothing checks that the four agree -
+         * docs/practices.md section 11. Safe direction of error is *small*:
+         * under-declaring wastes memory, while over-declaring hands a kernel
+         * addresses that decode to no slave and read back as zeros. */
+        reg = <0x90000000 0x02000000>;
     };
 
     soc {

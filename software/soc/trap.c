@@ -46,7 +46,17 @@ static const char *cause_name(uint32_t mcause) {
         case 5:  return "load access fault";
         case 6:  return "store/AMO address misaligned";
         case 7:  return "store/AMO access fault";
+        case 8:  return "environment call from U-mode";
+        case 9:  return "environment call from S-mode";
         case 11: return "environment call from M-mode";
+        /* The page-fault causes. Absent until software/soc/mmutest.c
+         * provoked one and the report came back "unknown cause" - which is
+         * the one thing a loud handler must not say about a fault the
+         * machine raises on purpose. They are reachable whenever satp is on,
+         * which is now. */
+        case 12: return "INSTRUCTION PAGE FAULT";
+        case 13: return "LOAD PAGE FAULT";
+        case 15: return "STORE/AMO PAGE FAULT";
         default: return "unknown cause";
     }
 }

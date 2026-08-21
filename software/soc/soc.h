@@ -19,14 +19,15 @@
 #define FB_BASE     0x07000000u
 #define RAM_BASE    0x80000000u
 /* External SDRAM. Must match the S_SDRAM base byte in rtl/soc/soc_top.v and
- * the ORIGIN addresses in software/soc/link_sdram.ld. The window the
- * interconnect gives it is 16 MB, because wb_interconnect.v decodes
- * addr[31:24] alone; the part is 32 MB and the upper half is unreachable
- * until that decode grows a mask. Safe direction of error: a program linked
- * below this lands in unmapped space, which the interconnect acks with
- * zeros, so the CPU executes a zero word and traps immediately. */
+ * the ORIGIN addresses in software/soc/link_sdram.ld. The window is the
+ * whole 32 MB part: wb_interconnect.v decodes addr[31:24] through a per-slave
+ * mask, and soc_top.v gives this slave 0xFE, so it answers to 0x90 and 0x91
+ * alike. It was 16 MB while the decode was a bare equality. Safe direction of
+ * error: a program linked beyond this lands in unmapped space, which the
+ * interconnect acks with zeros, so the CPU executes a zero word and traps
+ * immediately rather than aliasing back onto itself. */
 #define SDRAM_BASE  0x90000000u
-#define SDRAM_SIZE  0x01000000u
+#define SDRAM_SIZE  0x02000000u
 /* 64 KB. This is the size the *firmware* is built for, and it is
  * deliberately smaller than soc_top.v's 256 KB simulation default: 256 KB of
  * on-chip RAM costs 244 ECP5 block RAMs, more than the largest ECP5 has, so a

@@ -1,5 +1,44 @@
-// Wishbone B4 "classic" shared-bus interconnect: 2 masters, NUM_SLAVES
-// slaves, fixed-priority arbitration and a flat addr[31:24] address decode.
+// Wishbone B4 "classic" shared-bus interconnect: 3 masters, NUM_SLAVES
+// slaves, fixed-priority arbitration and a masked addr[31:24] address decode.
+//
+// ---- The third master: page-table walks ----
+//
+// Master 2 is rtl/soc/wb_ptw.v, the two Sv32 walkers arbitrated into one
+// port. They used to read PTEs through a second port on wb_ram.v's block
+// RAM, which meant page tables could only live in block RAM - and an SDRAM
+// has no second port, so that arrangement could never reach one. Linux puts
+// page tables in DRAM, so the walkers had to become bus masters.
+//
+// ---- Priority: data > walker > fetch ----
+//
+// Not the obvious order, and each of the two comparisons is load-bearing.
+//
+// **Data still outranks the walker**, which looks wrong for a requester
+// everything else is waiting on, and is what keeps atomics atomic. cpu_wb.v
+// holds `cyc` across both phases of an AMO's read-modify-write and relies on
+// the data master always winning to keep anyone else out of the gap. A
+// walker that could preempt would break that - and it genuinely could ask
+// during the gap, because instruction fetch carries on translating while the
+// MEM stage sits in an AMO.
+//
+// This cannot deadlock. A data access reaches the bus only from EX/MEM, by
+// which point its address is already translated: while a data walk is in
+// flight the instruction that needs it is still in EX and has issued
+// nothing. So the data master is never waiting on the walker while holding
+// the bus.
+//
+// **The walker outranks fetch**, because fetch is nearly continuous and a
+// walk that lost to it could be starved indefinitely. The reverse cannot
+// happen: a walk is two reads and then it is over.
+//
+// ---- Decode: base and mask ----
+//
+// `hit[i] = (adr[31:24] & mask[i]) == (base[i] & mask[i])`. A mask of 0xFF
+// is one 16 MB region, which is what every slave had when the decode was a
+// bare equality. The SDRAM's mask is 0xFE so it answers to two adjacent
+// bases - 32 MB, which is the size of the part actually on the board. The
+// alternative, decoding more address bits globally, would have shrunk every
+// peripheral window to buy one slave more room.
 //
 // Shared bus, not a crossbar: exactly one master owns the bus at a time, so
 // `adr`/`dat_w`/`we`/`sel` are a single broadcast copy and only `stb` is
@@ -78,10 +117,19 @@ module wb_interconnect #(
     output wire [31:0] m1_dat_r,
     output wire        m1_ack,
 
+    // ---- master 2: page-table walks (read-only) ----
+    input  wire        m2_cyc,
+    input  wire        m2_stb,
+    input  wire [31:0] m2_adr,
+    output wire [31:0] m2_dat_r,
+    output wire        m2_ack,
+
     // ---- shared slave bus ----
-    // `s_base` is the addr[31:24] value each slave answers to, packed 8 bits
-    // per slave (slave i occupies bits [8*i +: 8]).
+    // `s_base` is the addr[31:24] value each slave answers to and `s_mask`
+    // which of those bits are compared, both packed 8 bits per slave (slave i
+    // occupies bits [8*i +: 8]). mask 0xFF is a 16 MB window; 0xFE is 32 MB.
     input  wire [NUM_SLAVES*8-1:0]  s_base,
+    input  wire [NUM_SLAVES*8-1:0]  s_mask,
     output wire                      s_cyc,
     output wire [NUM_SLAVES-1:0]     s_stb,
     output wire                      s_we,
@@ -97,22 +145,36 @@ module wb_interconnect #(
     // space can't silently claim an interrupt or eat a received byte.
     output wire                      s_data_master
 );
-    // ---- arbitration: fixed priority, data over fetch, locked per transfer ----
-    reg  lock;      // a transfer is in flight and owns the bus
-    reg  lock_m1;   // which master owns it
+    // ---- arbitration: fixed priority, data > walker > fetch, locked ----
+    //
+    // `lock_who` is one-hot over {m2, m1, m0} and is only meaningful while
+    // `lock` is set. Two bits rather than one now that there are three
+    // masters; the lock itself works exactly as it did.
+    reg        lock;            // a transfer is in flight and owns the bus
+    reg  [2:0] lock_who;        // which master owns it, one-hot
 
     wire want_m1 = m1_cyc;
-    wire want_m0 = m0_cyc && !m1_cyc;
+    wire want_m2 = m2_cyc && !m1_cyc;
+    wire want_m0 = m0_cyc && !m1_cyc && !m2_cyc;
 
-    wire sel_m1 = lock ?  lock_m1 : want_m1;
-    wire sel_m0 = lock ? !lock_m1 : want_m0;
+    wire sel_m1 = lock ? lock_who[1] : want_m1;
+    wire sel_m2 = lock ? lock_who[2] : want_m2;
+    wire sel_m0 = lock ? lock_who[0] : want_m0;
 
+    wire [2:0] sel_who = {sel_m2, sel_m1, sel_m0};
+
+    // Only the *data* master gets this. A peripheral with a read side effect
+    // (the PLIC's claim register, the UART's RXDATA) gates its read strobe on
+    // it, and a walk is no more entitled to claim an interrupt than a stray
+    // instruction fetch is - less so, since a walker address comes from a
+    // PTE the program may not even have meant to install.
     assign s_data_master = sel_m1;
 
-    assign s_cyc   = sel_m1 ? m1_cyc : (sel_m0 ? m0_cyc : 1'b0);
-    wire   cur_stb = sel_m1 ? m1_stb : (sel_m0 ? m0_stb : 1'b0);
-    assign s_we    = sel_m1 ? m1_we    : 1'b0;      // fetches are always reads
-    assign s_adr   = sel_m1 ? m1_adr   : m0_adr;
+    assign s_cyc   = sel_m1 ? m1_cyc : (sel_m2 ? m2_cyc : (sel_m0 ? m0_cyc : 1'b0));
+    wire   cur_stb = sel_m1 ? m1_stb : (sel_m2 ? m2_stb : (sel_m0 ? m0_stb : 1'b0));
+    // Neither the fetch master nor the walker has a write path.
+    assign s_we    = sel_m1 ? m1_we    : 1'b0;
+    assign s_adr   = sel_m1 ? m1_adr   : (sel_m2 ? m2_adr : m0_adr);
     assign s_dat_w = sel_m1 ? m1_dat_w : 32'b0;
     assign s_sel   = sel_m1 ? m1_sel   : 4'b1111;
 
@@ -121,7 +183,8 @@ module wb_interconnect #(
     integer i;
     always @(*) begin
         for (i = 0; i < NUM_SLAVES; i = i + 1)
-            hit[i] = (s_adr[31:24] == s_base[8*i +: 8]);
+            hit[i] = ((s_adr[31:24] & s_mask[8*i +: 8]) ==
+                      (s_base[8*i +: 8] & s_mask[8*i +: 8]));
     end
 
     assign s_stb = {NUM_SLAVES{cur_stb}} & hit;
@@ -149,8 +212,10 @@ module wb_interconnect #(
 
     assign m0_dat_r = fin_dat;
     assign m1_dat_r = fin_dat;
+    assign m2_dat_r = fin_dat;
     assign m0_ack   = sel_m0 && fin_ack;
     assign m1_ack   = sel_m1 && fin_ack;
+    assign m2_ack   = sel_m2 && fin_ack;
 
     // Take the lock only when a transfer actually starts and does *not*
     // complete in its first cycle, so zero-wait-state slaves (the peripheral
@@ -158,12 +223,12 @@ module wb_interconnect #(
     // this existed and never touch the lock at all.
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            lock    <= 1'b0;
-            lock_m1 <= 1'b0;
+            lock     <= 1'b0;
+            lock_who <= 3'b0;
         end else if (!lock) begin
             if (cur_stb && !fin_ack) begin
-                lock    <= 1'b1;
-                lock_m1 <= sel_m1;
+                lock     <= 1'b1;
+                lock_who <= sel_who;
             end
         end else if (fin_ack) begin
             lock <= 1'b0;

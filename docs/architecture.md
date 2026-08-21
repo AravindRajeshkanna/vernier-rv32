@@ -405,9 +405,10 @@ MMU (IF, `is_fetch=1` selects the X-permission check instead — a new
 `tlb_x` array alongside the pre-existing cached `R`/`W`/`A`/`D` bits).
 Both share `satp` (one real Sv32 address space per spec — the page table
 is shared, not duplicated) but have **independent TLBs and independent
-walker read ports into `dmem`** (`ptw_addr`/`ptw_rdata` for data,
-`iptw_addr`/`iptw_rdata` for instructions), so a data walk and a fetch
-walk never contend or block each other.
+walker request/grant ports** (`ptw_*` for data, `iptw_*` for
+instructions). In `top.v` those reach separate `dmem` read ports and never
+contend; in the SoC they are arbitrated into one bus master (data first),
+which is what lets page tables live in DRAM.
 
 An 8-entry fully-associative TLB sits in front of a 2-level Sv32 walker
 FSM per instance:
@@ -419,11 +420,21 @@ FSM per instance:
   PTE that could be cached, so a stale hit either succeeds correctly or
   faults correctly as long as that contract is honored. `SFENCE.VMA`
   flushes **both** TLBs together.
-- **TLB miss**: the walker reads up to two PTEs through its own
-  dedicated read-only `dmem` port — one state per level, since level 2's
-  address depends on level 1's PTE content. Resolves to either a physical
-  address (installed into the TLB; the pipeline unstalls and effectively
-  retries as a hit) or a fault.
+- **TLB miss**: the walker reads up to two PTEs through its request/grant
+  port — one state per level, since level 2's address depends on level 1's
+  PTE content. Resolves to either a physical address (installed into the
+  TLB; the pipeline unstalls and effectively retries as a hit) or a fault.
+
+  What answers that port differs between the two integrations, and the
+  module does not know which it is talking to. In `top.v` it is a
+  dedicated combinational read port on `dmem`. In the SoC it is
+  `rtl/soc/wb_ptw.v`, which arbitrates both walkers into a **third
+  Wishbone bus master** — so a page table can live anywhere the
+  interconnect decodes, including external SDRAM, which is what Linux
+  needs. The contract survives the change because `wb_ptw` asserts the
+  grant in the bus's *ack* cycle and registers the returning word on the
+  same edge, presenting data exactly one cycle after the grant however
+  long the slave took.
 - **No hardware A/D update**: a PTE whose Accessed bit (or Dirty bit, for
   a store) isn't already set faults rather than being auto-set, avoiding
   a read-modify-write path through the walker.
@@ -949,6 +960,46 @@ write withholds `ack` until all 8 bits have shifted. That makes the driver
 trivial (a byte exchange is one store plus one load, no polling), and more
 importantly it is what actually exercises `dbus_wait` end to end; every
 other slave acks combinationally and would have left that logic unverified.
+
+### Two bugs that only exist once translation is on
+
+The MMU shipped a long time before anything in this repository enabled it.
+`make sim_mmusdram` is the first program to write a non-zero `satp`, and it
+found both of these on its first run. Section 26 of `docs/practices.md` is
+about how 79 architectural tests and 82 matching Spike traces managed not to.
+
+**1. An `X` fetch address latches main memory dead.** While the ITLB walks,
+`mmu.v` still drives `pa` — derived from a PTE register that has not been
+read yet, so it is `X`. `cpu_wb.v` indexes its I-cache with whatever is on
+`imem_addr` every cycle, so `ic_valid[X]` makes `fetch_hit` `X`, which makes
+`iwb_cyc` `X`, which puts an `X` on the shared bus. `wb_ram.v`'s ack register
+is `ack_r <= a_en && !ack_r`, and `!x` is `x`: once poisoned it never
+recovers, and every subsequent access to main memory hangs. The machine stops
+with no trap and no output.
+
+Both cores now hold the **last resolved** fetch address instead of driving an
+unresolved one. That fixes more than the `X`: the held address was fetched
+moments earlier, so it hits in the I-cache and no bus cycle is issued at all —
+which matters now that the walkers are a bus master competing for the same
+interconnect. A fetch of an address the core cannot yet compute has no
+business ahead of a walk.
+
+**2. A translated store used the previous instruction's data.**
+`store_data_latched` snapshots the store operand because `op2_reg` is
+live-forwarded and decays across a multi-cycle walk. The snapshot is right;
+the *select* was `need_translate` alone. Being a register, it holds the
+operand as of the end of the cycle it was captured in — correct when a walk
+follows and keeps the instruction in EX for several more cycles, wrong on a
+TLB hit where the instruction leaves EX the same cycle and the register still
+holds its predecessor's value. Measured in S-mode: `sw a5,0(a3)` with
+`a5 = 0xA585A585` wrote `0x00000000`, and the `sw zero` two instructions later
+wrote `0x00000001`. The select is now `need_translate && mmu_busy`; on a hit
+`op2_reg` has had no chance to decay, because decay needs the pipeline to
+drain underneath a stalled instruction and nothing stalled.
+
+The comment above that line already described the hazard correctly and at
+length. The prose was right and one term of the code did not match it, and
+nothing had ever been run that could tell the difference.
 
 ### Boot flow
 

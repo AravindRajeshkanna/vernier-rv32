@@ -112,22 +112,22 @@ module soc_top #(
     localparam S_ROM = 0, S_CLINT = 1, S_PLIC = 2, S_UART = 3,
                S_GPIO = 4, S_SPI = 5, S_FB = 6, S_RAM = 7, S_SDRAM = 8;
 
-    // addr[31:24] each slave answers to, packed 8 bits per slave.
+    // addr[31:24] each slave answers to, and which of those bits are
+    // compared, packed 8 bits per slave. A mask of 0xFF is one 16 MB window.
     //
-    // SDRAM sits at 0x90 rather than replacing block RAM at 0x80, and that is
-    // a deliberate staging decision rather than an accident of address space.
-    // `wb_ram.v` carries the two page-table walker ports on its second block
-    // RAM port - an SDRAM has no second port, and giving the walkers one here
-    // means arbitrating three requesters into one controller. Keeping both
-    // memories means this lands as an addition that cannot regress anything,
-    // with Sv32-out-of-SDRAM named as the next step rather than attempted in
-    // the same change. See docs/roadmap.md Phase 2.
+    // SDRAM sits at 0x90 rather than replacing block RAM at 0x80, which is a
+    // staging decision: keeping both memories meant external DRAM landed as
+    // an addition that could not regress anything. See docs/roadmap.md
+    // Phase 2.
     //
-    // The window is 16 MB, not 32: `wb_interconnect.v` decodes addr[31:24]
-    // alone, so one base byte is one 16 MB slave. The part is 32 MB and the
-    // top half is unreachable until that decode grows a mask. 16 MB is 256x
-    // what block RAM offers and 30x `fw_jump.bin`, so it is not the binding
-    // constraint on anything this phase is for.
+    // Its window is **32 MB**, which is the size of the part actually on the
+    // board. It used to be 16 MB because the decode was a bare equality on
+    // addr[31:24], so one base byte bought exactly one 16 MB slave and the
+    // top half of the chip was unreachable. Mask 0xFE ignores bit 24, so the
+    // controller answers to 0x90 and 0x91 alike - and it always could
+    // address that far, since wb_sdram.v takes its row from wb_adr[24:12].
+    // Widening the global decode instead would have shrunk every peripheral
+    // window to buy this one slave more room.
     wire [NUM_SLAVES*8-1:0] s_base = {
         8'h90, // S_SDRAM
         8'h80, // S_RAM
@@ -138,6 +138,17 @@ module soc_top #(
         8'h03, // S_PLIC
         8'h02, // S_CLINT
         8'h00  // S_ROM
+    };
+    wire [NUM_SLAVES*8-1:0] s_mask = {
+        8'hFE, // S_SDRAM  0x90-0x91, 32 MB
+        8'hFF, // S_RAM
+        8'hFF, // S_FB
+        8'hFF, // S_SPI
+        8'hFF, // S_GPIO
+        8'hFF, // S_UART
+        8'hFF, // S_PLIC
+        8'hFF, // S_CLINT
+        8'hFF  // S_ROM
     };
 
     // ---- CPU native ports ----
@@ -158,6 +169,8 @@ module soc_top #(
     wire        dwb_cyc, dwb_stb, dwb_we, dwb_ack;
     wire [31:0] dwb_adr, dwb_dat_w, dwb_dat_r;
     wire [3:0]  dwb_sel;
+    wire        pwb_cyc, pwb_stb, pwb_ack;
+    wire [31:0] pwb_adr, pwb_dat_r;
 
     // ---- shared slave bus ----
     wire                     s_cyc, s_we, s_data_master;
@@ -212,11 +225,26 @@ module soc_top #(
         .m1_cyc(dwb_cyc), .m1_stb(dwb_stb), .m1_we(dwb_we), .m1_adr(dwb_adr),
         .m1_dat_w(dwb_dat_w), .m1_sel(dwb_sel),
         .m1_dat_r(dwb_dat_r), .m1_ack(dwb_ack),
-        .s_base(s_base),
+        .m2_cyc(pwb_cyc), .m2_stb(pwb_stb), .m2_adr(pwb_adr),
+        .m2_dat_r(pwb_dat_r), .m2_ack(pwb_ack),
+        .s_base(s_base), .s_mask(s_mask),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
         .s_data_master(s_data_master)
+    );
+
+    // The page-table walkers, as a bus master rather than a private port on
+    // block RAM. This is what lets page tables live in SDRAM - see
+    // rtl/soc/wb_ptw.v for why mmu.v did not have to change for it.
+    wb_ptw PTW (
+        .clk(clk), .rst(rst),
+        .ptw_req(ptw_req),   .ptw_addr(ptw_addr),
+        .ptw_gnt(ptw_gnt),   .ptw_rdata(ptw_rdata),
+        .iptw_req(iptw_req), .iptw_addr(iptw_addr),
+        .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata),
+        .wb_cyc(pwb_cyc), .wb_stb(pwb_stb), .wb_adr(pwb_adr),
+        .wb_dat_r(pwb_dat_r), .wb_ack(pwb_ack)
     );
 
     // =====================================================================
@@ -232,11 +260,7 @@ module soc_top #(
         .clk(clk), .rst(rst),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_RAM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
-        .wb_dat_r(s_dat_r[32*S_RAM +: 32]), .wb_ack(s_ack[S_RAM]),
-        .ptw_req(ptw_req),   .ptw_addr(ptw_addr),
-        .ptw_gnt(ptw_gnt),   .ptw_rdata(ptw_rdata),
-        .iptw_req(iptw_req), .iptw_addr(iptw_addr),
-        .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata)
+        .wb_dat_r(s_dat_r[32*S_RAM +: 32]), .wb_ack(s_ack[S_RAM])
     );
 
     wb_sdram #(

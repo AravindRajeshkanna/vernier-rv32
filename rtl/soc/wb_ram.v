@@ -1,6 +1,19 @@
-// Wishbone B4 classic RAM slave: a synchronous, word-organized, true
-// dual-port memory. Port A is the bus (read/write with byte lanes); port B is
-// a read-only port shared by the two page-table walkers.
+// Wishbone B4 classic RAM slave: a synchronous, word-organized memory behind
+// a single Wishbone port.
+//
+// ---- It used to have a second port, for the page-table walkers ----
+//
+// That port is gone, and its removal is the point of the change that removed
+// it. Walking a page table through a private port on *this* memory meant
+// page tables could live in block RAM and nowhere else - an SDRAM has one
+// port, so no amount of wiring here would have reached one, and Linux puts
+// page tables in DRAM. The walkers are now a third Wishbone master
+// (rtl/soc/wb_ptw.v) and can read a PTE from any slave the interconnect
+// decodes, including the 32 MB part on the board.
+//
+// What is left is an ordinary single-port RAM. The block RAM's second port
+// is simply unused now, which costs nothing: block RAMs come with two either
+// way.
 //
 // ---- Why this is shaped the way it is ----
 //
@@ -22,13 +35,11 @@
 //     this slave now takes one wait state. That is not a regression to
 //     apologize for - it is what a block RAM costs, and the pipeline already
 //     had `ibus_wait`/`dbus_wait` to absorb it.
-//  3. **Two ports, not four.** Block RAMs come with two. The bus gets one;
-//     the two walkers share the other through a fixed-priority arbiter
-//     below, which is why mmu.v now uses a request/grant handshake instead
-//     of assuming its read always lands.
-//
-// This is still the intended seam for external DRAM: everything above it
-// talks Wishbone and knows only the base address and size.
+//  3. **One port, not four.** Block RAMs come with two, and asking for four
+//     was what made this unsynthesizable. The walkers had the second for a
+//     while (see above) and are now on the bus, so one is all this needs.
+//     The request/grant handshake mmu.v gained for that second port is still
+//     what it uses, because a bus answers on its own schedule too.
 module wb_ram #(
     parameter MEM_BYTES = 65536,
     parameter INIT_FILE = ""
@@ -43,19 +54,7 @@ module wb_ram #(
     input  wire [31:0] wb_dat_w,
     input  wire [3:0]  wb_sel,
     output wire [31:0] wb_dat_r,
-    output wire        wb_ack,
-
-    // Page-table walker read ports. Assert `req` with `addr` and hold both
-    // until `gnt`; the data is on `rdata` in the cycle after `gnt`, and only
-    // then. See mmu.v.
-    input  wire        ptw_req,
-    input  wire [31:0] ptw_addr,
-    output wire        ptw_gnt,
-    output wire [31:0] ptw_rdata,
-    input  wire        iptw_req,
-    input  wire [31:0] iptw_addr,
-    output wire        iptw_gnt,
-    output wire [31:0] iptw_rdata
+    output wire        wb_ack
 );
     localparam WORDS = MEM_BYTES / 4;
     localparam AW    = $clog2(WORDS);
@@ -122,43 +121,4 @@ module wb_ram #(
     assign wb_dat_r = a_q;
     assign wb_ack   = ack_r;
 
-    // =====================================================================
-    // Port B: the two page-table walkers, arbitrated
-    // =====================================================================
-    // Fixed priority, data walker first. No starvation: a walk is a finite
-    // number of reads and then it is over, so the instruction walker always
-    // gets in eventually - and while the data walker is walking, the pipeline
-    // is frozen anyway.
-    wire b_sel_d = ptw_req;
-    wire b_sel_i = iptw_req && !ptw_req;
-
-    wire [AW-1:0] b_addr = b_sel_d ? ptw_addr[AW+1:2] : iptw_addr[AW+1:2];
-
-    reg [31:0] b_q;
-    reg        b_was_d, b_was_i;
-
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            b_was_d <= 1'b0;
-            b_was_i <= 1'b0;
-        end else begin
-            b_was_d <= b_sel_d;
-            b_was_i <= b_sel_i;
-        end
-    end
-
-    always @(posedge clk) b_q <= mem[b_addr];
-
-    // The grant is combinational (the read starts this cycle); the data lands
-    // next cycle. Both walkers read the same register, which is safe because
-    // each one samples it exactly one cycle after its own grant, and the
-    // arbiter never grants both in the same cycle.
-    assign ptw_gnt   = b_sel_d;
-    assign iptw_gnt  = b_sel_i;
-    assign ptw_rdata  = b_q;
-    assign iptw_rdata = b_q;
-
-    // b_was_d/b_was_i exist so a waveform shows which walker owns b_q in any
-    // given cycle; the walkers themselves track it from their own grant.
-    wire _unused_ok = &{1'b0, b_was_d, b_was_i, 1'b0};
 endmodule

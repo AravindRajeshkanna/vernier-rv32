@@ -234,7 +234,44 @@ module cpu_core #(
 
     wire itlb_wait_stall = itlb_req && !itlb_resolved;
     wire itlb_fault_now  = itlb_req && itlb_resolved && itlb_fault;
-    wire [31:0] fetch_phys_addr = itlb_req ? itlb_pa : pc;
+
+    // ---- what to fetch while the ITLB is still walking ----
+    //
+    // `itlb_pa` is only meaningful once the walk resolves. Before that mmu.v
+    // derives it from `pte1_r`, a register holding a PTE that has not been
+    // read yet - so it is not merely the wrong address, it is **X**, and
+    // cpu_wb.v indexes its instruction cache with whatever is on this wire
+    // every cycle.
+    //
+    // The consequences are worse than a wasted fetch. `ic_valid[ic_idx]` with
+    // an X index makes `fetch_hit` X, which makes `iwb_cyc` X, which puts an X
+    // on the shared bus - and wb_ram.v's `ack_r <= a_en && !ack_r` latches it
+    // permanently, because `!x` is `x`. One unresolved fetch address wedges
+    // main memory for the rest of the simulation, and the machine hangs with
+    // no trap and no output.
+    //
+    // Nothing caught this before, because nothing ran with instruction fetch
+    // translated: riscv-tests' rv32si suite is the `-p` (physical) variant and
+    // never turns fetch translation on. software/soc/mmutest.c is the test
+    // that does, and this is what it found.
+    //
+    // Holding the last address that *was* valid fixes more than the X. That
+    // address was fetched moments ago, so it is in the instruction cache, so
+    // `fetch_hit` is true and the fetch master issues no bus cycle at all -
+    // which is what we want anyway: the walker (rtl/soc/wb_ptw.v) is now a bus
+    // master competing for the same interconnect, and a fetch of an address
+    // the core cannot yet compute has no business ahead of it.
+    reg [31:0] itlb_pa_hold;
+    wire [31:0] fetch_phys_addr =
+        itlb_req ? (itlb_resolved ? itlb_pa : itlb_pa_hold) : pc;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            itlb_pa_hold <= RESET_PC;
+        else if (!itlb_req || itlb_resolved)
+            itlb_pa_hold <= fetch_phys_addr;
+    end
+
     assign imem_addr = fetch_phys_addr;
 
     // ---- branch target buffer: consulted every fetch, trained at EX ----
@@ -813,7 +850,34 @@ module cpu_core #(
         if (rst) store_data_latched <= 32'b0;
         else if (need_translate && !mmu_busy) store_data_latched <= op2_reg;
     end
-    wire [31:0] store_data_final = need_translate ? store_data_latched : op2_reg;
+
+    // `mmu_busy` in the select, not just `need_translate`, and the difference
+    // is a whole cycle of store data.
+    //
+    // The snapshot above is a *register*: it holds op2_reg as of the end of
+    // the cycle it was captured in. That is exactly right when a walk follows,
+    // because the walk keeps the instruction in EX for several more cycles and
+    // the snapshot is the only surviving copy. It is exactly wrong on a TLB
+    // hit, where the MMU resolves in the same cycle it is asked and the
+    // instruction leaves EX immediately: selecting the register then hands the
+    // store *the previous instruction's* operand, one cycle stale.
+    //
+    // Measured, before the fix, from software/soc/mmutest.c running in S-mode:
+    // `sw a5,0(a3)` with a5 = 0xA585A585 wrote 0x00000000, and the `sw zero`
+    // two instructions later wrote 0x00000001 - each store carrying its
+    // predecessor's data. The first symptom was a trap the program had armed
+    // being reported as unexpected, because the store that armed it had
+    // written somebody else's value.
+    //
+    // Nothing caught it because nothing ever did a translated store that hit
+    // in the TLB: riscv-tests' S-mode suite is the `-p` (physical) variant and
+    // never turns translation on at all. Under a walk - the only path that had
+    // ever run - the snapshot is correct, which is why the bug survived.
+    //
+    // On a hit, op2_reg has not had a chance to decay: decay needs the
+    // pipeline to drain underneath a stalled instruction, and nothing stalled.
+    wire [31:0] store_data_final =
+        (need_translate && mmu_busy) ? store_data_latched : op2_reg;
 
     // CSR read/write (RMW in one cycle - see csr_file.v)
     wire [31:0] csr_rdata;

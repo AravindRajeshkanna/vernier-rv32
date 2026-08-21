@@ -5,6 +5,15 @@
 // that did not make the request - because they surface far away as corrupted
 // data. That makes it worth proving rather than testing.
 //
+// It gained a third master when the page-table walkers stopped reading PTEs
+// through a private port on wb_ram.v and became rtl/soc/wb_ptw.v - which is
+// what lets a page table live in SDRAM. Three masters means the priority
+// order is no longer a single bit of "data or fetch", and the two comparisons
+// in it are asserted separately below (properties 4a and 4b), because they
+// are load-bearing for different reasons: data must outrank the walker or an
+// AMO's read-modify-write gap stops being atomic, and the walker must outrank
+// fetch or a continuous fetch stream can starve a walk.
+//
 // It became a *sequential* proof when the arbiter gained a lock. The
 // memories are now synchronous block RAMs with a wait state, so a transfer
 // spans several cycles, and a purely combinational grant would let the data
@@ -13,7 +22,7 @@
 // to the data master along with the fetch master's data. Properties 8 and 9
 // below are the ones that say that cannot happen.
 module fv_interconnect #(
-    parameter NUM_SLAVES = 7
+    parameter NUM_SLAVES = 9
 )(
     input wire        clk,
     input wire        rst,
@@ -22,19 +31,29 @@ module fv_interconnect #(
     input wire        m1_cyc, m1_stb, m1_we,
     input wire [31:0] m1_adr, m1_dat_w,
     input wire [3:0]  m1_sel,
+    input wire        m2_cyc, m2_stb,
+    input wire [31:0] m2_adr,
     input wire [NUM_SLAVES*32-1:0] s_dat_r,
     input wire [NUM_SLAVES-1:0]    s_ack
 );
-    // Fixed, distinct slave bases - the real map from soc_top.v. Held
-    // constant rather than left free because `s_base` is a wiring constant in
-    // the real design; leaving it free would let the solver invent an aliased
-    // map (two slaves at the same base) and then report a "bug" no
+    // The real map from soc_top.v, all nine slaves. Held constant rather than
+    // left free because `s_base`/`s_mask` are wiring constants in the real
+    // design; leaving them free would let the solver invent an aliased map
+    // (two slaves answering the same address) and then report a "bug" no
     // instantiation can produce.
+    //
+    // The SDRAM's mask is 0xFE rather than 0xFF, so it answers to 0x90 and
+    // 0x91 alike: 32 MB, the size of the part on the board. That asymmetry is
+    // the point of proving with the real map rather than a tidy one - a
+    // masked slave is exactly where a decode bug would put two slaves on the
+    // same address, and property 1 is what would catch it.
     wire [NUM_SLAVES*8-1:0] s_base =
-        {8'h80, 8'h06, 8'h05, 8'h04, 8'h03, 8'h02, 8'h00};
+        {8'h90, 8'h80, 8'h07, 8'h06, 8'h05, 8'h04, 8'h03, 8'h02, 8'h00};
+    wire [NUM_SLAVES*8-1:0] s_mask =
+        {8'hFE, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF};
 
-    wire [31:0] m0_dat_r, m1_dat_r;
-    wire        m0_ack, m1_ack;
+    wire [31:0] m0_dat_r, m1_dat_r, m2_dat_r;
+    wire        m0_ack, m1_ack, m2_ack;
     wire        s_cyc, s_we, s_data_master;
     wire [NUM_SLAVES-1:0] s_stb;
     wire [31:0] s_adr, s_dat_w;
@@ -47,7 +66,9 @@ module fv_interconnect #(
         .m1_cyc(m1_cyc), .m1_stb(m1_stb), .m1_we(m1_we), .m1_adr(m1_adr),
         .m1_dat_w(m1_dat_w), .m1_sel(m1_sel),
         .m1_dat_r(m1_dat_r), .m1_ack(m1_ack),
-        .s_base(s_base),
+        .m2_cyc(m2_cyc), .m2_stb(m2_stb), .m2_adr(m2_adr),
+        .m2_dat_r(m2_dat_r), .m2_ack(m2_ack),
+        .s_base(s_base), .s_mask(s_mask),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
@@ -79,21 +100,25 @@ module fv_interconnect #(
     always @(*) begin
         assume (m0_cyc == m0_stb);
         assume (m1_cyc == m1_stb);
+        assume (m2_cyc == m2_stb);
     end
 
-    reg p_m0_pending, p_m1_pending;
+    reg p_m0_pending, p_m1_pending, p_m2_pending;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             p_m0_pending <= 1'b0;
             p_m1_pending <= 1'b0;
+            p_m2_pending <= 1'b0;
         end else begin
             p_m0_pending <= m0_cyc && m0_stb && !m0_ack;
             p_m1_pending <= m1_cyc && m1_stb && !m1_ack;
+            p_m2_pending <= m2_cyc && m2_stb && !m2_ack;
         end
     end
     always @(*) begin
         if (p_m0_pending) assume (m0_cyc && m0_stb);
         if (p_m1_pending) assume (m1_cyc && m1_stb);
+        if (p_m2_pending) assume (m2_cyc && m2_stb);
     end
 
     // ---- everything below is expressed over ports only ----
@@ -105,8 +130,8 @@ module fv_interconnect #(
     // "A transfer is in progress" is therefore derived the way an observer on
     // the bus would derive it: somebody is asserting cyc+stb and nobody has
     // been acked yet.
-    wire any_req = (m0_cyc && m0_stb) || (m1_cyc && m1_stb);
-    wire any_ack = m0_ack || m1_ack;
+    wire any_req = (m0_cyc && m0_stb) || (m1_cyc && m1_stb) || (m2_cyc && m2_stb);
+    wire any_ack = m0_ack || m1_ack || m2_ack;
 
     reg p_any_req, p_any_ack, p_dm, p_rst;
     always @(posedge clk) begin
@@ -133,37 +158,74 @@ module fv_interconnect #(
         //    same cycle drive the shared response mux against each other.
         assert (stb_count <= 4'd1);
 
-        // 2. A strobed slave is the one the address actually decodes to.
+        // 2. A strobed slave is the one the address actually decodes to,
+        //    through that slave's own mask. A slave with a mask narrower than
+        //    0xFF answers to more than one base byte, which is how the SDRAM
+        //    covers 32 MB.
         for (j = 0; j < NUM_SLAVES; j = j + 1)
             if (s_stb[j])
-                assert (s_adr[31:24] == s_base[8*j +: 8]);
+                assert ((s_adr[31:24] & s_mask[8*j +: 8]) ==
+                        (s_base[8*j +: 8] & s_mask[8*j +: 8]));
 
         // 3. The bus is only claimed by a master that is asking for it.
         if (s_data_master) assert (m1_cyc);
 
-        // 4. Data outranks fetch whenever arbitration is actually open. The
-        //    `!in_flight` qualifier is the whole point of the lock: while a
-        //    transfer is under way, priority does not get to preempt it.
-        if (m1_cyc && !in_flight) assert (s_data_master);
+        // 4a. Data outranks the walker whenever arbitration is actually open.
+        //     The `!in_flight` qualifier is the whole point of the lock: while
+        //     a transfer is under way, priority does not get to preempt it.
+        //
+        //     This is the property that keeps atomics atomic. cpu_wb.v holds
+        //     `cyc` across both phases of an AMO's read-modify-write and
+        //     relies on the data master always winning to keep anyone else out
+        //     of the gap - and instruction fetch carries on translating while
+        //     the MEM stage sits in an AMO, so the walker genuinely can ask
+        //     during it.
+        if (m1_cyc && !in_flight) begin
+            assert (s_data_master);
+            assert (!m2_ack);
+            assert (!m0_ack);
+        end
+
+        // 4b. The walker outranks fetch. Fetch is nearly continuous, so a walk
+        //     that lost to it could be starved indefinitely; the reverse
+        //     cannot happen, because a walk is two reads and then it is over.
+        if (m2_cyc && !m1_cyc && !in_flight) assert (!m0_ack);
 
         // 5. Acks go to the master that made the request, and only to one.
         assert (!(m0_ack && m1_ack));
+        assert (!(m0_ack && m2_ack));
+        assert (!(m1_ack && m2_ack));
         if (m0_ack) assert (m0_cyc);
         if (m1_ack) assert (m1_cyc);
+        if (m2_ack) assert (m2_cyc);
 
         // 6. An access to an address matching no slave still acks. A bus that
         //    never acks wedges the CPU permanently - cpu_wb.v freezes the
         //    pipeline waiting for one - so a stray pointer would become an
         //    unrecoverable hang instead of garbage data the program survives.
+        //
+        //    It matters for the walker too, and more than it looks: a walker
+        //    reads whatever physical address a PTE names, and a half-built
+        //    page table names unmapped ones. wb_ptw.v's own handling of a
+        //    same-cycle ack is what turns that into a page fault rather than a
+        //    re-issued read forever.
         if (m1_cyc && m1_stb && !in_flight && (s_stb == {NUM_SLAVES{1'b0}}))
             assert (m1_ack);
+        if (m2_cyc && m2_stb && !m1_cyc && !in_flight &&
+            (s_stb == {NUM_SLAVES{1'b0}}))
+            assert (m2_ack);
 
-        // 7. The broadcast address belongs to the granted master.
+        // 7. The broadcast address belongs to the granted master. Only the
+        //    data master is observable every cycle (`s_data_master` exists for
+        //    the peripherals, not for this), so the other two are checked on
+        //    the cycle that matters: the one where a slave answered them.
         if (s_data_master) assert (s_adr == m1_adr);
-        else if (s_cyc)    assert (s_adr == m0_adr);
+        if (m0_ack)        assert (s_adr == m0_adr);
+        if (m2_ack)        assert (s_adr == m2_adr);
 
-        // 8. A fetch never writes. The instruction master has no write path,
-        //    so if this could fail a fetch could corrupt memory.
+        // 8. Only the data master writes. Neither the fetch master nor the
+        //    walker has a write path, so if this could fail either of them
+        //    could corrupt memory.
         if (!s_data_master) assert (!s_we);
     end
 

@@ -707,6 +707,51 @@ about what you know, which is what the next person needs.
 
 ---
 
+## 26. A suite that passes is not a suite that ran the code
+
+This core has had an Sv32 MMU for a long time. It has two independent walkers,
+an 8-entry TLB, superpage support, and a permission model with SUM and MXR.
+Against it stand 79 riscv-tests passing, 82 of 82 Spike traces matching
+instruction for instruction, and five formal proofs.
+
+The first time anything ever turned instruction-fetch translation on, it
+failed in the third instruction.
+
+**Why the suite never noticed.** riscv-tests' supervisor set is `rv32si-p-*`,
+and the `-p` is the whole story: it is the *physical* variant. Those tests run
+in S-mode and exercise S-mode CSRs, traps and delegation — and never write a
+non-zero `satp`. The suite that looks like the MMU's coverage is testing the
+privilege model next to it. The `-v` variants, which do use virtual memory,
+are not in the list this project fetches.
+
+So `satp` had been enabled, in this SoC, exactly never. Two bugs were sitting
+in the path, both reachable since the day the MMU landed:
+
+| | |
+|---|---|
+| Fetch address is `X` during a walk | `mmu.v` derives `pa` from a PTE register that has not been read yet. `cpu_wb.v` indexes its I-cache with it, `fetch_hit` goes `X`, `iwb_cyc` goes `X`, and `wb_ram.v`'s `ack_r <= a_en && !ack_r` latches it **permanently** — `!x` is `x`. One unresolved fetch wedges main memory for the rest of the run. |
+| Store data one cycle stale on a TLB hit | `store_data_latched` is a register, so it holds the operand as of the *end* of the cycle it was captured in. Correct when a walk follows and holds the instruction in EX; wrong on a hit, where the instruction leaves EX the same cycle and the register still holds the **previous instruction's** operand. |
+
+The second one is the more embarrassing, because the comment above it already
+described the hazard correctly and at length. What it got wrong was one term
+in the select — `need_translate` where it needed `need_translate && mmu_busy`.
+The prose was right and the code did not match it, and nothing was ever run
+that could tell the difference.
+
+**The rule.** Coverage is what a suite *executes*, not what it is named after.
+When you adopt somebody else's tests, find out which configurations they
+actually run before you count them as covering a feature — and when a feature
+has no test that turns it *on*, say so in the place a reader would look for
+reassurance, rather than letting a green suite imply it.
+
+The corollary is about where these were found. Neither bug is subtle once the
+path runs: one hangs the machine outright, the other writes the wrong word.
+They survived because writing the twenty-line program that enables `satp` was
+never anyone's task, and every layer above it reported success. The cheapest
+test in this repository is still the one nobody has written yet.
+
+---
+
 ---
 
 ## Conventions

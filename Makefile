@@ -35,6 +35,8 @@
 #
 #   make sim_sdram     -> rtl/soc/wb_sdram.v against sim/sdram_model.v
 #   make sim_sdramboot -> the SoC executing from SDRAM, larger than block RAM
+#   make sim_mmusdram  -> Sv32 page tables *in* SDRAM, walked from S-mode,
+#                         with the mapped pages in the part's top 16 MB
 #   make sim_uartload  -> the boot ROM's UART loader: a host sends a program
 #                         over the serial line and the SoC runs it from SDRAM
 #   make uartload-host -> the host script against a fake board on a pty
@@ -93,7 +95,8 @@ TB  = sim/tb_top.v
 # Harvard, zero-latency) for the Wishbone system in rtl/soc/.
 SOC_RTL = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
           rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
-          rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ram.v \
+          rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ptw.v \
+          rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
           rtl/soc/wb_sdram.v rtl/soc/soc_top.v $(CORE_RTL)
@@ -137,6 +140,7 @@ SD_BLOCKS = 128
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
+        sim_mmusdram \
         sim_uartload uartload-host \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
@@ -602,6 +606,42 @@ sim/sdramcheckimage.hex: software/soc/sdramcheck.elf software/bin2hex.py Makefil
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/sdramcheck.bin > $@
 
+# ---- Sv32 with the page tables in external SDRAM ----
+#
+# The test for the two changes that let a page table live in DRAM at all:
+# rtl/soc/wb_ptw.v (the walkers became a bus master, so a PTE can come from
+# any slave) and wb_interconnect.v's masked decode (so the top half of a
+# 32 MB part is addressable). software/soc/mmutest.c explains how each of
+# them fails loudly rather than quietly if reverted.
+#
+# The SDRAM model is 16 MB here rather than the usual 2, because the page
+# table deliberately maps addresses above 0x9100_0000 - which is the half of
+# the part that did not exist before the decode was masked. That costs about
+# 140 MB of simulator memory and two seconds to clear.
+MMUTEST_SRCS = $(SOCRT_SRCS) software/soc/mmutest.c
+
+software/soc/mmutest.elf: $(MMUTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	    -o $@ $(MMUTEST_SRCS)
+
+# --skip-words=1024, like every other preloaded image: link_ram.ld puts the
+# program at PROGRAM_LOAD_ADDR (RAM_BASE + 0x1000) and the first 4 KB is the
+# verdict word and the boot stack. Without it the image lands at offset 0, the
+# boot ROM does not recognise a preloaded program, and the run goes looking
+# for an SD card that is not there.
+sim/mmuimage.hex: software/soc/mmutest.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/mmutest.elf software/soc/mmutest.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/mmutest.bin > $@
+
+sim/sim_mmusdram.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"mmuimage.hex"' \
+	    -DSDRAM_WORDS='((1<<23)+(1<<16))' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+
+sim_mmusdram: sim/bootrom.hex sim/mmuimage.hex sim/sim_mmusdram.out
+	cd sim && $(VVP) sim_mmusdram.out $(VVP_DUMP)
+
 sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"sdramcheckimage.hex"' \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
@@ -691,7 +731,8 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_uartload \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
+        sim_mmusdram sim_uartload \
         uartload-host check-program isa cosim formal
 
 clean:
@@ -707,6 +748,8 @@ clean:
 	       sim/ramimage.hex sim/probeimage.hex \
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
+	       sim/sim_mmusdram.out sim/mmuimage.hex \
+	       software/soc/mmutest.elf software/soc/mmutest.bin \
 	       sim/sim_uartload.out sim/uartimage.hex sim/wave_uartload.vcd \
 	       tests/build/uartload_case.bin \
 	       software/soc/uartprog.elf software/soc/uartprog.bin \
