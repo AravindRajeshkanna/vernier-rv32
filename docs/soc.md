@@ -160,19 +160,31 @@ the same clock or every timeout is wrong.
 8 sources, numbered **1..8** — source 0 does not exist, matching the real
 PLIC convention. 3-bit priorities.
 
+The **standard** register map, as of the ns16550/S-mode work. It used to put
+threshold at `0x3000` and claim at `0x3004`, offsets of this project's own
+invention that no stock driver would ever look at.
+
 | Offset | Register | Notes |
 |---|---|---|
-| `0x0000 + 4*id` | priority for source `id` | 3 bits |
-| `0x1000` | pending bitmap | read-only |
-| `0x2000` | enable bitmap | bit `id` enables source `id` |
-| `0x3000` | threshold | only sources with priority **>** this are delivered |
-| `0x3004` | claim / complete | read claims, write completes |
+| `0x000000 + 4*id` | priority for source `id` | 3 bits |
+| `0x001000` | pending bitmap | read-only |
+| `0x002000 + 0x80*c` | enable bitmap for context `c` | bit `id` enables source `id` |
+| `0x200000 + 0x1000*c` | threshold for context `c` | only priorities **>** this are delivered |
+| `0x200004 + 0x1000*c` | claim / complete for context `c` | read claims, write completes |
+
+Two contexts: **0 is hart 0 M-mode** (drives `mip.MEIP`) and **1 is hart 0
+S-mode** (the hardware half of `mip.SEIP`). Enables and thresholds are
+per-context; `in_service` is per *source*, so a source claimed by one context
+is not handed to the other before the handler that owns it completes.
+
+The `0x200000` base is why this slave needs more than a 64 KB window — it is
+why `rtl/top.v`'s decode had to widen from `addr[31:16]` to `addr[31:24]`.
 
 Source assignment in `soc_top.v`:
 
 | Source | Device |
 |---|---|
-| 1 | UART — **wired but unused**, the UART is polled |
+| 1 | UART — the ns16550's `irq`, from IER/IIR |
 | 2 | GPIO rising edge |
 | 3–8 | spare, tied low |
 
@@ -182,15 +194,31 @@ stray *instruction fetch* into PLIC space cannot silently claim an interrupt.
 
 ### `uart` — console, `0x0400_0000`
 
+An **ns16550**, with `reg-shift = 2` so register *n* is at offset 4*n*. It
+used to be three registers of this project's own design (TXDATA/RXDATA/
+STATUS); the map changed so that OpenSBI's console and Linux's 8250 driver
+work without anyone writing a driver for a UART nobody else has.
+
 | Offset | Register | Access | Notes |
 |---|---|---|---|
-| `0x00` | TXDATA | W | writing a byte starts transmission |
-| `0x04` | RXDATA | R | last received byte; **reading clears `rx_valid`** |
-| `0x08` | STATUS | RO | bit 0 = `tx_busy`, bit 1 = `rx_valid` |
+| `0x00` | RBR / THR | R/W | data; **DLL** when `LCR.DLAB` |
+| `0x04` | IER | R/W | interrupt enables; **DLM** when `LCR.DLAB` |
+| `0x08` | IIR / FCR | R/W | interrupt ident (read) / FIFO control (write) |
+| `0x0C` | LCR | R/W | line control; bit 7 is DLAB |
+| `0x10` | MCR | R/W | modem control |
+| `0x14` | LSR | R | bit 0 = DR, bit 1 = OE, bit 5 = THRE, bit 6 = TEMT |
+| `0x18` | MSR | R | constant `0xB0` — no modem pins on this board |
+| `0x1C` | SCR | R/W | scratch; how a driver probes for the part |
 
-Polled, not interrupt-driven. The bit period is the `CLKS_PER_BIT` module
-parameter, derived from `CLK_HZ / BAUD_RATE` in `fpga/soc_fpga.v` — **not a
-runtime baud register**. Getting `CLK_HZ` wrong produces a console emitting
+No FIFOs (IIR reports bits 7:6 = 00, which identifies a 16450), and the THRE
+interrupt is a level rather than a latch cleared by reading IIR.
+
+The bit period is now a **runtime** value: divisor 0 (the reset value) keeps
+the `CLKS_PER_BIT` module parameter, and any other divisor gives 16*divisor,
+as the datasheet says. Zero is not a legal divisor on real silicon, which is
+what makes that carve-out safe — and it is what lets the testbenches keep
+running at four clocks per bit instead of the 16 a spec-compliant part's
+smallest divisor would force. Getting `CLK_HZ` wrong produces a console emitting
 garbage while everything else works, which reads as a CPU bug rather than a
 configuration one.
 

@@ -969,19 +969,32 @@ Two of the three hard blockers are now closed:
    registers the returning word on the same edge, which reproduces the
    one-cycle-later contract the walkers were written against, whatever the
    slave's latency.
-2. **`mip.SEIP` is hardwired to zero and the PLIC has one M-mode context.**
-   Linux takes external interrupts in S-mode. The PLIC also puts
-   threshold/claim at `0x3000`/`0x3004` rather than the spec's per-context
-   `0x200000` stride, which a stock driver will not find. **This is now the
-   largest remaining item.**
+2. ~~**`mip.SEIP` is hardwired to zero and the PLIC has one M-mode context.**~~
+   **Done.** `rtl/plic.v` has the standard register map and two contexts (0 =
+   hart 0 M-mode, 1 = hart 0 S-mode), and `mip.SEIP` is the spec's OR of a
+   software-writable bit and the controller's pin. `make sim_plic` raises a
+   GPIO interrupt, has it delivered to **S-mode** through context 1, claims
+   and completes it — the first program in this repository ever to take an
+   external interrupt in either privilege mode.
 3. ~~**The interconnect decodes `addr[31:24]`** — 16 MB per slave.~~ **Done.**
    The decode compares through a per-slave mask; the SDRAM's is `0xFE`, so it
    answers to `0x90` and `0x91` alike. `wb_sdram.v` needed no change — it
    always took its row from `wb_adr[24:12]`.
 
-Then: an ns16550-compatible UART (or a driver that is not), a device tree, an
-rv32ima kernel with no `C`, and an initramfs. Hardware PTE A/D auto-update is
-absent and Linux does not strictly need it to boot.
+Then: ~~an ns16550-compatible UART~~ (**done** — `rtl/uart.v` is one, with the
+divisor latch, IIR and an interrupt into PLIC source 1; `make sim_uart16550`),
+~~a device tree~~ (**done** — `dts/soc.dts` describes the two-context PLIC and
+the ns16550, and OpenSBI's `generic` platform is entirely FDT-driven, so that
+device tree *is* the platform port), an rv32ima kernel with no `C`, and an
+initramfs. Hardware PTE A/D auto-update is absent and Linux does not strictly
+need it to boot.
+
+**OpenSBI now runs rather than merely building**, and stops in a specific
+place: one trap at cycle 7192 and then a `wfi` loop, before console init, so
+it never says why. `software/opensbi/README.md` records exactly what is
+established and what is still a hypothesis — the leading candidate is the
+absence of PMP, which `fw_jump` wants for the next stage, but that has not
+been measured and §20 applies.
 
 ### What turning translation on for the first time cost
 

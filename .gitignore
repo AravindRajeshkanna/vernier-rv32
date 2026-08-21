@@ -26,6 +26,9 @@ software/firmware.elf
 software/firmware_text.bin
 software/firmware_data.bin
 
+# OpenSBI: its cloned source tree and everything built from it
+software/opensbi/build/
+
 # SoC build artifacts
 software/soc/*.elf
 software/soc/*.bin

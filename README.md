@@ -520,9 +520,10 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   timer/software interrupt, and a real PLIC (multiple prioritized,
   claimable sources) in place of the single wire it used to have — wired
   through real `mie`/`mip`/`mideleg` and privilege-aware interrupt-priority
-  logic. What it does *not* have is S-mode external interrupt delivery:
-  `mip.SEIP` is hardwired to zero and the PLIC has one M-mode context,
-  which is the largest single item between here and a kernel.
+  logic. It now also delivers external interrupts to **S-mode**: the PLIC
+  has the standard register layout and two contexts (hart 0 M-mode and
+  hart 0 S-mode), and `mip.SEIP` is the spec's OR of a software-writable
+  bit and the controller's pin. `make sim_plic` takes one.
 - **A real memory controller** driving actual DRAM — Linux plus a minimal
   root filesystem needs tens of megabytes at least; FPGA block RAM alone
   (tens of KB–a few MB) isn't enough. **This one is now done, on silicon**:
@@ -530,11 +531,12 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   program has been sent over the serial line into it and executed from
   there on an LFE5U-85F. No LiteX, no LiteDRAM. Sv32 page tables can live
   in it too, walked from S-mode for both fetch and data — the walkers are a
-  bus master now, and the decode reaches all 32 MB. What is still missing
-  is narrower and specific: `mip.SEIP` is hardwired to zero, and the PLIC
-  has a single M-mode context at a non-standard register layout.
+  bus master now, and the decode reaches all 32 MB.
 - **A UART** (for a console) and **SPI/SD or similar storage** — the SoC
-  now has both, and actually boots off the SD card.
+  now has both, and actually boots off the SD card. The UART is an
+  **ns16550** as of the OpenSBI work, so the console is one a stock 8250
+  driver can drive rather than one this project would have to write a
+  driver for.
 - **A boot chain**: typically first-stage bootloader → OpenSBI (SBI
   runtime) → U-Boot → Linux kernel → a root filesystem (often built with
   Buildroot). The first link exists — `software/soc/bootrom.c` is a genuine

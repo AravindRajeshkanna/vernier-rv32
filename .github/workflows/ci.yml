@@ -244,6 +244,22 @@ jobs:
       - name: Check Sv32-in-SDRAM verdict
         run: grep -q "RAMBOOT TEST PASSED" mmusdram.log
 
+      # The PLIC's standard register map and an external interrupt actually
+      # delivered to S-mode through context 1 - the first program here that
+      # ever takes an external interrupt, in either privilege mode.
+      - name: PLIC standard layout and S-mode delivery
+        run: make sim_plic | tee plic.log
+      - name: Check PLIC verdict
+        run: grep -q "RAMBOOT TEST PASSED" plic.log
+
+      # The ns16550 surface a driver touches that no program here did: DLAB,
+      # the divisor latch, IIR, MSR, and the UART's interrupt arriving through
+      # PLIC source 1. It found a wedged-transmitter bug on its first run.
+      - name: ns16550 register map and interrupt
+        run: make sim_uart16550 | tee uart16550.log
+      - name: Check ns16550 verdict
+        run: grep -q "RAMBOOT TEST PASSED" uart16550.log
+
       # The boot ROM's UART loader, end to end: a host sends a program over
       # the serial line and the SoC runs it out of external SDRAM. This is the
       # only way a program gets there on a board - a bitstream initialises

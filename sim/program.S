@@ -336,7 +336,12 @@ L_0438:
     lui          a1,0x0
     addi         a1,a1,1
     sw           a1,0(a0)
-    lui          a0,0x3003
+    /* PLIC context 0 (M-mode) threshold = 2, at the spec's 0x200000 +
+       0x1000*ctx. This used to be 0x3003000, an offset of this project's own
+       invention; rtl/plic.v now implements the standard map so that a stock
+       driver can find it. The enable bitmap below did not move - context 0's
+       enables are at 0x2000 either way. */
+    lui          a0,0x3200
     addi         a0,a0,0
     lui          a1,0x0
     addi         a1,a1,2
@@ -446,7 +451,7 @@ L_05e8:
     sw           t4,0(a0)
     jal          zero, L_06a8
 L_060c:
-    lui          a0,0x3003
+    lui          a0,0x3200
     addi         a0,a0,4
     lw           s8,0(a0)
     addi         s9,s9,1
@@ -480,7 +485,7 @@ L_067c:
     lui          s2,0x1
     addi         s2,s2,-2048
     csrrc        zero,mie,s2
-    lui          a0,0x3003
+    lui          a0,0x3200
     addi         a0,a0,4
     lui          a1,0x0
     addi         a1,a1,2

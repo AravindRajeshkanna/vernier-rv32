@@ -13,6 +13,23 @@
 #define ROM_BASE    0x00000000u
 #define CLINT_BASE  0x02000000u
 #define PLIC_BASE   0x03000000u
+/* The standard PLIC register map, which rtl/plic.v now implements. These
+ * offsets are the spec's, not this project's: a stock driver - OpenSBI's,
+ * Linux's - computes exactly these from the base address in the device tree,
+ * which is the whole reason the layout changed.
+ *
+ * Contexts: 0 is hart 0 M-mode, 1 is hart 0 S-mode. dts/soc.dts declares the
+ * same pairing in `interrupts-extended`, and nothing checks that the two
+ * agree - practices.md section 11. Safe direction of error does not really
+ * exist here: getting it wrong points a driver at the other privilege
+ * level's threshold register, which fails silently by never delivering. */
+#define PLIC_PRIORITY(src)      (PLIC_BASE + 0x000000u + 4u * (src))
+#define PLIC_PENDING            (PLIC_BASE + 0x001000u)
+#define PLIC_ENABLE(ctx)        (PLIC_BASE + 0x002000u + 0x80u * (ctx))
+#define PLIC_THRESHOLD(ctx)     (PLIC_BASE + 0x200000u + 0x1000u * (ctx))
+#define PLIC_CLAIM(ctx)         (PLIC_BASE + 0x200004u + 0x1000u * (ctx))
+#define PLIC_CTX_M   0
+#define PLIC_CTX_S   1
 #define UART_BASE_A 0x04000000u
 #define GPIO_BASE   0x05000000u
 #define SPI_BASE    0x06000000u
@@ -48,11 +65,31 @@
 #define REG32(a) (*(volatile uint32_t *)(uintptr_t)(a))
 
 /* ---- UART (rtl/uart.v) ---- */
-#define UART_TXDATA REG32(UART_BASE_A + 0x00)
-#define UART_RXDATA REG32(UART_BASE_A + 0x04)
-#define UART_STATUS REG32(UART_BASE_A + 0x08)
-#define UART_TX_BUSY  (1u << 0)
-#define UART_RX_VALID (1u << 1)
+/* ns16550, reg-shift 2 (register n at offset 4n) - see rtl/uart.v. These
+ * names are the datasheet's, not this project's, which is the point: the
+ * whole reason the map changed is that OpenSBI and Linux already have
+ * drivers for it. dts/soc.dts declares the same `reg-shift` and nothing
+ * checks that the two agree - practices.md section 11. */
+#define UART_RBR REG32(UART_BASE_A + 0x00)   /* read: data; write: THR   */
+#define UART_THR REG32(UART_BASE_A + 0x00)
+#define UART_DLL REG32(UART_BASE_A + 0x00)   /* when LCR.DLAB            */
+#define UART_IER REG32(UART_BASE_A + 0x04)
+#define UART_DLM REG32(UART_BASE_A + 0x04)   /* when LCR.DLAB            */
+#define UART_IIR REG32(UART_BASE_A + 0x08)   /* read                     */
+#define UART_FCR REG32(UART_BASE_A + 0x08)   /* write                    */
+#define UART_LCR REG32(UART_BASE_A + 0x0C)
+#define UART_MCR REG32(UART_BASE_A + 0x10)
+#define UART_LSR REG32(UART_BASE_A + 0x14)
+#define UART_MSR REG32(UART_BASE_A + 0x18)
+#define UART_SCR REG32(UART_BASE_A + 0x1C)
+
+/* LSR bits worth naming. DR says a byte is waiting in RBR; THRE says the
+ * transmit holding register will accept one. */
+#define UART_LSR_DR   0x01u
+#define UART_LSR_OE   0x02u
+#define UART_LSR_THRE 0x20u
+#define UART_LSR_TEMT 0x40u
+#define UART_LCR_DLAB 0x80u
 
 /* ---- GPIO (rtl/soc/wb_gpio.v) ---- */
 #define GPIO_OUT REG32(GPIO_BASE + 0x00)

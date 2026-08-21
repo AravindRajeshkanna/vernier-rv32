@@ -45,6 +45,9 @@
 //   +maxcycles=N      give up after this many cycles
 //   +drain=N          cycles to keep running after the verdict word appears,
 //                     so the last of the UART output gets out
+//   +uart_clks=N      clock cycles per UART bit (default 4). Must match what
+//                     the UART is actually running at - a driver that
+//                     programs the ns16550 divisor changes it.
 //   +quiet            suppress the UART stream (keep the summary)
 //   +dump[=FILE]      write a VCD. Only works if built with --trace; see the
 //                     Makefile's VTRACE knob, and note that the reason it is
@@ -79,9 +82,18 @@
 static const double CLK_PERIOD_NS = 40.0;
 static const double CLK_HALF_NS   = CLK_PERIOD_NS / 2.0;
 
-// Must match soc_top's UART_CLKS_PER_BIT, which every testbench here runs far
-// faster than a real UART to keep simulations short.
-static const int UART_CLKS_PER_BIT = 4;
+// Must match the rate the UART is actually running at. soc_top's
+// UART_CLKS_PER_BIT is 4, which every testbench here uses to keep simulations
+// short - but rtl/uart.v is an ns16550 now, and a driver that programs the
+// baud divisor changes the rate out from under that default. OpenSBI does
+// exactly this: it reads `clock-frequency` from the device tree and writes
+// 25e6/(16*115200) = 13, for 208 clocks per bit.
+//
+// So it is a runtime setting (`+uart_clks=N`) rather than a constant. Note
+// what makes that affordable: at 208 clocks per bit a character costs 2080
+// cycles and a banner costs a million, which is a quarter of a second here
+// and a minute and a half under Icarus.
+static int uart_clks_per_bit = 4;
 
 // ---------------------------------------------------------------------------
 // A 16-bit SDR SDRAM, ported from sim/sdram_model.v
@@ -440,15 +452,22 @@ class UartRx {
 public:
     explicit UartRx(bool quiet) : quiet_(quiet) {}
 
+    // Mid-bit sample points, from the same arithmetic the fixed-rate version
+    // used: the start bit spans one period from the falling edge, so the
+    // middle of data bit b is at 1.5 + b periods.
+    int sample_at(int bit) const {
+        return (3 * uart_clks_per_bit) / 2 + bit * uart_clks_per_bit;
+    }
+
     void sample(bool tx) {
         if (idle_) {
             if (prev_ && !tx) { idle_ = false; cnt_ = 0; bit_ = 0; byte_ = 0; }
         } else {
             cnt_++;
-            // Start bit spans cnt 0..3, data bit b spans 4+4b..7+4b, so the
-            // middle of bit b is 6+4b - which is what the Verilog testbenches
-            // reach by waiting half a bit and then one bit per sample.
-            if (cnt_ == 6 + 4 * bit_) {
+            // The middle of data bit b; see sample_at(). At the default rate
+            // this is 6+4b, which is what the Verilog testbenches reach by
+            // waiting half a bit and then one bit per sample.
+            if (cnt_ == sample_at(bit_)) {
                 if (tx) byte_ |= (uint8_t)(1u << bit_);
                 if (++bit_ == 8) {
                     idle_ = true;
@@ -527,7 +546,9 @@ int main(int argc, char **argv) {
     const long   max_cycles  = plusarg_long(argc, argv, "maxcycles", 40000000L);
     // Long enough for the last line of output to clear a 4-clocks-per-bit
     // UART, which is what the Verilog testbenches wait too.
-    const long   drain       = plusarg_long(argc, argv, "drain", 200L * UART_CLKS_PER_BIT * 10);
+    uart_clks_per_bit = (int)plusarg_long(argc, argv, "uart_clks", 4);
+    const long   drain       = plusarg_long(argc, argv, "drain",
+                                            200L * uart_clks_per_bit * 10);
 
     // The verdict lives in block RAM, not in the memory under test, exactly
     // as sim/tb_sdramboot.v arranges it: a broken SDRAM then shows up as a
@@ -595,6 +616,12 @@ int main(int argc, char **argv) {
 
     const auto   wall_start = std::chrono::steady_clock::now();
     long         cycles     = 0;
+    // soc_top exports `trap` for exactly this: a program that produces no
+    // output has either not started or is trapping, and those want different
+    // fixes. Counting is cheap and the first number worth having when a
+    // firmware image prints nothing at all.
+    long         traps      = 0;
+    long         first_trap = -1;
     long         verdict_at = -1;
     uint32_t     result     = 0;
     double       now_ns     = 0.0;
@@ -613,6 +640,11 @@ int main(int argc, char **argv) {
         if (cycles == 4) top->rst = 0;
 
         uart.sample(top->uart_tx != 0);
+
+        if (top->trap) {
+            traps++;
+            if (first_trap < 0) first_trap = cycles;
+        }
 
         // Loopback on the pins the SoC is driving, which is what the board's
         // GPIO header does when nothing is plugged into it.
@@ -679,6 +711,10 @@ int main(int argc, char **argv) {
 
     printf("\n---------------------------------------------\n");
     printf("cycles: %ld\n", cycles);
+    if (traps)
+        printf("traps taken: %ld (first at cycle %ld)\n", traps, first_trap);
+    else
+        printf("traps taken: none\n");
     printf("SDRAM refreshes issued: %ld\n", sdram.refreshes());
     printf("SDRAM read setup margin: %.1f ns\n", sdram.ac_setup_ns());
     printf("result word (expect \"PASS\"): 0x%08x\n", result);

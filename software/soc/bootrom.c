@@ -24,8 +24,8 @@
 #include "soc.h"
 
 static void uart_putc(char c) {
-    while (UART_STATUS & UART_TX_BUSY) { }
-    UART_TXDATA = (uint32_t)(unsigned char)c;
+    while (!(UART_LSR & UART_LSR_THRE)) { }
+    UART_THR = (uint32_t)(unsigned char)c;
 }
 
 static void uart_puts(const char *s) {
@@ -264,8 +264,8 @@ static int uart_getc_timeout(uint32_t ms) {
     uint32_t start = rdcycle();
     uint32_t limit = ms * (CPU_HZ / 1000u);
     while ((rdcycle() - start) < limit) {
-        if (UART_STATUS & UART_RX_VALID)
-            return (int)(UART_RXDATA & 0xFFu);
+        if (UART_LSR & UART_LSR_DR)
+            return (int)(UART_RBR & 0xFFu);
     }
     return -1;
 }

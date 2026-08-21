@@ -4,23 +4,25 @@
 /* Must match rtl/top.v's UART_BASE_HI decode window (0x0400_0000) and
  * rtl/uart.v's register map. */
 #define UART_BASE   ((volatile uint32_t *)0x04000000)
-#define UART_TXDATA (UART_BASE[0])
-#define UART_RXDATA (UART_BASE[1])
-#define UART_STATUS (UART_BASE[2])
+/* ns16550, reg-shift 2 - see rtl/uart.v. Word indices here, so [n] is
+ * register n. */
+#define UART_THR (UART_BASE[0])
+#define UART_RBR (UART_BASE[0])
+#define UART_LSR (UART_BASE[5])
+#define LSR_DR   0x01u
+#define LSR_THRE 0x20u
 
-#define STATUS_TX_BUSY  (1u << 0)
-#define STATUS_RX_VALID (1u << 1)
 
 void uart_putc(char c) {
-    while (UART_STATUS & STATUS_TX_BUSY) { }
-    UART_TXDATA = (uint32_t)(unsigned char)c;
+    while (!(UART_LSR & LSR_THRE)) { }
+    UART_THR = (uint32_t)(unsigned char)c;
 }
 
 int uart_rx_ready(void) {
-    return (UART_STATUS & STATUS_RX_VALID) != 0;
+    return (UART_LSR & LSR_DR) != 0;
 }
 
 int uart_getc(void) {
-    while (!(UART_STATUS & STATUS_RX_VALID)) { }
-    return (int)(UART_RXDATA & 0xFF);
+    while (!(UART_LSR & LSR_DR)) { }
+    return (int)(UART_RBR & 0xFF);
 }

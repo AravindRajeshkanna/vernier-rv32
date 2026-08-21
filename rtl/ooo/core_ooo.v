@@ -198,7 +198,10 @@ module core_ooo #(
     // interrupt sources
     input  wire         mtip,     // CLINT timer compare
     input  wire         msip_in,  // CLINT software interrupt
-    input  wire         meip,     // PLIC: at least one claimable source pending
+    input  wire         meip,     // PLIC context 0 (M-mode): a claimable source
+    // PLIC context 1 (S-mode). ORed with mip.SEIP's software-writable half
+    // inside csr_file.v, per the spec - see that file's header.
+    input  wire         seip,
     input  wire [63:0]  mtime_in, // CLINT mtime, for the `time` CSR
 
     output wire         fence_i, // FENCE.I retired: any instruction buffer/cache must drop its contents
@@ -1463,7 +1466,7 @@ module core_ooo #(
         .mtvec_out(csr_mtvec), .stvec_out(csr_stvec), .trap_to_s_out(csr_trap_to_s),
         .mret_en(mret_en), .mepc_out(csr_mepc),
         .sret_en(sret_en), .sepc_out(csr_sepc),
-        .mtip(mtip), .msip_in(msip_in), .meip_in(meip),
+        .mtip(mtip), .msip_in(msip_in), .meip_in(meip), .seip_in(seip),
         .mie_out(csr_mie), .mip_out(csr_mip), .mideleg_out(csr_mideleg),
         .mstatus_mie_out(csr_mstatus_mie), .sstatus_sie_out(csr_sstatus_sie),
         .current_priv_out(current_priv),
