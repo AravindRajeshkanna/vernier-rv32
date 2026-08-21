@@ -77,6 +77,63 @@ public_flat_rd -module "csr_file" -var "mepc_r"
 public_flat_rd -module "csr_file" -var "mtval_r"
 public_flat_rd -module "regfile" -var "regs"
 public_flat_rd -module "regfile_wide" -var "regs"
+// ---- 5. The shared bus, for checking what memory hands back ----
+//
+// Every completed transfer on the interconnect's slave side: the address, the
+// data, whether it was a write, and which master owns it. The harness has the
+// SDRAM's contents, so with these it can check that a read returned the word
+// the part actually holds - on every access, for a whole boot.
+//
+// That is a different question from the ones the probes above answer. They
+// say where the machine went; this says whether what it read was real. It
+// exists because a Linux boot failed in a way that looked like memory
+// returning different data for two identical traversals, and every cheaper
+// check - the blob on disk, the image in memory, the page tables - came back
+// clean.
+public_flat_rd -module "wb_interconnect" -var "s_adr"
+public_flat_rd -module "wb_interconnect" -var "s_we"
+public_flat_rd -module "wb_interconnect" -var "fin_ack"
+public_flat_rd -module "wb_interconnect" -var "fin_dat"
+public_flat_rd -module "wb_interconnect" -var "sel_m1"
+public_flat_rd -module "wb_interconnect" -var "sel_m2"
+
+// And the instruction the core actually consumes, which the bus check above
+// cannot see: a fetch that hits in the I-cache never reaches the bus at all,
+// so `fin_dat` says nothing about it. These three are the cache's *output*
+// and the address it was asked for, which is the last point before the word
+// becomes an instruction.
+public_flat_rd -module "cpu_wb" -var "imem_addr"
+public_flat_rd -module "cpu_wb" -var "imem_rdata"
+public_flat_rd -module "cpu_wb" -var "ibus_wait"
+
+// ---- 6. Every translation, against a walk of the same tables ----
+//
+// With the bus and the fetch path both proved to deliver the word memory
+// holds, a wrong *address* is what is left. There is nothing in software that
+// can check one: the whole point of translation is that the program does not
+// see it. The harness can, because it has the page tables - satp names the
+// root and the tables are in the SDRAM it is modelling - so it can walk them
+// itself and compare.
+//
+// Both cores instantiate these as IMMU and MMU, so the C++ paths are the same
+// either way; only the module name here is shared.
+public_flat_rd -module "mmu" -var "va"
+public_flat_rd -module "mmu" -var "satp_ppn"
+public_flat_rd -module "mmu" -var "resolved"
+public_flat_rd -module "mmu" -var "fault"
+public_flat_rd -module "mmu" -var "pa"
+public_flat_rd -module "mmu" -var "req"
+// `va` is *live* - for a data access it is op1+imm, recomputed from forwarding
+// every cycle - and mmu.v answers a concluded walk from the `va_r` it latched
+// when the walk started, precisely because the live one decays underneath a
+// stall. A checker that compares `pa` against a walk of the live `va` is
+// therefore wrong on exactly the cycles a walk finishes, and reports hundreds
+// of disagreements that are its own. It did. `state` says which of the two
+// the hardware used: S_IDLE (0) means a TLB hit answered from `va`, anything
+// else means a walk answered from `va_r`. docs/practices.md section 27.
+public_flat_rd -module "mmu" -var "va_r"
+public_flat_rd -module "mmu" -var "state"
+
 // What rate the UART is *actually* running at. A driver that programs
 // the ns16550 divisor changes it out from under `+uart_clks`, and a
 // mismatch prints garbage - which looks like a firmware fault rather

@@ -59,6 +59,17 @@
 //   +uart_clks=N      clock cycles per UART bit (default 4). Must match what
 //                     the UART is actually running at - a driver that
 //                     programs the ns16550 divisor changes it.
+//   +watchskew=N      how many cycles after the watched PC retires to read
+//                     the register file (default 3). Not a tuning knob: the
+//                     register file is written in WB, so at the moment an
+//                     instruction retires the one or two *before* it have
+//                     not landed yet, and reading the array then reports
+//                     their previous values. At a function entry that is
+//                     exactly the argument registers - the two `mv`s that
+//                     set them are still in flight - so the dump shows the
+//                     previous call's arguments and looks like a hardware
+//                     bug. It did, twice, in one afternoon. Zero reproduces
+//                     the old behaviour.
 //   +watchpc=ADDR     dump the integer registers the first time a *retired*
 //                     instruction is at ADDR. `+watchlast` takes the last
 //                     occurrence instead, which is what you want when the
@@ -67,6 +78,37 @@
 //                     console: the error code it decided to hang on is still
 //                     in a register at the point it branches to its hang
 //                     loop, and there is no other way to read it.
+//   +checkreads       compare every SDRAM read the interconnect completes
+//                     against what the modelled part actually holds, and
+//                     report the first few that disagree. This asks a
+//                     different question from every other probe here: not
+//                     "where did the machine go" but "was what it read
+//                     real". A whole boot's worth of accesses is checked,
+//                     which is why it is a flag - it costs a compare per
+//                     acknowledged transfer.
+//   +checkfetch       the same question for instructions. `+checkreads`
+//                     cannot answer it: a fetch that hits in the I-cache
+//                     never reaches the bus, so the only place to catch a
+//                     cache handing back the wrong word is where the core
+//                     takes it.
+//   +checkmmu         walk the page tables in C++ and compare against what
+//                     rtl/mmu.v resolved, on every translation both TLBs
+//                     answer. Software cannot check this - not seeing the
+//                     translation is the point of having one - so a wrong
+//                     physical address is invisible from inside the machine
+//                     and shows up only as whatever the program did next.
+//   +readtrace=ADDR:LEN:FILE
+//                     log every SDRAM read the interconnect completes inside
+//                     [ADDR, ADDR+LEN) as "cycle address data master". For
+//                     watching software walk a structure: the *sequence* of
+//                     addresses is the thing, and it is not recoverable from
+//                     a PC trace once the code is a loop over a pointer.
+//   +traptrace=FILE   every trap the core takes, as "cycle pc". Traps are
+//                     the one thing that can interrupt an instruction
+//                     sequence without appearing in it, so when a register
+//                     write goes missing between two adjacent instructions
+//                     this is what says whether anything happened in
+//                     between.
 //   +savemem=ADDR:LEN:FILE
 //                     write LEN bytes of SDRAM starting at ADDR to FILE when
 //                     the run ends. +peek reads a word; this reads a
@@ -484,6 +526,48 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// An Sv32 walk in C++, for checking the one in rtl/mmu.v
+// ---------------------------------------------------------------------------
+// Deliberately written from the spec rather than from mmu.v: a re-implementation
+// that copies the design's structure agrees with its bugs. Two levels, leaf at
+// either, and no permission checking - this is here to answer "is that the
+// right address", and the hardware has already said it did not fault.
+//
+// Returns false when the walk cannot be completed from the modelled part -
+// a table outside the SDRAM window, which is not a disagreement.
+struct Sv32 {
+    static bool walk(SdramModel &mem, uint32_t satp_ppn, uint32_t va,
+                     uint32_t *pa_out)
+    {
+        uint32_t pte1;
+        if (!read32(mem, (satp_ppn << 12) + ((va >> 22) << 2), &pte1))
+            return false;
+        if (!(pte1 & 1))                       return false;   // invalid
+        if (pte1 & 0x2 || pte1 & 0x8) {                        // R or X: leaf
+            *pa_out = ((pte1 >> 20) << 22) | (va & 0x3FFFFF);
+            return true;
+        }
+        uint32_t pte2;
+        if (!read32(mem, ((pte1 >> 10) << 12) + (((va >> 12) & 0x3FF) << 2),
+                    &pte2))
+            return false;
+        if (!(pte2 & 1))                       return false;
+        *pa_out = ((pte2 >> 10) << 12) | (va & 0xFFF);
+        return true;
+    }
+
+private:
+    static bool read32(SdramModel &mem, uint32_t addr, uint32_t *out)
+    {
+        if ((addr >> 24) != 0x90 && (addr >> 24) != 0x91) return false;
+        const uint32_t w = (addr - 0x90000000u) >> 1;
+        if (w + 1 >= mem.words()) return false;
+        *out = mem.storage()[w] | ((uint32_t)mem.storage()[w + 1] << 16);
+        return true;
+    }
+};
+
+// ---------------------------------------------------------------------------
 // UART receiver, same shape as the SoC testbenches: hunt for the start bit,
 // then sample each of the eight data bits in the middle of its window.
 // ---------------------------------------------------------------------------
@@ -690,6 +774,8 @@ int main(int argc, char **argv) {
     const uint32_t watch_pc = (uint32_t)plusarg_long(argc, argv, "watchpc", 0);
     bool         watch_hit = false;
     const bool   watch_last = plusarg(argc, argv, "watchlast") != nullptr;
+    const long   watch_skew = plusarg_long(argc, argv, "watchskew", 3);
+    long         watch_arm  = -1;   // cycles left before sampling the regfile
     long         watch_count = 0;
     uint32_t     watch_regs[32] = {0};
     static const int BRANCH_RING = 16;
@@ -703,6 +789,40 @@ int main(int argc, char **argv) {
                                                max_cycles > 2000 ? max_cycles - 2000 : 0);
     long         verdict_at = -1;
     long         stop_at    = -1;   // cycle +stopon's text completed
+    const bool   check_reads = plusarg(argc, argv, "checkreads") != nullptr;
+    long         reads_checked = 0;
+    long         reads_bad     = 0;
+    const bool   check_fetch = plusarg(argc, argv, "checkfetch") != nullptr;
+    long         fetch_checked = 0;
+    long         fetch_bad     = 0;
+    const bool   check_mmu  = plusarg(argc, argv, "checkmmu") != nullptr;
+    long         xlat_checked = 0;
+    long         xlat_bad     = 0;
+
+    FILE *tt_fp = nullptr;
+    if (const char *f = plusarg(argc, argv, "traptrace")) {
+        tt_fp = fopen(f, "w");
+        if (!tt_fp) printf("traptrace: cannot write %s\n", f);
+    }
+
+    // +readtrace=ADDR:LEN:FILE
+    uint32_t  rt_lo = 0, rt_hi = 0;
+    FILE     *rt_fp = nullptr;
+    if (const char *spec = plusarg(argc, argv, "readtrace")) {
+        const std::string sp(spec);
+        const size_t c1 = sp.find(':');
+        const size_t c2 = (c1 == std::string::npos) ? c1 : sp.find(':', c1 + 1);
+        if (c2 == std::string::npos) {
+            printf("readtrace \"%s\": expected ADDR:LEN:FILE\n", spec);
+        } else {
+            rt_lo = (uint32_t)strtoul(sp.substr(0, c1).c_str(), nullptr, 0);
+            rt_hi = rt_lo + (uint32_t)strtoul(
+                        sp.substr(c1 + 1, c2 - c1 - 1).c_str(), nullptr, 0);
+            rt_fp = fopen(sp.substr(c2 + 1).c_str(), "w");
+            if (!rt_fp) printf("readtrace: cannot write %s\n",
+                               sp.substr(c2 + 1).c_str());
+        }
+    }
     uint32_t     result     = 0;
     double       now_ns     = 0.0;
 
@@ -732,6 +852,130 @@ int main(int argc, char **argv) {
             first_trap_epc    = root->soc_top__DOT__CPU__DOT__CSR__DOT__mepc_r;
             first_trap_tval   = root->soc_top__DOT__CPU__DOT__CSR__DOT__mtval_r;
         }
+        // ---- every read, against what the part holds ----
+        //
+        // The interconnect's `fin_ack` is the acknowledgement it hands the
+        // owning master, and `fin_dat` the word it hands over with it, so
+        // this is the last point where the data is still the bus's rather
+        // than a cache's. Comparing it with the model's storage catches a
+        // controller, an arbiter or a decode returning the wrong word -
+        // which is invisible from software, because software has nothing to
+        // compare against.
+        //
+        // Writes are skipped rather than checked: the controller may
+        // acknowledge one before the array has taken it, so a write's
+        // `fin_dat` is not a claim about memory.
+        if (rt_fp &&
+            root->soc_top__DOT__BUS__DOT__fin_ack &&
+            !root->soc_top__DOT__BUS__DOT__s_we) {
+            const uint32_t a = root->soc_top__DOT__BUS__DOT__s_adr;
+            if (a >= rt_lo && a < rt_hi)
+                fprintf(rt_fp, "%ld %08x %08x %s\n", cycles, a,
+                        root->soc_top__DOT__BUS__DOT__fin_dat,
+                        root->soc_top__DOT__BUS__DOT__sel_m1 ? "data" :
+                        root->soc_top__DOT__BUS__DOT__sel_m2 ? "walker"
+                                                             : "fetch");
+        }
+
+        if (check_reads &&
+            root->soc_top__DOT__BUS__DOT__fin_ack &&
+            !root->soc_top__DOT__BUS__DOT__s_we) {
+            const uint32_t a = root->soc_top__DOT__BUS__DOT__s_adr;
+            if ((a >> 24) == 0x90 || (a >> 24) == 0x91) {
+                const uint32_t w = (a - 0x90000000u) >> 1;
+                if (w + 1 < sdram.words()) {
+                    const uint32_t want = sdram.storage()[w] |
+                                          ((uint32_t)sdram.storage()[w + 1] << 16);
+                    const uint32_t got = root->soc_top__DOT__BUS__DOT__fin_dat;
+                    reads_checked++;
+                    if (got != want) {
+                        reads_bad++;
+                        if (reads_bad <= 12) {
+                            const char *who =
+                                root->soc_top__DOT__BUS__DOT__sel_m1 ? "data" :
+                                root->soc_top__DOT__BUS__DOT__sel_m2 ? "walker"
+                                                                     : "fetch";
+                            printf("\n** bad read at cycle %ld: [0x%08x] = "
+                                   "0x%08x, bus returned 0x%08x (%s master)\n",
+                                   cycles, a, want, got, who);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- and every instruction the core takes ----
+        //
+        // `ibus_wait` low means the word on `imem_rdata` is the one the core
+        // is about to execute, whether it came from the cache or the bus.
+        if (check_fetch && !root->soc_top__DOT__BUSADAPT__DOT__ibus_wait) {
+            const uint32_t a = root->soc_top__DOT__BUSADAPT__DOT__imem_addr & ~3u;
+            if ((a >> 24) == 0x90 || (a >> 24) == 0x91) {
+                const uint32_t w = (a - 0x90000000u) >> 1;
+                if (w + 1 < sdram.words()) {
+                    const uint32_t want = sdram.storage()[w] |
+                                          ((uint32_t)sdram.storage()[w + 1] << 16);
+                    const uint32_t got = root->soc_top__DOT__BUSADAPT__DOT__imem_rdata;
+                    fetch_checked++;
+                    if (got != want) {
+                        fetch_bad++;
+                        if (fetch_bad <= 12)
+                            printf("\n** bad fetch at cycle %ld: [0x%08x] = "
+                                   "0x%08x, core got 0x%08x\n",
+                                   cycles, a, want, got);
+                    }
+                }
+            }
+        }
+
+        // ---- and every translation, against the tables it came from ----
+        if (check_mmu) {
+            // The address the hardware actually translated: the live `va` on
+            // a TLB hit (state S_IDLE), the latched `va_r` on a concluded
+            // walk. Getting this wrong is not a subtle inaccuracy - it
+            // manufactures disagreements on every walk, because the live one
+            // has moved on. See sim/verilator_soc.vlt.
+            struct { const char *name; uint32_t req, resolved, fault, va, satp, pa; } t[2] = {
+                {"itlb",
+                 root->soc_top__DOT__CPU__DOT__IMMU__DOT__req,
+                 root->soc_top__DOT__CPU__DOT__IMMU__DOT__resolved,
+                 root->soc_top__DOT__CPU__DOT__IMMU__DOT__fault,
+                 root->soc_top__DOT__CPU__DOT__IMMU__DOT__state == 0
+                     ? root->soc_top__DOT__CPU__DOT__IMMU__DOT__va
+                     : root->soc_top__DOT__CPU__DOT__IMMU__DOT__va_r,
+                 root->soc_top__DOT__CPU__DOT__IMMU__DOT__satp_ppn,
+                 root->soc_top__DOT__CPU__DOT__IMMU__DOT__pa},
+                {"dtlb",
+                 root->soc_top__DOT__CPU__DOT__MMU__DOT__req,
+                 root->soc_top__DOT__CPU__DOT__MMU__DOT__resolved,
+                 root->soc_top__DOT__CPU__DOT__MMU__DOT__fault,
+                 root->soc_top__DOT__CPU__DOT__MMU__DOT__state == 0
+                     ? root->soc_top__DOT__CPU__DOT__MMU__DOT__va
+                     : root->soc_top__DOT__CPU__DOT__MMU__DOT__va_r,
+                 root->soc_top__DOT__CPU__DOT__MMU__DOT__satp_ppn,
+                 root->soc_top__DOT__CPU__DOT__MMU__DOT__pa},
+            };
+            for (int k = 0; k < 2; k++) {
+                if (!t[k].resolved || t[k].fault) continue;
+                uint32_t want;
+                if (!Sv32::walk(sdram, t[k].satp, t[k].va, &want)) continue;
+                xlat_checked++;
+                if (want != t[k].pa) {
+                    xlat_bad++;
+                    if (xlat_bad <= 12)
+                        printf("\n** bad %s translation at cycle %ld: "
+                               "va 0x%08x -> 0x%08x, tables say 0x%08x "
+                               "(satp ppn 0x%05x)\n",
+                               t[k].name, cycles, t[k].va, t[k].pa, want,
+                               t[k].satp);
+                }
+            }
+        }
+
+        if (top->trap && tt_fp)
+            fprintf(tt_fp, "%ld %08x\n", cycles,
+                    root->soc_top__DOT__CPU__DOT__id_ex_pc);
+
         if (top->trap) {
             traps++;
             if (first_trap < 0) {
@@ -748,10 +992,17 @@ int main(int argc, char **argv) {
         const bool     retired = root->soc_top__DOT__CPU__DOT__instret_retire;
         const uint32_t ret_pc  = root->soc_top__DOT__CPU__DOT__id_ex_pc;
 
+        // Arm on the match, sample `watch_skew` cycles later. See the note on
+        // +watchskew: reading the register file in the retire cycle catches
+        // the two preceding instructions mid-flight and reports what their
+        // destinations held *before* the call being watched.
         if (watch_pc && (watch_last || !watch_hit) && retired &&
             ret_pc == watch_pc) {
-            watch_hit = true;
             watch_count++;
+            watch_arm = watch_skew;
+        }
+        if (watch_arm >= 0 && watch_arm-- == 0) {
+            watch_hit = true;
             for (int r = 0; r < 32; r++)
                 watch_regs[r] = root->soc_top__DOT__CPU__DOT__RF__DOT__regs[r];
         }
@@ -862,6 +1113,9 @@ int main(int argc, char **argv) {
     const auto   wall_end = std::chrono::steady_clock::now();
     const double secs = std::chrono::duration<double>(wall_end - wall_start).count();
 
+    if (rt_fp) fclose(rt_fp);
+    if (tt_fp) fclose(tt_fp);
+
 #if VM_TRACE
     if (tfp) { tfp->close(); delete tfp; }
 #endif
@@ -875,6 +1129,30 @@ int main(int argc, char **argv) {
         else
             printf("stopon \"%s\": never seen in %ld cycles\n",
                    uart_stop_on.c_str(), cycles);
+    }
+    if (check_reads) {
+        if (reads_bad)
+            printf("SDRAM reads checked: %ld, **%ld returned the wrong word**\n",
+                   reads_checked, reads_bad);
+        else
+            printf("SDRAM reads checked: %ld, all matched the part\n",
+                   reads_checked);
+    }
+    if (check_fetch) {
+        if (fetch_bad)
+            printf("instruction fetches checked: %ld, **%ld were the wrong "
+                   "word**\n", fetch_checked, fetch_bad);
+        else
+            printf("instruction fetches checked: %ld, all matched memory\n",
+                   fetch_checked);
+    }
+    if (check_mmu) {
+        if (xlat_bad)
+            printf("translations checked: %ld, **%ld disagreed with the page "
+                   "tables**\n", xlat_checked, xlat_bad);
+        else
+            printf("translations checked: %ld, all agreed with the page "
+                   "tables\n", xlat_checked);
     }
     if (traps) {
         printf("traps taken: %ld (first at cycle %ld)\n", traps, first_trap);

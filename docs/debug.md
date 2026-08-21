@@ -56,6 +56,39 @@ The tracer is a `$fdisplay` observer, not trace hardware. Real on-chip
 tracing (compressed branch trace out a pin, à la RISC-V N-Trace) is a
 different thing entirely, and calling this that would overstate it.
 
+## Asking the machine, under Verilator
+
+`sim/verilator_soc.cpp` carries the probes that exist because firmware owns
+the console and says nothing when it fails. They fall into two groups, and the
+distinction matters more than the list - see PRACTICES §30.
+
+**Probes that check.** Each compares the hardware against an independent model
+and prints one line unless something disagrees. Add them to any run:
+
+```sh
+cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage.hex \
+    +uart_clks=224 +sdram_words=16777216 +checkreads +checkfetch +checkmmu
+```
+
+| | Checks |
+|---|---|
+| `+checkreads` | every word the interconnect acknowledges, against the modelled SDRAM |
+| `+checkfetch` | every instruction the core consumes - which `+checkreads` cannot see, because an I-cache hit never reaches the bus |
+| `+checkmmu` | every address both TLBs resolve, against an Sv32 walk of the same tables |
+
+**Probes that report.** These print state for you to read, which means you
+need a theory of what they mean. That theory has been wrong three times here,
+so treat a surprising reading as a question about the probe first:
+
+| | |
+|---|---|
+| `+watchpc=ADDR` | integer registers when a *retired* instruction is at ADDR. `+watchlast` takes the last occurrence rather than the first. |
+| `+watchskew=N` | how many cycles later to read the register file (default 3). Not a tuning knob: at N=0 the one or two instructions *before* the watched PC have not written back, so a dump at a function entry shows the *previous* call's arguments. |
+| `+peek=ADDR` | one 32-bit word at the end of the run, up to four times |
+| `+savemem=ADDR:LEN:FILE` | a region of SDRAM to a file, for `dtc`, `objdump` or `cmp` to judge |
+| `+readtrace=ADDR:LEN:FILE` | every read inside a region as `cycle address data master`, for watching software walk a structure |
+| `+stopon=TEXT` | end the run when TEXT comes out of the UART. Software this project did not write ends a boot by printing, not by storing a verdict word. |
+
 ## JTAG and OpenOCD: not implemented
 
 This is the honest gap. `open-ocd` is a `brew install` away and
