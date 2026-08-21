@@ -489,6 +489,15 @@ module core_ooo #(
                 12'h100, 12'h104, 12'h105, 12'h106, 12'h140, 12'h141, 12'h142,
                 12'h143, 12'h144, 12'h180,
                 12'h300, 12'h301, 12'h302, 12'h303, 12'h304, 12'h305, 12'h306,
+                // mstatush, and the same story as in rtl/cpu_core.v - which
+                // is the point. That fix landed on the in-order core only,
+                // and this line is the second half of it, eight months late,
+                // because nothing ever asked this core for the CSR: OpenSBI
+                // is the only thing that reads it and `make sim_opensbi`
+                // builds CORE=inorder. The wide core hung in `_start_hang`
+                // with no console the first time a kernel image was pointed
+                // at it. docs/practices.md section 26.
+                12'h310,
                 12'h320,
                 12'h340, 12'h341, 12'h342, 12'h343, 12'h344,
                 12'hB00, 12'hB02, 12'hB80, 12'hB82,
