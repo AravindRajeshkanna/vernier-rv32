@@ -1218,6 +1218,62 @@ needs it.
 
 ---
 
+## 35. A failed build must not leave a runnable artifact
+
+Six board targets in `fpga/synth/synth_ecp5.sh` write the same
+`fpga/build/ulx3s_top.bit`, carrying six different programs, and
+`openFPGALoader` cannot tell them apart.
+
+A `BOARD=ulx3s85-ram` build failed in place-and-route — it drew a placement
+seed whose routed Fmax came in at 24.87 MHz against a 25.00 MHz constraint,
+and nextpnr treats an unmet constraint as a hard error. The bitstream from an
+earlier `BOARD=ulx3s85` run was still sitting there. The board got flashed with
+it, came up with nothing in block RAM, fell through to the SD path it was
+specifically meant to avoid, and printed:
+
+```
+=== RV32IMA SoC boot ROM ===
+SPI/SD init...
+  CMD0 failed after 10 tries: 0x000000FF
+BOOT FAILED: no SD card
+```
+
+Every line of that is correct. It is an accurate report about a bitstream
+nobody meant to flash. The debugging it invites — the card, the slot, the SPI
+wiring, the boot ROM — is all downstream of a build that had already failed
+and said so.
+
+**The general shape: a build step that fails must not leave behind something
+that still runs.** `set -e` stops the script; it does not undo the filesystem.
+The previous artifact is byte-for-byte as loadable as a correct one, has no
+marking that distinguishes it, and sits at exactly the path the next
+documented command names. Deleting the outputs *before* the build starts is
+the whole fix, and it works because a missing file cannot be misread while a
+stale one is indistinguishable from a fresh one at the moment it matters.
+
+**A stamp that outlives what it describes is worse than no stamp.** This had a
+mitigation already: preloading targets copied their program next to the
+bitstream as `$TOP.bit.ramimage.hex`, so you could see what was in it. It
+failed for a reason worth stating, because it is not obvious — *only the
+preloading targets wrote it*. A later non-preload build overwrote the
+bitstream and left the stamp untouched, so the directory asserted that a
+bitstream carried a program that was no longer in it. A stale absence is
+ambiguous; a stale assertion is misleading, and it reads as evidence to
+somebody deciding whether to trust the artifact. Every target writes the stamp
+now, and it is deleted up front with everything else.
+
+The third instance of the same class in three changes, which is why it is a
+section rather than a comment: `make sim_linux`'s gate could not report a
+garbled boot because a garbled boot made the log binary and `grep -q` silently
+stops matching (§32's PR); `+ram=` was a documented harness feature that had
+never worked because nothing exercised it (§34); and now a build failure that
+leaves a loadable artifact. In all three the machinery was present, plausible,
+and answering a question nobody had checked it could answer.
+
+---
+
+---
+
 ## Conventions
 
 **Commits** are imperative and say what changed and why it matters — `Test
