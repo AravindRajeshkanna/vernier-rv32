@@ -13,36 +13,102 @@ make sim_linux                        # boot it
 
 ## Status, precisely
 
-**In QEMU (`qemu-system-riscv32 -M virt`) this kernel boots to userspace.**
-That is the whole chain except the hardware: the config, the ISA restriction,
-the cpio format, `/dev/console`, the libc-free `/init` and its raw system
-calls are all proven end to end.
+**In QEMU (`qemu-system-riscv32 -M virt`) this kernel boots to userspace**, and
+**on this SoC it now does too.**
 
-**On this SoC it now reaches the last initcall before `/init`.**
+```
+Freeing unused kernel image (initmem) memory: 152K
+Run /init as init process
+
+=== VERNIER-RV32: USERSPACE ===
+kernel  : Linux 6.18.45
+machine : riscv32
+pid     : 1
+
+--- /proc/cpuinfo ---
+processor       : 0
+hart            : 0
+isa             : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
+mmu             : sv32
+mvendorid       : 0x0
+marchid         : 0x0
+mimpid          : 0x0
+hart isa        : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
+
+=== VERNIER-RV32-LINUX-BOOT-OK ===
+```
+
+Verbatim from `make sim_linux`, which reaches the marker at cycle 132,938,924 —
+33 seconds of Verilator, and 5.3 seconds of wall time on a board at 25 MHz.
 
 | | |
 |---|---|
 | OpenSBI banner, platform, root domain, hand off to S-mode | ✅ |
 | Kernel entered, device tree parsed, `earlycon=sbi` up | ✅ |
 | memblock, Sv32 paging, the whole linear map | ✅ |
-| `unflatten_device_tree()` | ✅ **fixed — see below** |
+| `unflatten_device_tree()` | ✅ |
 | `Memory: 24316K/28672K available` | ✅ |
 | `SBI misaligned access exception delegation ok` | ✅ |
 | `clocksource: Switched to clocksource riscv_clocksource` | ✅ |
 | `riscv-plic: plic@3000000: mapped 8 interrupts ... for 2 contexts` | ✅ |
-| `4000000.serial: ttyS0 at MMIO 0x4000000 (irq = 1) is a 16550A` | ✅ |
+| `4000000.serial: ttyS0 at MMIO 0x4000000 (irq = 1) is a 16450` | ✅ |
 | console handover from `sbi0` to `ttyS0` | ✅ |
-| `clk: Disabling unused clocks` | ✅ |
-| everything after that | ❌ **the console output garbles** |
+| `Run /init as init process`, and `/init` printing | ✅ |
+| **On hardware** | ❌ never attempted — `fpga/README.md` has the list |
 
-The remaining failure is the next one to chase: after Linux takes the console
-over from the SBI earlycon, the bytes coming out are mangled. It is not a
-decoding rate mismatch — the harness reports the UART running at divisor 14,
-224 clocks per bit, which is what `+uart_clks=224` assumes and what both
-OpenSBI and Linux compute from `clock-frequency` in `dts/soc.dts`. So it is
-either `rtl/uart.v`'s transmitter or the 8250 driver's use of it.
+The `isa` line is the point of printing `/proc/cpuinfo`: it is what the kernel
+parsed out of `dts/soc.dts` and believed, so a boot that gets here has proved
+the device tree was read *and* acted on. `zaamo`/`zalrsc` are the kernel
+spelling out what `a` decomposes into.
 
-## The bug that was in the way: an instruction executed under the wrong PC
+## The last bug: one letter in a device tree
+
+The console garbled the moment Linux took it over from the SBI earlycon:
+
+```
+clk: Disabling unused clocks
+Fet2KoecRt=:kL 6mrp1-op	h		i		r_m		m	m		m
+```
+
+It was not a decoding rate mismatch — the harness reported the UART running at
+divisor 14, 224 clocks per bit, which is what `+uart_clks=224` assumes and what
+both OpenSBI and Linux compute from `clock-frequency`. That was true, and it
+ruled out the wrong half. The rate was right; the bytes were not all being
+sent.
+
+`dts/soc.dts` said `compatible = "ns16550a"`. `rtl/uart.v` has no FIFOs — its
+own header says so, and so did a comment directly above that line: *"IIR
+reports bits 7:6 = 00, so a driver that checks will stay in 16450 mode."*
+
+Nothing checks. `drivers/tty/serial/8250/8250_of.c` sets `UPF_FIXED_TYPE`, so
+`uart_configure_port()` skips `autoconfig()` and the honest `IIR` is never
+read. The compatible string is not a hint — it is the configuration.
+`ns16550a` is `PORT_16550A` is `tx_loadsz = 16`, and `serial8250_tx_chars()`
+writes sixteen bytes into a one-byte holding register after a single `THRE`
+with no status check between them. `rtl/uart.v` takes a write only when the
+transmitter is free, so fifteen of every sixteen were discarded — correctly,
+and with nothing that could report it.
+
+`compatible = "ns16450", "ns16550";` now. The order is load-bearing: Linux
+scores a match by its index in *this* list and takes `ns16450`, while OpenSBI's
+`uart8250` driver matches `ns16550` and keeps its own console.
+
+**How it is tested.** `+checkuart` counts what software wrote to `THR` and
+compares it against what the receiver decodes off the wire. Before:
+
+```
+** UART dropped a byte at cycle 127768723: 0x72 'r' was written to THR while
+   the transmitter was still shifting the previous character out
+...
+UART bytes written to THR: 6336, **470 dropped by the transmitter**, 5866 sent
+```
+
+`r`,`e`,`e`,`i`,`n`,`g`,` `,`u`,`n`,`u`,`s`,`e` — the tail of `F`*reeing
+unuse*`d`, forty-eight cycles apart where a character takes 2,240. After:
+`6335 written, all 6335 sent, in order`. It runs in `make verilator_check`
+(part of `make verify`) and in `make sim_linux`.
+
+## The bug before that: an instruction executed under the wrong PC
 
 `fdt_next_node(blob, 0)` returned `-FDT_ERR_BADOFFSET` for a device tree that
 was demonstrably well formed. The reason was three instructions wide:
@@ -175,8 +241,15 @@ make linuxpayload
 # then press reset
 ```
 
-The image is 7.5 MB and the loader is stop-and-wait, a round trip per byte, so
-that is about **22 minutes** at 115200. `uartload.py` says so before it starts
-rather than leaving a progress bar to be interpreted. This has not been run on
-hardware - there is no reason to spend 22 minutes sending an image that does
-not finish booting in simulation.
+The image is 7,744,876 bytes and the loader is stop-and-wait, a round trip per
+byte, so that is about **22 minutes** at 115200. `uartload.py` says so before
+it starts rather than leaving a progress bar to be interpreted.
+
+**This has not been run on hardware**, and the reason is no longer "it does not
+boot in simulation". What stands between here and a board is a list, and it is
+in [fpga/README.md](../../fpga/README.md): the last measured Fmax predates five
+RTL-changing commits and this design has 1.5% of margin at 25 MHz; the largest
+region of SDRAM ever proved on silicon is 256 KB against the ~28 MB a kernel
+needs; and nothing exercising the MMU, the PLIC or the ns16550 has ever been
+built into a bitstream, though every one of them has a simulation target. A
+22-minute transfer is worth spending once those are answered and not before.

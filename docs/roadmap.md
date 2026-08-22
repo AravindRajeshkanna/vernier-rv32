@@ -990,25 +990,71 @@ Two of the three hard blockers are now closed:
    answers to `0x90` and `0x91` alike. `wb_sdram.v` needed no change — it
    always took its row from `wb_adr[24:12]`.
 
-### The kernel: built, booting in QEMU, and one bug from userspace here
+### The kernel: booting to userspace, here
 
 `software/linux/build-linux.sh` fetches Linux 6.18.45 and builds an rv32ima
 kernel with an initramfs in it. **In `qemu-system-riscv32 -M virt` it boots to
-userspace** — `/init` prints its banner, `uname`, its pid and `/proc/cpuinfo`.
+userspace, and on this SoC it does too**:
 
-**On this SoC it now reaches the last initcall before `/init`.** It parses the
-device tree, brings up `earlycon`, builds memblock and the whole linear map,
-turns Sv32 on, reports `Memory: 24316K/28672K available`, switches to
-`riscv_clocksource`, probes `rtl/plic.v` (`mapped 8 interrupts ... for 2
-contexts`) and `rtl/uart.v` (`ttyS0 at MMIO 0x4000000 ... is a 16550A`), hands
-the console over from the SBI earlycon to `ttyS0`, and gets to
-`clk: Disabling unused clocks`.
+```
+Run /init as init process
 
-Then the console output garbles. That is the next thing, and it is not a
-decoding-rate mismatch: the harness reports the UART at divisor 14, 224 clocks
-per bit, which is what both OpenSBI and Linux compute from `clock-frequency`.
+=== VERNIER-RV32: USERSPACE ===
+kernel  : Linux 6.18.45
+machine : riscv32
+pid     : 1
+isa     : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
+mmu     : sv32
+```
 
-### The bug that was in the way, and why nothing here could have caught it
+`make sim_linux` reaches the marker at cycle 132,938,924 — 33 seconds of
+Verilator, 5.3 seconds of wall time at 25 MHz. It parses the device tree,
+brings up `earlycon`, builds memblock and the whole linear map, turns Sv32 on,
+reports `Memory: 24316K/28672K available`, switches to `riscv_clocksource`,
+probes `rtl/plic.v` (`mapped 8 interrupts ... for 2 contexts`) and
+`rtl/uart.v` (`ttyS0 at MMIO 0x4000000 (irq = 1) is a 16450`), hands the
+console over from the SBI earlycon to `ttyS0`, frees its init memory and runs
+`/init`.
+
+Three defects stood between "the kernel starts" and that, and all three are
+recorded below and in `software/linux/README.md`. **It has never been run on a
+board.** `fpga/README.md` opens with the list of what to settle first.
+
+### The last one: a device tree that claimed a FIFO the hardware has not
+
+The console garbled the instant Linux took it over from the SBI earlycon —
+`clk: Disabling unused clocks` came out clean, and the next line arrived as
+`Fet2KoecRt=:kL`. That was *not* a decoding-rate mismatch, which the standing
+note here said and which was true: the harness reported divisor 14, 224 clocks
+per bit, exactly what both OpenSBI and Linux compute from `clock-frequency`.
+The rate was right. Not all of the bytes were being sent.
+
+`dts/soc.dts` said `compatible = "ns16550a"`, and `rtl/uart.v` has no FIFOs.
+The device tree even carried a comment saying so, ending "so a driver that
+checks will stay in 16450 mode" — and nothing checks.
+`drivers/tty/serial/8250/8250_of.c` sets `UPF_FIXED_TYPE`, so `autoconfig()`
+never runs and the honest `IIR` is never read. The compatible string is not a
+hint that a probe confirms; it *is* the configuration. `PORT_16550A` means
+`tx_loadsz = 16`, and `serial8250_tx_chars()` writes sixteen bytes into a
+one-byte holding register after a single `THRE` with no status check between
+them. `rtl/uart.v` takes a write only when the transmitter is free, so fifteen
+of every sixteen went nowhere, with nothing in the part that could report it.
+
+`compatible = "ns16450", "ns16550";` now — the part this is, and the register
+map it can be driven through. The order is load-bearing: Linux scores a match
+by its index in *that* list and takes `ns16450`, while OpenSBI's `uart8250`
+driver matches `ns16550` and keeps its own console.
+
+`+checkuart` is what settles it, and it settles it in the output of the failing
+run: it counts what software writes to `THR` against what the receiver decodes
+off the wire, and needs no baseline, because a discarded write is a defect on
+its own terms. Before, `6336 written, 470 dropped by the transmitter`, naming
+the first twelve by value — `r`,`e`,`e`,`i`,`n`,`g`,` `,`u`,`n`,`u`,`s`,`e`,
+the tail of "F*reeing unuse*d", 48 cycles apart where a character takes 2,240.
+After, `6335 written, all 6335 sent, in order`. It runs in
+`make verilator_check` and in `make sim_linux`. docs/practices.md section 32.
+
+### The one before that: an instruction executed under the wrong PC
 
 `unflatten_device_tree()` failed on a device tree that was demonstrably well
 formed. The cause was **an instruction executed under the wrong program

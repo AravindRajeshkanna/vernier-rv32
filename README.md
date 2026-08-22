@@ -35,9 +35,11 @@ card** (a 64 GB SDXC card never answers CMD0 — cards above 32 GB are not
 required to implement SPI mode, and the test bitstream sidesteps it by
 preloading RAM from the bitstream) and **video scan-out**, which is generated
 and simulated but not routed to the HDMI pins, since that needs a PLL and a
-TMDS serializer neither of which exists yet. **Read the "Can this run Linux?"
-section before you get too attached to that plan**: the honest answer is not with this core, and it
-explains why and what the realistic path looks like.
+TMDS serializer neither of which exists yet. **Linux boots on this SoC in
+simulation** — 6.18.45 rv32ima, through OpenSBI, to a userspace `/init` — and
+has never been run on a board; the ["Can this run Linux?"](#5-then-install-linux-and-test-cpu-performance--the-honest-picture)
+section is the full accounting, and `fpga/README.md` lists what to settle
+before the image is worth a 22-minute transfer.
 
 ## What's here
 
@@ -187,8 +189,8 @@ UART loader:             host -> ROM -> SDRAM -> running  (make sim_uartload)
   ...and its host script:  against a fake board on a pty    (make uartload-host)
 Sv32, megapages and 4 KB: page tables in SDRAM, both levels (make sim_mmusdram)
 OpenSBI:                 boots, detects the platform, hands off (make sim_opensbi)
-Linux 6.18 rv32ima:      boots to userspace under QEMU; on this
-                         SoC it stops in unflatten_device_tree  (make sim_linux)
+Linux 6.18 rv32ima:      boots to userspace on this SoC, and under
+                         QEMU; /init runs and prints            (make sim_linux)
 99 KB program from SDRAM: on a ULX3S 85F, over the serial line
 ULX3S 85F bitstream:     27.41 MHz, 20% LUT, 51% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
 ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (predates the D-cache and SDRAM)
@@ -502,11 +504,18 @@ The rest is genuinely board-dependent:
 
 ## 5. "Then install Linux and test CPU performance" — the honest picture
 
-This is the part I want to be direct about rather than let you find out the
-hard way: **this core (or a beginner-scale core like it) cannot run Linux**,
-and getting a homemade core to that point is a large undertaking — realistic
-open-source projects that do this represent months of dedicated engineering
-by experienced teams. Specifically, to boot Linux you need, at minimum:
+This section opened, for most of this project's life, with "**this core (or a
+beginner-scale core like it) cannot run Linux**". That was the honest reading
+at the time and it is now wrong: `make sim_linux` boots Linux 6.18.45 rv32ima
+to userspace on this SoC, through OpenSBI, out of external SDRAM, with `/init`
+printing back the ISA string the kernel parsed from `dts/soc.dts`.
+
+The rest of the sentence stands. It was a large undertaking, it took the
+better part of this repository's history, and the list below is what it
+actually required — kept in its original shape, with each item marked by what
+now exists rather than rewritten to sound inevitable. **In simulation**: the
+image has never been sent to a board. `fpga/README.md` opens with what to
+settle before it is.
 
 - **RV32IMA or RV64IMA** — this core is now genuinely RV32IMA (the A
   extension landed alongside M/S/U privilege modes), so this box is
@@ -547,13 +556,13 @@ by experienced teams. Specifically, to boot Linux you need, at minimum:
   a genuine first-stage loader; **OpenSBI boots**, detects this platform
   from `dts/soc.dts` and hands off to S-mode (`make sim_opensbi`); and
   there is now **an rv32ima Linux with an initramfs**, built from source by
-  `software/linux/build-linux.sh`, which **boots to userspace under
-  `qemu-system-riscv32`**. On this SoC that kernel gets through the device
-  tree, `earlycon`, memblock and Sv32 paging and then stops in
-  `unflatten_device_tree()` — one named failure, not a category.
-  `software/linux/README.md` is precise about what has been eliminated and
-  how. U-Boot is skipped: `mkimage.py` packs the kernel where `fw_jump`
-  expects it, so there is nothing for it to do.
+  `software/linux/build-linux.sh`, which **boots to userspace on this
+  SoC** — `Run /init as init process`, and `/init` printing `uname` and
+  `/proc/cpuinfo` back, in `make sim_linux`. In *simulation*: the image has
+  never been sent to a board, and `fpga/README.md` opens with what to settle
+  before it is. `software/linux/README.md` records the defects that were in
+  the way and how each was caught. U-Boot is skipped: `mkimage.py` packs the kernel where
+  `fw_jump` expects it, so there is nothing for it to do.
 - Performance that isn't so slow it's unusable — this core is pipelined
   and now has a branch predictor, but it's still single-issue and
   in-order, with no cache; real Linux-capable FPGA cores typically add
