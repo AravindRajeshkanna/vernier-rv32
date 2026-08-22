@@ -990,70 +990,57 @@ Two of the three hard blockers are now closed:
    answers to `0x90` and `0x91` alike. `wb_sdram.v` needed no change — it
    always took its row from `wb_adr[24:12]`.
 
-### The kernel: built, booting in QEMU, and not yet reaching userspace here
+### The kernel: built, booting in QEMU, and one bug from userspace here
 
 `software/linux/build-linux.sh` fetches Linux 6.18.45 and builds an rv32ima
 kernel with an initramfs in it. **In `qemu-system-riscv32 -M virt` it boots to
 userspace** — `/init` prints its banner, `uname`, its pid and `/proc/cpuinfo`.
-That proves the config, the ISA restriction, the cpio format, `/dev/console`
-and the libc-free `/init` all the way through, with only the hardware left.
 
-**On this SoC it stops at `unflatten_device_tree()`**, and the stopping point
-is exact rather than a hang. OpenSBI hands off, the kernel runs, parses the
-device tree, brings up `earlycon=sbi`, builds memblock, turns Sv32 on, runs at
-`0xC000_0000` and builds the whole linear map — then
-`OF: fdt: Error -4 processing FDT`, and everything after that is a cascade.
+**On this SoC it now reaches the last initcall before `/init`.** It parses the
+device tree, brings up `earlycon`, builds memblock and the whole linear map,
+turns Sv32 on, reports `Memory: 24316K/28672K available`, switches to
+`riscv_clocksource`, probes `rtl/plic.v` (`mapped 8 interrupts ... for 2
+contexts`) and `rtl/uart.v` (`ttyS0 at MMIO 0x4000000 ... is a 16550A`), hands
+the console over from the SBI earlycon to `ttyS0`, and gets to
+`clk: Disabling unused clocks`.
 
-The interesting part is the shape: that function walks the blob twice, once to
-size the result and once to build it. The first walk completes and the kernel
-allocates 8068 bytes for what it measured; the second, over the same bytes,
-fails. Same traversal, same input, different answer.
+Then the console output garbles. That is the next thing, and it is not a
+decoding-rate mismatch: the harness reports the UART at divisor 14, 224 clocks
+per bit, which is what both OpenSBI and Linux compute from `clock-frequency`.
 
-The failure is now three instructions wide. `fdt_next_tag()` returns
-`FDT_BEGIN_NODE`, `li a5,1` sets the value it is compared against, and
-`bne a0,a5` takes a branch it must not take — because on that one execution
-`a5` still holds `0x38`, the value it had inside the callee. **The register
-write does not arrive.** No trap falls within 20,000 cycles of it, and the
-probe reading `a5` is calibrated at the same PC: the first execution of that
-same `bne` reads `a5 = 1` correctly.
+### The bug that was in the way, and why nothing here could have caught it
 
-Three self-checking probes say the machine underneath is behaving, which is
-what makes that reading interesting rather than just another suspect.
+`unflatten_device_tree()` failed on a device tree that was demonstrably well
+formed. The cause was **an instruction executed under the wrong program
+counter**.
 
-Three self-checking probes now say the machine underneath it is behaving. Over
-one boot: **19,911,640 SDRAM reads all matched the part**, **133,755,481
-instruction fetches all matched memory**, and **125,322,100 address
-translations all agreed with a walk of the page tables written from the spec**.
-Those are `+checkreads`, `+checkfetch` and `+checkmmu`, and they stay in the
-tree — the memory system and the MMU are no longer suspects by measurement
-rather than by argument. `software/linux/README.md` has the rest of the
-elimination table and the calibration behind the `a5` reading.
+A `ret` was predicted taken to a stale BTB target left by a different call
+site. The core detected the misprediction and redirected correctly — but an
+**ITLB walk was in flight for the mispredicted address**, and `rtl/mmu.v`
+answers a concluded walk from the `va_r` it latched when the walk began. That
+is deliberate and right for the data side, where the live `va` is recomputed
+from forwarding and decays under a stall. The fetch side has the opposite
+property: `redirect_valid` overrides the PC freeze *on purpose*, so the PC
+moves while the walk runs.
 
-The mechanism is not known. Forcing `predicted_taken` low in `rtl/btb.v` moves
-the failure elsewhere, but that proves nothing — removing branch prediction
-retimes everything, so any timing-sensitive defect would move. It is recorded
-as a thing tried.
+So the walk handed back the mispredicted path's physical address, the fetch
+unit fetched a real instruction from a real address, and the IF/ID register
+paired it with the corrected PC. `li a4,3` executed where `li a5,1` should
+have. Two instructions later a `bne` took a branch it must not take, and
+libfdt reported a malformed tree.
 
-One earlier claim is withdrawn: "both cores fail identically" was over-read.
-The identical oops addresses are downstream of `of_root == NULL`, so they show
-only that both end up with a failed unflatten, not that the same instruction
-misbehaved in each. A timing-sensitive bug was never excluded.
+`rtl/mmu.v` now exposes `pa_va` — the virtual address its answer is the
+translation of — and both cores reject an answer that is not for the current
+`pc`. Rejecting costs a re-walk and cannot livelock: the walk still installs
+its TLB entry.
 
-Two real defects fell out of the hunt, which is the argument for doing it:
-
-- **`mstatush` was missing from the wide core.** `rtl/cpu_core.v` gained CSR
-  `0x310` when OpenSBI first needed it and `rtl/ooo/core_ooo.v` never did,
-  because `make sim_opensbi` builds `CORE=inorder`. **OpenSBI had never run
-  on the wide core at all** — pointed at it, the firmware took an
-  illegal-instruction trap on `csrc mstatush, t0` at cycle 6050 and hung in
-  `_start_hang` with no console. Section 26 again, and the second time this
-  exact gap has bitten.
-- **`FW_JUMP_FDT_ADDR` was below the kernel.** `arch/riscv` sets
-  `phys_ram_base` to the kernel's own load address and drops every memory
-  range beneath it, so a device tree there sits in memory the kernel has
-  decided does not exist. Moved to `0x91E0_0000`. This did not fix the
-  failure above — it is a separate defect that would have bitten the moment
-  the first one was cleared.
+**It needs an ITLB miss and a mispredict in flight simultaneously.** Every
+bare-metal program in this repository is small enough that the ITLB stops
+missing after its first pass, and riscv-tests never enables paging. Linux, with
+4 KB pages throughout its linear map and 2.4 MB of text, lives in ITLB
+eviction. `+checkdecode` now checks the pairing directly and runs in
+`make verilator_check`; docs/practices.md section 31 is about why the three
+probes that already passed could not have found it.
 
 ### Turning translation on had never included a second level
 

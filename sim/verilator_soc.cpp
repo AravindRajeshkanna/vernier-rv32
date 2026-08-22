@@ -103,6 +103,24 @@
 //                     watching software walk a structure: the *sequence* of
 //                     addresses is the thing, and it is not recoverable from
 //                     a PC trace once the code is a loop over a pointer.
+//   +checkdecode      check that the instruction the decoder is holding is
+//                     the instruction at the PC it is attributed to,
+//                     translating that PC through the page tables the same
+//                     way the hardware would. This is the one check the
+//                     others cannot make: +checkfetch proves the fetch unit
+//                     returned the right word for the address it was *given*,
+//                     and says nothing about whether that was the right
+//                     address to have asked for. An ITLB walk that resolves
+//                     after a mispredict redirect answers for the address it
+//                     started with, and the IF/ID register then pairs a real
+//                     instruction from the wrong path with the corrected PC.
+//   +pipetrace=FROM:TO:FILE
+//                     one line per cycle between FROM and TO: the fetch PC,
+//                     the retiring PC, the register writeback, and the
+//                     redirect and prediction state. For the case where an
+//                     instruction retires and its register write does not
+//                     appear - which no probe that samples the register file
+//                     can distinguish from sampling it at the wrong moment.
 //   +traptrace=FILE   every trap the core takes, as "cycle pc". Traps are
 //                     the one thing that can interrupt an instruction
 //                     sequence without appearing in it, so when a register
@@ -776,6 +794,7 @@ int main(int argc, char **argv) {
     const bool   watch_last = plusarg(argc, argv, "watchlast") != nullptr;
     const long   watch_skew = plusarg_long(argc, argv, "watchskew", 3);
     long         watch_arm  = -1;   // cycles left before sampling the regfile
+    long         watch_cycle = -1;  // when the sample was taken
     long         watch_count = 0;
     uint32_t     watch_regs[32] = {0};
     static const int BRANCH_RING = 16;
@@ -795,9 +814,33 @@ int main(int argc, char **argv) {
     const bool   check_fetch = plusarg(argc, argv, "checkfetch") != nullptr;
     long         fetch_checked = 0;
     long         fetch_bad     = 0;
+    const bool   check_dec = plusarg(argc, argv, "checkdecode") != nullptr;
+    long         dec_checked = 0;
+    long         dec_bad     = 0;
     const bool   check_mmu  = plusarg(argc, argv, "checkmmu") != nullptr;
     long         xlat_checked = 0;
     long         xlat_bad     = 0;
+
+    // +pipetrace=FROM:TO:FILE
+    long  pt_from = 0, pt_to = -1;
+    FILE *pt_fp = nullptr;
+    if (const char *spec = plusarg(argc, argv, "pipetrace")) {
+        const std::string sp(spec);
+        const size_t c1 = sp.find(':');
+        const size_t c2 = (c1 == std::string::npos) ? c1 : sp.find(':', c1 + 1);
+        if (c2 == std::string::npos) {
+            printf("pipetrace \"%s\": expected FROM:TO:FILE\n", spec);
+        } else {
+            pt_from = strtol(sp.substr(0, c1).c_str(), nullptr, 0);
+            pt_to   = strtol(sp.substr(c1 + 1, c2 - c1 - 1).c_str(), nullptr, 0);
+            pt_fp   = fopen(sp.substr(c2 + 1).c_str(), "w");
+            if (!pt_fp) printf("pipetrace: cannot write %s\n",
+                               sp.substr(c2 + 1).c_str());
+            else fprintf(pt_fp, "%-10s %-8s %-8s %-8s %-3s %-3s %-14s %-3s %-3s %s\n",
+                         "cycle", "fetchpc", "ifidpc", "ifidins", "we",
+                         "ret", "wb", "rdr", "mis", "pred|imemaddr imemdata iwait");
+        }
+    }
 
     FILE *tt_fp = nullptr;
     if (const char *f = plusarg(argc, argv, "traptrace")) {
@@ -928,6 +971,33 @@ int main(int argc, char **argv) {
             }
         }
 
+        // ---- is the decoder looking at the instruction at its own PC? ----
+        if (check_dec && root->soc_top__DOT__CPU__DOT__if_id_valid) {
+            const uint32_t va   = root->soc_top__DOT__CPU__DOT__if_id_pc;
+            const uint32_t satp = root->soc_top__DOT__CPU__DOT__IMMU__DOT__satp_ppn;
+            uint32_t pa = va;
+            bool have = true;
+            if (satp)                       // paging on: translate as the hart would
+                have = Sv32::walk(sdram, satp, va, &pa);
+            if (have && ((pa >> 24) == 0x90 || (pa >> 24) == 0x91)) {
+                const uint32_t w = (pa - 0x90000000u) >> 1;
+                if (w + 1 < sdram.words()) {
+                    const uint32_t want = sdram.storage()[w] |
+                                          ((uint32_t)sdram.storage()[w + 1] << 16);
+                    const uint32_t got = root->soc_top__DOT__CPU__DOT__if_id_instr;
+                    dec_checked++;
+                    if (got != want) {
+                        dec_bad++;
+                        if (dec_bad <= 12)
+                            printf("\n** decoding the wrong instruction at cycle "
+                                   "%ld: pc 0x%08x (pa 0x%08x) holds 0x%08x, "
+                                   "decoder has 0x%08x\n",
+                                   cycles, va, pa, want, got);
+                    }
+                }
+            }
+        }
+
         // ---- and every translation, against the tables it came from ----
         if (check_mmu) {
             // The address the hardware actually translated: the live `va` on
@@ -972,6 +1042,32 @@ int main(int argc, char **argv) {
             }
         }
 
+        if (pt_fp && cycles >= pt_from && cycles <= pt_to) {
+            const bool we = root->soc_top__DOT__CPU__DOT__mem_wb_reg_we;
+            const int  rd = root->soc_top__DOT__CPU__DOT__mem_wb_rd;
+            char wb[16];
+            if (we && rd) snprintf(wb, sizeof(wb), "x%-2d=%08x", rd,
+                                   root->soc_top__DOT__CPU__DOT__mem_wb_wb_data);
+            else          snprintf(wb, sizeof(wb), "%-14s", "-");
+            fprintf(pt_fp, "%-10ld %08x %08x %08x %-3s %-3s %-14s %-3s %-3s %d/%08x\n",
+                    cycles,
+                    root->soc_top__DOT__CPU__DOT__pc,
+                    root->soc_top__DOT__CPU__DOT__if_id_pc,
+                    root->soc_top__DOT__CPU__DOT__if_id_instr,
+                    root->soc_top__DOT__CPU__DOT__id_ex_reg_we ? "yes" : "-",
+                    root->soc_top__DOT__CPU__DOT__instret_retire ? "yes" : "-",
+                    wb,
+                    root->soc_top__DOT__CPU__DOT__redirect_valid ? "yes" : "-",
+                    root->soc_top__DOT__CPU__DOT__mispredict ? "yes" : "-",
+                    root->soc_top__DOT__CPU__DOT__id_ex_pred_taken,
+                    root->soc_top__DOT__CPU__DOT__id_ex_pred_target);
+            fseek(pt_fp, -1, SEEK_CUR);
+            fprintf(pt_fp, "|%08x %08x %s\n",
+                    root->soc_top__DOT__BUSADAPT__DOT__imem_addr,
+                    root->soc_top__DOT__BUSADAPT__DOT__imem_rdata,
+                    root->soc_top__DOT__BUSADAPT__DOT__ibus_wait ? "wait" : "-");
+        }
+
         if (top->trap && tt_fp)
             fprintf(tt_fp, "%ld %08x\n", cycles,
                     root->soc_top__DOT__CPU__DOT__id_ex_pc);
@@ -1003,6 +1099,7 @@ int main(int argc, char **argv) {
         }
         if (watch_arm >= 0 && watch_arm-- == 0) {
             watch_hit = true;
+            watch_cycle = cycles;
             for (int r = 0; r < 32; r++)
                 watch_regs[r] = root->soc_top__DOT__CPU__DOT__RF__DOT__regs[r];
         }
@@ -1115,6 +1212,7 @@ int main(int argc, char **argv) {
 
     if (rt_fp) fclose(rt_fp);
     if (tt_fp) fclose(tt_fp);
+    if (pt_fp) fclose(pt_fp);
 
 #if VM_TRACE
     if (tfp) { tfp->close(); delete tfp; }
@@ -1146,6 +1244,14 @@ int main(int argc, char **argv) {
             printf("instruction fetches checked: %ld, all matched memory\n",
                    fetch_checked);
     }
+    if (check_dec) {
+        if (dec_bad)
+            printf("decoded instructions checked: %ld, **%ld were not the "
+                   "instruction at their own PC**\n", dec_checked, dec_bad);
+        else
+            printf("decoded instructions checked: %ld, all matched their PC\n",
+                   dec_checked);
+    }
     if (check_mmu) {
         if (xlat_bad)
             printf("translations checked: %ld, **%ld disagreed with the page "
@@ -1172,8 +1278,9 @@ int main(int argc, char **argv) {
                 "zero","ra","sp","gp","tp","t0","t1","t2","s0","s1","a0","a1",
                 "a2","a3","a4","a5","a6","a7","s2","s3","s4","s5","s6","s7",
                 "s8","s9","s10","s11","t3","t4","t5","t6"};
-            printf("registers at pc 0x%08x (%s of %ld visits):\n", watch_pc,
-                   watch_last ? "last" : "first", watch_count);
+            printf("registers at pc 0x%08x (%s of %ld visits, cycle %ld):\n",
+                   watch_pc, watch_last ? "last" : "first", watch_count,
+                   watch_cycle);
             for (int r = 0; r < 32; r += 4) {
                 printf("  ");
                 for (int c = 0; c < 4; c++)

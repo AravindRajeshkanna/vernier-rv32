@@ -134,6 +134,42 @@ public_flat_rd -module "mmu" -var "req"
 public_flat_rd -module "mmu" -var "va_r"
 public_flat_rd -module "mmu" -var "state"
 
+// ---- 7. The pipeline, for a window of cycles ----
+//
+// +pipetrace prints what retired and what wrote back, cycle by cycle, over a
+// range. It exists because the remaining Linux failure is a register write
+// that does not arrive between two adjacent instructions, 33 million cycles
+// into a boot - too deep for a waveform (an unwindowed VCD of that run once
+// filled a 228 GB disk) and too fine for anything the probes above report.
+//
+// Both cores carry all of these under the same names, so one C++ path serves
+// both, as with the probes above.
+// The instruction the decoder is looking at, alongside the PC it is
+// attributed to. Those two coming apart is exactly the failure that a probe
+// on either one alone cannot see.
+public_flat_rd -module "cpu_core" -var "if_id_valid"
+public_flat_rd -module "core_ooo" -var "if_id_valid"
+public_flat_rd -module "cpu_core" -var "if_id_instr"
+public_flat_rd -module "cpu_core" -var "if_id_pc"
+public_flat_rd -module "cpu_core" -var "id_ex_reg_we"
+public_flat_rd -module "core_ooo" -var "if_id_instr"
+public_flat_rd -module "core_ooo" -var "if_id_pc"
+public_flat_rd -module "core_ooo" -var "id_ex_reg_we"
+public_flat_rd -module "cpu_core" -var "mem_wb_rd"
+public_flat_rd -module "cpu_core" -var "mem_wb_wb_data"
+public_flat_rd -module "cpu_core" -var "mem_wb_reg_we"
+public_flat_rd -module "cpu_core" -var "redirect_valid"
+public_flat_rd -module "cpu_core" -var "mispredict"
+public_flat_rd -module "cpu_core" -var "id_ex_pred_taken"
+public_flat_rd -module "cpu_core" -var "id_ex_pred_target"
+public_flat_rd -module "core_ooo" -var "mem_wb_rd"
+public_flat_rd -module "core_ooo" -var "mem_wb_wb_data"
+public_flat_rd -module "core_ooo" -var "mem_wb_reg_we"
+public_flat_rd -module "core_ooo" -var "redirect_valid"
+public_flat_rd -module "core_ooo" -var "mispredict"
+public_flat_rd -module "core_ooo" -var "id_ex_pred_taken"
+public_flat_rd -module "core_ooo" -var "id_ex_pred_target"
+
 // What rate the UART is *actually* running at. A driver that programs
 // the ns16550 divisor changes it out from under `+uart_clks`, and a
 // mismatch prints garbage - which looks like a firmware fault rather

@@ -18,163 +18,78 @@ That is the whole chain except the hardware: the config, the ISA restriction,
 the cpio format, `/dev/console`, the libc-free `/init` and its raw system
 calls are all proven end to end.
 
-```
-Run /init as init process
-
-=== VERNIER-RV32: USERSPACE ===
-kernel  : Linux 6.18.45
-machine : riscv32
-pid     : 1
-
---- /proc/cpuinfo ---
-processor       : 0
-hart            : 0
-isa             : rv32imac...
-mmu             : sv32
-
-=== VERNIER-RV32-LINUX-BOOT-OK ===
-```
-
-**On this SoC it does not reach userspace yet.** It gets a long way, and the
-stopping point is exact rather than a hang. `make sim_linux` produces:
+**On this SoC it now reaches the last initcall before `/init`.**
 
 | | |
 |---|---|
-| OpenSBI banner, platform, root domain | ✅ |
-| Hands off to S-mode at `0x9040_0000` | ✅ |
-| Kernel entered, `Linux version 6.18.45 ...` | ✅ |
-| Device tree parsed: machine model, `bootargs`, both memory nodes | ✅ |
-| SBI extensions detected (time, ipi, rfence, srst, dbcn, fwft) | ✅ |
-| `earlycon=sbi` console up | ✅ |
-| memblock built, OpenSBI's reserved regions honoured | ✅ |
-| Sv32 paging on, kernel running at `0xC000_0000` | ✅ |
-| Linear map built - all seven level-2 tables | ✅ |
-| `unflatten_device_tree()` | ❌ `OF: fdt: Error -4 processing FDT` |
+| OpenSBI banner, platform, root domain, hand off to S-mode | ✅ |
+| Kernel entered, device tree parsed, `earlycon=sbi` up | ✅ |
+| memblock, Sv32 paging, the whole linear map | ✅ |
+| `unflatten_device_tree()` | ✅ **fixed — see below** |
+| `Memory: 24316K/28672K available` | ✅ |
+| `SBI misaligned access exception delegation ok` | ✅ |
+| `clocksource: Switched to clocksource riscv_clocksource` | ✅ |
+| `riscv-plic: plic@3000000: mapped 8 interrupts ... for 2 contexts` | ✅ |
+| `4000000.serial: ttyS0 at MMIO 0x4000000 (irq = 1) is a 16550A` | ✅ |
+| console handover from `sbi0` to `ttyS0` | ✅ |
+| `clk: Disabling unused clocks` | ✅ |
+| everything after that | ❌ **the console output garbles** |
 
-Everything after that is a cascade: `of_root` is NULL, the zone print faults,
-and the oops handler faults reading kallsyms while trying to report it.
+The remaining failure is the next one to chase: after Linux takes the console
+over from the SBI earlycon, the bytes coming out are mangled. It is not a
+decoding rate mismatch — the harness reports the UART running at divisor 14,
+224 clocks per bit, which is what `+uart_clks=224` assumes and what both
+OpenSBI and Linux compute from `clock-frequency` in `dts/soc.dts`. So it is
+either `rtl/uart.v`'s transmitter or the 8250 driver's use of it.
 
-### What that failure is, and what it is not
+## The bug that was in the way: an instruction executed under the wrong PC
 
-`unflatten_device_tree()` walks the blob **twice** - once to size the result,
-once to build it. With `memblock=debug` the log shows the *first* walk
-completing and the kernel allocating 8068 bytes for what it measured, then the
-*second* walk over the same bytes failing. Same traversal, same input,
-different answer.
-
-The second round of instrumentation localised that a long way further. The
-failing call is exactly:
-
-```
-fdt_next_node(blob = 0x9de00000, offset = 0, &depth)  ->  -FDT_ERR_BADOFFSET
-```
-
-- `blob` is `dtb_early_va`, the fixmap address of the device tree, and it is
-  correct.
-- `offset` is 0, the root node, so this is the *first* step of the second
-  pass - it fails immediately, not part-way through.
-- libfdt can only return that from `fdt_check_node_offset_()`, which means
-  `fdt_next_tag()` did not report `FDT_BEGIN_NODE` for the root.
-- Every memory read that call makes is verified correct (below), and the tag
-  it reads at struct offset 0 is `0x00000001` - `FDT_BEGIN_NODE`.
-
-So the data is right and the answer is wrong.
-
-### What has been ruled out, and how
-
-Nothing here is an argument from reading the RTL. Each line is a measurement
-over a whole boot.
-
-| Suspect | Instrument | Result |
-|---|---|---|
-| The blob on disk | `dtc -I dtb` on what `+savemem` pulled out of SDRAM | 126 lines, valid |
-| The blob at the failing moment | `+savemem` at 30M and at 200M cycles, `cmp` | byte-identical; nothing writes it |
-| The blob's structure | an independent walker in Python implementing libfdt's own `fdt_next_tag` rules | 20 nodes, well-formed, walk completes |
-| Where the blob is | ran with the tree at `0x9020_0000` and at `0x91E0_0000` | identical failure |
-| The kernel image | `+savemem` of all 3.5 MB, `cmp` against the file | every byte of executable text identical |
-| **What memory hands back** | `+checkreads` | **19,911,640 SDRAM reads, all matched the part** |
-| **What the core executes** | `+checkfetch` | **133,755,481 fetches, all matched memory** |
-| **Address translation** | `+checkmmu`, walking the page tables in C++ | **125,322,100 translations, all agreed** |
-| The two-level page walk | `software/soc/mmutest.c`, extended | passes |
-| TLB refill under pressure | same, 4x the entry count | passes |
-| A timing race | both cores | byte-identical faulting addresses |
-| The memory map | dropped the block-RAM `memory` node | no change |
-| A write-back cache hiding a PTE | `cpu_wb.v` is write-through, and SDRAM is not even in `dc_cacheable` | n/a |
-
-The three self-checking probes are the substantial part. Between them they say
-that for the whole of a Linux boot, this SoC delivered the right word from the
-right address for every instruction and every load. That is a strong statement
-about the memory system and the MMU, and it is now a repeatable one.
-
-### Where it actually stops: a register write that does not arrive
-
-The instruction sequence is three long. `fdt_next_tag()` returns, `a5` is set
-to 1, and the result is compared against it:
+`fdt_next_node(blob, 0)` returned `-FDT_ERR_BADOFFSET` for a device tree that
+was demonstrably well formed. The reason was three instructions wide:
 
 ```
 c02205b4:  jal   c0220224 <fdt_next_tag>
 c02205b8:  li    a5,1
-c02205bc:  bne   a0,a5,c02205ec <.L144>     <- .L144 is `li s0,-4`
+c02205bc:  bne   a0,a5,c02205ec        # -> `li s0,-4`
 ```
 
-`fdt_next_tag` returns `FDT_BEGIN_NODE`, which is 1, so `a0 == a5` and the
-branch must not be taken. It is taken exactly once, on the 53rd and last
-execution, and that is where `-FDT_ERR_BADOFFSET` comes from.
+`fdt_next_tag` returned 1, `a5` should have been 1, and the branch was taken
+anyway — because `a5` still held `0x38`. The pipeline trace says why:
 
-At that execution `a5` holds **0x38** - the value it had inside
-`fdt_offset_ptr`, before `li a5,1`. The write did not arrive.
+```
+cycle      fetchpc  ifidpc   ifidins  ... mis pred     | imemaddr imemdata
+33147587   c0221620 c0220350 00008067 ... yes 1/c0221620| 90620350 00008067
+33147588   c02205b8 ...                                 | 90620350 ...
+33147604   c02205b8 ...                                 | 90621620 00300713
+33147605   c02205bc c02205b8 00300713 ...               | 906205bc ...   wait
+```
 
-That claim is only worth making because the probe reading it is calibrated at
-the *same PC*:
+The `ret` at `c0220350` was predicted taken to a **stale BTB target**
+(`c0221620`, left by another call site). The core detected that correctly and
+redirected to `c02205b8`. But an **ITLB walk was in flight for the
+mispredicted target**, and `rtl/mmu.v` answers a concluded walk from the
+`va_r` it latched when the walk started. So the walk handed back
+`c0221620`'s physical address, the fetch unit dutifully fetched from it — a
+real instruction at a real address, so nothing downstream objected — and the
+IF/ID register paired `li a4,3` from the wrong path with the corrected PC
+`c02205b8`. `a5` was never written; `a4` was.
 
-| | `a0` | `a5` | branch |
-|---|---|---|---|
-| first execution of `0xc02205bc` | 1 | **1** | not taken, correct |
-| last (53rd) execution | 1 | **0x38** | taken, wrong |
+The fix is in `rtl/mmu.v` and both cores: the module now exposes `pa_va`, the
+virtual address its answer is the translation *of*, and the fetch rejects an
+answer that is not for the current `pc`. Rejecting costs a re-walk and cannot
+livelock — the walk still installs its TLB entry.
 
-Same instruction, same probe, same sampling skew - so the probe can read `a5`
-there, and on the last pass the register genuinely does not hold what the
-instruction before it wrote. `li a5,1` retires 53 times, the same count as the
-`jal` before it and the `bne` after it, so it is not being skipped.
+**Why nothing caught it before.** It needs an ITLB miss and a mispredict in
+flight at the same moment. Every bare-metal program here is small enough that
+the ITLB stops missing after the first pass, and riscv-tests never enables
+paging at all. Linux, with 4 KB pages throughout its linear map and a 2.4 MB
+text section, is in ITLB eviction permanently.
 
-And nothing interrupts the sequence: `+traptrace` logs all 215 traps of the
-boot, and **none of them fall within 20,000 cycles** of that instruction.
-
-### What is not yet known
-
-The mechanism. Forcing `predicted_taken` low in `rtl/btb.v` moves the failure
-somewhere else entirely - the kernel stops earlier, in a spin, with no FDT
-error at all - but that experiment proves nothing: removing branch prediction
-changes the timing of everything, so *any* timing-sensitive defect would move.
-It is recorded here as a thing tried, not as evidence.
-
-Worth correcting from the previous round, too: "both cores fail identically"
-was over-read. The identical oops addresses are all downstream of
-`of_root == NULL`, so they only show that both cores end up with a failed
-unflatten - not that the same instruction misbehaved in each. A
-timing-sensitive bug was never actually excluded.
-
-### One real bug this did find
-
-**`mstatush` was missing from the wide core.** `rtl/cpu_core.v` gained CSR
-`0x310` when OpenSBI first needed it; `rtl/ooo/core_ooo.v` never did, and
-nothing noticed because `make sim_opensbi` builds `CORE=inorder`. Pointed at
-the wide core, OpenSBI took an illegal-instruction trap on
-`csrc mstatush, t0` at cycle 6050 and hung in `_start_hang` with no console.
-Fixed, and the wide core now boots OpenSBI and reaches the same point as the
-in-order one.
-
-### And one address that had to move
-
-`FW_JUMP_FDT_ADDR` was `0x9020_0000`, below the kernel. `arch/riscv` sets
-`phys_ram_base` to the kernel's own load address and drops every memory range
-below it, so a device tree there is in memory the kernel has decided does not
-exist. It is `0x91E0_0000` now, above the kernel, mirroring where QEMU's virt
-machine puts it.
-
-This did **not** fix the failure above, and that is worth saying plainly: it
-is a real defect found while chasing a different one, and it would have bitten
-as soon as the first one was fixed.
+**How it is tested.** `+checkdecode` compares the instruction the decoder is
+holding against the instruction at its own PC, translating that PC through the
+page tables independently. Before the fix it reports 35 wrong decodes in forty
+million cycles; after, none in 28 million checked. It runs in
+`make verilator_check`, which is part of `make verify`.
 
 ## How the pieces fit
 

@@ -75,6 +75,7 @@ cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage.hex \
 | `+checkreads` | every word the interconnect acknowledges, against the modelled SDRAM |
 | `+checkfetch` | every instruction the core consumes - which `+checkreads` cannot see, because an I-cache hit never reaches the bus |
 | `+checkmmu` | every address both TLBs resolve, against an Sv32 walk of the same tables |
+| `+checkdecode` | that the instruction the decoder holds is the instruction at the PC it is attributed to. The only one of these that can see a *pairing* go wrong - see PRACTICES §31 - and the one that found a core executing an instruction from a mispredicted path under the corrected PC. |
 
 **Probes that report.** These print state for you to read, which means you
 need a theory of what they mean. That theory has been wrong three times here,
@@ -87,6 +88,8 @@ so treat a surprising reading as a question about the probe first:
 | `+peek=ADDR` | one 32-bit word at the end of the run, up to four times |
 | `+savemem=ADDR:LEN:FILE` | a region of SDRAM to a file, for `dtc`, `objdump` or `cmp` to judge |
 | `+readtrace=ADDR:LEN:FILE` | every read inside a region as `cycle address data master`, for watching software walk a structure |
+| `+traptrace=FILE` | every trap as `cycle pc`. Traps are the one thing that interrupts an instruction sequence without appearing in it. |
+| `+pipetrace=FROM:TO:FILE` | one line per cycle over a window: fetch PC, the PC and instruction in IF/ID, the writeback, and the redirect and prediction state. For a 33-million-cycle boot where a waveform is not an option - an unwindowed VCD of one once filled a 228 GB disk. |
 | `+stopon=TEXT` | end the run when TEXT comes out of the UART. Software this project did not write ends a boot by printing, not by storing a verdict word. |
 
 ## JTAG and OpenOCD: not implemented

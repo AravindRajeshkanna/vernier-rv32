@@ -989,6 +989,54 @@ them can re-run the question in a minute instead of a week.
 
 ---
 
+## 31. "The right word from the right address" is two questions
+
+Three self-checking probes said this SoC was behaving, over a whole Linux
+boot: every word the interconnect acknowledged matched the modelled part
+(19.9M), every instruction the core consumed matched memory (133.8M), every
+address both TLBs resolved matched a walk of the page tables (125.3M).
+
+All three were true, and the core was executing the wrong instruction.
+
+`+checkfetch` asks whether the fetch unit returned the right word for the
+address it was **given**. It cannot ask whether that was the right address to
+have asked for, because it reads the address from the same wire the fetch unit
+does. The question it was missing is one level up: *is the instruction the
+decoder is holding the instruction at the PC it is attributed to?* That is
+`+checkdecode`, it needs the page tables to answer, and it found 35 wrong
+decodes in the first forty million cycles it ran.
+
+The defect it found is worth the space, because its shape is the argument.
+`rtl/mmu.v` answers a concluded walk from the `va_r` it latched when the walk
+began — deliberately, because for a data access the live `va` is recomputed
+from forwarding every cycle and decays under a stall. The instruction fetch
+does not have that problem and has the opposite one: `redirect_valid`
+overrides the PC freeze on purpose, so a mispredict *moves the PC* while a
+fetch-side walk is in flight. The walk then hands back the mispredicted path's
+physical address, and the IF/ID register pairs a real instruction from that
+address with the corrected PC.
+
+Every link in that chain is individually correct. The bus returned what memory
+holds. The translation was a correct translation — of the address it was asked
+about. The fetch returned the instruction at the address it was handed. Only
+the *pairing* was wrong, and a pairing is exactly what a probe on either side
+alone cannot see.
+
+The practical rule: when a check reads one of its two operands from the thing
+under test, it is not checking that operand. `+checkfetch` takes the address
+from the fetch unit; `+checkdecode` takes it from the program counter and
+derives the rest independently. That difference is the whole of why one found
+the bug and the other could not.
+
+And a second one, from the fix rather than the finding. The first version
+compared `pa_va[31:12] != pc[31:12]` — page numbers — and cleared 32 of the 35.
+The three it left were redirects *within a single page*, where the page number
+matches and the offset does not, and a physical address is `{ppn, va[11:0]}`.
+A fix that removes most of a symptom is the most dangerous kind, because the
+remainder looks like noise. The check is what said three were left.
+
+---
+
 ---
 
 ## Conventions
