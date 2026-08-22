@@ -317,14 +317,22 @@ static uint32_t uartload(void) {
      *
      * The console and the protocol share one wire, and the host reads the
      * next byte after each chunk expecting an acknowledgement. A progress
-     * message in between would arrive first and be read as one - and it
-     * cannot be filtered by value either, because 'E' is the NAK byte and
-     * "UART LOAD FAILED" contains one.
+     * message in between would arrive first and be read as one.
      *
      * So during a transfer this ROM emits acknowledgements and nothing else.
      * Every failure below sends its NAK *before* its explanation, so the host
      * sees the NAK where it is looking for it and a human reads the reason on
-     * the console afterwards. */
+     * the console afterwards.
+     *
+     * The ordering is still what makes a failure legible, but it is no longer
+     * what makes the protocol unambiguous - UARTLOAD_ACK and UARTLOAD_NAK are
+     * ASCII control codes now, which nothing here ever prints. This comment
+     * used to justify the rule by observing that "UART LOAD FAILED" contains
+     * the old NAK byte 'E'. That was true and it was the smaller half of the
+     * problem: the old ACK was 'K', and "KB" appears in the console output of
+     * every program in this repository, so console text could impersonate an
+     * *acknowledgement* to a host that had not even reached this code. See
+     * software/soc/soc.h. */
 
     /* 2. the header.
      *

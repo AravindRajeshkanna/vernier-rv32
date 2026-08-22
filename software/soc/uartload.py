@@ -38,8 +38,13 @@ import time
 
 MAGIC = 0x55434F53          # 'S','O','C','U' little-endian
 PROBE = b"\x55"             # 'U'
-ACK   = 0x4B                # 'K'
-NAK   = 0x45                # 'E'
+# ASCII ACK and NAK, and they are control codes deliberately. They used to be
+# 'K' and 'E', which are ordinary text on a wire the console also uses: "KB"
+# appears in the output of every program in this repository, so knocking at a
+# board that was *printing* rather than listening matched the 'K' of "KB" and
+# reported "ROM answered". Must match software/soc/soc.h.
+ACK   = 0x06                # ASCII ACK - the board never prints a control code
+NAK   = 0x15                # ASCII NAK
 
 # Must match soc.h. A load address outside these is refused by the ROM, which
 # is the safe direction - but saying so here means the mistake is caught
@@ -99,9 +104,53 @@ class Serial:
         termios.tcflush(self.fd, termios.TCIOFLUSH)
 
     def write(self, data):
+        """Write everything, waiting when the kernel's buffer is full.
+
+        The port is opened O_NONBLOCK, so os.write raises EAGAIN rather than
+        blocking once the outbound buffer fills - and it does fill, in the one
+        case that matters: knocking for thirty seconds at a board that is not
+        reading. Nothing consumes the probes, the buffer backs up, and this
+        raised BlockingIOError and printed a Python traceback where the script
+        was supposed to say "the ROM never answered".
+
+        Found by tests/uartload_host.py's chatty-board case, which is the
+        first thing here that ever let a knock run to its full timeout.
+        """
         while data:
-            n = os.write(self.fd, data)
+            try:
+                n = os.write(self.fd, data)
+            except BlockingIOError:
+                select.select([], [self.fd], [], 0.1)
+                continue
+            except OSError as e:
+                # The far end went away - the adapter was unplugged, or the
+                # board was power-cycled off. Say that, rather than unwinding
+                # a traceback through a script whose whole job is to be
+                # readable at a bench.
+                sys.exit(f"error: the serial port went away mid-transfer "
+                         f"({e.strerror}) - check the cable")
             data = data[n:]
+
+    def poke(self, data):
+        """Write if it fits, and shrug if it does not.
+
+        Knocking has a deadline, and `write` above is the wrong tool for it:
+        that one waits for room, which is right for the image (the ROM is
+        reading, and every byte must arrive) and wrong for a probe (nobody may
+        be reading at all). Retrying inside the write meant a board that never
+        drained its input held the knock loop past its own timeout and the
+        deadline was never re-checked - the script knocked forever at a board
+        that was never going to answer.
+
+        A dropped probe costs nothing: the next one is 2 ms away.
+        """
+        try:
+            os.write(self.fd, data)
+        except BlockingIOError:
+            pass
+        except OSError as e:
+            sys.exit(f"error: the serial port went away ({e.strerror}) - "
+                     f"check the cable")
 
     def read(self, n, timeout):
         """Up to `n` bytes, or fewer if `timeout` seconds pass first."""
@@ -140,7 +189,7 @@ def knock(port, timeout_s):
     # arrives in well under a millisecond when it arrives at all.
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        port.write(PROBE)
+        port.poke(PROBE)
         r = port.read(1, 0.002)
         if r and r[0] == ACK:
             return True
@@ -155,9 +204,7 @@ def expect_ack(port, what):
 
     Deliberately not "skip anything that isn't an ACK". The ROM prints nothing
     between the first acknowledgement and the last precisely so this can be
-    strict - see the comment in software/soc/bootrom.c. Filtering by value
-    would not work anyway: 'E' is the NAK byte and "UART LOAD FAILED" contains
-    one, so a permissive reader would turn a progress message into a rejection.
+    strict - see the comment in software/soc/bootrom.c.
     """
     r = port.read(1, 1.0)
     if not r:
@@ -165,9 +212,23 @@ def expect_ack(port, what):
     if r[0] == NAK:
         sys.exit(f"error: board rejected {what}; its console says why")
     if r[0] != ACK:
-        sys.exit(f"error: unexpected reply 0x{r[0]:02X} ({chr(r[0])!r}) after "
-                 f"{what} - the ROM should send nothing but acknowledgements "
-                 f"during a transfer")
+        # A printable byte here means the board is talking to a human, not to
+        # this script - it is running a program and printing, and never
+        # entered the loader. Saying so is the whole difference between a
+        # useful message and "unexpected reply 0x42".
+        extra = ""
+        if 0x20 <= r[0] < 0x7F:
+            extra = ("\n  0x%02X is the printable character %r, so the board "
+                     "is printing console\n  text rather than running the "
+                     "loader. The usual cause is a bitstream with a\n  program "
+                     "preloaded into block RAM: the ROM finds it, jumps "
+                     "straight to it,\n  and never opens the knock window. "
+                     "Build BOARD=ulx3s85 (no preload) and\n  check "
+                     "fpga/build/ulx3s_top.bit.target before flashing."
+                     % (r[0], chr(r[0])))
+        sys.exit(f"error: unexpected reply 0x{r[0]:02X} after {what} - the ROM "
+                 f"should send nothing but acknowledgements during a "
+                 f"transfer{extra}")
 
 
 def main():
