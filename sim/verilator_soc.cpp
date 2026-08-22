@@ -114,6 +114,17 @@
 //                     after a mispredict redirect answers for the address it
 //                     started with, and the IF/ID register then pairs a real
 //                     instruction from the wrong path with the corrected PC.
+//   +checkuart        check that every byte written to the UART's holding
+//                     register comes out on the wire, in order. The console
+//                     is the instrument the rest of this list reports
+//                     through, so when it is the thing that is broken the
+//                     evidence and the fault are the same signal: output
+//                     arrives thinned and unreadable, and every reading of it
+//                     is a guess about the decoder. This watches both ends
+//                     independently - what software wrote, and what the line
+//                     carried - so "the harness is decoding at the wrong
+//                     rate" and "the hardware threw the byte away" stop
+//                     looking alike.
 //   +pipetrace=FROM:TO:FILE
 //                     one line per cycle between FROM and TO: the fetch PC,
 //                     the retiring PC, the register writeback, and the
@@ -153,6 +164,7 @@
 #include <cinttypes>
 #include <string>
 #include <vector>
+#include <deque>
 #include <chrono>
 
 #include "Vsoc_top.h"
@@ -193,6 +205,75 @@ static int uart_clks_per_bit = 4;
 // interleaved with whatever else is printing.
 static std::string uart_stop_on;
 static bool        uart_stop_hit = false;
+
+// ---------------------------------------------------------------------------
+// `+checkuart`: what the program handed the transmitter, against what the
+// wire carried.
+//
+// The console is the one part of this machine whose output *is* the
+// instrument, so a fault in it disguises itself as a fault in everything
+// upstream. rtl/uart.v holds one byte and its TX_IDLE arm takes a write only
+// when the transmitter is free; a write that lands mid-character is
+// discarded, and there is no status bit that says so. What comes out is a
+// thinned version of what went in, which reads as a console decoding at the
+// wrong rate - a hypothesis about the harness rather than about the machine.
+//
+// Two counts and one queue. The counts say how many bytes software wrote and
+// how many the hardware threw away, which is the *cause*. The queue holds
+// the accepted bytes and the receiver pops one per completed frame, which
+// checks the stronger property - that the wire carries the bytes the
+// transmitter took, in order - on every run that prints anything.
+//
+// Neither needs calibrating against a known-good baseline: a dropped write is
+// a defect on its own terms, and so is a byte on the line that nothing wrote.
+// docs/practices.md section 30.
+// ---------------------------------------------------------------------------
+static bool uart_check       = false;
+static long uart_thr_writes  = 0;
+static long uart_thr_dropped = 0;
+static long uart_wire_bytes  = 0;
+static long uart_wire_bad    = 0;
+static std::deque<uint8_t> uart_accepted;
+
+static char uart_glyph(uint8_t b) {
+    return (b >= 0x20 && b < 0x7f) ? (char)b : '.';
+}
+
+// Called on the cycle a THR write is on the bus, with the transmitter's state
+// as the RTL will see it at the edge that takes the write.
+static void uart_thr_write(uint8_t b, bool busy, long cycle) {
+    uart_thr_writes++;
+    if (busy) {
+        uart_thr_dropped++;
+        if (uart_thr_dropped <= 12)
+            printf("\n** UART dropped a byte at cycle %ld: 0x%02x '%c' was "
+                   "written to THR while the transmitter was still shifting "
+                   "the previous character out\n",
+                   cycle, b, uart_glyph(b));
+    } else {
+        uart_accepted.push_back(b);
+    }
+}
+
+// Called by the receiver below as each frame completes on the line.
+static void uart_wire_byte(uint8_t b) {
+    uart_wire_bytes++;
+    if (uart_accepted.empty()) {
+        uart_wire_bad++;
+        if (uart_wire_bad <= 12)
+            printf("\n** UART sent 0x%02x '%c', which nothing wrote to THR\n",
+                   b, uart_glyph(b));
+        return;
+    }
+    const uint8_t want = uart_accepted.front();
+    uart_accepted.pop_front();
+    if (want != b) {
+        uart_wire_bad++;
+        if (uart_wire_bad <= 12)
+            printf("\n** UART sent 0x%02x '%c' where THR was given 0x%02x "
+                   "'%c'\n", b, uart_glyph(b), want, uart_glyph(want));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // A 16-bit SDR SDRAM, ported from sim/sdram_model.v
@@ -612,6 +693,7 @@ public:
                 if (tx) byte_ |= (uint8_t)(1u << bit_);
                 if (++bit_ == 8) {
                     idle_ = true;
+                    if (uart_check) uart_wire_byte(byte_);
                     if (!quiet_) { putchar((int)byte_); fflush(stdout); }
                     if (!uart_stop_on.empty() && !uart_stop_hit) {
                         tail_ += (char)byte_;
@@ -820,6 +902,7 @@ int main(int argc, char **argv) {
     const bool   check_mmu  = plusarg(argc, argv, "checkmmu") != nullptr;
     long         xlat_checked = 0;
     long         xlat_bad     = 0;
+    uart_check = plusarg(argc, argv, "checkuart") != nullptr;
 
     // +pipetrace=FROM:TO:FILE
     long  pt_from = 0, pt_to = -1;
@@ -883,6 +966,18 @@ int main(int argc, char **argv) {
         if (cycles == 4) top->rst = 0;
 
         uart.sample(top->uart_tx != 0);
+
+        // ---- and the other end of the same wire ----
+        //
+        // `write_thr` is combinational off the bus, so after this eval() it is
+        // the write the *next* edge will take - and `tx_state` is what that
+        // edge will see, because nothing but a THR write moves the
+        // transmitter out of TX_IDLE. So the two read here are consistent:
+        // busy now means this write is about to be discarded.
+        if (uart_check && root->soc_top__DOT__UART__DOT__write_thr)
+            uart_thr_write((uint8_t)root->soc_top__DOT__UART__DOT__wdata,
+                           root->soc_top__DOT__UART__DOT__tx_state != 0,
+                           cycles);
 
         // `trap` is a combinational pulse in EX; mcause/mepc/mtval are
         // written by the same edge, so reading them on the pulse cycle
@@ -1260,6 +1355,23 @@ int main(int argc, char **argv) {
             printf("translations checked: %ld, all agreed with the page "
                    "tables\n", xlat_checked);
     }
+    if (uart_check) {
+        // One byte may legitimately still be in the shift register when the
+        // run ends - a timeout does not drain the console the way `+stopon`
+        // does - and reporting that as lost would be the probe inventing a
+        // fault on every run that times out. Anything beyond it is real.
+        size_t stranded = uart_accepted.size();
+        if (stranded && root->soc_top__DOT__UART__DOT__tx_state != 0) stranded--;
+        if (uart_thr_dropped || uart_wire_bad || stranded)
+            printf("UART bytes written to THR: %ld, **%ld dropped by the "
+                   "transmitter**, %ld sent, %ld wrong on the wire, %zu never "
+                   "sent\n",
+                   uart_thr_writes, uart_thr_dropped, uart_wire_bytes,
+                   uart_wire_bad, stranded);
+        else
+            printf("UART bytes written to THR: %ld, all %ld sent, in order\n",
+                   uart_thr_writes, uart_wire_bytes);
+    }
     if (traps) {
         printf("traps taken: %ld (first at cycle %ld)\n", traps, first_trap);
         printf("  first trap: pc=0x%08x mcause=0x%08x mepc=0x%08x mtval=0x%08x\n",
@@ -1358,8 +1470,19 @@ int main(int argc, char **argv) {
     printf("SDRAM read setup margin: %.1f ns\n", sdram.ac_setup_ns());
     printf("result word (expect \"PASS\"): 0x%08x\n", result);
     printf("wall clock: %.2f s  (%.0f cycles/s)\n", secs, secs > 0 ? cycles / secs : 0.0);
+    // A program that ends by *printing* never writes the verdict word, so
+    // "no verdict" and "timed out" are not the same outcome and this used to
+    // call both of them a failure - printing "VERILATOR SOC TEST FAILED
+    // (timed out)" directly above `make sim_linux`'s "LINUX BOOT PASSED" on a
+    // boot that reached userspace and stopped on its own marker. Two verdicts
+    // that disagree teach you to read neither. The word is still the verdict
+    // when there is one; when the run ended on `+stopon` instead, that is
+    // what it says.
     if (result == RESULT_PASS)      printf("VERILATOR SOC TEST PASSED\n");
     else if (result == RESULT_FAIL) printf("VERILATOR SOC TEST FAILED\n");
+    else if (uart_stop_hit)
+        printf("VERILATOR SOC RUN ENDED ON +stopon (no verdict word; the "
+               "caller's gate decides)\n");
     else printf("VERILATOR SOC TEST FAILED (timed out after %ld cycles)\n", cycles);
     printf("---------------------------------------------\n");
 

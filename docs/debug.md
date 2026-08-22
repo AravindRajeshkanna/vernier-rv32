@@ -67,7 +67,8 @@ and prints one line unless something disagrees. Add them to any run:
 
 ```sh
 cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage.hex \
-    +uart_clks=224 +sdram_words=16777216 +checkreads +checkfetch +checkmmu
+    +uart_clks=224 +sdram_words=16777216 \
+    +checkreads +checkfetch +checkmmu +checkdecode +checkuart
 ```
 
 | | Checks |
@@ -76,6 +77,7 @@ cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage.hex \
 | `+checkfetch` | every instruction the core consumes - which `+checkreads` cannot see, because an I-cache hit never reaches the bus |
 | `+checkmmu` | every address both TLBs resolve, against an Sv32 walk of the same tables |
 | `+checkdecode` | that the instruction the decoder holds is the instruction at the PC it is attributed to. The only one of these that can see a *pairing* go wrong - see PRACTICES §31 - and the one that found a core executing an instruction from a mispredicted path under the corrected PC. |
+| `+checkuart` | that every byte written to the UART's holding register comes out on the wire, in order. The console is what all of the above report *through*, so when it is the broken thing the evidence and the fault are the same signal - output arrives thinned, and every reading of it is a guess about the decoder. This watches both ends independently. See PRACTICES §32. |
 
 **Probes that report.** These print state for you to read, which means you
 need a theory of what they mean. That theory has been wrong three times here,
