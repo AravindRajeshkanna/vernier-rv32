@@ -325,6 +325,26 @@ mkdir -p "$BUILD"
 # RTL needs no per-program conditionals - the board target picks the source.
 [ "$PRELOAD_RAM" = "1" ] && cp "$RAM_IMAGE" "$BUILD/ramimage.hex"
 
+# ---- fail closed: no stale bitstream survives a failed build ----
+#
+# Every board target writes the same $BUILD/$TOP.bit. Six of them do
+# (ulx3s85, -ram, -probe, -trapcheck, -sdramcheck, -sdramfull), carrying six
+# different programs, and `openFPGALoader` cannot tell them apart. So a build
+# that dies anywhere - nextpnr erroring, ecppack missing from PATH, a
+# ^C - leaves the *previous* target's bitstream sitting there looking exactly
+# like a fresh one, and the next command in the documented sequence flashes
+# it.
+#
+# That has now cost a bench session. A `-ram` build failed in nextpnr, the
+# bitstream from an earlier `ulx3s85` run stayed behind, and the board came up
+# with no program in RAM and fell through to the SD path it was specifically
+# supposed to be avoiding. The console output was correct and described a
+# different bitstream than the one that had just been built.
+#
+# Removing them first makes the failure unmistakable: no bitstream at all
+# rather than the wrong one. A missing file cannot be misread.
+rm -f "$BUILD/$TOP.bit" "$BUILD/$TOP.bit.target" "$BUILD/$TOP.bit.ramimage.hex"
+
 # Stated up front and again at the end: a bitstream is device-specific, and
 # loading one built for the wrong ECP5 fails in ways that look like a broken
 # design rather than a broken command line.
@@ -333,33 +353,138 @@ echo "=== yosys ==="
 ( cd "$BUILD" && yosys -p "read_verilog $YOSYS_DEFINES $(echo "$RTL" | sed "s|[^ ][^ ]*|$ROOT/&|g"); \
     synth_ecp5 -top $TOP -json $TOP.json" )
 
+# ---- place and route, retrying seeds until timing closes ----
+#
+# nextpnr treats an unmet clock constraint as a hard **error** and exits 1:
+#
+#   ERROR: Max frequency for clock ...: 24.87 MHz (FAIL at 25.00 MHz)
+#   0 warnings, 1 error
+#
+# and this design does not reliably close 25 MHz. Its placer is a
+# simulated-annealing search seeded from a constant, and the routed Fmax over
+# six measured seeds is 24.69, 24.87, 25.47, 26.62, 27.07, 27.63 - **two of
+# six below the constraint**. Whether a build succeeds is therefore a coin
+# weighted about 2:1, decided by a seed, and the failure arrives after eight
+# minutes of place-and-route with nothing to show for it.
+#
+# Retrying seeds is the standard answer to a marginal design and it is what
+# this does. It is a mitigation, not a fix: the fix is a shorter critical path,
+# and until that lands `fpga/README.md` says plainly that the margin is
+# approximately zero. A bitstream produced on the fourth seed is exactly as
+# correct as one produced on the first - the constraint is met or it is not -
+# but a design that needs four is one bad change away from needing forty.
+#
+# Skipped entirely if the caller pinned a seed, because then the seed is the
+# experiment.
 echo "=== nextpnr-ecp5 ==="
-nextpnr-ecp5 --"$DEVICE" --package "$PACKAGE" \
-    --json "$BUILD/$TOP.json" \
-    --lpf "$LPF" $PNR_EXTRA \
-    --textcfg "$BUILD/$TOP.config"
+pnr_seeds=${SEED_TRIES:-6}
+case "$PNR_EXTRA" in
+    *--seed*) pnr_seeds=1 ;;
+esac
+
+pnr_ok=0
+pnr_seed=""
+i=1
+while [ "$i" -le "$pnr_seeds" ]; do
+    if [ "$pnr_seeds" = "1" ]; then
+        seed_arg=""
+    else
+        seed_arg="--seed $i"
+        echo "--- placement seed $i of $pnr_seeds ---"
+    fi
+    if nextpnr-ecp5 --"$DEVICE" --package "$PACKAGE" \
+        --json "$BUILD/$TOP.json" \
+        --lpf "$LPF" $PNR_EXTRA $seed_arg \
+        --textcfg "$BUILD/$TOP.config"; then
+        pnr_ok=1
+        pnr_seed="$i"
+        break
+    fi
+    echo "--- seed $i did not close timing; trying another ---" >&2
+    i=$((i + 1))
+done
+
+if [ "$pnr_ok" != "1" ]; then
+    echo >&2
+    echo "error: no placement seed closed timing in $pnr_seeds attempts." >&2
+    echo "  This design's routed Fmax straddles the 25 MHz constraint - see" >&2
+    echo "  'Fmax is a distribution' in fpga/README.md. Raise SEED_TRIES, or" >&2
+    echo "  shorten the critical path nextpnr printed above." >&2
+    exit 1
+fi
+# A plain `if`, not an `A && B && echo` chain: under `set -e` the failing case
+# of such a chain is the last command in the list, and whether that aborts the
+# script is exactly the kind of shell subtlety this file should not be
+# betting on.
+if [ "$pnr_seeds" != "1" ]; then
+    echo "--- timing closed on seed $pnr_seed ---"
+fi
 
 echo "=== ecppack ==="
 ecppack "$BUILD/$TOP.config" "$BUILD/$TOP.bit"
 
+# ecppack can return 0 and write nothing useful, and `set -e` does not check
+# what a tool produced - only what it returned. This is the last point at
+# which "the build worked" is still a claim rather than an artifact.
+if [ ! -s "$BUILD/$TOP.bit" ]; then
+    echo "error: ecppack produced no bitstream at $BUILD/$TOP.bit" >&2
+    exit 1
+fi
+
 echo
 echo "bitstream: $BUILD/$TOP.bit  (LFE5U-${DEVICE%k}F - will not load on any other ECP5)"
-# Repeated at the end, where it is read, and stamped next to the bitstream.
+# ---- what this bitstream is, written down next to it ----
 #
-# All three preloading targets write the same $TOP.bit and copy their image to
-# the same $BUILD/ramimage.hex, so a build that stops part way - or a later one
-# that is interrupted - leaves a directory whose loose image no longer
-# describes the .bit beside it. Then "which program is in this bitstream?"
-# becomes unanswerable from the filesystem, which is the one question you need
-# answered before flashing.
+# "Which program is in this bitstream?" is the one question you have to answer
+# before flashing, and until now the filesystem could not answer it. The
+# `.bit.ramimage.hex` stamp below was the attempt, and it was written *only by
+# preloading targets* - so a later non-preload build overwrote the bitstream
+# and left the stamp behind, describing a program that was no longer in it. A
+# stamp that survives the thing it describes is worse than no stamp: it reads
+# as evidence.
+#
+# Every target writes it now, including the ones that preload nothing, and it
+# is removed before the build so a failure leaves neither.
+{
+    echo "board:     ${BOARD:-generic}"
+    echo "top:       $TOP"
+    echo "device:    LFE5U-${DEVICE%k}F $PACKAGE"
+    echo "lpf:       $LPF"
+    echo "built:     $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    if [ "$PRELOAD_RAM" = "1" ]; then
+        echo "preloaded: $RAM_IMAGE (from $RAM_ELF)"
+        echo "boots:     straight into the preloaded program; the SD card is not touched"
+    else
+        echo "preloaded: nothing"
+        echo "boots:     the ROM - UART loader window first, then SD card"
+    fi
+} > "$BUILD/$TOP.bit.target"
+
 if [ "$PRELOAD_RAM" = "1" ]; then
     cp "$RAM_IMAGE" "$BUILD/$TOP.bit.ramimage.hex"
     echo "  carries:  $RAM_IMAGE  (stamped as $TOP.bit.ramimage.hex)"
+else
+    echo "  carries:  nothing preloaded - this boots the ROM, which waits for a"
+    echo "            UART knock and then tries the SD card"
 fi
-case "$BOARD" in
-    ulx3s|ulx3s85|ulx3s85-ram|ulx3s85-probe|ulx3s85-trapcheck|ulx3s85-sdramcheck|ulx3s-diag|ulx3s-cmd0|ulx3s-sdram)
-        echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
-    *)             echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
+echo "  what it is: $BUILD/$TOP.bit.target"
+
+# A second copy under the target's own name. $TOP.bit is the one every
+# document and every muscle-memory command line names, so it stays; this is
+# what lets a bring-up session keep several bitstreams without re-running
+# place-and-route, and it cannot be confused with another target's.
+if [ -n "${BOARD:-}" ]; then
+    cp "$BUILD/$TOP.bit" "$BUILD/$BOARD.bit"
+    echo "  also as:  $BUILD/$BOARD.bit"
+fi
+
+# Every ULX3S target, not a hand-maintained subset. ulx3s85-sdramfull was
+# added and not listed here, so it printed "openFPGALoader -b <your-board>" at
+# a user who was following the instructions - the same class of defect as the
+# stamp above, and found the same way.
+case "${BOARD:-}" in
+    ulx3s*) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
+    *)      echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
 esac
 echo
 echo "Check nextpnr's reported Fmax against your target clock. If it comes in"

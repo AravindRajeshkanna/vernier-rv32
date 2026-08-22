@@ -16,7 +16,7 @@ still open:
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
 | Resource usage | ✅ **measured** — 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F; the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ✅ **25.47–27.63 MHz** (85F, three placement seeds), PASS at the board's 25 MHz on all of them — worst case **1.9% margin**. Re-measured after the Linux work; see [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) |
+| **Fmax with I/O constrained** | ⚠️ **24.69–27.63 MHz** (85F, six placement seeds) — **two of six land under the board's 25 MHz and nextpnr fails the build**. Margin is approximately zero; `synth_ecp5.sh` retries seeds. See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
@@ -37,12 +37,14 @@ board has never been asked to do, and each one turns "Linux hangs on the
 board" from a hunt into a lookup. Sending the image costs 22 minutes, so the
 order matters.
 
-**1. ~~Re-measure Fmax and the resource count.~~ Done — it passes.** See
-[Fmax is a distribution](#fmax-is-a-distribution-not-a-number) below. Three
-placement seeds give 25.47, 27.07 and 27.63 MHz, all PASS at 25 MHz. Six
-RTL-changing commits had landed since the last measurement, including one that
-put a 32-bit comparator directly in the fetch path, and the design still
-closes. Area grew: 17,435 TRELLIS_COMB against 14,260 LUT4 recorded, block RAM
+**1. Shorten the critical path.** Re-measuring answered the wrong question
+first. Six placement seeds give 24.69, 24.87, 25.47, 26.62, 27.07 and
+27.63 MHz — **two of them under 25 MHz, which nextpnr fails the build over**.
+The margin is approximately zero and a bench build hit it on the first
+attempt. `synth_ecp5.sh` retries seeds so a bitstream can still be produced,
+but the design needs the path from `CPU.mem_wb_rd_r` through the forwarding
+comparators and `is_mret` to `pc` made shorter — 36.19 ns today. Area also
+grew to 17,435 TRELLIS_COMB against 14,260 LUT4 recorded, block RAM
 unchanged.
 
 **2. ~~Prove SDRAM past 256 KB.~~ Done in simulation; still owed a board.**
@@ -95,19 +97,42 @@ placer is a simulated-annealing search seeded from a constant, so a single
 run is one sample, and the spread turns out to be **wider than the margin
 being reported**:
 
-| Seed | Routed Fmax | at 25 MHz |
-|---|---|---|
-| default | **27.63 MHz** | PASS, 10.5% |
-| 2 | **27.07 MHz** | PASS, 8.3% |
-| 3 | **25.47 MHz** | PASS, 1.9% |
+| Target | Seed | Routed Fmax | at 25 MHz |
+|---|---|---|---|
+| `ulx3s85` | default | **27.63 MHz** | PASS, 10.5% |
+| `ulx3s85` | 2 | **27.07 MHz** | PASS, 8.3% |
+| `ulx3s85` | 3 | **25.47 MHz** | PASS, 1.9% |
+| `ulx3s85-ram` | 2 | **26.62 MHz** | PASS, 6.5% |
+| `ulx3s85-ram` | default | **24.87 MHz** | ❌ **FAIL** |
+| `ulx3s85-ram` | 1 | **24.69 MHz** | ❌ **FAIL** |
 
-Yosys 0.68+118 (144c707b7), nextpnr 0.11.1-8-g7c0c1c40, `BOARD=ulx3s85`,
-every pin constrained. Reproduce a seed with
+Yosys 0.68+118 (144c707b7), nextpnr 0.11.1-8-g7c0c1c40, every pin
+constrained. Reproduce any of them with
 `PNR_EXTRA="--seed 3" BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh`.
 
-So "25.37 MHz, 1.5% margin" was not wrong, it was underspecified: it is one
-draw from a distribution roughly 2 MHz wide. The claim worth making is the
-**worst** seed, and the number to quote is 25.47 MHz.
+**Two of six are under the constraint, and nextpnr treats that as a hard
+error** — it prints `ERROR: Max frequency ... (FAIL at 25.00 MHz)`, reports
+`0 warnings, 1 error` and exits 1, after eight minutes of place-and-route.
+Whether a build succeeds is a weighted coin decided by a placement seed.
+
+The first three rows of that table were this file's claim after the Linux
+work: *"three seeds, all PASS, worst case 1.9% margin"*. That was three
+samples of one target, and it was too optimistic — the very next build anybody
+ran, `BOARD=ulx3s85-ram` on a bench, drew 24.87 and failed. Three samples do
+not find a tail. **The margin here is approximately zero**, and the honest
+summary is that this design does not reliably close 25 MHz.
+
+`synth_ecp5.sh` now retries placement seeds until one closes (`SEED_TRIES`,
+default 6) and prints which one won. That is the standard answer to a marginal
+design and it is a mitigation, not a fix: a bitstream produced on the fourth
+seed is exactly as correct as one produced on the first — the constraint is
+met or it is not — but a design that needs four seeds is one bad change away
+from needing forty. **Shortening the critical path is the actual fix** and is
+now the top item on the pre-board list.
+
+So "25.37 MHz, 1.5% margin" was not wrong; it was underspecified in a way that
+hid a build-breaking tail. One draw from a distribution, reported as a
+property of the design.
 
 The re-measurement was overdue for a real reason — six RTL-changing commits
 had landed since the last one, including the PLIC moving to the spec register
@@ -210,6 +235,80 @@ is the lesson this file already carries from the clock-phase failure, where
 simulation proved the design self-consistent and one word in a thousand came
 back wrong on the part. What has changed is that the untested region is now
 named and the instrument to test it exists.
+
+## Before you flash: check what the bitstream is
+
+**Six board targets write the same `fpga/build/ulx3s_top.bit`** — `ulx3s85`,
+`-ram`, `-probe`, `-trapcheck`, `-sdramcheck`, `-sdramfull` — carrying six
+different programs, and `openFPGALoader` cannot tell them apart. Every build
+now writes a stamp beside it saying which one it is:
+
+```sh
+$ cat fpga/build/ulx3s_top.bit.target
+board:     ulx3s85-ram
+top:       ulx3s_top
+device:    LFE5U-85F CABGA381
+lpf:       fpga/constraints/ulx3s.lpf
+built:     2026-08-22T16:04:11Z
+preloaded: sim/ramimage.hex (from software/soc/socprog.elf)
+boots:     straight into the preloaded program; the SD card is not touched
+```
+
+The bitstream and its stamps are **deleted before the build starts**, so a run
+that dies anywhere — nextpnr erroring, `ecppack` missing from `PATH`, a `^C` —
+leaves no bitstream at all rather than the previous target's. A missing file
+cannot be misread; a stale one is indistinguishable from a fresh one at the
+moment you flash it.
+
+Each build also lands at `fpga/build/<BOARD>.bit`, so a bring-up session can
+keep several without re-running place-and-route.
+
+**This is written down because it cost a session.** A `BOARD=ulx3s85-ram`
+build failed in nextpnr — it drew a placement seed that missed 25 MHz by
+0.13 MHz, and nextpnr fails the build over that. The bitstream from an earlier
+`BOARD=ulx3s85` run stayed behind; the board was flashed with it and came up
+with nothing in block RAM, fell through to the SD path it was specifically
+meant to avoid, and printed:
+
+```
+=== RV32IMA SoC boot ROM ===
+SPI/SD init...
+  CMD0 failed after 10 tries: 0x000000FF
+BOOT FAILED: no SD card
+```
+
+Every line of that is correct, and it is an accurate report about a bitstream
+nobody meant to flash. The debugging it invites — the card, the slot, the SPI
+wiring — is all downstream of a build that had already failed and said so.
+
+The `.bit.ramimage.hex` stamp that existed to prevent exactly this was written
+only by *preloading* targets, so the non-preload build overwrote the bitstream
+and left the stamp behind, asserting that it carried a program that was no
+longer in it. A stale absence is ambiguous; a stale assertion is misleading,
+and it reads as evidence to somebody deciding whether to trust the artifact.
+
+Both halves are tested:
+
+```
+$ SEED_TRIES=1 PNR_EXTRA="--seed 1" BOARD=ulx3s85-ram ./fpga/synth/synth_ecp5.sh
+error: no placement seed closed timing in 1 attempts.
+$ ls fpga/build/ulx3s_top.bit
+ls: fpga/build/ulx3s_top.bit: No such file or directory
+```
+
+```
+$ BOARD=ulx3s85-ram ./fpga/synth/synth_ecp5.sh
+--- placement seed 1 of 6 ---
+--- seed 1 did not close timing; trying another ---
+--- placement seed 2 of 6 ---
+--- timing closed on seed 2 ---
+  carries:  sim/ramimage.hex  (stamped as ulx3s_top.bit.ramimage.hex)
+  what it is: fpga/build/ulx3s_top.bit.target
+  also as:  fpga/build/ulx3s85-ram.bit
+```
+
+If a board behaves like a different bitstream, `cat` the stamp before
+debugging the design. `docs/practices.md` §35.
 
 ## The hardware run
 
@@ -707,8 +806,17 @@ reach it yet, because there is no memory controller.
 make soc                                     # boot ROM image is a synthesis input
 BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh     # LFE5U-85F
 # or:  BOARD=ulx3s ./fpga/synth/synth_ecp5.sh   for the 45F
+cat fpga/build/ulx3s_top.bit.target           # what the bitstream actually is
 openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
 ```
+
+**A build can take several place-and-route attempts.** Two of six measured
+placement seeds land under 25 MHz and nextpnr fails the build over it, so the
+script retries seeds (`SEED_TRIES`, default 6) and prints which one closed.
+Budget 8 minutes per attempt on an 85F. See [Fmax is a
+distribution](#fmax-is-a-distribution-not-a-number) — the retry is a
+mitigation for a margin that is approximately zero, not a property of a
+healthy design.
 
 **The FPGA variant is part of the board target, not a separate knob.** A
 bitstream is device-specific and will not load on a different ECP5, the four
@@ -721,7 +829,7 @@ the bitstream line.
 | Target | Device | Fmax | LUT4 | EBR |
 |---|---|---|---|---|
 | `BOARD=ulx3s` | LFE5U-45F | 28.78 MHz † | 29% | 105/108 — 97% † |
-| `BOARD=ulx3s85` | LFE5U-85F | **25.37 MHz** | 14,260 | **80/208 — 38%** |
+| `BOARD=ulx3s85` | LFE5U-85F | **24.69–27.63 MHz**, 2 of 6 seeds FAIL | 17,435 comb | **80/208 — 38%** |
 
 † the 45F row has not been re-measured since the data cache landed and is
 stale in both columns. Its EBR figure in particular should improve by roughly
