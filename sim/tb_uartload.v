@@ -24,7 +24,11 @@ module tb_uartload;
 
     // Protocol, from software/soc/soc.h.
     localparam [31:0] UARTLOAD_MAGIC = 32'h55434F53;
-    localparam [7:0]  PROBE = 8'h55, ACK = 8'h4B, NAK = 8'h45;
+    // Must match software/soc/soc.h. ACK and NAK are ASCII control codes
+    // because the console shares this wire: they were 'K' and 'E', and "KB" -
+    // which every program in this repository prints - put the old ACK byte
+    // into ordinary console text. docs/practices.md section 36.
+    localparam [7:0]  PROBE = 8'h55, ACK = 8'h06, NAK = 8'h15;
 
     localparam [31:0] LOAD_ADDR = 32'h9000_0000;
 

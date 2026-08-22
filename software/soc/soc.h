@@ -218,10 +218,38 @@
  * 115200 instead of 43 - which is nothing for something run once per test
  * cycle, and it is correct at any line rate on any receiver.
  */
+/* The two bytes the *board* sends are ASCII control codes, and that is the
+ * whole point of them.
+ *
+ * They used to be 'K' and 'E'. The console and the protocol share one wire,
+ * so every byte the board sends is either a protocol reply or console text,
+ * and the host has nothing but the value to tell them apart. 'K' is 0x4B, and
+ * the word "KB" appears in the output of every program in this repository -
+ * "64 KB of RAM", "sweeping 256 KB of 32768 KB". So a host knocking at a
+ * board that is *printing* rather than listening reads the 'K' of "KB" as an
+ * acknowledgement, sends its header into a program that is not reading, and
+ * then reports whatever came next:
+ *
+ *     ROM answered
+ *     error: unexpected reply 0x42 ('B') after header
+ *
+ * which is the 'B' of "KB", and which reads as a protocol fault on a board
+ * that was working correctly and running something else. It cost a bench
+ * session. docs/practices.md section 36.
+ *
+ * 0x06 and 0x15 are ACK and NAK in ASCII, and neither this ROM nor anything
+ * it loads ever prints a control character - the console emits printable
+ * ASCII plus CR and LF. So a protocol byte can no longer be manufactured by
+ * something printing, which is the only ambiguity that has ever bitten here.
+ *
+ * UARTLOAD_PROBE stays printable: it travels host->board, and the board only
+ * reads it inside the loader, where console text cannot arrive. The ROM also
+ * relies on it differing from the magic's first byte ('S') to skip late
+ * knocks, and 'U' is as good a value for that as any. */
 #define UARTLOAD_MAGIC    0x55434F53u   /* 'S','O','C','U' little-endian */
 #define UARTLOAD_PROBE    0x55u         /* 'U' - host knocking            */
-#define UARTLOAD_ACK      0x4Bu         /* 'K'                            */
-#define UARTLOAD_NAK      0x45u         /* 'E'                            */
+#define UARTLOAD_ACK      0x06u         /* ASCII ACK - never printed      */
+#define UARTLOAD_NAK      0x15u         /* ASCII NAK - never printed      */
 
 /* How long after reset the ROM listens for a knock, in milliseconds.
  *
