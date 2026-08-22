@@ -829,16 +829,6 @@ int main(int argc, char **argv) {
         size_t n = load_hex(sdram_img, sdram.storage(), sdram.words());
         printf("SDRAM image: %zu 16-bit words from %s\n", n, sdram_img);
     }
-    if (rom_img) {
-        size_t n = load_hex(rom_img, &root->soc_top__DOT__ROM__DOT__mem[0],
-                            sizeof(root->soc_top__DOT__ROM__DOT__mem) / sizeof(uint32_t));
-        printf("ROM image: %zu words from %s\n", n, rom_img);
-    }
-    if (ram_img) {
-        size_t n = load_hex(ram_img, &root->soc_top__DOT__RAM__DOT__mem[0],
-                            sizeof(root->soc_top__DOT__RAM__DOT__mem) / sizeof(uint32_t));
-        printf("RAM image: %zu words from %s\n", n, ram_img);
-    }
 
     top->rst      = 1;
     top->uart_rx  = 1;
@@ -856,6 +846,37 @@ int main(int argc, char **argv) {
     // program sent.
     top->clk = 0;
     top->eval();
+
+    // ---- the *Verilog* arrays, and why they are loaded here and not above ----
+    //
+    // rtl/soc/wb_ram.v and wb_rom.v both open with an `initial` block that
+    // zero-fills the array (Verilog leaves an unwritten one X, and several
+    // testbenches load an image smaller than the memory and expect the rest
+    // to read zero). Verilator runs `initial` blocks on the *first* eval(),
+    // which is the line above - so anything written into those arrays before
+    // it is erased before the first instruction is fetched.
+    //
+    // That is not a hypothetical. `+ram=` and `+rom=` were documented at the
+    // top of this file and had never worked: loading a block-RAM program
+    // produced a machine that fetched zeros from its reset vector and trapped
+    // on cycle 7 with mcause=2, mtval=0, forever. It printed nothing, which
+    // reads as "the program hung" rather than "the program is not there".
+    // Nothing had noticed because every run until now started from SDRAM,
+    // which is a C++ model this does not apply to.
+    //
+    // The SDRAM image above is loaded before eval() and stays loaded for
+    // exactly that reason: it goes into SdramModel, not into an array the
+    // design's own initial block owns.
+    if (rom_img) {
+        size_t n = load_hex(rom_img, &root->soc_top__DOT__ROM__DOT__mem[0],
+                            sizeof(root->soc_top__DOT__ROM__DOT__mem) / sizeof(uint32_t));
+        printf("ROM image: %zu words from %s\n", n, rom_img);
+    }
+    if (ram_img) {
+        size_t n = load_hex(ram_img, &root->soc_top__DOT__RAM__DOT__mem[0],
+                            sizeof(root->soc_top__DOT__RAM__DOT__mem) / sizeof(uint32_t));
+        printf("RAM image: %zu words from %s\n", n, ram_img);
+    }
 
     printf("=== SoC running from external SDRAM (Verilator) ===\n");
     fflush(stdout);
