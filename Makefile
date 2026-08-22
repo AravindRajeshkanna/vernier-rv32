@@ -635,6 +635,76 @@ sim/sdramcheckimage.hex: software/soc/sdramcheck.elf software/bin2hex.py Makefil
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/sdramcheck.bin > $@
 
+# ---- the same program over the whole part ----
+#
+# 256 KB is what silicon has ever been asked to hold, and rtl/soc/wb_sdram.v
+# maps wb_adr[24:12] to the row - so that is 64 of 8192 rows, with seven of
+# the thirteen row address bits never driven high. A kernel needs about 28 MB.
+# `sdramcheck.c` prints those ranges at startup now, so the short run says how
+# short it is.
+#
+# This build sweeps all 32 MB. It is a different .elf rather than a runtime
+# flag because it has to be *the image a bitstream bakes in*, and a knob a
+# board build could get wrong is not worth the flexibility.
+#
+# Icarus cannot run it - `make sim_sdramcheck` is minutes at 256 KB and this
+# is 128 times the work. Verilator can: `make verilator_sdramfull` does the
+# whole part in well under a minute, which is what keeps this from being a
+# bitstream nobody has ever executed. practices section 4.
+software/soc/sdramfull.elf: $(SOCRT_SRCS) software/soc/sdramcheck.c \
+                              software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOCPROG_CFLAGS) -DSWEEP_BYTES=0x02000000u \
+	    -T software/soc/link_ram.ld \
+	    -o $@ $(SOCRT_SRCS) software/soc/sdramcheck.c
+
+sim/sdramfullimage.hex: software/soc/sdramfull.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/sdramfull.elf software/soc/sdramfull.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/sdramfull.bin > $@
+
+sdramfullimage: sim/sdramfullimage.hex
+
+# The whole 32 MB, swept densely, under Verilator.
+#
+# This needs a *second* Verilator binary and that is the whole difficulty.
+# VERILATOR_PARAMS builds soc_top with RESET_PC=0x9000_0000 because the
+# harness models sim/tb_sdramboot.v, where execution starts in SDRAM. A
+# program that runs from block RAM never starts under it - it sat there
+# printing nothing, which is what sent this down a wrong path once already.
+#
+# So: same RTL, same harness, RESET_PC at the block-RAM program instead. That
+# skips the boot ROM, which on a board would only have jumped here anyway
+# (PROGRAM_LOAD_ADDR in software/soc/soc.h, and bin2hex's --skip-words=1024 is
+# the same 0x1000).
+#
+# What it buys: the bitstream BOARD=ulx3s85-sdramfull bakes in has been
+# executed before it is flashed - 8 million words written and read back, and
+# the retention interval that produces measured rather than assumed. Icarus
+# cannot do this run; it is hours at 256 KB's rate.
+VERILATOR_RAMBOOT_MDIR = obj_dir_soc_ramboot
+VERILATOR_RAMBOOT_BIN  = $(VERILATOR_RAMBOOT_MDIR)/Vsoc_top
+
+$(VERILATOR_RAMBOOT_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
+	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O2" \
+	    --top-module soc_top $(CORE_DEFINES) \
+	    -GRAM_BYTES=65536 -GRESET_PC=0x80001000 \
+	    --Mdir $(VERILATOR_RAMBOOT_MDIR) \
+	    $(SOC_RTL) sim/verilator_soc.vlt sim/verilator_soc.cpp
+
+# `+sdram_words` is 16,777,216 sixteen-bit words - the whole part. The
+# harness's default models 4 MB and the sweep would run off the end of it,
+# which the model reports rather than quietly wrapping.
+verilator_sdramfull: sim/sdramfullimage.hex $(VERILATOR_RAMBOOT_BIN)
+	@cd sim && ../$(VERILATOR_RAMBOOT_BIN) +ram=sdramfullimage.hex \
+	    +sdram_words=16777216 +maxcycles=2000000000 \
+	    +stopon="SDRAM-CHECK:" | tee sdramfull.log
+	@grep -aq "SDRAM-CHECK: PASS" sim/sdramfull.log && \
+	    echo "SDRAM FULL-PART CHECK PASSED" || \
+	    { echo "SDRAM FULL-PART CHECK FAILED"; exit 1; }
+	@grep -aq "rows 0..8191 of 8192" sim/sdramfull.log || \
+	    { echo "FAILED: the full-part build did not sweep the full part"; \
+	      exit 1; }
+
 # ---- OpenSBI, packed into an SDRAM image ----
 #
 # Not part of `verify`: it needs OpenSBI's source tree, which
@@ -862,8 +932,16 @@ sim/sim_mmusdram.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 sim_mmusdram: sim/bootrom.hex sim/mmuimage.hex sim/sim_mmusdram.out
 	cd sim && $(VVP) sim_mmusdram.out $(VVP_DUMP)
 
+# SDRAM_WORDS is the whole 32 MB part here, and it has to be: the row test in
+# sdramcheck.c touches one word in each of 8192 rows, and the top of the part
+# is 0x91FF_FFFF. tb_ramboot.v defaults to 2 MB, and sim/sdram_model.v *errors*
+# on an access past MEM_WORDS instead of aliasing - so a model left too small
+# fails loudly rather than passing a row test it never performed. It costs
+# memory in the simulator and nothing in time, because the sparse test does
+# 16,384 accesses however big the array is.
 sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"sdramcheckimage.hex"' \
+	    -DSDRAM_WORDS=16777216 \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_sdramcheck: sim/bootrom.hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
@@ -952,6 +1030,7 @@ verify_ooo:
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
+        verilator_sdramfull \
         sim_mmusdram sim_plic sim_uart16550 sim_uartload \
         uartload-host check-program isa cosim formal
 
@@ -968,6 +1047,9 @@ clean:
 	       sim/ramimage.hex sim/probeimage.hex \
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
+	       sim/sdramfullimage.hex sim/sdramfull.log \
+	       obj_dir_soc_ramboot \
+	       software/soc/sdramfull.elf software/soc/sdramfull.bin \
 	       sim/sim_mmusdram.out sim/mmuimage.hex \
 	       sim/sim_plic.out sim/plicimage.hex \
 	       sim/sim_uart16550.out sim/uart16550image.hex \

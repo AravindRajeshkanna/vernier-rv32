@@ -1105,6 +1105,119 @@ was not, and nothing in the format distinguishes those two kinds of lie.
 
 ---
 
+## 33. A number without a spread is not a measurement
+
+`fpga/README.md` carried "**25.37 MHz**, PASS at the board's 25 MHz — 1.5%
+margin" for six pull requests, quoted to four significant figures, and it was
+one place-and-route run.
+
+nextpnr's placer is a simulated-annealing search seeded from a constant. Three
+seeds of the same netlist:
+
+| Seed | Routed Fmax |
+|---|---|
+| default | 27.63 MHz |
+| 2 | 27.07 MHz |
+| 3 | 25.47 MHz |
+
+**The spread is 2.2 MHz and the margin being reported was 0.37 MHz.** The
+number was not wrong; it was underspecified in a way that made a claim about
+the design out of a property of one random seed. The claim worth making is the
+worst seed, and it is 25.47 MHz — still a pass, and 1.9% rather than 1.5%,
+which is the same order and now has a floor under it.
+
+This is the same failure as `fpga/README.md`'s own opening confession, where
+"50–150 MHz is plausible for a core this size" met 28.78 MHz from
+place-and-route. That one was an estimate presented as a measurement. This one
+is a measurement presented as a constant. Both overstate what one run of a
+tool can tell you.
+
+**And read the right number.** nextpnr prints "Max frequency" twice and they
+disagree by about 6 MHz here, consistently, on every seed:
+
+```
+Info: Max frequency ... : 21.51 MHz (FAIL at 25.00 MHz)   <- after placement
+Info: Max frequency ... : 27.63 MHz (PASS at 25.00 MHz)   <- after routing
+```
+
+The first is an estimate taken before the router has attacked the critical
+nets. Taking it at face value here produced a confident report that the design
+had stopped closing timing and needed the fetch path rebuilt — of a design
+that passes with 10% to spare. A number that arrives mid-flow is not a result,
+and a tool that prints two of them is not being ambiguous, it is being
+truthful about a process with stages.
+
+The practical rule: **when a number comes out of a stochastic or staged tool,
+report the distribution and say which stage it came from.** Three runs is not
+rigour, it is the minimum that distinguishes a number from a coincidence.
+
+---
+
+## 34. Volume is not coverage
+
+`SDRAM-CHECK: PASS` over **256 KB** was this project's evidence that external
+memory worked, on silicon, for months. It is true. It is also one
+two-hundredth of the claim it sounds like.
+
+`rtl/soc/wb_sdram.v` maps `wb_adr[24:12]` to the row, `wb_adr[11:10]` to the
+bank, `wb_adr[9:1]` to the column. Decompose 256 KB against that and it is:
+
+- all 512 columns
+- all 4 banks
+- **64 of 8192 rows** — row address bits A6 through A12 never driven high
+
+Seven address lines that had never been asserted through the CPU, on a part a
+kernel needs 28 MB of. "256 KB" is a volume, and volume reads like coverage
+because both are big numbers that go up when things get better. They are not
+the same quantity and only one of them is about the hardware.
+
+**The fix is not more volume.** The gap is *which bits toggle*, and that
+separates cleanly from how many bytes are touched: one word in each of the
+8192 rows drives every row address bit for 16,384 accesses, which costs a
+simulation nothing and therefore runs in `make verify` on every change. The
+dense sweep stays what it always was — a volume and retention test — and its
+full-part build is board-only because 8 million words is hours under Icarus.
+
+The test now states its own coverage rather than leaving it to be worked out:
+
+```
+sweeping 256 KB of 32768 KB, against 64 KB of block RAM
+  rows 0..63 of 8192, all 4 banks, all 512 columns
+  the dense sweep leaves row address bits A6..A12 low; test 3 drives them
+```
+
+**It fails when it should**, which is section 1's question and is worth
+answering with an experiment rather than an argument. Forcing row bit A7 low
+in `wb_sdram.v`:
+
+```
+  4096 of 8192 rows wrong, first at 0x90000000 (row 0)
+  all 8192 rows, one word each  FAILED
+  256 KB unique addresses       ok        <- the old test, same broken part
+```
+
+The last line is the entire case. The test this project had been relying on
+passes a memory with a dead address line.
+
+**A second thing fell out of trying to run it**, and it is section 26 again.
+The natural home for a full-part sweep was the Verilator harness, whose
+`+ram=` plusarg has been documented at the top of `sim/verilator_soc.cpp` for
+several revisions. It had never worked. `rtl/soc/wb_ram.v` opens with an
+`initial` block that zero-fills the array, Verilator runs `initial` blocks on
+the *first* `eval()`, and the harness loaded its image before that — so the
+preload was erased before the first instruction was fetched. The machine
+fetched zeros from its reset vector and trapped forever, printing nothing,
+which reads as "the program hung". Nothing had noticed because every previous
+run started from SDRAM, which is a C++ model the problem does not apply to.
+
+A documented feature that nothing exercises is indistinguishable from one that
+does not exist, and the two stay indistinguishable right up until somebody
+needs it.
+
+---
+
+---
+
 ## Conventions
 
 **Commits** are imperative and say what changed and why it matters — `Test
