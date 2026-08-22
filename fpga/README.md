@@ -14,9 +14,9 @@ still open:
 | Full SoC synthesis (yosys) | ✅ **runs, ~19 s** |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs** — 4 min on an 85F, 11 min on a 45F |
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
-| Resource usage | ✅ **measured** — 14,260 LUT4 / 80 EBR (38%) on an 85F; the 45F figures are stale |
+| Resource usage | ✅ **measured** — 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F; the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ✅ **25.37 MHz** (85F), PASS at the board's 25 MHz — **1.5% margin**, see the breakdown below before adding anything to the fetch or MMU path |
+| **Fmax with I/O constrained** | ✅ **25.47–27.63 MHz** (85F, three placement seeds), PASS at the board's 25 MHz on all of them — worst case **1.9% margin**. Re-measured after the Linux work; see [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
@@ -24,6 +24,7 @@ still open:
 | newlib / `printf` on a board | ✅ **works** — `NEWLIB-PROBE: PASS`; the old failure was the `.data` bug above, not libc |
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
 | **SDRAM pins** | ✅ **confirmed on silicon** — 256 KB of unique addresses, byte and halfword lanes, refresh |
+| **All 8192 rows** | ⚠️ **in simulation** — every row address bit driven, and 32 MB swept densely with a measured 4.0 s retention interval. Never on a board: `BOARD=ulx3s85-sdramfull` |
 | **SDRAM as data, on a board** | ✅ **`SDRAM-CHECK: PASS`** — failed first at one word in a thousand; see the clock-phase diagnosis below |
 | Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
@@ -36,23 +37,23 @@ board has never been asked to do, and each one turns "Linux hangs on the
 board" from a hunt into a lookup. Sending the image costs 22 minutes, so the
 order matters.
 
-**1. Re-measure Fmax and the resource count.** The 25.37 MHz and 14,260 LUT4 /
-80 EBR below were measured at PR #22. Five RTL-changing commits have landed
-since: the PLIC moved to the spec register map and `rtl/uart.v` became an
-ns16550 (#23); `mstatush`, 64-bit `mcycle`/`minstret`, misaligned traps and a
-FENCE.I invalidate arrived (#24); and #28 put a 32-bit comparator directly in
-the fetch path, feeding both the fetch stall and the `imem_addr` mux. That is
-precisely what the Fmax row warns about, against **1.5% of margin** and no PLL
-wired in to fall back on.
+**1. ~~Re-measure Fmax and the resource count.~~ Done — it passes.** See
+[Fmax is a distribution](#fmax-is-a-distribution-not-a-number) below. Three
+placement seeds give 25.47, 27.07 and 27.63 MHz, all PASS at 25 MHz. Six
+RTL-changing commits had landed since the last measurement, including one that
+put a 32-bit comparator directly in the fetch path, and the design still
+closes. Area grew: 17,435 TRELLIS_COMB against 14,260 LUT4 recorded, block RAM
+unchanged.
 
-**2. Prove SDRAM past 256 KB.** `software/soc/sdramcheck.c` sweeps
-`SWEEP_BYTES = 0x40000`, and the largest thing ever executed from the part is
-99 KB. A kernel needs about 28 MB live. That leaves the upper row and bank
-address bits never toggled and refresh proved over a 100 ms idle rather than
-over minutes of continuous traffic — and the read capture *was* marginal here
-before the `ODDRX1F` phase fix, at one failing word in a thousand. Margin is
-what scales with coverage. The check runs from block RAM, so raising the sweep
-to the whole 32 MB is a constant and a longer run.
+**2. ~~Prove SDRAM past 256 KB.~~ Done in simulation; still owed a board.**
+See [What 256 KB of SDRAM was and was not
+saying](#what-256-kb-of-sdram-was-and-was-not-saying). Every row address bit
+is now driven by a test that runs in `make verify`, and the whole 32 MB is
+swept densely by `make verilator_sdramfull`, which is the exact image
+`BOARD=ulx3s85-sdramfull` bakes into a bitstream. **Neither has been on a
+board**, and the read capture was marginal here at one word in a thousand
+before the `ODDRX1F` phase fix — margin is what scales with coverage, and only
+silicon has margin.
 
 **3. Build the three peripherals Linux depends on into a bitstream.**
 `mmutest.c`, `plictest.c` and `uarttest.c` each have a simulation target and
@@ -86,6 +87,129 @@ board console is coming from before diagnosing anything else.
 The bitstream to send is **`BOARD=ulx3s85`** — plain ROM boot, no RAM preload,
 so the UART loader actually runs. The `-ram`/`-probe`/`-trapcheck` builds
 preload block RAM and never reach it.
+
+## Fmax is a distribution, not a number
+
+Every Fmax in this file until now was one place-and-route run. nextpnr's
+placer is a simulated-annealing search seeded from a constant, so a single
+run is one sample, and the spread turns out to be **wider than the margin
+being reported**:
+
+| Seed | Routed Fmax | at 25 MHz |
+|---|---|---|
+| default | **27.63 MHz** | PASS, 10.5% |
+| 2 | **27.07 MHz** | PASS, 8.3% |
+| 3 | **25.47 MHz** | PASS, 1.9% |
+
+Yosys 0.68+118 (144c707b7), nextpnr 0.11.1-8-g7c0c1c40, `BOARD=ulx3s85`,
+every pin constrained. Reproduce a seed with
+`PNR_EXTRA="--seed 3" BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh`.
+
+So "25.37 MHz, 1.5% margin" was not wrong, it was underspecified: it is one
+draw from a distribution roughly 2 MHz wide. The claim worth making is the
+**worst** seed, and the number to quote is 25.47 MHz.
+
+The re-measurement was overdue for a real reason — six RTL-changing commits
+had landed since the last one, including the PLIC moving to the spec register
+map, `rtl/uart.v` becoming an ns16550, 64-bit `mcycle`/`minstret`, and a
+32-bit comparator inserted directly into the fetch path. All of that, and it
+still closes.
+
+**Read the routed number, not the placed one.** nextpnr prints "Max frequency"
+twice, and on this design they disagree enormously:
+
+```
+Info: Max frequency ... : 21.51 MHz (FAIL at 25.00 MHz)   <- after placement
+Info: Max frequency ... : 27.63 MHz (PASS at 25.00 MHz)   <- after routing
+```
+
+The first is an estimate made before the router has had a go at the critical
+nets, and it is pessimistic by about 6 MHz here, consistently, on every seed.
+Reading it costs a day of optimising a design that already passes — which is
+exactly what nearly happened when these numbers were taken.
+
+The critical path is now `CPU.mem_wb_rd_r` → the forwarding and hazard
+comparators → `is_mret` → `pc`: 36.19 ns, writeback destination register
+through to the next program counter. Area is 17,435 TRELLIS_COMB (20% of an
+85F), 80 DP16KD (38%) and 4 MULT18X18D.
+
+## What 256 KB of SDRAM was and was not saying
+
+`SDRAM-CHECK: PASS` over 256 KB has been this project's evidence that external
+memory works. It is true, and much narrower than it sounds.
+
+`rtl/soc/wb_sdram.v` maps `wb_adr[24:12]` to the row, `wb_adr[11:10]` to the
+bank and `wb_adr[9:1]` to the column. So 256 KB is:
+
+- **all 512 columns** ✅
+- **all 4 banks** ✅
+- **64 of 8192 rows** — row address bits **A6 through A12 never driven high**
+
+Every bank and every column, and one two-hundredth of the rows, behind seven
+address lines that had never been asserted through the CPU. A kernel needs
+about 28 MB.
+
+`software/soc/sdramcheck.c` now says so in its own output, so the short run
+reports how short it is:
+
+```
+SDRAM window at 0x90000000, sweeping 256 KB of 32768 KB, against 64 KB of block RAM
+  rows 0..63 of 8192, all 4 banks, all 512 columns
+  the dense sweep leaves row address bits A6..A12 low; test 3 drives them
+```
+
+**The gap is which bits toggle, not how many bytes are touched**, and those
+separate cleanly. One word in each of the 8192 rows drives every row address
+bit for 16,384 accesses — nothing, in simulation terms — so it runs in
+`make verify` on every change:
+
+```
+  all 8192 rows, one word each  ok
+```
+
+It fails when it should. Forcing row bit A7 low in `wb_sdram.v` gives:
+
+```
+  4096 of 8192 rows wrong, first at 0x90000000 (row 0)
+  all 8192 rows, one word each  FAILED
+  256 KB unique addresses       ok        <- the old test, on the same broken part
+```
+
+That last line is the argument for the whole change: the test this project has
+been relying on passes a part with a dead address line.
+
+### And the whole part, densely
+
+`make verilator_sdramfull` sweeps all 32 MB — 8 million words written and read
+back — in 261 million cycles, about a minute of Verilator, and it is in
+`make verify`:
+
+```
+sweeping 32768 KB of 32768 KB, against 64 KB of block RAM
+  rows 0..8191 of 8192, all 4 banks, all 512 columns
+  all 8192 rows, one word each  ok
+  32 MB unique addresses        ok
+  4031 ms between writing the lowest address and reading it back
+```
+
+That last line is the one a kernel cares about and the one a short sweep could
+never produce. The write pass runs bottom to top and so does the read-back, so
+address 0 is read **four seconds** after it was written, with continuous
+traffic through the same controller in between — against 31 ms at 256 KB. It
+is measured off the CLINT's `mtime`, not derived from a spin count: the two
+comments on the old idle loop said "~100 ms" and "~10 ms" four lines apart,
+and the real answer is 20 ms.
+
+This is the exact image `BOARD=ulx3s85-sdramfull` bakes into a bitstream, run
+before it is flashed, which is what stops it being a bitstream nobody has
+executed (PRACTICES §4). Expect roughly six seconds on a board against a tenth
+of a second for the short one.
+
+**None of this is silicon.** A behavioural model cannot show marginality — that
+is the lesson this file already carries from the clock-phase failure, where
+simulation proved the design self-consistent and one word in a thousand came
+back wrong on the part. What has changed is that the untested region is now
+named and the instrument to test it exists.
 
 ## The hardware run
 

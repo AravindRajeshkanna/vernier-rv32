@@ -681,6 +681,18 @@ distinct, with byte and halfword lanes and refresh** — `SDRAM-CHECK: PASS`.
 Both logs, the arithmetic and what it cost to read the evidence properly are
 in `fpga/README.md` and `docs/practices.md` §23.
 
+**What 256 KB was not saying.** `wb_sdram.v` takes the row from
+`wb_adr[24:12]`, so that sweep is all 512 columns, all 4 banks and **64 of
+8192 rows** — row address bits A6..A12 never driven high through the CPU, on a
+part a kernel needs 28 MB of. The gap is which bits toggle rather than how
+many bytes are touched, so `sdramcheck.c` now writes and reads one word in
+every one of the 8192 rows for 16,384 accesses, which runs in `make verify`;
+forcing row bit A7 low makes it report 4,096 wrong rows while the 256 KB sweep
+still passes. `make verilator_sdramfull` sweeps all 32 MB densely in about a
+minute and measures a 4,031 ms retention interval against the short sweep's
+31 ms. All of that is simulation — the board has still only ever held 256 KB.
+`docs/practices.md` §34.
+
 Bring-up is two bitstreams, in the order that narrows the problem —
 `fpga/README.md` has the procedure and the LED table:
 
@@ -688,6 +700,7 @@ Bring-up is two bitstreams, in the order that narrows the problem —
 |---|---|
 | `BOARD=ulx3s-sdram` | `fpga/ulx3s_sdram.v` — no CPU at all. Five cumulative LEDs: power-up, one word, walking ones over the data, one address per address bit, and survival across a ~100 ms idle, which is what proves refresh |
 | `BOARD=ulx3s85-sdramcheck` | `software/soc/sdramcheck.c` — the CPU, caches and interconnect in the path, running from block RAM and hammering 256 KB of SDRAM |
+| `BOARD=ulx3s85-sdramfull` | the same program over the whole 32 MB. 256 KB is 64 of 8192 rows, so seven of the thirteen row address bits were never driven high — see `fpga/README.md`. Not yet flashed |
 
 Both have simulations (`make sim_sdramprobe`, `make sim_sdramcheck`) and both
 are gated in CI, because a bring-up instrument that is itself wrong turns "the
