@@ -290,16 +290,20 @@ verilator_sdramboot: sim/sdramimage.hex $(VERILATOR_BIN)
 # `make sim_linux`, which is not in `verify` because it needs a kernel.
 verilator_check: sim_sdramboot $(VERILATOR_BIN)
 	@cd sim && ../$(VERILATOR_BIN) +sdram=sdramimage.hex \
-	    +checkreads +checkfetch +checkdecode +checkmmu | tee verilator_soc.log
+	    +checkreads +checkfetch +checkdecode +checkmmu +checkuart \
+	    | tee verilator_soc.log
 	@python3 sim/verilator_compare.py sim/sdramboot.log sim/verilator_soc.log
-	@grep -q "were not the instruction at their own PC" sim/verilator_soc.log && \
+	@grep -aq "were not the instruction at their own PC" sim/verilator_soc.log && \
 	    { echo "FAILED: the core decoded an instruction that is not at its PC"; \
 	      exit 1; } || true
-	@grep -q "returned the wrong word" sim/verilator_soc.log && \
+	@grep -aq "returned the wrong word" sim/verilator_soc.log && \
 	    { echo "FAILED: a read returned something the memory does not hold"; \
 	      exit 1; } || true
-	@grep -q "disagreed with the page tables" sim/verilator_soc.log && \
+	@grep -aq "disagreed with the page tables" sim/verilator_soc.log && \
 	    { echo "FAILED: a translation disagreed with the page tables"; \
+	      exit 1; } || true
+	@grep -aq "dropped by the transmitter" sim/verilator_soc.log && \
+	    { echo "FAILED: the UART did not send a byte software wrote to it"; \
 	      exit 1; } || true
 
 software: sim/firmware_imem.hex sim/firmware_dmem.hex
@@ -746,7 +750,7 @@ LINUX_MARKER = VERNIER-RV32-LINUX-BOOT-OK
 
 sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
 	@cd sim && ../$(VERILATOR_BIN) +sdram=linuximage.hex +uart_clks=224 \
-	    +sdram_words=16777216 +maxcycles=400000000 \
+	    +sdram_words=16777216 +maxcycles=400000000 +checkuart \
 	    +stopon=$(LINUX_MARKER) | tee linux.log
 # The `===` are load-bearing and this gate was wrong without them. The
 # harness reports what +stopon was looking for - `stopon "MARKER": never seen
@@ -755,7 +759,24 @@ sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
 # on the first run of this target. docs/practices.md section 26: a suite that
 # passes is not a suite that ran the code. Only
 # software/linux/initramfs/init.c prints the delimited form.
-	@grep -q "=== $(LINUX_MARKER) ===" sim/linux.log && \
+# Two gates, because they fail differently. The marker says the boot reached
+# `/init`; `+checkuart` says the console carried every byte software wrote to
+# it. A boot can reach the marker with output that is unreadable either side of
+# it - that is exactly what a device tree claiming a sixteen-byte FIFO on a
+# one-byte holding register produced - and a log nobody can read is not a
+# passing boot.
+#
+# `-a` on both, and it is load-bearing rather than tidiness. A console failure
+# puts bytes above 0x7f in this log, grep then calls the file binary, and
+# `grep -q` on a binary file exits *non-zero even when the pattern is there* -
+# checked on this machine, not assumed. So the gate that exists to report a
+# garbled boot was the gate a garbled boot disabled, and it would have called a
+# boot that reached userspace a failure. Same lesson as the `===` note above:
+# the failing case is the one the gate has to survive.
+	@grep -aq "dropped by the transmitter" sim/linux.log && \
+	    { echo "LINUX BOOT FAILED - the console did not send every byte"; \
+	      exit 1; } || true
+	@grep -aq "=== $(LINUX_MARKER) ===" sim/linux.log && \
 	    echo "LINUX BOOT PASSED - reached userspace" || \
 	    { echo "LINUX BOOT FAILED - never reached /init"; exit 1; }
 

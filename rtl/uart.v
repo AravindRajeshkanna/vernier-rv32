@@ -56,8 +56,24 @@
 // ---- Simplifications, stated rather than assumed ----
 //
 //  * **No FIFOs.** One byte each way, as before. FCR writes are accepted and
-//    IIR reports bits 7:6 = 00, which is how a 16450 identifies itself; a
-//    driver that checks will simply not use FIFO mode.
+//    IIR reports bits 7:6 = 00, which is how a 16450 identifies itself.
+//
+//    That is not enough on its own, and believing it was cost a Linux boot.
+//    This used to end "a driver that checks will simply not use FIFO mode",
+//    and the flaw is the premise: a driver told the part's name by a device
+//    tree does not check. drivers/tty/serial/8250/8250_of.c sets
+//    UPF_FIXED_TYPE, so autoconfig() never runs and IIR is never read - the
+//    compatible string is the whole configuration. `ns16550a` meant
+//    tx_loadsz = 16, and serial8250_tx_chars() wrote sixteen bytes into this
+//    one-byte register after a single THRE with no status check between
+//    them. The TX_IDLE arm below discarded fifteen of them, silently,
+//    because there is no bit in this part that could say otherwise.
+//
+//    So what identifies the hardware is dts/soc.dts's `compatible`, and it
+//    now names a 16450. `+checkuart` in sim/verilator_soc.cpp watches both
+//    ends of the wire and fails on a discarded write, because the symptom -
+//    thinned, unreadable console output - is indistinguishable from the
+//    harness decoding at the wrong baud rate.
 //  * **THRE's interrupt is a level, not a latch.** A real 16550 clears the
 //    transmitter-empty interrupt when IIR is read; here it follows LSR.THRE
 //    directly. Drivers enable ETBEI only while they have something to send,

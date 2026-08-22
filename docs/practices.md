@@ -963,6 +963,7 @@ unless they disagree:
 | `+checkreads` | every word the interconnect acknowledges | the modelled SDRAM's contents |
 | `+checkfetch` | every instruction the core consumes | the same, at the fetch address |
 | `+checkmmu` | every address both TLBs resolve | an Sv32 walk written from the spec |
+| `+checkuart` | every byte written to the UART's holding register | the byte the receiver decodes off the wire |
 
 Over one Linux boot that is 19.9 million reads, 133.8 million fetches and
 125.3 million translations, and the output is three lines. There is no reading
@@ -1034,6 +1035,71 @@ The three it left were redirects *within a single page*, where the page number
 matches and the offset does not, and a physical address is `{ppn, va[11:0]}`.
 A fix that removes most of a symptom is the most dangerous kind, because the
 remainder looks like noise. The check is what said three were left.
+
+---
+
+## 32. A device tree is a claim about hardware, and drivers do not check it
+
+The last defect between this SoC and a Linux userspace was one letter in
+`dts/soc.dts`:
+
+```
+compatible = "ns16550a";
+```
+
+`rtl/uart.v` has no FIFOs. It says so in its own header, and the device tree
+said so too, in a comment directly above that line: *"No FIFOs: `fifo-size` is
+deliberately absent and IIR reports bits 7:6 = 00, so a driver that checks
+will stay in 16450 mode."*
+
+Every clause of that is true. The conclusion does not follow, because
+**nothing checks**. `drivers/tty/serial/8250/8250_of.c` sets `UPF_FIXED_TYPE`,
+which makes `uart_configure_port()` skip `autoconfig()` entirely — the honest
+`IIR` this hardware reports is never read by anything. The compatible string
+is not a hint that a probe then confirms. It *is* the configuration.
+
+`ns16550a` means `PORT_16550A`, which means `tx_loadsz = 16`, which means
+`serial8250_tx_chars()` writes sixteen bytes into a one-byte holding register
+after a single `THRE`, with no status check between them. `rtl/uart.v`'s
+`TX_IDLE` arm takes a write only when the transmitter is free, so fifteen of
+every sixteen were discarded — correctly, and with nothing anywhere that could
+report it, because a part with no FIFO has no bit for "I threw that away".
+
+Two things make this worth a section.
+
+**The symptom impersonated the instrument.** Output came out thinned rather
+than absent: `Freeing unused kernel image...` arrived as `Fet2KoecRt=:kL`.
+Dropped characters and a mis-decoded baud rate look identical from the far end
+of a serial line, and the console is the one component whose failure corrupts
+the evidence for every other component. The standing note in
+`software/linux/README.md` even said "it is not a decoding rate mismatch — the
+harness reports divisor 14, 224 clocks per bit" — which was true, and ruled out
+the wrong half. The rate was right. The bytes were not all being sent.
+
+**The check that settles it watches both ends.** `+checkuart` counts what
+software wrote to `THR` and compares it against what the receiver decodes off
+the wire. It needs no baseline: a write discarded by the transmitter is a
+defect on its own terms, and so is a byte on the line nobody wrote. It named
+the first twelve losses by value and cycle — `r`, `e`, `e`, `i`, `n`, `g`, ` `,
+`u`, `n`, `u`, `s`, `e`, forty-eight cycles apart where a character takes two
+thousand two hundred and forty — and that is the whole diagnosis, in the
+output of the run that failed. Section 30's rule, applied to the console
+itself.
+
+The general form: **`compatible` is not documentation, it is an instruction.**
+A binding names a part, and the driver that binds to it implements that part's
+contract without asking whether the silicon honours it. Under-claiming costs
+performance; over-claiming corrupts data. `dts/soc.dts` now says
+`"ns16450", "ns16550"` — the part this is, and the register map it can be
+driven through — and the ordering is load-bearing, because Linux scores a
+match by its index in *that* list while OpenSBI matches `ns16550` and keeps its
+console.
+
+The same file already carried the right instinct, one paragraph up, about the
+UART's *previous* compatible string: "naming a compatible string you do not
+implement loads a driver that talks to the wrong registers - a worse failure
+than having no driver." The registers were right this time. The buffer depth
+was not, and nothing in the format distinguishes those two kinds of lie.
 
 ---
 

@@ -6,9 +6,9 @@
 # platform detection. There is no platform port: PLATFORM=generic is entirely
 # FDT-driven, so dts/soc.dts *is* the port.
 #
-# The kernel it hands off to does not reach userspace yet - it stops in
-# unflatten_device_tree(). That is a defect in front of this script rather
-# than in it; software/linux/README.md is precise about where.
+# The kernel it hands off to now reaches userspace: `make sim_linux` runs
+# Linux 6.18.45 rv32ima through this firmware to a `/init` that prints back
+# the ISA string the kernel parsed out of dts/soc.dts.
 #
 # The one non-obvious part is the PIE patch below. Modern OpenSBI hard-errors
 # unless the linker can create position-independent executables, and the

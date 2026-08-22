@@ -173,19 +173,49 @@
         };
 
         uart0: serial@4000000 {
-            /* This claim used to be a lie and is now true: rtl/uart.v is an
-             * ns16550. It was three registers of this project's own design,
-             * and the comment here said so, because naming a compatible
-             * string you do not implement loads a driver that talks to the
-             * wrong registers - a worse failure than having no driver.
+            /* rtl/uart.v is an 8250-family part with the 16550 register map
+             * and **no FIFOs**, so that is what this says: a 16450, which can
+             * also be driven as a 16550 with the FIFO left alone. Both
+             * entries are true, and the order is what makes the first one
+             * count - Linux scores a match by its index in *this* list, so it
+             * takes ns16450, and OpenSBI's uart8250 driver matches on ns16550
+             * and keeps its console.
+             *
+             * This said "ns16550a" for one revision, and the single letter
+             * cost a whole boot. The comment below used to end "a driver that
+             * checks will stay in 16450 mode", and the flaw is in the
+             * premise: nothing checks. drivers/tty/serial/8250/8250_of.c sets
+             * UPF_FIXED_TYPE, so serial_core skips autoconfig() entirely and
+             * the compatible string *is* the configuration - IIR is never
+             * read. "ns16550a" means PORT_16550A means tx_loadsz = 16, and
+             * serial8250_tx_chars() then writes sixteen bytes into a
+             * one-byte holding register after a single THRE, with no status
+             * check between them. Fifteen are discarded, in hardware, with
+             * nothing to report them: rtl/uart.v's TX_IDLE arm takes a write
+             * only when the transmitter is free.
+             *
+             * The output that produces is thinned rather than absent, so it
+             * reads as a console decoding at the wrong rate - a fault in the
+             * instrument - and the machine looks like it died where it in
+             * fact carried on. `make sim_linux` runs with `+checkuart`, which
+             * watches both ends of the wire and names the bytes.
+             *
+             * This node already carried the right instinct, about the string
+             * *before* that one, when rtl/uart.v was three registers of this
+             * project's own design: "naming a compatible string you do not
+             * implement loads a driver that talks to the wrong registers - a
+             * worse failure than having no driver." The registers were right
+             * the second time. The buffer depth was not, and nothing in the
+             * format distinguishes those two kinds of lie.
              *
              * reg-shift 2 puts register n at offset 4n, which is how this
              * word-addressed bus wants it and what rtl/uart.v decodes.
              *
-             * No FIFOs: `fifo-size` is deliberately absent and IIR reports
-             * bits 7:6 = 00, so a driver that checks will stay in 16450 mode.
+             * `fifo-size` is absent and IIR reports bits 7:6 = 00, which is
+             * how a part without FIFOs identifies itself to anything that
+             * does ask.
              */
-            compatible = "ns16550a";
+            compatible = "ns16450", "ns16550";
             reg = <0x04000000 0x00010000>;
             reg-shift = <2>;
             reg-io-width = <4>;

@@ -28,6 +28,65 @@ still open:
 | Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 
+## Before a Linux boot is tried on a board
+
+Linux now boots to userspace **in simulation** (`software/linux/README.md`).
+Nothing below is a reason it would not boot on silicon; each is a thing this
+board has never been asked to do, and each one turns "Linux hangs on the
+board" from a hunt into a lookup. Sending the image costs 22 minutes, so the
+order matters.
+
+**1. Re-measure Fmax and the resource count.** The 25.37 MHz and 14,260 LUT4 /
+80 EBR below were measured at PR #22. Five RTL-changing commits have landed
+since: the PLIC moved to the spec register map and `rtl/uart.v` became an
+ns16550 (#23); `mstatush`, 64-bit `mcycle`/`minstret`, misaligned traps and a
+FENCE.I invalidate arrived (#24); and #28 put a 32-bit comparator directly in
+the fetch path, feeding both the fetch stall and the `imem_addr` mux. That is
+precisely what the Fmax row warns about, against **1.5% of margin** and no PLL
+wired in to fall back on.
+
+**2. Prove SDRAM past 256 KB.** `software/soc/sdramcheck.c` sweeps
+`SWEEP_BYTES = 0x40000`, and the largest thing ever executed from the part is
+99 KB. A kernel needs about 28 MB live. That leaves the upper row and bank
+address bits never toggled and refresh proved over a 100 ms idle rather than
+over minutes of continuous traffic — and the read capture *was* marginal here
+before the `ODDRX1F` phase fix, at one failing word in a thousand. Margin is
+what scales with coverage. The check runs from block RAM, so raising the sweep
+to the whole 32 MB is a constant and a longer run.
+
+**3. Build the three peripherals Linux depends on into a bitstream.**
+`mmutest.c`, `plictest.c` and `uarttest.c` each have a simulation target and
+**no `BOARD=` target**. The acceptance test that has run on silicon covers
+AMO, LR/SC, `misa`, the counters, misaligned traps and FENCE.I — not Sv32, not
+PLIC interrupt delivery, not the ns16550 divisor-latch path. Sv32 is the one
+to want most: PR #28's defect lived in the ITLB, and only Linux ever pressures
+it. Each target is about ten lines of `synth/synth_ecp5.sh`, copying
+`ulx3s85-probe`.
+
+**4. Two device-tree claims are false on a board.** `dts/soc.dts` declares
+256 KB at `0x8000_0000` — the simulation figure; a board build is
+`RAM_BYTES = 65536`. Probably harmless, since `arch/riscv` sets `phys_ram_base`
+to `0x9040_0000` and drops every range below it, but the same `.dtb` goes into
+the image the board receives.
+
+**5. The transfer is all-or-nothing.** `sdram.bin` is 7,744,876 bytes;
+`UARTLOAD_BYTE_TIMEOUT_MS` is 200 ms and the ROM halts on the first timeout,
+with the CRC checked only at the end. One dropped byte in 7.7 million costs
+the whole 22 minutes. About 3 MB of that image is the zero gap between the end
+of OpenSBI and the kernel at `+0x400000`, so a run-length skip in the header
+roughly halves it; raising the baud is the other half.
+
+**6. The 3.1% baud error has never run on silicon.** The boot ROM's console
+uses the reset divisor — `CLKS_PER_BIT = 25e6/115200 = 217`, essentially exact.
+OpenSBI and Linux both program the ns16550 divisor to **14**, which is 111,607
+baud. That is inside a frame's tolerance and it is what every byte after the
+ROM banner uses, so it is worth knowing which of the two channels a garbled
+board console is coming from before diagnosing anything else.
+
+The bitstream to send is **`BOARD=ulx3s85`** — plain ROM boot, no RAM preload,
+so the UART loader actually runs. The `-ram`/`-probe`/`-trapcheck` builds
+preload block RAM and never reach it.
+
 ## The hardware run
 
 Verbatim from `picocom -b 115200 /dev/cu.usbserial-D01595`, on a ULX3S with

@@ -19,8 +19,8 @@ to S-mode.
 | Finds the interrupt controller | ✅ the PLIC's 4 MB window appears as a domain region |
 | Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 0 |
 | **Prints its banner** | ✅ |
-| Hands off to an S-mode payload | ✅ prepared — `Next Address 0x9040_0000`, `Next Mode S-mode`; there is no payload there yet |
-| A kernel to hand off *to* | ❌ see docs/roadmap.md |
+| Hands off to an S-mode payload | ✅ `Next Address 0x9040_0000`, `Next Mode S-mode` |
+| A kernel to hand off *to* | ✅ Linux 6.18.45 rv32ima, to userspace — `software/linux/README.md` |
 
 ```
 OpenSBI v1.9-11-gc0f87f10
@@ -140,38 +140,34 @@ conditional on linker support instead of unconditional, and builds `FW_PIC=n`.
 The patch is idempotent and the upstream commit is pinned so it can't silently
 rot.
 
-## What's left to actually boot it
+## Where this leads
 
-1. **A platform port.** `platform/template/` upstream is the skeleton. It
-   needs a console (this SoC's UART is not a 16550, so OpenSBI's `uart8250`
-   driver won't do), plus timer and IPI hooked to the CLINT — the CLINT is
-   already register-compatible with `riscv,clint0`, so that part should be
-   straightforward. The PLIC is **not** layout-compatible with `riscv,plic0`
-   (its threshold/claim registers are at `0x3000`/`0x3004` rather than the
-   spec's per-context `0x200000` block), so either the PLIC gets remapped or
-   the port skips irqchip init.
-2. **Link it into SDRAM** at `0x9000_0000`, not block RAM. `fw_jump.bin` is
-   521 KB against 64 KB on the board, and Phase 2 answered that: there are
-   32 MB of SDRAM on a ULX3S and `rtl/soc/wb_sdram.v` reaches 16 MB of them.
-   This used to say DRAM was "the reason this can never run on the current
-   FPGA target", which stopped being true when a board read and wrote 256 KB
-   of it — see `fpga/README.md`.
+`make sim_linux` boots an rv32ima Linux to userspace on this SoC through this
+firmware — see `software/linux/README.md`. This section used to list what was
+left to get there, and every item on it has since been answered:
 
-   What is *not* answered is getting the image there on hardware. A bitstream
-   initialises block RAM at FPGA configuration time and SDRAM comes up
-   holding nothing, so this needs a loader: the SD path (Phase 7) or a UART
-   one. In simulation the testbench preloads the model and the question does
-   not arise, which is exactly the kind of gap `docs/practices.md` §4 is
-   about.
-3. **Preload rather than loading over SPI, in simulation.** Pulling ~500 KB
-   through the bit-banged SPI/SD path would cost roughly 16 M cycles just for
-   the transfer. `sim/tb_sdramboot.v` already does this — it `$readmemh`s the
-   image straight into the SDRAM model and runs a 99 KB program out of it.
-4. **An S-mode payload** for OpenSBI to hand off to, to prove the transition.
+- **A platform port** — not needed. `PLATFORM=generic` is FDT-driven, so
+  `dts/soc.dts` is the port, and it works because the hardware the stock
+  drivers look for is now really there: `rtl/uart.v` became an ns16550 and
+  `rtl/plic.v` moved to the spec's per-context register map (both in #23),
+  which the old text called out as the two blockers.
+- **Link it into SDRAM** — `FW_TEXT_START=0x9008_0000`, and the board reads
+  and writes the part on silicon (`fpga/README.md`).
+- **Getting the image there on hardware** — `software/soc/uartload.py` and the
+  loader in `software/soc/bootrom.c`, proved on a board with a 99 KB program.
+- **Preload rather than loading over SPI in simulation** — `+sdram=` does it.
+- **An S-mode payload** — the kernel.
 
-## And to be clear about Linux
+One correction worth keeping, because it was wrong in the direction that
+matters. The device tree's UART node said `compatible = "ns16550a"`, which
+OpenSBI's `uart8250` driver was perfectly happy with — and which told Linux the
+part had a sixteen-byte FIFO it does not have. M-mode polled `THRE` before
+every byte and never noticed; the kernel wrote sixteen at a time and lost
+fifteen. It now says `"ns16450", "ns16550"`, which both firmwares match and
+only one of them was ever going to catch. docs/practices.md §32.
 
-Even with all of the above, Linux needs more than this: an S-mode PLIC
-context (`mip.SEIP` is currently hardwired 0, so the kernel could never
-receive an external interrupt), a UART with an actual Linux driver, and tens
-of megabytes of RAM. See the root `README.md` for the full gap analysis.
+## And to be clear about the caveats
+
+Linux boots **in simulation**. It has never been tried on a board, and
+`fpga/README.md` opens with the list of what to settle first — starting with
+an Fmax that predates five RTL-changing commits against 1.5% of margin.

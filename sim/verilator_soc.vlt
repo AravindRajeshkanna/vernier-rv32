@@ -175,3 +175,24 @@ public_flat_rd -module "core_ooo" -var "id_ex_pred_target"
 // mismatch prints garbage - which looks like a firmware fault rather
 // than a decoding one.
 public_flat_rd -module "uart" -var "divisor_r"
+
+// And what the program handed the transmitter, which the decoded line above
+// cannot tell you on its own.
+//
+// rtl/uart.v holds one byte. Its TX_IDLE arm takes a write only when the
+// transmitter is free (`write_thr && !tx_busy`); a write that arrives while a
+// character is still being shifted out is discarded, silently, because that is
+// what a part with no FIFO can do and there is no status bit for "I threw the
+// last one away". From software the result is indistinguishable from a console
+// decoding at the wrong rate.
+//
+// A driver that polls LSR.THRE before each byte never provokes it. One that
+// believes it has a sixteen-byte FIFO writes sixteen after a single poll and
+// provokes it fifteen times per burst.
+//
+// `tx_state` rather than the `tx_busy` wire it feeds: a one-line continuous
+// assignment is exactly what the optimiser folds away, and the state register
+// cannot be.
+public_flat_rd -module "uart" -var "write_thr"
+public_flat_rd -module "uart" -var "tx_state"
+public_flat_rd -module "uart" -var "wdata"
