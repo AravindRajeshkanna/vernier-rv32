@@ -1274,6 +1274,72 @@ and answering a question nobody had checked it could answer.
 
 ---
 
+## 36. On a shared wire, a protocol byte must be one the console cannot print
+
+The boot ROM's UART loader and the boot ROM's console are the same wire. The
+host has nothing but the byte value to tell a protocol reply from ordinary
+text, and the acknowledgement byte was `'K'`.
+
+`'K'` is `0x4B`. **"KB" appears in the console output of every program in this
+repository** — "64 KB of RAM the firmware assumes", "sweeping 256 KB of
+32768 KB, against 64 KB of block RAM". So a host knocking at a board that was
+*printing* rather than listening matched the `'K'` of "KB", announced
+
+```
+  ROM answered
+```
+
+sent its 16-byte header into a program that was not reading a single byte of
+it, and then reported the next thing on the wire:
+
+```
+error: unexpected reply 0x42 ('B') after header - the ROM should send
+       nothing but acknowledgements during a transfer
+```
+
+`0x42` is the `'B'` of "KB". Every word of that message is true and all of it
+is about a protocol that was never running. The board was working correctly
+and doing something else entirely — it had a bitstream with a program
+preloaded into block RAM, so the ROM found it, jumped straight to it, and
+never opened the knock window.
+
+The fix is to choose bytes the other traffic on the wire cannot produce. This
+ROM's console emits printable ASCII plus CR and LF, so `0x06` and `0x15` —
+ASCII ACK and NAK — are unforgeable by anything printing. That is a property
+of the value, not of timing, ordering or luck.
+
+**The near-miss is the instructive part.** `software/soc/bootrom.c` already
+carried a comment about exactly this hazard, in the other direction:
+
+> *it cannot be filtered by value either, because 'E' is the NAK byte and
+> "UART LOAD FAILED" contains one*
+
+The collision had been noticed, reasoned about, and solved — for NAK, by
+ordering the NAK before its message. The identical problem with ACK went
+unexamined, because the analysis was framed as "can the host mistake a message
+for a rejection" rather than "can text on this wire produce any protocol
+byte". A rule stated as a special case protects the case; a rule stated as a
+property protects the class.
+
+**Two more defects came out of writing the test**, both in the same
+never-exercised path. `tests/uartload_host.py` gained a board that prints and
+never listens, and it was the first thing that had ever let the host's knock
+run to its full timeout. That immediately produced a `BlockingIOError`
+traceback — `os.write` on a non-blocking port raises `EAGAIN` once the buffer
+fills, and nothing handled it. Handling it by retrying then produced the
+opposite failure: the retry loop never returned, so the knock deadline was
+never re-checked and the host knocked forever at a board that was never going
+to answer. Probes and payload need *different* write semantics — the payload
+must wait for room because the ROM is reading it, and a probe must be dropped
+because nobody may be.
+
+Three defects, all in the path that runs when the far end does not respond,
+none reachable by any test that assumed it would.
+
+---
+
+---
+
 ## Conventions
 
 **Commits** are imperative and say what changed and why it matters — `Test

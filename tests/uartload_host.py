@@ -29,7 +29,10 @@ ROOT = os.path.dirname(HERE)
 SCRIPT = os.path.join(ROOT, "software", "soc", "uartload.py")
 
 MAGIC = 0x55434F53
-PROBE, ACK, NAK = 0x55, 0x4B, 0x45
+# Must match software/soc/soc.h. ACK and NAK are ASCII control codes because
+# the console shares this wire and "KB" - which every program here prints -
+# used to be indistinguishable from an acknowledgement followed by a byte.
+PROBE, ACK, NAK = 0x55, 0x06, 0x15
 LOAD_ADDR = 0x90000000
 
 failures = []
@@ -39,6 +42,41 @@ def check(name, ok, detail=""):
     print(f"  {name:<44}{'ok' if ok else 'FAILED'}")
     if not ok:
         failures.append(f"{name}: {detail}")
+
+
+class ChattyBoard:
+    """A board that is *printing*, not listening — the case that cost a bench
+    session.
+
+    It never enters the loader. It emits ordinary console output containing
+    the word "KB", which every program in this repository prints ("64 KB of
+    RAM", "sweeping 256 KB of 32768 KB"). With the old protocol bytes the 'K'
+    of "KB" was UARTLOAD_ACK, so the host announced "ROM answered", sent its
+    header into a program that was not reading, and reported the following
+    'B' as a protocol fault.
+
+    The host must knock, get no acknowledgement, and time out saying so.
+    """
+
+    def __init__(self, fd, seconds=2.5):
+        self.fd = fd
+        self.seconds = seconds
+        os.set_blocking(fd, False)
+
+    def run(self, *_args, **_kwargs):
+        # Tolerant writes: the host gives up knocking and exits while this is
+        # still printing, and a pty with no reader fills and then blocks
+        # forever. A real board does not care whether anybody is listening.
+        end = time.monotonic() + self.seconds
+        line = (b"  sweeping 256 KB of 32768 KB, "
+                b"against 64 KB of block RAM\r\n")
+        while time.monotonic() < end:
+            try:
+                os.write(self.fd, line)
+            except (BlockingIOError, OSError):
+                pass
+            time.sleep(0.05)
+        return "CHATTY"
 
 
 class FakeBoard:
@@ -115,7 +153,7 @@ class FakeBoard:
         return bytes(got)
 
 
-def run_case(name, payload, extra_args=(), **board_kwargs):
+def run_case(name, payload, extra_args=(), board_cls=FakeBoard, **board_kwargs):
     master, slave = os.openpty()
     image = os.path.join(HERE, "build", "uartload_case.bin")
     os.makedirs(os.path.dirname(image), exist_ok=True)
@@ -127,7 +165,7 @@ def run_case(name, payload, extra_args=(), **board_kwargs):
          "--knock-timeout", "5", *extra_args],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
-        got = FakeBoard(master).run(payload, **board_kwargs)
+        got = board_cls(master).run(payload, **board_kwargs)
         # Closing our end ends the script's console passthrough.
         time.sleep(0.05)
         os.close(master)
@@ -165,6 +203,24 @@ def main():
     got, out = run_case("addr", payload, extra_args=("--addr", "0x04000000"))
     check("a bad load address is refused up front",
           "not inside any region" in (out or ""), (out or "")[-200:])
+
+    # 5. a board that is printing, not listening.
+    #
+    # This is the regression for the bench failure that made ACK and NAK
+    # control codes. The board never enters the loader; it just prints "KB",
+    # which used to contain the acknowledgement byte. The host must NOT claim
+    # the ROM answered.
+    #
+    # Both halves are checked, because only the pair distinguishes a fix from
+    # a coincidence: the knock must fail, *and* it must fail for the stated
+    # reason rather than by the script dying somewhere else.
+    got, out = run_case("chatty", payload, board_cls=ChattyBoard,
+                        extra_args=("--knock-timeout", "1"))
+    check("console text is not read as an acknowledgement",
+          got == "CHATTY" and "ROM answered" not in (out or ""),
+          (out or "")[-300:])
+    check("the host reports the ROM never answered",
+          "never answered" in (out or ""), (out or "")[-300:])
 
     print()
     if failures:

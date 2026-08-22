@@ -726,6 +726,28 @@ The order matters: the ROM listens for a knock for only 20 ms after reset, so
 the script has to be running already and you reset into it. Miss it and press
 reset again — nothing on the host side needs restarting.
 
+**The bitstream must be one with nothing preloaded** — `BOARD=ulx3s85`. A
+preloaded build makes the ROM jump straight to the program in block RAM
+without ever opening the knock window, and the loader has no way in.
+`cat fpga/build/ulx3s_top.bit.target` says which you have.
+
+That used to fail confusingly. The acknowledgement byte was `'K'`, and every
+program here prints "KB" — "64 KB of RAM", "sweeping 256 KB of 32768 KB" — so
+the host matched the `'K'` of "KB" in a *running program's console output*,
+reported "ROM answered", sent its header into something that was not reading,
+and blamed the reply:
+
+```
+  ROM answered
+error: unexpected reply 0x42 ('B') after header
+```
+
+`0x42` is the `'B'` of "KB". The board was fine and was running a different
+program. `UARTLOAD_ACK` and `UARTLOAD_NAK` are ASCII control codes now
+(`0x06`, `0x15`), which nothing on this console ever prints, and the host
+names the likely cause when it sees a printable byte where an acknowledgement
+belongs. `docs/practices.md` §36.
+
 It sends a 16-byte header (magic, load address, length, CRC32), the ROM
 refuses any address outside RAM or SDRAM, and the CRC is checked before it
 jumps. Then the script hands the console over, so a load and its output are
