@@ -46,6 +46,7 @@ BUILD=fpga/build
 #
 #   BOARD=ulx3s85-ram        the acceptance test
 #   BOARD=ulx3s85-sdramcheck the SDRAM check, run from block RAM
+#   BOARD=ulx3s85-sdramfull  the same check over the whole 32 MB part
 #
 # and one that is not a SoC at all - a standalone SDRAM probe with no CPU,
 # for proving the memory before anything else is in the path:
@@ -141,6 +142,33 @@ case "$BOARD" in
         PRELOAD_RAM=1
         RAM_IMAGE=sim/sdramcheckimage.hex
         RAM_ELF=software/soc/sdramcheck.elf
+        ;;
+    ulx3s85-sdramfull)
+        # The same program over the whole 32 MB instead of the first 256 KB.
+        #
+        # 256 KB is what silicon has ever been asked to hold, and it is a
+        # smaller claim than it sounds: rtl/soc/wb_sdram.v maps wb_adr[24:12]
+        # to the row, so 256 KB is 64 of 8192 rows and seven of the thirteen
+        # row address bits are never driven high. Every bank, every column,
+        # one two-hundredth of the rows. A kernel needs about 28 MB of it.
+        #
+        # It also buys the one thing a short sweep cannot: the write pass runs
+        # bottom to top and so does the read-back, so the lowest address is
+        # read seconds after it was written, with continuous traffic through
+        # the same controller in between. The program measures that interval
+        # off mtime and prints it rather than asserting it.
+        #
+        # Costs about six seconds on the board against a tenth of a second.
+        # `make verilator_sdramfull` runs this exact image first, because a
+        # bitstream nobody has executed is not a test - practices section 4.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
+        PRELOAD_RAM=1
+        RAM_IMAGE=sim/sdramfullimage.hex
+        RAM_ELF=software/soc/sdramfull.elf
         ;;
     ulx3s85-ram)
         # 85F with the acceptance-test program preloaded into RAM, so the

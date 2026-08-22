@@ -30,11 +30,53 @@
 #include "console.h"
 #include "trap.h"
 
-/* 256 KB, four times the block RAM this program is running from. Big enough
- * that no aliasing failure can hide, small enough that the simulated run of the
- * same image stays inside a minute. The board does this in about a tenth of a
- * second. */
+/* How much of the part to sweep. Overridable at build time, because the two
+ * things that run this image want opposite sizes and only one of them is the
+ * interesting one.
+ *
+ *   256 KB (the default)  four times the block RAM this program runs from,
+ *                         and small enough that `make sim_sdramcheck` under
+ *                         Icarus stays inside a few minutes.
+ *   32 MB                 the whole part, which is the size that says
+ *                         anything about running a kernel out of it.
+ *                         `make sdramfullimage`, and BOARD=ulx3s85-sdramfull.
+ *
+ * The difference is not "more of the same", and the coverage line printed at
+ * startup is there to say so. rtl/soc/wb_sdram.v maps wb_adr[24:12] to the
+ * row, wb_adr[11:10] to the bank and wb_adr[9:1] to the column, so a 256 KB
+ * sweep reaches rows 0..63 of 8192 and **never drives row address bits
+ * A6..A12 high at all**. Every bank and every column, one two-hundredth of
+ * the rows.
+ *
+ * (Those three ranges are duplicated from wb_sdram.v's header - practices
+ * section 11. Safe direction of error is *over*-stating the shift, which
+ * under-reports coverage and makes this look worse than it is; under-stating
+ * it would claim rows that were never touched.)
+ */
+#ifndef SWEEP_BYTES
 #define SWEEP_BYTES 0x00040000u
+#endif
+
+#define SDRAM_ROW_SHIFT 12u          /* wb_adr[24:12] is the row      */
+#define SDRAM_ROWS      8192u        /* 13 row bits                   */
+#define SDRAM_BANKS     4u           /* wb_adr[11:10]                 */
+#define SDRAM_COLS      512u         /* wb_adr[9:1]                   */
+
+/* mtime, which counts once per system clock in rtl/clint.v. Used here to
+ * *measure* the two intervals this program used to assert - the retention gap
+ * and the idle - rather than deriving them from a spin count and a comment.
+ * The two comments on the idle loop below disagreed with each other about
+ * whether it was 10 ms or 100 ms, which is what a number nobody measured
+ * looks like after a while. */
+static inline uint32_t now_ticks(void)
+{
+    return *(volatile uint32_t *)(uintptr_t)(CLINT_BASE + 0xBFF8u);
+}
+
+static uint32_t ticks_to_ms(uint32_t ticks)
+{
+    return ticks / (CPU_HZ / 1000u);
+}
 
 static int failures = 0;
 
@@ -44,6 +86,41 @@ static void report(const char *name, int ok)
     put_pad(name, 30);
     put_str(ok ? "ok\n" : "FAILED\n");
     if (!ok) failures++;
+}
+
+/* `report()` with a number built into the label.
+ *
+ * The address-uniqueness line used to be the string literal "256 KB unique
+ * addresses" next to a `#define SWEEP_BYTES 0x40000`, which was true and one
+ * edit away from not being. Raising the sweep would have produced a test that
+ * passed while reporting a coverage it had not done - the exact failure
+ * practices section 1 and section 26 are about, and worse than either,
+ * because the wrong number would have been *printed on a board* and believed.
+ */
+static char *u32_dec(char *p, uint32_t v)
+{
+    char tmp[10];
+    int n = 0;
+    do { tmp[n++] = (char)('0' + (v % 10u)); v /= 10u; } while (v);
+    while (n) *p++ = tmp[--n];
+    return p;
+}
+
+static void report_size(uint32_t kb, const char *tail, int ok)
+{
+    char buf[40];
+    char *p = buf;
+    const char *t;
+    if (kb >= 1024u && (kb % 1024u) == 0u) {
+        p = u32_dec(p, kb / 1024u);
+        *p++ = ' '; *p++ = 'M'; *p++ = 'B'; *p++ = ' ';
+    } else {
+        p = u32_dec(p, kb);
+        *p++ = ' '; *p++ = 'K'; *p++ = 'B'; *p++ = ' ';
+    }
+    for (t = tail; *t && (p - buf) < (int)sizeof(buf) - 1; t++) *p++ = *t;
+    *p = '\0';
+    report(buf, ok);
 }
 
 /* Every address bit reaches the data, so a swapped or stuck address line
@@ -58,7 +135,8 @@ int main(void)
 {
     volatile uint32_t *result = (volatile uint32_t *)TEST_RESULT_ADDR;
     volatile uint32_t *sdram  = (volatile uint32_t *)SDRAM_BASE;
-    uint32_t i, bad_at;
+    uint32_t i;
+    uint32_t t_write_start, t_read_start;
     int ok;
 
     trap_install();
@@ -68,9 +146,45 @@ int main(void)
     put_hex(SDRAM_BASE);
     put_str(", sweeping ");
     put_dec((int)(SWEEP_BYTES / 1024));
-    put_str(" KB against ");
+    put_str(" KB of ");
+    put_dec((int)(SDRAM_SIZE / 1024));
+    put_str(" KB, against ");
     put_dec((int)(RAM_SIZE / 1024));
-    put_str(" KB of block RAM\n\n");
+    put_str(" KB of block RAM\n");
+
+    /* What the sweep size means in the part's own coordinates.
+     *
+     * "256 KB of SDRAM works" was the claim this program has been making on
+     * silicon, and it is true and much smaller than it sounds: the row is
+     * wb_adr[24:12], so 256 KB is 64 of 8192 rows and seven of the thirteen
+     * row address bits are never driven high. Printing the ranges makes the
+     * limit visible in the output of the *short* run too, instead of leaving
+     * it to be worked out from a memory map by somebody who has already
+     * decided the memory is fine.
+     *
+     * The banks and columns are fully covered by anything over 4 KB, so they
+     * are stated once and not belaboured. */
+    {
+        uint32_t rows = (SWEEP_BYTES + (1u << SDRAM_ROW_SHIFT) - 1u)
+                        >> SDRAM_ROW_SHIFT;
+        uint32_t bits = 0, r = rows - 1u;
+        while (r) { bits++; r >>= 1; }
+        put_str("  rows 0..");
+        put_dec((int)(rows - 1u));
+        put_str(" of ");
+        put_dec((int)SDRAM_ROWS);
+        put_str(", all ");
+        put_dec((int)SDRAM_BANKS);
+        put_str(" banks, all ");
+        put_dec((int)SDRAM_COLS);
+        put_str(" columns\n");
+        if (rows < SDRAM_ROWS) {
+            put_str("  the dense sweep leaves row address bits A");
+            put_dec((int)bits);
+            put_str("..A12 low; test 3 drives them\n");
+        }
+        put_str("\n");
+    }
 
     /* ---- 1. a single word ----
      * If this fails, nothing below will mean anything, and the probe with no
@@ -98,13 +212,66 @@ int main(void)
     }
     report("walking ones, 32 bits", ok);
 
-    /* ---- 3. address uniqueness ----
+    /* ---- 3. every row, one word each ----
+     *
+     * The dense sweep below is bounded by how long a simulation can take, and
+     * that bound lands in the worst possible place: rtl/soc/wb_sdram.v maps
+     * wb_adr[24:12] to the row, so 256 KB reaches 64 of 8192 rows and leaves
+     * seven of the thirteen row address bits permanently low. Two hundred
+     * times more memory than has ever been proved, sitting behind address
+     * lines that have never been driven high through the CPU.
+     *
+     * The gap is *which bits toggle*, not how many bytes are touched, and
+     * those are separable. One word in each of the 8192 rows drives every row
+     * address bit and catches any row aliasing onto another - for 8192 writes
+     * and 8192 reads, which costs a simulation nothing and runs in
+     * `make verify` under Icarus alongside everything else. The dense sweep
+     * stays what it is: a volume and retention test. Its full-part build
+     * cannot run under Icarus - 8 million words is hours - so it runs under
+     * Verilator instead (`make verilator_sdramfull`, about a minute), which
+     * is what keeps BOARD=ulx3s85-sdramfull from being a bitstream nobody has
+     * executed.
+     *
+     * Written entirely and then read entirely, for the same reason the sweep
+     * below is: a per-word write-then-read passes even if every row aliases
+     * onto one.
+     */
+    {
+        uint32_t bad = 0, first_bad = 0;
+        for (i = 0; i < SDRAM_ROWS; i++) {
+            uint32_t a = SDRAM_BASE + (i << SDRAM_ROW_SHIFT);
+            *(volatile uint32_t *)a = pattern(a);
+        }
+        for (i = 0; i < SDRAM_ROWS; i++) {
+            uint32_t a = SDRAM_BASE + (i << SDRAM_ROW_SHIFT);
+            if (*(volatile uint32_t *)a != pattern(a)) {
+                if (!bad) first_bad = a;
+                bad++;
+            }
+        }
+        if (bad) {
+            put_str("  ");
+            put_dec((int)bad);
+            put_str(" of ");
+            put_dec((int)SDRAM_ROWS);
+            put_str(" rows wrong, first at ");
+            put_hex(first_bad);
+            put_str(" (row ");
+            put_dec((int)((first_bad - SDRAM_BASE) >> SDRAM_ROW_SHIFT));
+            put_str(")\n");
+        }
+        report("all 8192 rows, one word each", bad == 0);
+    }
+
+    /* ---- 4. address uniqueness ----
      * Written entirely, then read entirely. A per-word write-then-read passes
      * even if every address aliases onto one location, which is exactly the
      * failure block RAM's 16 MB window has — sim/tb_ramboot.v's header is
      * about that at length. */
+    t_write_start = now_ticks();
     for (i = 0; i < SWEEP_BYTES; i += 4)
         *(volatile uint32_t *)(SDRAM_BASE + i) = pattern(SDRAM_BASE + i);
+    t_read_start = now_ticks();
 
     /* Every mismatch, not the first. A single failing word says almost
      * nothing; the *shape* of a thousand of them says which side is wrong,
@@ -172,9 +339,28 @@ int main(void)
         }
         ok = (bad_count == 0);
     }
-    report("256 KB unique addresses", ok);
+    report_size(SWEEP_BYTES / 1024u, "unique addresses", ok);
 
-    /* ---- 4. byte and halfword lanes ----
+    /* How long the low rows actually held their contents, measured rather
+     * than argued.
+     *
+     * The write pass runs from the bottom of the sweep to the top and the
+     * read-back does the same, so address 0 was written a whole write pass
+     * before it was read - and at 32 MB that is seconds of continuous traffic
+     * through the same controller, not the fraction of a millisecond a 256 KB
+     * sweep gives it. That is the interval a kernel cares about, and it is
+     * the one thing the short sweep could never test no matter how many times
+     * it passed.
+     *
+     * mtime counts once per system clock here (rtl/clint.v), so this is only
+     * a real duration if `timebase-frequency` and CPU_HZ agree - the same
+     * assumption dts/soc.dts documents. 32 bits of it wraps after 171 s at
+     * 25 MHz, well past any sweep this program can do. */
+    put_str("  ");
+    put_dec((int)ticks_to_ms(t_read_start - t_write_start));
+    put_str(" ms between writing the lowest address and reading it back\n");
+
+    /* ---- 5. byte and halfword lanes ----
      * A 32-bit word is two 16-bit SDRAM columns with their own DQM pair, and
      * cpu_wb.v additionally shifts sub-word data into the addressed lane. The
      * two shifts have to compose; this is where they are checked through the
@@ -197,23 +383,33 @@ int main(void)
         report("halfword lanes", ok);
     }
 
-    /* ---- 5. survives an idle period ----
-     * A short one. Real retention is the probe's job: it idles ~100 ms with no
-     * CPU in the way, which is what makes its led[4] a retention test rather
-     * than a formality. This is here to catch a refresh that stops entirely in
-     * the SoC configuration specifically — different arbitration, different
-     * traffic — and is kept short so the simulated run of this same image
-     * stays usable. */
+    /* ---- 6. survives an idle period ----
+     * Catches a refresh that stops entirely in the SoC configuration
+     * specifically - different arbitration, different traffic from the
+     * CPU-less probe - and is kept short so the simulated run of this same
+     * image stays usable.
+     *
+     * The duration is *measured* now. The two comments that used to describe
+     * this loop said "~100 ms" and "~10 ms", four lines apart, because both
+     * were derived from a spin count and neither from a clock. A retention
+     * test whose retention interval is unknown is a formality, and this one
+     * had drifted into being one without anybody editing it. */
     {
         volatile uint32_t *w = (volatile uint32_t *)(SDRAM_BASE + 0x1000u);
         volatile uint32_t  spin;
+        uint32_t t0, idle_ms;
         *w = 0x5AA55AA5u;
-        /* ~10 ms at 25 MHz. `volatile` so it is not optimised away. */
+        t0 = now_ticks();
         for (spin = 0; spin < CPU_HZ / 400u; spin++) { }
-        report("survives a short idle", *w == 0x5AA55AA5u);
+        idle_ms = ticks_to_ms(now_ticks() - t0);
+        ok = (*w == 0x5AA55AA5u);
+        put_str("  idled ");
+        put_dec((int)idle_ms);
+        put_str(" ms\n");
+        report("survives an idle", ok);
     }
 
-    /* ---- 6. block RAM is still fine ----
+    /* ---- 7. block RAM is still fine ----
      * The verdict below is written there, so this is what makes the verdict
      * worth reading. */
     {
