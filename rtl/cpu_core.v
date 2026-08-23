@@ -305,18 +305,20 @@ module cpu_core #(
     //
     // **That side effect is load-bearing, and nothing here enforces it.**
     //
-    // Three attempts to change the fetch path (fpga/README.md) each made the
-    // machine so much slower that a Linux boot stopped finishing inside the
-    // simulator's cycle budget - 132.9 million cycles on this design, still
-    // unfinished at 900 million on the variants. Not a hang: userspace is
-    // reached and `/init` runs. The cost is paid in the instruction cache,
-    // most likely because a fetch issued during a walk *fills* a line, and
-    // depending on the variant that line lands at the index the next real
-    // fetch wants, tagged to the wrong page.
+    // Four attempts to change the fetch path (fpga/README.md) all left the
+    // *kernel* boot untouched - within 1,301 cycles of 127,920,017 to
+    // `Freeing unused`, one part in a hundred thousand - and all made **user
+    // mode** at least 150x slower, turning a 5-million-cycle phase into one
+    // that has not finished at 900 million. Not a hang, and not the
+    // instruction cache: the traps concentrate in `uart_write`, which is the
+    // interrupt-driven tty path rather than the polled console one, so the
+    // phase that breaks is the phase that needs a UART interrupt delivered
+    // through the PLIC.
     //
-    // (An earlier version of this comment said the failures showed the stall
-    // logic below could not tolerate `ibus_wait` during a walk. That was
-    // inferred from a gate reporting a timeout and is not supported.)
+    // (Two earlier versions of this comment were wrong in turn: first that
+    // the stall logic below could not tolerate `ibus_wait` during a walk -
+    // inferred from a gate reporting a timeout - and then that the cost was
+    // paid in the instruction cache, which a mid-boot measurement refuted.)
     //
     // So: anything that touches this - a virtually indexed cache, a fetch
     // pipeline stage, a different hold policy - inherits a performance

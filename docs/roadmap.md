@@ -1227,14 +1227,15 @@ no way to read it.
 `make verify`; `formal/fv_interconnect.v` proves the arbitration with the
 fourth master.
 
-**Before the timing margin: the fetch path's behaviour during an ITLB walk is
-a performance property nothing enforces.** Three attempts at it each made a
-Linux boot 7x slower or worse - 132.9 million cycles becomes "not finished at
-900 million" - while `make sim_mmusdram` and every other functional test kept
-passing. The likely mechanism is the instruction cache being filled during
-walks with lines tagged to the wrong page; the test for that has not been run.
-fpga/README.md has the variants and the correction to an earlier, wrong
-reading of them as a hang.
+**Before the timing margin: something in user mode depends on the fetch
+path's behaviour during an ITLB walk.** Four attempts at that path all left
+the kernel boot untouched - within 1,301 cycles of each other to `Freeing
+unused` - and all made *user mode* at least 150x slower, with the traps
+concentrating in `uart_write`. That is the interrupt-driven tty path rather
+than the polled console one, which points at UART interrupt delivery through
+the PLIC - the one link in the interrupt chain never proved on hardware or in
+a bare-metal test on this design. fpga/README.md has the four variants and
+the two wrong diagnoses that preceded this one.
 
 **The timing margin has stopped being a risk and started blocking work.**
 `BOARD=ulx3s85-plictest` - one of the three peripheral bitstreams added to
