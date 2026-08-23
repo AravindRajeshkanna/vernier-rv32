@@ -1429,6 +1429,18 @@ any. It touches the fetch path, which is the highest-risk region in this
 design and where section 31's defect lived, so the bar is a demonstrated win.
 It was reverted.
 
+**"It works and the check disagrees" is not a pass.** A second attempt at this
+same path - virtually indexing the instruction cache - booted Linux to
+userspace with `+checkdecode` clean over forty million instructions, and
+`+checkfetch` reporting wrong words throughout. Both were true: the core is
+stalled for the whole window in which the mismatch occurs, so the wrong word
+is discarded and nothing architectural goes astray. It was still not
+shippable, for two reasons worth separating. The correctness rested on a
+*stall* rather than on the fetch being right, which is the same shape as every
+defect in this file. And the `verilator_check` gate greps for the read
+summary rather than the fetch one, so nothing would have caught it - a probe
+firing into a gate that does not read it is a probe nobody has.
+
 **A negative result is a result, and belongs in the tree.** `fpga/README.md`
 carries the attempt, the numbers and the reason it was dropped, because the
 alternative is that the next person derives the same algebra, spends the same

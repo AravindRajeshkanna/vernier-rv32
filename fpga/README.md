@@ -334,6 +334,57 @@ evidence of improvement, so it is not in the tree: a refactor of the fetch
 path — the highest-risk region in this design, and where PR #28's defect lived
 — needs a demonstrated win, not a plausible one.
 
+### The second attempt: virtual indexing
+
+Also tried, also not shipped, and it got considerably further — far enough to
+be worth writing down as a design with two open questions rather than a dead
+end.
+
+`rtl/soc/cpu_wb.v` indexes its 256-entry instruction cache with
+`imem_addr[9:2]` — the *physical* address — so three arrays cannot be read
+until the TLB has answered, putting a memory access in series with translation
+on exactly the path above. But **256 entries of 4 bytes is 10 address bits,
+and Sv32 does not translate the low 12**: the index is a page offset, not a
+translation of anything, so `imem_vaddr[9:2]` and `imem_addr[9:2]` are the
+same bits. Indexing by the virtual address starts the read at the clock edge
+and leaves only the tag comparison downstream of the TLB. That is textbook
+VIPT, and it is sound here for a checkable reason rather than by convention.
+
+What stops it being a two-line change is `itlb_pa_hold`. While an instruction
+TLB walk is in flight the core holds the last address that *was* valid, and
+that address's page offset belongs to an older PC — so index and tag would
+describe different addresses. Two variants were built:
+
+| | Linux | `+checkfetch` |
+|---|---|---|
+| virtual index, hold unchanged | **boots** | **reports wrong words** |
+| virtual index, hold splices the live page offset | **hangs after `Run /init`** | — |
+
+The first is behaviourally correct — `+checkdecode` is clean over 40 million
+instructions and the boot reaches userspace — because the core is stalled for
+the whole hold window and throws the fetch away. That is the problem: "the
+wrong word, discarded" is a property of the stall rather than of the fetch,
+and it is precisely the reasoning this file spends its length objecting to. It
+also leaves `+checkfetch` printing mismatches, and the `verilator_check` gate
+greps for the *read* summary rather than the fetch one, so nothing would have
+caught it.
+
+The second removes the mismatch by holding only the page number and splicing
+the live offset on — making the pairing exact in every case — and hangs the
+boot after `Run /init`, for a reason not yet diagnosed. The most likely
+suspect is the bus traffic it newly generates: the held address stops being
+one the cache is known to hold, so a stalled fetch now misses and issues reads
+for a page it will never use, filling cache lines with entries tagged to the
+old page number.
+
+**So the direction is right and the interaction with the hold is unresolved.**
+Anyone picking this up should start there, and should decide a question this
+attempt could not settle honestly under time pressure: whether `+checkfetch`
+ought to check fetches the core *discards*. There is a real argument that it
+should not — a fetch whose result never reaches IF/ID is not a fetch the core
+consumed — and an equally real risk that answering it while trying to land a
+timing fix is how an instrument gets quietly weakened.
+
 ### A trap worth naming
 
 Comparing "seed 1 before" against "seed 1 after" **is not a controlled
@@ -347,8 +398,13 @@ hurt".
 
 ### What would actually work
 
-Pipeline the fetch: register the translated address so the TLB lookup and the
-bus request fall in different cycles. That is a real microarchitectural change
+Two candidates now, in increasing order of cost.
+
+**Virtual indexing**, above — smaller, half-built, and blocked on one
+interaction rather than on a design question.
+
+**Pipelining the fetch**: register the translated address so the TLB lookup and
+the bus request fall in different cycles. That is a real microarchitectural change
 — it costs a cycle of fetch latency, and the I-cache, the BTB and the redirect
 logic all have to cope — and it deserves its own change and its own
 verification rather than being appended to something else. It is also the
