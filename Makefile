@@ -153,6 +153,7 @@ SD_BLOCKS = 128
         sim_mmusdram sim_plic sim_uart16550 \
         sim_uartload uartload-host sbiimage sim_opensbi \
         linuximage linuxpayload sim_linux \
+        mmuimage plicimage uart16550image \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
 
@@ -962,6 +963,12 @@ sim/jtagram.hex: Makefile
 
 sim/sim_jtag.out: sim/tb_jtag.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_jtag.v $(SOC_RTL)
+
+# Friendly names for the three images that become BOARD= bitstreams, so the
+# documented flash sequence in fpga/README.md is a command rather than a path.
+mmuimage:       sim/mmuimage.hex
+plicimage:      sim/plicimage.hex
+uart16550image: sim/uart16550image.hex
 
 sim_jtag: sim/jtagram.hex sim/sim_jtag.out
 	cd sim && $(VVP) sim_jtag.out $(VVP_DUMP) | tee jtag.log
