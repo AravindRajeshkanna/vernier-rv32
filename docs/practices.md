@@ -1452,6 +1452,48 @@ failed optimisation is usually the characterisation it produced on the way.
 
 ---
 
+## 39. A timeout is not a hang
+
+`make sim_linux` prints `LINUX BOOT FAILED - never reached /init` when its
+marker does not appear inside 400 million cycles. Three fetch-path variants
+produced that line, and it was read as "the machine hangs at `execve`" - a
+structural claim about where a design breaks, inferred from a gate reporting
+only that a string had not arrived yet.
+
+Running the same image without the gate showed the machine reaching userspace,
+`/init` running, and `/proc/cpuinfo` printing. Nothing had hung. The variants
+were **seven times slower or worse**, and the cycle budget expired partway
+through the output.
+
+The wrong conclusion was published, in a commit message and in two documents,
+and had to be corrected in the tree.
+
+Three things worth taking from it.
+
+**A gate reports what it checked, and nothing more.** "The marker did not
+arrive in N cycles" is exactly true and says nothing about why. The inference
+on top of it - hang, crash, wrong instruction, too slow - is a separate claim
+needing separate evidence, and the cheapest evidence here was one run without
+`+stopon`, which takes the same two minutes.
+
+**Performance failures wear a functional failure's clothes.** Every functional
+test passed on all three variants, including `make sim_mmusdram`, the one that
+exists specifically to exercise fetch translation. Only a whole Linux boot -
+the longest thing this project runs - was long enough for a constant-factor
+slowdown to become a visible failure, and it presented as a hang rather than
+as a number.
+
+**Be suspicious of a diagnosis that arrives with no measurement attached.**
+"The stall logic cannot tolerate `ibus_wait` during a walk" is a satisfying
+sentence: specific, mechanical, and it explains everything. It also had no
+number behind it. The version with a number - 132.9 million cycles against
+900 million, 84,859 traps against 1,587 - says something quite different and
+points at the instruction cache instead.
+
+---
+
+---
+
 ## Conventions
 
 **Commits** are imperative and say what changed and why it matters — `Test

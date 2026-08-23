@@ -422,18 +422,71 @@ too, which fits the same pattern: what all three failures share is
 `ibus_wait` being *asserted* during an instruction-TLB walk, where today it is
 deasserted by a cache hit on the held address.
 
-**So the real finding is about `rtl/cpu_core.v`, not about the cache.**
-Something in the stall or redirect logic cannot tolerate `ibus_wait` and an
-ITLB walk being true at the same time, and the present design never exercises
-that combination because the held address is always in the instruction cache -
-by construction, since it was fetched moments earlier. The comment in
-`cpu_core.v` that explains the hold describes this as a happy side effect. It
-is load-bearing.
+### That conclusion was wrong, and this is the correction
 
-That is the thing to find, and it is worth finding independently of the timing
-work: it is a latent fragility that any change to the fetch path will hit, and
-the next one may not be a change that can be reverted. Virtual indexing is
-then a small edit on top.
+The paragraph that stood here said the failures showed "something in
+`rtl/cpu_core.v`'s stall or redirect logic cannot tolerate `ibus_wait` and an
+ITLB walk being true at the same time". **That is not supported, and it was
+inferred from a timeout.**
+
+`make sim_linux` reported `LINUX BOOT FAILED - never reached /init`, which is
+what the gate prints when its marker does not appear inside 400 million
+cycles. It was read as a hang. Running the same image without the gate shows
+otherwise:
+
+```
+Run /init as init process
+
+=== VERNIER-RV32: USERSPACE ===
+kernel  : Linux 6.18.45
+machine : riscv32
+pid     : 1
+
+--- /proc/cpuinfo ---
+```
+
+**The machine reaches userspace and `/init` runs.** The UART is healthy
+throughout - 6,046 bytes written to THR, all sent, in order. What the variant
+does is make the machine *much* slower: the baseline reaches the marker at
+132.9 million cycles, and the variant has not reached it by 900 million.
+
+The trap trace says where it goes:
+
+| Trap PC | Count | Symbol |
+|---|---|---|
+| `0xc01e5cfc` | 84,859 | `uart_write + 0xa4` |
+| `0xc000dfe8` | 752 | `__sbi_ecall + 0x4` |
+| `0x000100e0` | 14 | *userspace* |
+
+against 1,587 traps in total on the baseline. The core is spinning in the
+console write path with interrupts arriving periodically, and `0x000100e0` is
+`/init` itself - so user mode was entered and left repeatedly.
+
+**A timeout is not a hang, and "never reached /init" is not "died at
+`execve`".** The gate is honest about what it checked; the inference on top of
+it was not. That inference was published, so this is a correction rather than
+a footnote - docs/practices.md section 3.
+
+### What is actually likely, stated as a hypothesis
+
+Cache pollution, and it is specific to how each variant fills.
+
+`ic_fill_idx` comes from `bus_addr`. In variant 2 the fetch address during a
+walk is {held page number, *live* page offset}, so a fill lands at the index
+the real fetch is about to use, tagged to the wrong page - and the real fetch
+then misses too. Every walk poisons the line the next fetch wants, and with
+Linux's 4 KB pages the ITLB misses continuously.
+
+That is a hypothesis with an obvious test - suppress `ic_fill` while the
+translation is stale - and it has not been run. What it is not is a claim
+about the stall logic.
+
+**What all this does establish**, and it survives the correction: the fetch
+unit's behaviour on the bus during an ITLB walk matters enormously to
+performance, the present design gets the good case by accident (the held
+address hits, so nothing is fetched and nothing is filled), and nothing
+enforces it. That is still worth making explicit before anything else changes
+here.
 
 ### A trap worth naming
 
