@@ -106,7 +106,9 @@ SOC_RTL = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
           rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
-          rtl/soc/wb_sdram.v rtl/soc/soc_top.v $(CORE_RTL)
+          rtl/soc/wb_sdram.v \
+          rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
+          rtl/soc/soc_top.v $(CORE_RTL)
 SOC_TB  = sim/tb_soc.v sim/sd_card_model.v
 
 SOFTWARE_SRCS = software/crt0.S software/syscalls.c software/uart.c software/main.c
@@ -147,6 +149,7 @@ SD_BLOCKS = 128
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
+        sim_jtag \
         sim_mmusdram sim_plic sim_uart16550 \
         sim_uartload uartload-host sbiimage sim_opensbi \
         linuximage linuxpayload sim_linux \
@@ -947,6 +950,24 @@ sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 sim_sdramcheck: sim/bootrom.hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
 	cd sim && $(VVP) sim_sdramcheck.out $(VVP_DUMP)
 
+# ---- the JTAG debug path ----
+#
+# rtl/debug/jtag_tap.v + dmi_cdc.v + dm.v, driven the way a host drives them:
+# the testbench bit-bangs TCK/TMS/TDI and checks only values a real debugger
+# reads. It needs no toolchain - the block RAM image is a generated pattern,
+# not a compiled program - so it runs on a bare runner like `make sim`.
+sim/jtagram.hex: Makefile
+	@python3 -c "import sys;\
+	[sys.stdout.write('%08X\n' % (0xDEAD0000 + (n & 0xFFFF))) for n in range(16384)]" > $@
+
+sim/sim_jtag.out: sim/tb_jtag.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_jtag.v $(SOC_RTL)
+
+sim_jtag: sim/jtagram.hex sim/sim_jtag.out
+	cd sim && $(VVP) sim_jtag.out $(VVP_DUMP) | tee jtag.log
+	@grep -aq "JTAG TEST PASSED" sim/jtag.log && echo "JTAG PATH OK" || \
+	    { echo "FAILED: the JTAG debug path"; exit 1; }
+
 # ---- the boot ROM's UART loader ----
 #
 # The only way a program gets into external SDRAM on a board: a bitstream
@@ -1031,7 +1052,7 @@ verify_ooo:
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
-        sim_mmusdram sim_plic sim_uart16550 sim_uartload \
+        sim_mmusdram sim_plic sim_uart16550 sim_uartload sim_jtag \
         uartload-host check-program isa cosim formal
 
 clean:
@@ -1053,6 +1074,7 @@ clean:
 	       sim/sim_mmusdram.out sim/mmuimage.hex \
 	       sim/sim_plic.out sim/plicimage.hex \
 	       sim/sim_uart16550.out sim/uart16550image.hex \
+	       sim/sim_jtag.out sim/jtagram.hex sim/jtag.log \
 	       sim/sbiimage.hex sim/opensbi.log sim/linuximage.hex sim/linux.log \
 	       software/linux/build/sdram.bin \
 	       software/opensbi/build/sbi_stub.elf \

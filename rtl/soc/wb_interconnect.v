@@ -124,6 +124,31 @@ module wb_interconnect #(
     output wire [31:0] m2_dat_r,
     output wire        m2_ack,
 
+    // ---- master 3: the debug module (rtl/debug/dm.v) ----
+    //
+    // **Highest priority**, which is the opposite of what "a debugger should
+    // not disturb the machine" suggests, and is deliberate.
+    //
+    // It issues at most one access at a time, and only when a host has
+    // shifted a DMI transaction through the TAP - 41 TCK cycles, microseconds
+    // apart at any plausible TCK against a 25 MHz system clock. So the
+    // interference is one arbitration slot per access and is unmeasurable.
+    //
+    // The alternative starves it. The fetch master asserts `cyc` almost
+    // continuously, so anything placed below it waits for a cache miss to
+    // coincide with an idle data port, and a debugger reading a wedged
+    // machine's memory is exactly the case where the CPU is hammering the bus
+    // in a loop. A debug port that works only when the machine is healthy is
+    // not a debug port.
+    input  wire        m3_cyc,
+    input  wire        m3_stb,
+    input  wire        m3_we,
+    input  wire [31:0] m3_adr,
+    input  wire [31:0] m3_dat_w,
+    input  wire [3:0]  m3_sel,
+    output wire [31:0] m3_dat_r,
+    output wire        m3_ack,
+
     // ---- shared slave bus ----
     // `s_base` is the addr[31:24] value each slave answers to and `s_mask`
     // which of those bits are compared, both packed 8 bits per slave (slave i
@@ -145,38 +170,48 @@ module wb_interconnect #(
     // space can't silently claim an interrupt or eat a received byte.
     output wire                      s_data_master
 );
-    // ---- arbitration: fixed priority, data > walker > fetch, locked ----
+    // ---- arbitration: fixed priority, debug > data > walker > fetch ----
     //
-    // `lock_who` is one-hot over {m2, m1, m0} and is only meaningful while
-    // `lock` is set. Two bits rather than one now that there are three
-    // masters; the lock itself works exactly as it did.
+    // `lock_who` is one-hot over {m3, m2, m1, m0} and is only meaningful
+    // while `lock` is set. The lock itself works exactly as it always has.
     reg        lock;            // a transfer is in flight and owns the bus
-    reg  [2:0] lock_who;        // which master owns it, one-hot
+    reg  [3:0] lock_who;        // which master owns it, one-hot
 
-    wire want_m1 = m1_cyc;
-    wire want_m2 = m2_cyc && !m1_cyc;
-    wire want_m0 = m0_cyc && !m1_cyc && !m2_cyc;
+    wire want_m3 = m3_cyc;
+    wire want_m1 = m1_cyc && !m3_cyc;
+    wire want_m2 = m2_cyc && !m3_cyc && !m1_cyc;
+    wire want_m0 = m0_cyc && !m3_cyc && !m1_cyc && !m2_cyc;
 
+    wire sel_m3 = lock ? lock_who[3] : want_m3;
     wire sel_m1 = lock ? lock_who[1] : want_m1;
     wire sel_m2 = lock ? lock_who[2] : want_m2;
     wire sel_m0 = lock ? lock_who[0] : want_m0;
 
-    wire [2:0] sel_who = {sel_m2, sel_m1, sel_m0};
+    wire [3:0] sel_who = {sel_m3, sel_m2, sel_m1, sel_m0};
 
     // Only the *data* master gets this. A peripheral with a read side effect
     // (the PLIC's claim register, the UART's RXDATA) gates its read strobe on
     // it, and a walk is no more entitled to claim an interrupt than a stray
     // instruction fetch is - less so, since a walker address comes from a
     // PTE the program may not even have meant to install.
+    // Note what this does *not* include: the debug master. A host reading the
+    // UART's RBR or the PLIC's claim register through rtl/debug/dm.v gets the
+    // value without the side effect - it does not eat a received byte or
+    // claim an interrupt. That is the difference between a debug port and a
+    // second CPU, and it is one word of code.
     assign s_data_master = sel_m1;
 
-    assign s_cyc   = sel_m1 ? m1_cyc : (sel_m2 ? m2_cyc : (sel_m0 ? m0_cyc : 1'b0));
-    wire   cur_stb = sel_m1 ? m1_stb : (sel_m2 ? m2_stb : (sel_m0 ? m0_stb : 1'b0));
-    // Neither the fetch master nor the walker has a write path.
-    assign s_we    = sel_m1 ? m1_we    : 1'b0;
-    assign s_adr   = sel_m1 ? m1_adr   : (sel_m2 ? m2_adr : m0_adr);
-    assign s_dat_w = sel_m1 ? m1_dat_w : 32'b0;
-    assign s_sel   = sel_m1 ? m1_sel   : 4'b1111;
+    assign s_cyc   = sel_m3 ? m3_cyc :
+                     (sel_m1 ? m1_cyc : (sel_m2 ? m2_cyc : (sel_m0 ? m0_cyc : 1'b0)));
+    wire   cur_stb = sel_m3 ? m3_stb :
+                     (sel_m1 ? m1_stb : (sel_m2 ? m2_stb : (sel_m0 ? m0_stb : 1'b0)));
+    // Neither the fetch master nor the walker has a write path; the debug
+    // module and the data master do.
+    assign s_we    = sel_m3 ? m3_we : (sel_m1 ? m1_we : 1'b0);
+    assign s_adr   = sel_m3 ? m3_adr :
+                     (sel_m1 ? m1_adr : (sel_m2 ? m2_adr : m0_adr));
+    assign s_dat_w = sel_m3 ? m3_dat_w : (sel_m1 ? m1_dat_w : 32'b0);
+    assign s_sel   = sel_m3 ? m3_sel : (sel_m1 ? m1_sel : 4'b1111);
 
     // ---- address decode ----
     reg  [NUM_SLAVES-1:0] hit;
@@ -213,9 +248,11 @@ module wb_interconnect #(
     assign m0_dat_r = fin_dat;
     assign m1_dat_r = fin_dat;
     assign m2_dat_r = fin_dat;
+    assign m3_dat_r = fin_dat;
     assign m0_ack   = sel_m0 && fin_ack;
     assign m1_ack   = sel_m1 && fin_ack;
     assign m2_ack   = sel_m2 && fin_ack;
+    assign m3_ack   = sel_m3 && fin_ack;
 
     // Take the lock only when a transfer actually starts and does *not*
     // complete in its first cycle, so zero-wait-state slaves (the peripheral
@@ -224,7 +261,7 @@ module wb_interconnect #(
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             lock     <= 1'b0;
-            lock_who <= 3'b0;
+            lock_who <= 4'b0;
         end else if (!lock) begin
             if (cur_stb && !fin_ack) begin
                 lock     <= 1'b1;
