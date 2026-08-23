@@ -63,6 +63,18 @@ module soc_top #(
     input  wire clk,
     input  wire rst,
 
+    // ---- JTAG, for rtl/debug ----
+    //
+    // Four pins in the host's own clock domain. Tie tck/tms/tdi to 0 and
+    // leave tdo unconnected on a target with no debug header: the TAP's state
+    // machine only advances on a TCK edge, so a parked TCK costs exactly
+    // nothing and the Debug Module never leaves reset.
+    input  wire jtag_tck,
+    input  wire jtag_tms,
+    input  wire jtag_tdi,
+    output wire jtag_tdo,
+    output wire jtag_tdo_oe,
+
     output wire uart_tx,
     input  wire uart_rx,
 
@@ -190,7 +202,7 @@ module soc_top #(
 `else
     cpu_core #(.RESET_PC(RESET_PC)) CPU (
 `endif
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .imem_addr(imem_addr), .imem_rdata(imem_rdata),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size),
@@ -206,7 +218,7 @@ module soc_top #(
     );
 
     cpu_wb BUSADAPT (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .imem_addr(imem_addr), .imem_rdata(imem_rdata), .ibus_wait(ibus_wait),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_is_amo(dmem_is_amo),
@@ -220,8 +232,76 @@ module soc_top #(
         .dwb_dat_r(dwb_dat_r), .dwb_ack(dwb_ack)
     );
 
-    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES)) BUS (
+    // ---- the debug path: four pins to a bus master ----
+    //
+    // rtl/debug/jtag_tap.v (TCK domain) -> rtl/debug/dmi_cdc.v (the one
+    // crossing) -> rtl/debug/dm.v (this clock domain, and a fourth master on
+    // the interconnect below).
+    //
+    // None of it touches the CPU. `ndmreset` is the single wire that runs the
+    // other way, and it resets everything *except* the debug path itself.
+    wire        dbg_cyc, dbg_stb, dbg_we, dbg_ack;
+    wire [31:0] dbg_adr, dbg_dat_w, dbg_dat_r;
+    wire [3:0]  dbg_sel;
+    wire        dbg_ndmreset;
+
+    // Everything except the debug path resets when the host asks for it, or
+    // when the board does. The TAP, the crossing and the Debug Module use
+    // bare `rst`, which is the spec's rule and the only sensible one: a reset
+    // that took the debug path down with it would end the session that asked
+    // for it.
+    //
+    // The interconnect is included. It has to be - a bus lock held by a
+    // master that has just been reset is never released, and the debugger
+    // that issued the reset would find the bus wedged. rtl/debug/dm.v holds
+    // its own bus access off while `ndmreset` is asserted so there is nothing
+    // in flight to lose.
+    wire rst_soc = rst || dbg_ndmreset;
+
+    wire [6:0]  tck_dmi_addr;
+    wire [31:0] tck_dmi_wdata, tck_dmi_rdata;
+    wire [1:0]  tck_dmi_op, tck_dmi_resp;
+    wire        tck_dmi_req, tck_dmi_busy;
+
+    wire        dmi_valid, dmi_done;
+    wire [6:0]  dmi_addr;
+    wire [31:0] dmi_wdata, dmi_rdata;
+    wire [1:0]  dmi_op, dmi_resp;
+
+    jtag_tap TAP (
+        .tck(jtag_tck), .tms(jtag_tms), .tdi(jtag_tdi),
+        .tdo(jtag_tdo), .tdo_oe(jtag_tdo_oe),
+        .dmi_addr(tck_dmi_addr), .dmi_wdata(tck_dmi_wdata),
+        .dmi_op(tck_dmi_op), .dmi_req(tck_dmi_req),
+        .dmi_rdata(tck_dmi_rdata), .dmi_resp(tck_dmi_resp),
+        .dmi_busy(tck_dmi_busy)
+    );
+
+    dmi_cdc DMI_CDC (
+        .tck(jtag_tck),
+        .req(tck_dmi_req), .req_addr(tck_dmi_addr),
+        .req_wdata(tck_dmi_wdata), .req_op(tck_dmi_op),
+        .rsp_rdata(tck_dmi_rdata), .rsp_op(tck_dmi_resp),
+        .busy(tck_dmi_busy),
         .clk(clk), .rst(rst),
+        .sys_valid(dmi_valid), .sys_addr(dmi_addr),
+        .sys_wdata(dmi_wdata), .sys_op(dmi_op),
+        .sys_done(dmi_done), .sys_rdata(dmi_rdata), .sys_resp(dmi_resp)
+    );
+
+    dm DM (
+        .clk(clk), .rst(rst),
+        .dmi_valid(dmi_valid), .dmi_addr(dmi_addr),
+        .dmi_wdata(dmi_wdata), .dmi_op(dmi_op),
+        .dmi_done(dmi_done), .dmi_rdata(dmi_rdata), .dmi_resp(dmi_resp),
+        .wb_cyc(dbg_cyc), .wb_stb(dbg_stb), .wb_we(dbg_we),
+        .wb_adr(dbg_adr), .wb_dat_w(dbg_dat_w), .wb_sel(dbg_sel),
+        .wb_dat_r(dbg_dat_r), .wb_ack(dbg_ack),
+        .ndmreset(dbg_ndmreset), .dmactive()
+    );
+
+    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES)) BUS (
+        .clk(clk), .rst(rst_soc),
         .m0_cyc(iwb_cyc), .m0_stb(iwb_stb), .m0_adr(iwb_adr),
         .m0_dat_r(iwb_dat_r), .m0_ack(iwb_ack),
         .m1_cyc(dwb_cyc), .m1_stb(dwb_stb), .m1_we(dwb_we), .m1_adr(dwb_adr),
@@ -229,6 +309,9 @@ module soc_top #(
         .m1_dat_r(dwb_dat_r), .m1_ack(dwb_ack),
         .m2_cyc(pwb_cyc), .m2_stb(pwb_stb), .m2_adr(pwb_adr),
         .m2_dat_r(pwb_dat_r), .m2_ack(pwb_ack),
+        .m3_cyc(dbg_cyc), .m3_stb(dbg_stb), .m3_we(dbg_we), .m3_adr(dbg_adr),
+        .m3_dat_w(dbg_dat_w), .m3_sel(dbg_sel),
+        .m3_dat_r(dbg_dat_r), .m3_ack(dbg_ack),
         .s_base(s_base), .s_mask(s_mask),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
@@ -240,7 +323,7 @@ module soc_top #(
     // block RAM. This is what lets page tables live in SDRAM - see
     // rtl/soc/wb_ptw.v for why mmu.v did not have to change for it.
     wb_ptw PTW (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .ptw_req(ptw_req),   .ptw_addr(ptw_addr),
         .ptw_gnt(ptw_gnt),   .ptw_rdata(ptw_rdata),
         .iptw_req(iptw_req), .iptw_addr(iptw_addr),
@@ -253,13 +336,13 @@ module soc_top #(
     // Slaves
     // =====================================================================
     wb_rom #(.MEM_WORDS(ROM_WORDS), .INIT_FILE(ROM_INIT_FILE)) ROM (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_ROM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_r(s_dat_r[32*S_ROM +: 32]), .wb_ack(s_ack[S_ROM])
     );
 
     wb_ram #(.MEM_BYTES(RAM_BYTES), .INIT_FILE(RAM_INIT_FILE)) RAM (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_RAM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
         .wb_dat_r(s_dat_r[32*S_RAM +: 32]), .wb_ack(s_ack[S_RAM])
@@ -271,7 +354,7 @@ module soc_top #(
         .COL_BITS(SDRAM_COL_BITS),
         .BA_BITS(SDRAM_BA_BITS)
     ) SDRAM (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_SDRAM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
         .wb_dat_r(s_dat_r[32*S_SDRAM +: 32]), .wb_ack(s_ack[S_SDRAM]),
@@ -296,7 +379,7 @@ module soc_top #(
         .p_we(clint_we), .p_re(clint_re), .p_rdata(clint_rdata)
     );
     clint CLINT (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .addr(clint_addr), .wdata(clint_wdata), .we(clint_we),
         .rdata(clint_rdata), .mtip(mtip), .msip_out(msip), .mtime_out(mtime)
     );
@@ -324,7 +407,7 @@ module soc_top #(
     // dts/soc.dts declares in `interrupts-extended` and what every stock
     // PLIC driver assumes.
     plic #(.NUM_SOURCES(NUM_IRQ), .NUM_CONTEXTS(2)) PLIC (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .addr(plic_addr), .wdata(plic_wdata), .we(plic_we), .re(plic_re),
         .rdata(plic_rdata), .irq_sources(irq_sources), .eip(plic_eip)
     );
@@ -341,14 +424,14 @@ module soc_top #(
         .p_we(uart_we), .p_re(uart_re), .p_rdata(uart_rdata)
     );
     uart #(.CLKS_PER_BIT(UART_CLKS_PER_BIT)) UART (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .addr(uart_addr), .wdata(uart_wdata), .we(uart_we), .re(uart_re),
         .rdata(uart_rdata), .tx(uart_tx), .rx(uart_rx), .irq(uart_irq)
     );
 
     // ---- native Wishbone peripherals ----
     wb_gpio #(.WIDTH(GPIO_WIDTH)) GPIO (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_GPIO]), .wb_we(s_we),
         .wb_adr(s_adr), .wb_dat_w(s_dat_w),
         .wb_dat_r(s_dat_r[32*S_GPIO +: 32]), .wb_ack(s_ack[S_GPIO]),
@@ -361,7 +444,7 @@ module soc_top #(
     wire        raster_de, raster_hsync, raster_vsync, raster_frame_start;
 
     video_timing VTIMING (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .x(raster_x), .y(raster_y), .de(raster_de),
         .hsync(raster_hsync), .vsync(raster_vsync),
         .frame_start(raster_frame_start)
@@ -370,7 +453,7 @@ module soc_top #(
     wb_framebuffer #(
         .FB_WIDTH(FB_WIDTH), .FB_HEIGHT(FB_HEIGHT), .PIXEL_DOUBLE(1)
     ) FB (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_FB]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
         .wb_dat_r(s_dat_r[32*S_FB +: 32]), .wb_ack(s_ack[S_FB]),
@@ -382,7 +465,7 @@ module soc_top #(
     );
 
     wb_spi SPI (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_SPI]), .wb_we(s_we),
         .wb_adr(s_adr), .wb_dat_w(s_dat_w),
         .wb_dat_r(s_dat_r[32*S_SPI +: 32]), .wb_ack(s_ack[S_SPI]),

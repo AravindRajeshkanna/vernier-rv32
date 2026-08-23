@@ -23,6 +23,18 @@ LOCATE COMP "clk_25mhz" SITE "G2";
 IOBUF  PORT "clk_25mhz" PULLMODE=NONE IO_TYPE=LVCMOS33;
 FREQUENCY PORT "clk_25mhz" 25 MHZ;
 
+# JTAG's TCK, driven by the debug adapter on gn[2]. Constrained explicitly
+# because nextpnr will otherwise infer this as a clock and time it against a
+# defaulted 12 MHz - a number nobody chose, appearing in a report next to one
+# that was measured.
+#
+# 15 MHz is above what any FT2232-class adapter will drive here and far below
+# what the TAP closes at (194 MHz measured, because it is a handful of
+# flip-flops and a 41-bit shift register). The margin is enormous and that is
+# the point: this domain must never be the reason a build fails to close,
+# because the *system* clock has almost none and shares the fitter with it.
+FREQUENCY PORT "gn[2]" 15 MHZ;
+
 ## ---- FTDI FT231X serial console ----
 ## Named from the FTDI's point of view: ftdi_rxd is an FPGA output.
 LOCATE COMP "ftdi_rxd" SITE "L4";
@@ -138,9 +150,9 @@ IOBUF PORT "gp[12]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF PORT "gp[13]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF PORT "gn[0]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF PORT "gn[1]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
-IOBUF PORT "gn[2]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
-IOBUF PORT "gn[3]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
-IOBUF PORT "gn[4]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "gn[2]"  PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "gn[3]"  PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "gn[4]"  PULLMODE=DOWN IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF PORT "gn[5]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF PORT "gn[6]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF PORT "gn[7]"  PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;

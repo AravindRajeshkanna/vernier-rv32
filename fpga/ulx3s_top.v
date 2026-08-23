@@ -149,8 +149,33 @@ module ulx3s_top #(
     // what a bidirectional connection has to be.
     //
     // The rest of the gn header is parked at high-impedance so those pins are
-    // claimed and constrained without being driven.
-    assign gn[13:2] = 12'bz;
+    // claimed and constrained without being driven - except gn[5:2], which
+    // are the JTAG debug header (below).
+    assign gn[13:6] = 8'bz;
+
+    // ---- JTAG debug header ----
+    //
+    // gn[2] TCK   gn[3] TMS   gn[4] TDI   gn[5] TDO
+    //
+    // **Not the ECP5's own JTAG.** That TAP belongs to the configuration
+    // engine and is what `openFPGALoader` talks to; borrowing it would mean
+    // sharing a chain with the thing that loads the bitstream. These are four
+    // ordinary header pins and any FT2232-style adapter drives them.
+    //
+    // The three inputs are pulled *down* in the LPF, and that is not
+    // tidiness. An unconnected CMOS input floats, and a floating TCK on a
+    // board with no debug cable attached is an oscillator: it would clock the
+    // TAP's state machine through a random walk, and a random walk that
+    // reaches Update-DR with the DMI instruction selected issues a bus write
+    // with whatever bits happened to shift in. A pulldown makes "no cable"
+    // mean "no clock", which is the only safe reading of an absent host.
+    //
+    // TDO is driven continuously rather than gated by `tdo_oe`. There is one
+    // TAP on this header, so nothing else can be driving the pin, and a
+    // permanently-driven output is easier to probe than one that floats
+    // between shifts.
+    wire jtag_tdo;
+    assign gn[5] = jtag_tdo;
 
     soc_fpga #(
         .CLK_HZ(CLK_HZ),
@@ -170,6 +195,9 @@ module ulx3s_top #(
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
         .gpio({gn[1:0], gp[13:0]}),
+
+        .jtag_tck(gn[2]), .jtag_tms(gn[3]), .jtag_tdi(gn[4]),
+        .jtag_tdo(jtag_tdo), .jtag_tdo_oe(),
 
         .sdram_cke(sdram_cke), .sdram_cs_n(sdram_csn),
         .sdram_ras_n(sdram_rasn), .sdram_cas_n(sdram_casn),

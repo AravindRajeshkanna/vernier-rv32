@@ -33,6 +33,14 @@ module fv_interconnect #(
     input wire [3:0]  m1_sel,
     input wire        m2_cyc, m2_stb,
     input wire [31:0] m2_adr,
+    // The debug module (rtl/debug/dm.v). Highest priority and the second
+    // master with a write path, which is why it is here rather than assumed
+    // harmless: every property below has to hold with four contenders, not
+    // three, and "at most one master is selected" is exactly the kind of
+    // thing that stays true by luck when a case is added.
+    input wire        m3_cyc, m3_stb, m3_we,
+    input wire [31:0] m3_adr, m3_dat_w,
+    input wire [3:0]  m3_sel,
     input wire [NUM_SLAVES*32-1:0] s_dat_r,
     input wire [NUM_SLAVES-1:0]    s_ack
 );
@@ -52,8 +60,8 @@ module fv_interconnect #(
     wire [NUM_SLAVES*8-1:0] s_mask =
         {8'hFE, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF};
 
-    wire [31:0] m0_dat_r, m1_dat_r, m2_dat_r;
-    wire        m0_ack, m1_ack, m2_ack;
+    wire [31:0] m0_dat_r, m1_dat_r, m2_dat_r, m3_dat_r;
+    wire        m0_ack, m1_ack, m2_ack, m3_ack;
     wire        s_cyc, s_we, s_data_master;
     wire [NUM_SLAVES-1:0] s_stb;
     wire [31:0] s_adr, s_dat_w;
@@ -68,6 +76,9 @@ module fv_interconnect #(
         .m1_dat_r(m1_dat_r), .m1_ack(m1_ack),
         .m2_cyc(m2_cyc), .m2_stb(m2_stb), .m2_adr(m2_adr),
         .m2_dat_r(m2_dat_r), .m2_ack(m2_ack),
+        .m3_cyc(m3_cyc), .m3_stb(m3_stb), .m3_we(m3_we), .m3_adr(m3_adr),
+        .m3_dat_w(m3_dat_w), .m3_sel(m3_sel),
+        .m3_dat_r(m3_dat_r), .m3_ack(m3_ack),
         .s_base(s_base), .s_mask(s_mask),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
@@ -101,24 +112,28 @@ module fv_interconnect #(
         assume (m0_cyc == m0_stb);
         assume (m1_cyc == m1_stb);
         assume (m2_cyc == m2_stb);
+        assume (m3_cyc == m3_stb);
     end
 
-    reg p_m0_pending, p_m1_pending, p_m2_pending;
+    reg p_m0_pending, p_m1_pending, p_m2_pending, p_m3_pending;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             p_m0_pending <= 1'b0;
             p_m1_pending <= 1'b0;
             p_m2_pending <= 1'b0;
+            p_m3_pending <= 1'b0;
         end else begin
             p_m0_pending <= m0_cyc && m0_stb && !m0_ack;
             p_m1_pending <= m1_cyc && m1_stb && !m1_ack;
             p_m2_pending <= m2_cyc && m2_stb && !m2_ack;
+            p_m3_pending <= m3_cyc && m3_stb && !m3_ack;
         end
     end
     always @(*) begin
         if (p_m0_pending) assume (m0_cyc && m0_stb);
         if (p_m1_pending) assume (m1_cyc && m1_stb);
         if (p_m2_pending) assume (m2_cyc && m2_stb);
+        if (p_m3_pending) assume (m3_cyc && m3_stb);
     end
 
     // ---- everything below is expressed over ports only ----
@@ -130,8 +145,9 @@ module fv_interconnect #(
     // "A transfer is in progress" is therefore derived the way an observer on
     // the bus would derive it: somebody is asserting cyc+stb and nobody has
     // been acked yet.
-    wire any_req = (m0_cyc && m0_stb) || (m1_cyc && m1_stb) || (m2_cyc && m2_stb);
-    wire any_ack = m0_ack || m1_ack || m2_ack;
+    wire any_req = (m0_cyc && m0_stb) || (m1_cyc && m1_stb) ||
+                   (m2_cyc && m2_stb) || (m3_cyc && m3_stb);
+    wire any_ack = m0_ack || m1_ack || m2_ack || m3_ack;
 
     reg p_any_req, p_any_ack, p_dm, p_rst;
     always @(posedge clk) begin
@@ -170,6 +186,13 @@ module fv_interconnect #(
         // 3. The bus is only claimed by a master that is asking for it.
         if (s_data_master) assert (m1_cyc);
 
+        // 3b. `s_data_master` is what gates read side effects - the PLIC's
+        //     claim register, the UART's RBR. The debug module must never
+        //     assert it: a host reading a peripheral through rtl/debug/dm.v
+        //     has to get the value without consuming it. This is one line and
+        //     it is the difference between a debug port and a second CPU.
+        if (m3_ack) assert (!s_data_master);
+
         // 4a. Data outranks the walker whenever arbitration is actually open.
         //     The `!in_flight` qualifier is the whole point of the lock: while
         //     a transfer is under way, priority does not get to preempt it.
@@ -180,7 +203,18 @@ module fv_interconnect #(
         //     of the gap - and instruction fetch carries on translating while
         //     the MEM stage sits in an AMO, so the walker genuinely can ask
         //     during it.
-        if (m1_cyc && !in_flight) begin
+        // 4z. Debug outranks everything, whenever arbitration is open. It
+        //     asks about once per JTAG transaction, so the cost is one
+        //     arbitration slot; the benefit is that a host can read the
+        //     memory of a machine whose CPU is spinning on the bus, which is
+        //     the case a debugger is for.
+        if (m3_cyc && !in_flight) begin
+            assert (!m0_ack);
+            assert (!m1_ack);
+            assert (!m2_ack);
+        end
+
+        if (m1_cyc && !m3_cyc && !in_flight) begin
             assert (s_data_master);
             assert (!m2_ack);
             assert (!m0_ack);
@@ -189,15 +223,19 @@ module fv_interconnect #(
         // 4b. The walker outranks fetch. Fetch is nearly continuous, so a walk
         //     that lost to it could be starved indefinitely; the reverse
         //     cannot happen, because a walk is two reads and then it is over.
-        if (m2_cyc && !m1_cyc && !in_flight) assert (!m0_ack);
+        if (m2_cyc && !m1_cyc && !m3_cyc && !in_flight) assert (!m0_ack);
 
         // 5. Acks go to the master that made the request, and only to one.
         assert (!(m0_ack && m1_ack));
         assert (!(m0_ack && m2_ack));
         assert (!(m1_ack && m2_ack));
+        assert (!(m3_ack && m0_ack));
+        assert (!(m3_ack && m1_ack));
+        assert (!(m3_ack && m2_ack));
         if (m0_ack) assert (m0_cyc);
         if (m1_ack) assert (m1_cyc);
         if (m2_ack) assert (m2_cyc);
+        if (m3_ack) assert (m3_cyc);
 
         // 6. An access to an address matching no slave still acks. A bus that
         //    never acks wedges the CPU permanently - cpu_wb.v freezes the
@@ -209,9 +247,15 @@ module fv_interconnect #(
         //    page table names unmapped ones. wb_ptw.v's own handling of a
         //    same-cycle ack is what turns that into a page fault rather than a
         //    re-issued read forever.
-        if (m1_cyc && m1_stb && !in_flight && (s_stb == {NUM_SLAVES{1'b0}}))
+        if (m1_cyc && m1_stb && !m3_cyc && !in_flight &&
+            (s_stb == {NUM_SLAVES{1'b0}}))
             assert (m1_ack);
-        if (m2_cyc && m2_stb && !m1_cyc && !in_flight &&
+        // The debug master needs it most: a host can ask for any address at
+        // all, including ones that decode to nothing, and a debug read that
+        // hangs the bus would take the machine down rather than report a hole.
+        if (m3_cyc && m3_stb && !in_flight && (s_stb == {NUM_SLAVES{1'b0}}))
+            assert (m3_ack);
+        if (m2_cyc && m2_stb && !m1_cyc && !m3_cyc && !in_flight &&
             (s_stb == {NUM_SLAVES{1'b0}}))
             assert (m2_ack);
 
@@ -222,11 +266,20 @@ module fv_interconnect #(
         if (s_data_master) assert (s_adr == m1_adr);
         if (m0_ack)        assert (s_adr == m0_adr);
         if (m2_ack)        assert (s_adr == m2_adr);
+        if (m3_ack)        assert (s_adr == m3_adr);
 
-        // 8. Only the data master writes. Neither the fetch master nor the
-        //    walker has a write path, so if this could fail either of them
-        //    could corrupt memory.
-        if (!s_data_master) assert (!s_we);
+        // 8. Only a master that *has* a write path drives `s_we` - the data
+        //    master and the debug module. The fetch master and the walker
+        //    have none, so if this could fail either of them could corrupt
+        //    memory.
+        //
+        //    This said "only the data master writes" until the debug module
+        //    arrived, and the prover refuted it on the first run - correctly,
+        //    because the statement had become false. It is restated rather
+        //    than deleted: the property worth having is not "m1 is the only
+        //    writer" but "nothing writes that cannot", and those were the
+        //    same sentence only while there was one writer.
+        if (s_we) assert (s_data_master || m3_cyc);
     end
 
     // ---- the property that makes a multi-cycle slave safe ----

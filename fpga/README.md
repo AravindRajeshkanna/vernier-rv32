@@ -41,6 +41,7 @@ a distribution](#fmax-is-a-distribution-not-a-number).
 | **ns16550 console on a board** | ✅ **confirmed on silicon** — `ttyS0 ... is a 16450`, and the handover from the SBI earlycon is clean |
 | **Loading 7.4 MB over UART** | ✅ **confirmed on silicon** — 22 minutes, CRC ok, no retries |
 | **Linux to userspace on a board** | ✅ **`=== VERNIER-RV32-LINUX-BOOT-OK ===`** — see [Linux, on the board](#linux-on-the-board) |
+| **JTAG debug path** | ⚠️ **simulated only** — TAP, DTM and a Debug Module with System Bus Access, on `gn[5:2]`. No adapter has been connected. `rtl/debug/README.md` |
 
 ## Linux, on the board
 
@@ -339,6 +340,53 @@ What a behavioural model still cannot show is marginality — the lesson this
 file carries from the clock-phase failure, where simulation proved the design
 self-consistent and one word in a thousand came back wrong on the part. That
 is why this section ends with a board transcript and not a simulation log.
+
+## The JTAG header, and what it costs
+
+`gn[2]` TCK, `gn[3]` TMS, `gn[4]` TDI, `gn[5]` TDO — four ordinary header
+pins reaching a bus master that can read and write any address the SoC
+decodes, whether or not the CPU is cooperating. `rtl/debug/README.md` is the
+design; this is its effect on the fitter.
+
+**Not the ECP5's own JTAG.** That TAP belongs to the configuration engine and
+is what `openFPGALoader` talks to. These are four GPIO pins and any
+FT2232-class adapter drives them.
+
+**The three inputs are pulled down in the LPF, and that is load-bearing.** An
+unconnected CMOS input floats, and a floating TCK on a board with no debug
+cable is an oscillator: it would clock the TAP through a random walk, and a
+random walk that reaches Update-DR with the DMI instruction selected issues a
+bus write with whatever bits happened to shift in. A pulldown makes "no cable"
+mean "no clock".
+
+### Measured, on `BOARD=ulx3s85`
+
+| | With the debug path | Before it |
+|---|---|---|
+| System clock, seed that closed | **25.20 MHz** | 24.69–27.63 over six seeds |
+| Seeds that failed to close | 2 of 3 | 2 of 6 |
+| TCK domain | **169.66 MHz** against a 15 MHz constraint | — |
+| TRELLIS_COMB | **17,021** | 17,435 |
+| DP16KD | 80 (38%) | 80 (38%) |
+
+**The critical path is CPU-internal at both ends** — source
+`CPU.pc_TRELLIS_FF_Q_26`, sink `CPU.id_ex_pred_target_TRELLIS_FF_Q_26`,
+39.68 ns — and contains no cell from `rtl/debug/`. That is the measurement
+behind the claim that this touches the CPU nowhere: it is a bus master and one
+reset term, and the fitter agrees.
+
+TCK is constrained explicitly at 15 MHz rather than left to nextpnr's 12 MHz
+default, because a number nobody chose should not appear in a timing report
+next to one that was measured. It closes at eleven times that, which is what a
+handful of flip-flops and a 41-bit shift register ought to do.
+
+**Two things this table does not say.** Three seeds cannot distinguish a real
+shift in the failure rate from noise against six — the design was marginal
+before this and is marginal after it, and the fix for that is the critical
+path, not this module. And the LUT count went *down* by 414, which I have not
+accounted for; the debug logic is demonstrably in the netlist (nextpnr times
+the TCK domain and reports cells under `SOC.TAP` and `SOC.DM`), so it is not
+that the module vanished.
 
 ## Before you flash: check what the bitstream is
 

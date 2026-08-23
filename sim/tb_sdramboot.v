@@ -76,6 +76,11 @@ module tb_sdramboot;
         .SDRAM_BA_BITS(BA_BITS)
     ) DUT (
         .clk(clk), .rst(rst),
+        // No debug host in this testbench. TCK parked low means the TAP's
+        // state machine never advances and the Debug Module stays in reset,
+        // which is exactly what a board with no debug cable does.
+        .jtag_tck(1'b0), .jtag_tms(1'b0), .jtag_tdi(1'b0),
+        .jtag_tdo(), .jtag_tdo_oe(),
         .uart_tx(uart_tx), .uart_rx(1'b1),
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(spi_miso),

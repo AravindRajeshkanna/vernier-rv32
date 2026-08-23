@@ -242,6 +242,14 @@ jobs:
       # the configuration the board has: 64 KB of block RAM, program preloaded,
       # SDRAM behind the window it hammers. Gated here so the thing that gets
       # flashed is the thing that was tested.
+      # Four pins to a bus master. No toolchain needed - the block RAM image
+      # is a generated pattern rather than a compiled program - so this runs
+      # on the bare runner alongside the rest.
+      - name: JTAG debug path
+        run: make sim_jtag | tee jtag.log
+      - name: Check JTAG verdict
+        run: grep -aq "JTAG TEST PASSED" jtag.log
+
       - name: SDRAM checked from block RAM (the board's bitstream image)
         run: make sim_sdramcheck | tee sdramcheck.log
       - name: Check SDRAM check verdict

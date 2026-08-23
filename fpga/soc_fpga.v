@@ -59,6 +59,18 @@ module soc_fpga #(
     input  wire clk,        // board oscillator
     input  wire rst_n,      // active-low reset button (invert if yours is active-high)
 
+    // ---- JTAG debug, on whatever pins the board wrapper has spare ----
+    //
+    // A board with no debug header ties tck/tms/tdi low and drops tdo: the
+    // TAP only advances on a TCK edge, so a parked TCK costs nothing and the
+    // Debug Module never leaves reset. `tdo_oe` exists so several TAPs can
+    // share one chain; a board driving a single TAP can ignore it.
+    input  wire jtag_tck,
+    input  wire jtag_tms,
+    input  wire jtag_tdi,
+    output wire jtag_tdo,
+    output wire jtag_tdo_oe,
+
     output wire uart_tx,    // to your USB-serial adapter's RX
     input  wire uart_rx,    // from your USB-serial adapter's TX
 
@@ -166,6 +178,8 @@ module soc_fpga #(
         .GPIO_WIDTH(GPIO_WIDTH)
     ) SOC (
         .clk(clk), .rst(rst),
+        .jtag_tck(jtag_tck), .jtag_tms(jtag_tms), .jtag_tdi(jtag_tdi),
+        .jtag_tdo(jtag_tdo), .jtag_tdo_oe(jtag_tdo_oe),
         .uart_tx(uart_tx), .uart_rx(uart_rx),
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),

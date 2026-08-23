@@ -1347,6 +1347,52 @@ none reachable by any test that assumed it would.
 
 ---
 
+## 37. Build the half that does not touch the critical path first
+
+The RISC-V Debug Module has two ways to reach memory. Abstract commands and
+the program buffer make the *hart* do it — which means halting it, which means
+debug mode, `dcsr`, `dpc`, `dret` and a debug ROM the core vectors into.
+System Bus Access does it with a bus master that has nothing to do with the
+hart.
+
+This project built the second and deliberately not the first, and the reason
+is worth stating because it is a scheduling argument rather than a technical
+one.
+
+**Two of six placement seeds already fail to close 25 MHz.** Halt/resume lands
+on the fetch redirect and the register file write port — the two paths the
+critical path already runs through. Adding to them before the margin is fixed
+would turn an intermittent build failure into a permanent one, and it would do
+it in the same change that introduces a large new module, so the two causes
+would arrive together and have to be separated afterwards.
+
+Splitting on that line cost nothing, because the halves are not equally
+valuable. Every failure that has actually cost time on this board — OpenSBI
+hanging before its console came up, the boot ROM stopping silently, Linux
+dying between `earlycon` and `ttyS0` — was *the memory is fine and I cannot
+see it*. None of them needed the hart stopped. The half that touches nothing
+is the half that answers the questions.
+
+**The claim is measured, not asserted.** After the change the critical path
+runs `CPU.pc` → `CPU.id_ex_pred_target`, 39.68 ns, CPU-internal at both ends
+with no cell from `rtl/debug/` in it, and the new clock domain closes at
+169.66 MHz against its 15 MHz constraint. "It does not touch the CPU" is the
+kind of claim that is easy to believe about your own design and cheap to
+check.
+
+**And say what the deferred half means for a user, in the interface.**
+`dmstatus` hardwires `allrunning` to 1 and accepts `haltreq` while ignoring
+it, so a debugger that tries to halt gets a hart that never halts rather than
+a plausible lie. `fpga/openocd/vernier.cfg` deliberately declares no target
+for the same reason: `target create ... riscv` would produce timeouts that
+read as a broken adapter instead of a Debug Module that says plainly it has no
+hart control. A partial implementation should be *legible* as partial from the
+outside, not merely documented as partial somewhere else.
+
+---
+
+---
+
 ## Conventions
 
 **Commits** are imperative and say what changed and why it matters — `Test
