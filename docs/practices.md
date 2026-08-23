@@ -1393,6 +1393,53 @@ outside, not merely documented as partial somewhere else.
 
 ---
 
+## 38. A random seed is not a controlled variable
+
+Section 33 established that a single place-and-route run is one draw from a
+distribution and that the worst seed is the number to quote. This is the
+corollary, and it is the one that bites when you try to *improve* something.
+
+An attempt to shorten this design's critical path produced:
+
+| Seed | Before | After |
+|---|---|---|
+| 1 | 24.80 MHz FAIL | 22.36 MHz FAIL |
+| 2 | 24.44 MHz FAIL | 25.05 MHz PASS |
+
+The tempting reading is "seed 2 improved by 0.6 MHz and seed 1 regressed by
+2.4". Both halves of that sentence are wrong, because **a placement seed
+indexes a random trajectory through a specific netlist**. Change the netlist
+and seed 1 is no longer the same experiment with one variable moved — it is a
+different draw. Holding the seed number fixed across a design change feels
+like a control and is not one.
+
+Against a spread already measured at ~3 MHz, two samples versus three cannot
+resolve a change of this size in either direction. The honest statement is
+**"no demonstrated effect"** — not "it helped", and equally not "it hurt".
+
+Two things follow.
+
+**A change with no demonstrated benefit does not ship**, however good the
+argument for it. The reasoning here was sound and the transformation provably
+exact — the predicate `pa_va != pc` really does reduce to
+`(state != S_IDLE) && (va_r != pc)`, and that really does put both operands in
+registers. Behaviour was identical, both simulators agreeing cycle for cycle.
+None of that is evidence about timing, and the measurement declined to supply
+any. It touches the fetch path, which is the highest-risk region in this
+design and where section 31's defect lived, so the bar is a demonstrated win.
+It was reverted.
+
+**A negative result is a result, and belongs in the tree.** `fpga/README.md`
+carries the attempt, the numbers and the reason it was dropped, because the
+alternative is that the next person derives the same algebra, spends the same
+two place-and-route runs, and learns the same nothing. The measured critical
+path is recorded alongside it for the same reason: the useful output of a
+failed optimisation is usually the characterisation it produced on the way.
+
+---
+
+---
+
 ## Conventions
 
 **Commits** are imperative and say what changed and why it matters — `Test

@@ -24,7 +24,7 @@ a distribution](#fmax-is-a-distribution-not-a-number).
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
 | Resource usage | ✅ **measured** — 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F; the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ⚠️ **24.69–27.63 MHz** (85F, six placement seeds) — **two of six land under the board's 25 MHz and nextpnr fails the build**. Margin is approximately zero; `synth_ecp5.sh` retries seeds. See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) |
+| **Fmax with I/O constrained** | ⚠️ **24.69–27.63 MHz** (85F, six placement seeds) — **two of six land under the board's 25 MHz and nextpnr fails the build**. Margin is approximately zero; `synth_ecp5.sh` retries seeds. See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
@@ -218,6 +218,75 @@ The critical path is now `CPU.mem_wb_rd_r` → the forwarding and hazard
 comparators → `is_mret` → `pc`: 36.19 ns, writeback destination register
 through to the next program counter. Area is 17,435 TRELLIS_COMB (20% of an
 85F), 80 DP16KD (38%) and 4 MULT18X18D.
+
+## The critical path, and one attempt that did not work
+
+The margin at 25 MHz is approximately zero and two of six seeds fail to close.
+This is what is known about *why*, and what has been tried.
+
+**The path**, read out of nextpnr rather than guessed:
+
+```
+CPU.pc  →  IMMU.tlb_super  →  BUSADAPT.imem_addr  →  BUS.sel_m0  →  stall terms
+        →  CPU.id_ex_pred_target                                        39.68 ns
+```
+
+In words: the program counter is translated by the instruction TLB, the
+physical address goes to the bus, the bus decides whether the fetch master is
+granted, and that decision feeds the stall logic that clocks the pipeline
+registers — **all combinationally, in one cycle**. The design has no fetch
+pipeline stage; translation, arbitration and the stall that gates ID/EX are a
+single path from one flop to the next.
+
+### The attempt
+
+PR #28 added `itlb_answer_stale = pa_va != pc` to the fetch path, and `pa_va`
+is a mux selected by the MMU's walk state — so the comparator cannot start
+until the walk resolves, and its output selects `imem_addr`. Since the IMMU's
+`va` *is* `pc`, the predicate simplifies exactly:
+
+```
+pa_va != pc  ==  (state != S_IDLE) && (va_r != pc)
+```
+
+Both operands are registers, so the compare resolves at the clock edge in
+parallel with the lookup rather than after it. The algebra is exact and the
+behaviour was identical — both simulators still agreed cycle-for-cycle, with
+`+checkmmu` and `+checkdecode` clean.
+
+**It made no measurable difference**, and the change was reverted.
+
+| Seed | Before | After |
+|---|---|---|
+| 1 | 24.80 MHz FAIL | 22.36 MHz FAIL |
+| 2 | 24.44 MHz FAIL | 25.05 MHz PASS |
+| 3 | 25.20 MHz PASS | — |
+
+One seed better, one worse, against a spread already measured at ~3 MHz. No
+evidence of improvement, so it is not in the tree: a refactor of the fetch
+path — the highest-risk region in this design, and where PR #28's defect lived
+— needs a demonstrated win, not a plausible one.
+
+### A trap worth naming
+
+Comparing "seed 1 before" against "seed 1 after" **is not a controlled
+experiment**, and reading that table as though it were is the easy mistake. A
+placement seed indexes a random trajectory through a *specific* netlist;
+change the netlist and the same seed number is a different draw, not the same
+run with one variable moved. Two samples against three, on a distribution
+3 MHz wide, cannot resolve a change of this size in either direction. The
+honest statement is "no demonstrated effect", not "it helped" and not "it
+hurt".
+
+### What would actually work
+
+Pipeline the fetch: register the translated address so the TLB lookup and the
+bus request fall in different cycles. That is a real microarchitectural change
+— it costs a cycle of fetch latency, and the I-cache, the BTB and the redirect
+logic all have to cope — and it deserves its own change and its own
+verification rather than being appended to something else. It is also the
+thing standing between this design and hart control in the Debug Module
+(`rtl/debug/README.md`).
 
 ## What 256 KB of SDRAM was and was not saying
 

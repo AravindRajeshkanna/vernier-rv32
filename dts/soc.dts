@@ -106,12 +106,31 @@
 
     memory@80000000 {
         device_type = "memory";
-        /* 256 KB of on-chip block RAM - the simulation figure; a board build
-         * has 64 KB (see software/soc/soc.h's RAM_SIZE for why). Kept as a
-         * separate node from the SDRAM below rather than merged, because they
-         * are separate slaves at separate bases with very different latency,
-         * and nothing in this system relocates either of them. */
-        reg = <0x80000000 0x00040000>;
+        /* 64 KB, which is what a board actually has: fpga/ulx3s_top.v passes
+         * RAM_BYTES(65536), and software/soc/soc.h's RAM_SIZE says the same.
+         *
+         * This declared 0x40000 - the 256 KB simulation figure - and was
+         * wrong on every board that has ever run this tree. It survived
+         * because `arch/riscv` sets phys_ram_base to the kernel's own load
+         * address and drops every range below it, so Linux prints
+         *
+         *     OF: fdt: Ignoring memory block 0x80000000 - 0x80040000
+         *
+         * and never touches the node. A lie nothing acts on is still a lie,
+         * and the next consumer of this file may not be a kernel that
+         * discards it - a bare-metal program handed this tree would size its
+         * heap from a number four times too big.
+         *
+         * Kept as a separate node from the SDRAM below rather than merged,
+         * because they are separate slaves at separate bases with very
+         * different latency, and nothing in this system relocates either.
+         *
+         * Duplicated in fpga/ulx3s_top.v (RAM_BYTES) and software/soc/soc.h
+         * (RAM_SIZE), and nothing checks that the three agree -
+         * docs/practices.md section 11. Safe direction of error is *small*:
+         * under-declaring wastes memory, over-declaring hands software
+         * addresses that read back as garbage. */
+        reg = <0x80000000 0x00010000>;
     };
 
     memory@90000000 {

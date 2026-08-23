@@ -1227,6 +1227,13 @@ no way to read it.
 `make verify`; `formal/fv_interconnect.v` proves the arbitration with the
 fourth master.
 
+**The timing margin is what gates the rest of it**, and one attempt at the
+critical path has been made and reverted — `fpga/README.md` has the path, the
+numbers and why the change did not ship. The measured chain is `pc` -> ITLB ->
+`imem_addr` -> bus arbitration -> the stall that clocks the pipeline
+registers, all in one cycle, and the answer is a fetch pipeline stage rather
+than any point fix.
+
 **What is left is hart control**: halt, resume, single-step, and reading the
 CPU's registers. That needs debug mode, `dcsr`, `dpc`, `dret` and a debug ROM
 the core vectors into, all of which land on the fetch redirect and the
