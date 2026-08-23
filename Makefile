@@ -249,7 +249,12 @@ VERILATOR_PARAMS = -GRAM_BYTES=65536 -GRESET_PC=0x90000000
 
 # CORE_DEFINES is `-DCORE_OOO` or empty, and Verilator spells `define the
 # same way Icarus does, so the same variable serves both front ends.
-VERILATOR_FLAGS = --cc --exe --build -j 4 -O3 -CFLAGS "-O2" \
+# `-CFLAGS` carries CORE_DEFINES too, not just the Verilog side. The harness
+# has to compile differently for the wide core: `+checkdecode`'s second-slot
+# check reads id_ex1_* signals that exist only in rtl/ooo/core_ooo.v, and
+# referencing them in the in-order build is a compile error rather than a
+# silent nothing.
+VERILATOR_FLAGS = --cc --exe --build -j 4 -O3 -CFLAGS "-O2 $(CORE_DEFINES)" \
                    --top-module soc_top $(VERILATOR_TRACE) \
                    $(CORE_DEFINES) $(VERILATOR_PARAMS) --Mdir $(VERILATOR_MDIR)
 
@@ -698,7 +703,7 @@ VERILATOR_RAMBOOT_MDIR = obj_dir_soc_ramboot
 VERILATOR_RAMBOOT_BIN  = $(VERILATOR_RAMBOOT_MDIR)/Vsoc_top
 
 $(VERILATOR_RAMBOOT_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
-	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O2" \
+	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O2 $(CORE_DEFINES)" \
 	    --top-module soc_top $(CORE_DEFINES) \
 	    -GRAM_BYTES=65536 -GRESET_PC=0x80001000 \
 	    --Mdir $(VERILATOR_RAMBOOT_MDIR) \

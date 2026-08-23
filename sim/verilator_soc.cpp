@@ -1088,31 +1088,53 @@ int main(int argc, char **argv) {
         }
 
         // ---- is the decoder looking at the instruction at its own PC? ----
-        if (check_dec && root->soc_top__DOT__CPU__DOT__if_id_valid) {
-            const uint32_t va   = root->soc_top__DOT__CPU__DOT__if_id_pc;
+        //
+        // Factored into a lambda because the wide core has *two* issue slots
+        // and both need it. Slot 0 is checked at IF/ID, where both cores have
+        // the signal; the wide core's slot 1 is formed later, at issue, so it
+        // is checked at ID/EX. Same question either way: is the instruction
+        // this stage is holding the one that lives at the PC it is attributed
+        // to.
+        auto check_one_decode = [&](uint32_t va, uint32_t got) {
             const uint32_t satp = root->soc_top__DOT__CPU__DOT__IMMU__DOT__satp_ppn;
             uint32_t pa = va;
             bool have = true;
             if (satp)                       // paging on: translate as the hart would
                 have = Sv32::walk(sdram, satp, va, &pa);
-            if (have && ((pa >> 24) == 0x90 || (pa >> 24) == 0x91)) {
-                const uint32_t w = (pa - 0x90000000u) >> 1;
-                if (w + 1 < sdram.words()) {
-                    const uint32_t want = sdram.storage()[w] |
-                                          ((uint32_t)sdram.storage()[w + 1] << 16);
-                    const uint32_t got = root->soc_top__DOT__CPU__DOT__if_id_instr;
-                    dec_checked++;
-                    if (got != want) {
-                        dec_bad++;
-                        if (dec_bad <= 12)
-                            printf("\n** decoding the wrong instruction at cycle "
-                                   "%ld: pc 0x%08x (pa 0x%08x) holds 0x%08x, "
-                                   "decoder has 0x%08x\n",
-                                   cycles, va, pa, want, got);
-                    }
-                }
+            if (!have) return;
+            if ((pa >> 24) != 0x90 && (pa >> 24) != 0x91) return;
+            const uint32_t w = (pa - 0x90000000u) >> 1;
+            if (w + 1 >= sdram.words()) return;
+            const uint32_t want = sdram.storage()[w] |
+                                  ((uint32_t)sdram.storage()[w + 1] << 16);
+            dec_checked++;
+            if (got != want) {
+                dec_bad++;
+                if (dec_bad <= 12)
+                    printf("\n** decoding the wrong instruction at cycle "
+                           "%ld: pc 0x%08x (pa 0x%08x) holds 0x%08x, "
+                           "decoder has 0x%08x\n",
+                           cycles, va, pa, want, got);
             }
-        }
+        };
+
+        if (check_dec && root->soc_top__DOT__CPU__DOT__if_id_valid)
+            check_one_decode(root->soc_top__DOT__CPU__DOT__if_id_pc,
+                             root->soc_top__DOT__CPU__DOT__if_id_instr);
+
+#ifdef CORE_OOO
+        // The second issue slot, which nothing checked until now.
+        //
+        // The wide core dual-issues, so "52.8 million decoded instructions all
+        // matched their PC" was a statement about slot 0 alone. Adding this
+        // takes the same boot to 56.6 million - 7% more, not the half it was
+        // assumed to be, because the second slot only issues one class of
+        // single-cycle ALU op. Small, and exactly the part that exists only
+        // on the core with a failing Linux boot. docs/practices.md §31.
+        if (check_dec && root->soc_top__DOT__CPU__DOT__id_ex1_valid)
+            check_one_decode(root->soc_top__DOT__CPU__DOT__id_ex1_pc,
+                             root->soc_top__DOT__CPU__DOT__id_ex1_instr);
+#endif
 
         // ---- and every translation, against the tables it came from ----
         if (check_mmu) {
