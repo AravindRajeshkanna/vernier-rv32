@@ -58,11 +58,70 @@ board prints the same thing.
 | console handover from `sbi0` to `ttyS0` | ✅ |
 | `Run /init as init process`, and `/init` printing | ✅ |
 | **On hardware** | ✅ ULX3S / LFE5U-85F — [the transcript](../../fpga/README.md#linux-on-the-board) |
+| **On the wide core** (`CORE=ooo`) | ❌ boots the whole kernel, then `Failed to execute /init (error -14)` — see below |
 
 The `isa` line is the point of printing `/proc/cpuinfo`: it is what the kernel
 parsed out of `dts/soc.dts` and believed, so a boot that gets here has proved
 the device tree was read *and* acted on. `zaamo`/`zalrsc` are the kernel
 spelling out what `a` decomposes into.
+
+## The wide core: everything but `execve`
+
+`make sim_linux CORE=ooo` had never been run. It boots almost all of the way:
+
+```
+Freeing unused kernel image (initmem) memory: 152K
+Run /init as init process
+Failed to execute /init (error -14)
+Kernel panic - not syncing: No working init found.
+```
+
+**`-14` is `-EFAULT`.** The wide core executes the entire kernel — memblock,
+Sv32 and the whole linear map, the clocksource, the PLIC probe, `ttyS0` and
+the console handover, `free_initmem` — three million instructions, correctly,
+and then takes a bad-address fault in `execve`.
+
+That is one named failure at a known point rather than a category, which is
+the same shape the ITLB defect had before it was found.
+
+**The three self-checking probes were pointed at it, and all three pass:**
+
+```
+SDRAM reads checked:          14,354,365, all matched the part
+decoded instructions checked: 52,823,404, all matched their PC
+translations checked:         99,058,380, all agreed with the page tables
+```
+
+Nothing else in the log is anomalous either — no oops, no bad-page report, no
+unexpected trap — and `make verify_ooo` passes riscv-tests, CoreMark and every
+SoC test. So the wide core is not broadly broken, and whatever is wrong is
+narrow.
+
+**But there is a gap in that evidence, and it is the important part.**
+`+checkdecode` reads `if_id_valid` / `if_id_pc` / `if_id_instr`, and the wide
+core **dual-issues**: those name slot 0 only. Slot 1 has its own
+`id_ex1_valid` / `id_ex1_pc` / `id_ex1_instr` and nothing checks them. So
+"52.8 million decoded instructions all matched their PC" is a statement about
+roughly half the instructions the core executed, and the half it says nothing
+about is the one that only exists on this core — which is also the only core
+that fails.
+
+`sim/verilator_soc.vlt` has said so since the probe was written ("`instret_retire`
+/ `id_ex_pc` describe slot 0 only... a branch trace taken from the wide core is
+a sample of control flow rather than all of it"). It was recorded as a caveat
+on a trace and is really a hole in the strongest instrument this project has.
+
+Extending `+checkdecode` to slot 1 is the next step and needs one piece of
+build plumbing: the slot-1 signals exist only in `rtl/ooo/core_ooo.v`, so the
+C++ has to compile conditionally on `CORE=ooo` rather than sharing one path
+as it does today. docs/practices.md section 31 is the general form — a check
+that reads one of its operands from the thing under test is not checking that
+operand, and a check that reads only half the machine is not checking the
+other half.
+
+`CORE=ooo` is not in `make verify`'s Linux path for the same reason
+`sim_linux` is not in `make verify` at all: it needs a kernel tarball off the
+network.
 
 ## The last bug: one letter in a device tree
 

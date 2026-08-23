@@ -1227,6 +1227,11 @@ no way to read it.
 `make verify`; `formal/fv_interconnect.v` proves the arbitration with the
 fourth master.
 
+**The timing margin has stopped being a risk and started blocking work.**
+`BOARD=ulx3s85-plictest` - one of the three peripheral bitstreams added to
+close the last simulation-only gaps - failed to close timing on four
+consecutive seeds and cannot be built today. fpga/README.md has the numbers.
+
 **The timing margin is what gates the rest of it**, and one attempt at the
 critical path has been made and reverted — `fpga/README.md` has the path, the
 numbers and why the change did not ship. The measured chain is `pc` -> ITLB ->

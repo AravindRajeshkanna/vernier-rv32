@@ -37,7 +37,7 @@ a distribution](#fmax-is-a-distribution-not-a-number).
 | Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 | **Sv32 MMU on a board** | ✅ **confirmed on silicon** — Linux runs its whole linear map through it |
-| **PLIC on a board** | ⚠️ **probed, not fired** — Linux maps 8 interrupts over 2 contexts; no interrupt has been *delivered* on silicon |
+| **PLIC on a board** | ⚠️ **probed, not fired** — Linux maps 8 interrupts over 2 contexts; no interrupt has been *delivered* on silicon. `BOARD=ulx3s85-plictest` settles it in one flash |
 | **ns16550 console on a board** | ✅ **confirmed on silicon** — `ttyS0 ... is a 16450`, and the handover from the SBI earlycon is clean |
 | **Loading 7.4 MB over UART** | ✅ **confirmed on silicon** — 22 minutes, CRC ok, no retries |
 | **Linux to userspace on a board** | ✅ **`=== VERNIER-RV32-LINUX-BOOT-OK ===`** — see [Linux, on the board](#linux-on-the-board) |
@@ -218,6 +218,73 @@ The critical path is now `CPU.mem_wb_rd_r` → the forwarding and hazard
 comparators → `is_mret` → `pc`: 36.19 ns, writeback destination register
 through to the next program counter. Area is 17,435 TRELLIS_COMB (20% of an
 85F), 80 DP16KD (38%) and 4 MULT18X18D.
+
+## The three peripherals Linux depends on, one bitstream each
+
+Sv32, PLIC interrupt delivery and the ns16550's divisor latch are the parts of
+this SoC that only *Linux* has exercised on silicon — and Linux exercises them
+all at once, three million instructions in, with no way to attribute a failure
+to any one of them.
+
+```sh
+make mmuimage    && BOARD=ulx3s85-mmutest   ./fpga/synth/synth_ecp5.sh
+make plicimage   && BOARD=ulx3s85-plictest  ./fpga/synth/synth_ecp5.sh
+make uart16550image && BOARD=ulx3s85-uarttest  ./fpga/synth/synth_ecp5.sh
+openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
+picocom -b 115200 /dev/cu.usbserial-XXXXXXX     # then tap reset
+```
+
+| Target | Verdict | What it adds to what simulation already proves |
+|---|---|---|
+| `ulx3s85-mmutest` | `MMU-SDRAM: PASS` | Sv32 with its page tables in the **external** part — the walkers, both TLBs and `wb_ptw.v` against a memory with real latency |
+| `ulx3s85-plictest` | `PLIC-TEST: PASS` | **the one thing the Linux boot did not settle**: an interrupt actually *delivered*, to S-mode, through context 1 |
+| `ulx3s85-uarttest` | `UART16550-TEST: PASS` | the divisor latch and register map, including reprogramming mid-character — which garbles on real silicon, and is meant to |
+
+Each preloads its program into block RAM, so the boot ROM jumps straight to it
+and the SD card is never touched. `cat fpga/build/ulx3s_top.bit.target` before
+flashing — several targets write that one filename.
+
+### One of them does not build today
+
+`BOARD=ulx3s85-plictest` was run end to end to prove the target works, and it
+**failed to close timing on four consecutive placement seeds**:
+
+```
+seed 1   23.79 MHz FAIL      seed 3   23.67 MHz FAIL
+seed 2   24.81 MHz FAIL      seed 4   24.19 MHz FAIL
+error: no placement seed closed timing in 4 attempts.
+```
+
+The target definition is correct — yosys and nextpnr both accept it, the
+preload is stamped, and the fail-closed behaviour did its job by leaving no
+bitstream and no stamp behind. What stopped it is the design's timing margin,
+and this is the first time that margin has prevented work rather than merely
+threatened to.
+
+Read against everything else measured on this board, the distribution has
+walked downward as the design has grown:
+
+| Target | Seeds passing | Range |
+|---|---|---|
+| `ulx3s85`, before the debug path | 3 of 3 | 25.47–27.63 MHz |
+| `ulx3s85-ram`, before the debug path | 1 of 3 | 24.69–26.62 MHz |
+| `ulx3s85`, with the debug path | 1 of 3 | 24.44–25.20 MHz |
+| `ulx3s85-plictest` | **0 of 4** | 23.67–24.81 MHz |
+
+Those are different netlists rather than one experiment with a variable moved
+(§38), so the table is a description and not an attribution. The conclusion it
+supports is weaker than a cause and strong enough to act on: **25 MHz is no
+longer reliably reachable, and a fetch pipeline stage is now blocking three
+things** — this bitstream, hart control in the Debug Module, and any further
+growth of the design.
+
+**Why `plictest` is the one to flash first.** `riscv-plic: mapped 8 interrupts
+with 1 handlers for 2 contexts` in the Linux transcript is a successful
+*probe*: the driver read the register map and claimed its contexts. Nothing in
+that boot required an interrupt to be **taken** — the 8250 console path polls
+`THRE`, and `/init` waits on nothing. So interrupt delivery is the last part of
+the interrupt path that exists only in simulation, and it is the one a bare
+program can settle in a second.
 
 ## The critical path, and one attempt that did not work
 
