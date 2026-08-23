@@ -62,6 +62,32 @@ different thing entirely, and calling this that would overstate it.
 the console and says nothing when it fails. They fall into two groups, and the
 distinction matters more than the list - see PRACTICES §30.
 
+## The JTAG debug path
+
+Four pins on the `gn` header reach a bus master that can read and write any
+address the SoC decodes, while the CPU is running or wedged. `rtl/debug/`
+has the design; the short version:
+
+```
+gn[2] TCK  gn[3] TMS  gn[4] TDI  gn[5] TDO
+```
+
+**What it answers that nothing else here can.** Everything below this section
+is a simulation probe: `+checkreads`, `+checkfetch`, `+watchpc` and the rest
+exist because in simulation you can see everything, and on a board you can see
+what the firmware prints. The gap is a board that is not printing — OpenSBI
+hanging before its console comes up, a boot ROM stopping with no output, a
+kernel dying between `earlycon` and `ttyS0`. In all of those the interesting
+state is sitting in memory and there has been no way to look at it.
+
+**What it cannot do:** halt the hart, read its registers, or set a breakpoint.
+The Debug Module implements System Bus Access only, and `rtl/debug/README.md`
+explains why that half first — the other half lands on the fetch and writeback
+paths of a design with almost no timing margin.
+
+`make sim_jtag` drives the four pins the way an adapter does and is gated in
+`make verify`.
+
 **Probes that check.** Each compares the hardware against an independent model
 and prints one line unless something disagrees. Add them to any run:
 

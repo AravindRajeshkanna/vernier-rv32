@@ -1212,12 +1212,31 @@ is not a suite that ran the code.
 
 ## Phase 6 — Debug infrastructure
 
-No JTAG TAP, no RISC-V Debug Module, so debugging is UART `printf` and the
-loud trap handler. [docs/debug.md](debug.md) is honest about what that costs.
+**Half done, and it is the half that was blocking things.** `rtl/debug/` is a
+JTAG TAP, a RISC-V Debug Transport Module and a Debug Module implementing
+System Bus Access: four pins on the `gn` header to a bus master that reads and
+writes any address the SoC decodes, without the CPU's cooperation.
 
-This is the phase that makes every other phase cheaper, which is an argument
-for doing it earlier than its position here suggests. It is placed after the
-others because none of them are blocked by it.
+That is what turns "the board prints nothing" from the end of an investigation
+into the start of one. Every failure that has cost real time here — OpenSBI
+hanging before its console came up, the boot ROM stopping silently, Linux
+dying between `earlycon` and `ttyS0` — had its evidence sitting in memory with
+no way to read it.
+
+`make sim_jtag` drives the four pins as an adapter would and is in
+`make verify`; `formal/fv_interconnect.v` proves the arbitration with the
+fourth master.
+
+**What is left is hart control**: halt, resume, single-step, and reading the
+CPU's registers. That needs debug mode, `dcsr`, `dpc`, `dret` and a debug ROM
+the core vectors into, all of which land on the fetch redirect and the
+register file write port. Two of six placement seeds already fail to close
+25 MHz. **Fix the timing margin first** — this is the clearest case in the
+project of one phase being gated on another, and it is gated on Phase 3's
+unfinished business rather than on anything here.
+
+Also missing, and cheaper: no debug adapter has been connected to a board.
+The path is proven in simulation only.
 
 ---
 

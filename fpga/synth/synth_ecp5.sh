@@ -282,6 +282,7 @@ RTL="rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
      rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
      rtl/soc/wb_sdram.v \
+     rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
      rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
 fi
 

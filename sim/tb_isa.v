@@ -36,6 +36,11 @@ module tb_isa;
         .RESET_PC(32'h8000_0000)
     ) DUT (
         .clk(clk), .rst(rst),
+        // No debug host in this testbench. TCK parked low means the TAP's
+        // state machine never advances and the Debug Module stays in reset,
+        // which is exactly what a board with no debug cable does.
+        .jtag_tck(1'b0), .jtag_tms(1'b0), .jtag_tdi(1'b0),
+        .jtag_tdo(), .jtag_tdo_oe(),
         .uart_tx(uart_tx), .uart_rx(1'b1),
         .gpio_in(16'b0), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
