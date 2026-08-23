@@ -305,17 +305,24 @@ module cpu_core #(
     //
     // **That side effect is load-bearing, and nothing here enforces it.**
     //
-    // Three separate attempts to change the fetch path (fpga/README.md) all
-    // hung Linux at userspace entry, and what they had in common was not the
-    // change they were making - it was `ibus_wait` being *asserted* while an
-    // instruction-TLB walk is in flight. Today that combination never occurs,
-    // because the held address always hits, so the fetch always looks
-    // complete. Something in the stall or redirect logic below depends on
-    // that and it is not known what.
+    // Three attempts to change the fetch path (fpga/README.md) each made the
+    // machine so much slower that a Linux boot stopped finishing inside the
+    // simulator's cycle budget - 132.9 million cycles on this design, still
+    // unfinished at 900 million on the variants. Not a hang: userspace is
+    // reached and `/init` runs. The cost is paid in the instruction cache,
+    // most likely because a fetch issued during a walk *fills* a line, and
+    // depending on the variant that line lands at the index the next real
+    // fetch wants, tagged to the wrong page.
     //
-    // Anything that touches this - a virtually indexed cache, a fetch
-    // pipeline stage, a different hold policy - will meet it. Worth finding
-    // on its own account rather than as a casualty of the next change.
+    // (An earlier version of this comment said the failures showed the stall
+    // logic below could not tolerate `ibus_wait` during a walk. That was
+    // inferred from a gate reporting a timeout and is not supported.)
+    //
+    // So: anything that touches this - a virtually indexed cache, a fetch
+    // pipeline stage, a different hold policy - inherits a performance
+    // property that is currently free and accidental, and should measure a
+    // full boot rather than trusting a functional test. `make sim_mmusdram`
+    // passes on every variant that made Linux 7x slower.
     reg [31:0] itlb_pa_hold;
     wire [31:0] fetch_phys_addr =
         itlb_req ? (itlb_ok ? itlb_pa : itlb_pa_hold) : pc;

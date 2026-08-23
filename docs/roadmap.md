@@ -1227,15 +1227,14 @@ no way to read it.
 `make verify`; `formal/fv_interconnect.v` proves the arbitration with the
 fourth master.
 
-**Before the timing margin: `ibus_wait` during an ITLB walk.** Three attempts
-at the fetch path all hung Linux at userspace entry, and what they shared was
-not the change being made - it was asserting `ibus_wait` while an
-instruction-TLB walk is in flight, a combination the present design never
-produces because the held fetch address always hits in the instruction cache.
-Something in cpu_core.v's stall or redirect logic depends on that and it is
-not known what. It is a latent fragility rather than a bug today, and any
-change to the fetch path meets it first. fpga/README.md has the three
-variants.
+**Before the timing margin: the fetch path's behaviour during an ITLB walk is
+a performance property nothing enforces.** Three attempts at it each made a
+Linux boot 7x slower or worse - 132.9 million cycles becomes "not finished at
+900 million" - while `make sim_mmusdram` and every other functional test kept
+passing. The likely mechanism is the instruction cache being filled during
+walks with lines tagged to the wrong page; the test for that has not been run.
+fpga/README.md has the variants and the correction to an earlier, wrong
+reading of them as a hang.
 
 **The timing margin has stopped being a risk and started blocking work.**
 `BOARD=ulx3s85-plictest` - one of the three peripheral bitstreams added to
