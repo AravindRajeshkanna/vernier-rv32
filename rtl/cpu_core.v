@@ -302,6 +302,20 @@ module cpu_core #(
     // which is what we want anyway: the walker (rtl/soc/wb_ptw.v) is now a bus
     // master competing for the same interconnect, and a fetch of an address
     // the core cannot yet compute has no business ahead of it.
+    //
+    // **That side effect is load-bearing, and nothing here enforces it.**
+    //
+    // Three separate attempts to change the fetch path (fpga/README.md) all
+    // hung Linux at userspace entry, and what they had in common was not the
+    // change they were making - it was `ibus_wait` being *asserted* while an
+    // instruction-TLB walk is in flight. Today that combination never occurs,
+    // because the held address always hits, so the fetch always looks
+    // complete. Something in the stall or redirect logic below depends on
+    // that and it is not known what.
+    //
+    // Anything that touches this - a virtually indexed cache, a fetch
+    // pipeline stage, a different hold policy - will meet it. Worth finding
+    // on its own account rather than as a casualty of the next change.
     reg [31:0] itlb_pa_hold;
     wire [31:0] fetch_phys_addr =
         itlb_req ? (itlb_ok ? itlb_pa : itlb_pa_hold) : pc;

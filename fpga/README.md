@@ -377,13 +377,63 @@ one the cache is known to hold, so a stalled fetch now misses and issues reads
 for a page it will never use, filling cache lines with entries tagged to the
 old page number.
 
-**So the direction is right and the interaction with the hold is unresolved.**
-Anyone picking this up should start there, and should decide a question this
-attempt could not settle honestly under time pressure: whether `+checkfetch`
-ought to check fetches the core *discards*. There is a real argument that it
-should not — a fetch whose result never reaches IF/ID is not a fetch the core
-consumed — and an equally real risk that answering it while trying to land a
-timing fix is how an instrument gets quietly weakened.
+### The question, settled
+
+Should `+checkfetch` check fetches the core *discards*? **No change: it should
+keep checking them.**
+
+Its invariant is that whenever the fetch unit presents data, that data is the
+word memory holds at the address on the unit's own input. That is a property
+of the fetch unit, independent of what the pipeline downstream does with it -
+a cache returning data that does not correspond to its own address input is
+broken whether or not somebody throws the result away. Weakening it to "only
+what IF/ID latches" would hide cache bugs that a stall masks today and a
+pipeline change unmasks tomorrow, which is the failure mode this entire file
+is a record of.
+
+So variant 1 stays rejected on its merits rather than on a technicality, and
+any fix has to satisfy the probe rather than be excused from it.
+
+### A third variant, and what all three actually proved
+
+Variant 3 keeps virtual indexing and adds an eight-bit check that the index
+and the tag describe the same address - in parallel with the tag comparison,
+so the array read still starts at the clock edge. It satisfies `+checkfetch`
+completely: 181 million fetches, all matching memory, 103 million decoded
+instructions all matching their PC, 377 million translations all agreeing with
+the page tables.
+
+**And Linux hangs after `Run /init`, exactly as variant 2 did.**
+
+Three variants is enough to see what they have in common, and it is not the
+indexing:
+
+| Variant | What the fetch does on the bus during an ITLB walk | Linux |
+|---|---|---|
+| 1, no gating | cache **hits** the held address, issues no request | **boots** |
+| 2, hold splices the live offset | misses, **issues a request** | hangs at `execve` |
+| 3, index/tag pairing checked | misses, **issues a request** | hangs at `execve` |
+
+Every variant that changes the fetch unit's bus behaviour while a walk is in
+flight hangs at userspace entry. The one that leaves it alone boots. The first
+attempt in this section - gating both the hit and the request on a
+"translation is current" signal, so the fetch neither hit nor requested - hung
+too, which fits the same pattern: what all three failures share is
+`ibus_wait` being *asserted* during an instruction-TLB walk, where today it is
+deasserted by a cache hit on the held address.
+
+**So the real finding is about `rtl/cpu_core.v`, not about the cache.**
+Something in the stall or redirect logic cannot tolerate `ibus_wait` and an
+ITLB walk being true at the same time, and the present design never exercises
+that combination because the held address is always in the instruction cache -
+by construction, since it was fetched moments earlier. The comment in
+`cpu_core.v` that explains the hold describes this as a happy side effect. It
+is load-bearing.
+
+That is the thing to find, and it is worth finding independently of the timing
+work: it is a latent fragility that any change to the fetch path will hit, and
+the next one may not be a change that can be reverted. Virtual indexing is
+then a small edit on top.
 
 ### A trap worth naming
 
