@@ -499,6 +499,52 @@ run with one variable moved. Two samples against three, on a distribution
 honest statement is "no demonstrated effect", not "it helped" and not "it
 hurt".
 
+### A fourth variant, measured properly this time
+
+The correction above established that these variants do not hang. This one
+establishes something narrower, and it invalidates the "seven times slower"
+framing as well.
+
+Virtual indexing, with the stale-translation window made explicit: while an
+instruction-TLB walk is in flight the fetch unit neither hits nor requests, so
+`+checkfetch`'s invariant cannot be violated and the bus stays free for the
+walk. Semantically the cleanest of the four. All probes clean over a full
+boot - 404,850,810 fetches, 230,046,563 decodes, 926,148,601 translations, all
+correct.
+
+Then the same boot, measured against the baseline at a mid-kernel milestone
+rather than at the end:
+
+| | `Freeing unused` | marker | userspace phase |
+|---|---|---|---|
+| baseline | 127,920,017 | 132,938,924 | **5.0M cycles** |
+| variant | 127,918,716 | not reached by 900M | **>772M cycles** |
+
+**The kernel boot is unaffected** - the two are 1,301 cycles apart, one part
+in a hundred thousand, which is noise. Every one of these variants runs the
+entire kernel at full speed. The pathology is confined to *user mode*, and it
+is not a 7x slowdown but at least **150x**, of a phase that is 4% of the boot.
+
+The trap trace after userspace entry says where:
+
+| Trap PC | Count | Symbol |
+|---|---|---|
+| `0xc01e5cfc` | 54,676 | `uart_write + 0xa4` |
+| `0x000100e0` | 14 | *userspace* |
+
+**That is a specific suspicion rather than a general one.** Kernel output goes
+through the 8250 *console* path, which polls `THRE`. `/init`'s writes go
+through the *tty* path, which is interrupt-driven - it enables `THRI` and
+waits. So the phase that breaks is exactly the phase that depends on a UART
+interrupt being delivered through the PLIC, and that is the one link in the
+interrupt chain this project has never proved anywhere: the hardware Linux
+boot only ever *probed* the PLIC, and `BOARD=ulx3s85-plictest` cannot be built
+because of the margin these changes exist to fix.
+
+Whether the fetch change perturbs interrupt delivery, or merely exposes
+something already fragile in it, is not established. What is established is
+where to look, and that it is not the instruction cache.
+
 ### What would actually work
 
 Two candidates now, in increasing order of cost.
