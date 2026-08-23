@@ -690,7 +690,12 @@ every one of the 8192 rows for 16,384 accesses, which runs in `make verify`;
 forcing row bit A7 low makes it report 4,096 wrong rows while the 256 KB sweep
 still passes. `make verilator_sdramfull` sweeps all 32 MB densely in about a
 minute and measures a 4,031 ms retention interval against the short sweep's
-31 ms. All of that is simulation — the board has still only ever held 256 KB.
+31 ms.
+
+**And it has run on the part.** `BOARD=ulx3s85-sdramfull` reports
+`SDRAM-CHECK: PASS` on a ULX3S 85F over all 8192 rows, 8,388,608 unique words,
+with the same 4,031 ms retention and 20 ms idle the model predicts — model and
+silicon agreeing to the millisecond over 16 million accesses.
 `docs/practices.md` §34.
 
 Bring-up is two bitstreams, in the order that narrows the problem —
@@ -700,7 +705,7 @@ Bring-up is two bitstreams, in the order that narrows the problem —
 |---|---|
 | `BOARD=ulx3s-sdram` | `fpga/ulx3s_sdram.v` — no CPU at all. Five cumulative LEDs: power-up, one word, walking ones over the data, one address per address bit, and survival across a ~100 ms idle, which is what proves refresh |
 | `BOARD=ulx3s85-sdramcheck` | `software/soc/sdramcheck.c` — the CPU, caches and interconnect in the path, running from block RAM and hammering 256 KB of SDRAM |
-| `BOARD=ulx3s85-sdramfull` | the same program over the whole 32 MB. 256 KB is 64 of 8192 rows, so seven of the thirteen row address bits were never driven high — see `fpga/README.md`. Not yet flashed |
+| `BOARD=ulx3s85-sdramfull` | the same program over the whole 32 MB. 256 KB was 64 of 8192 rows, so seven of the thirteen row address bits had never been driven high. **`SDRAM-CHECK: PASS` on the board** |
 
 Both have simulations (`make sim_sdramprobe`, `make sim_sdramcheck`) and both
 are gated in CI, because a bring-up instrument that is itself wrong turns "the
@@ -1030,8 +1035,14 @@ console over from the SBI earlycon to `ttyS0`, frees its init memory and runs
 `/init`.
 
 Three defects stood between "the kernel starts" and that, and all three are
-recorded below and in `software/linux/README.md`. **It has never been run on a
-board.** `fpga/README.md` opens with the list of what to settle first.
+recorded below and in `software/linux/README.md`.
+
+**And it boots on the board.** A ULX3S / LFE5U-85F, 7,744,876 bytes sent over
+the serial line into external SDRAM in one attempt, OpenSBI, the kernel, and
+`/init` at pid 1. `fpga/README.md` has the transcript and what each line of it
+settles — the Sv32 MMU on silicon, the ns16550 console and its 3.1% baud
+error, and the 22-minute all-or-nothing transfer. PLIC interrupt *delivery* is
+the one thing that boot does not prove.
 
 ### The last one: a device tree that claimed a FIFO the hardware has not
 

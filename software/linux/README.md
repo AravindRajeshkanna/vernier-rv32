@@ -13,8 +13,10 @@ make sim_linux                        # boot it
 
 ## Status, precisely
 
-**In QEMU (`qemu-system-riscv32 -M virt`) this kernel boots to userspace**, and
-**on this SoC it now does too.**
+**This kernel boots to userspace on the board** — a ULX3S / LFE5U-85F, out of
+32 MB of external SDRAM, with the image sent over the serial line by the boot
+ROM's own loader. It also boots in QEMU (`qemu-system-riscv32 -M virt`) and
+under Verilator, which is where all three of the defects below were found.
 
 ```
 Freeing unused kernel image (initmem) memory: 152K
@@ -39,7 +41,8 @@ hart isa        : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
 ```
 
 Verbatim from `make sim_linux`, which reaches the marker at cycle 132,938,924 —
-33 seconds of Verilator, and 5.3 seconds of wall time on a board at 25 MHz.
+33 seconds of Verilator, and 5.3 seconds of wall time on a board at 25 MHz. The
+board prints the same thing.
 
 | | |
 |---|---|
@@ -54,7 +57,7 @@ Verbatim from `make sim_linux`, which reaches the marker at cycle 132,938,924 �
 | `4000000.serial: ttyS0 at MMIO 0x4000000 (irq = 1) is a 16450` | ✅ |
 | console handover from `sbi0` to `ttyS0` | ✅ |
 | `Run /init as init process`, and `/init` printing | ✅ |
-| **On hardware** | ❌ never attempted — `fpga/README.md` has the list |
+| **On hardware** | ✅ ULX3S / LFE5U-85F — [the transcript](../../fpga/README.md#linux-on-the-board) |
 
 The `isa` line is the point of printing `/proc/cpuinfo`: it is what the kernel
 parsed out of `dts/soc.dts` and believed, so a boot that gets here has proved
@@ -245,11 +248,46 @@ The image is 7,744,876 bytes and the loader is stop-and-wait, a round trip per
 byte, so that is about **22 minutes** at 115200. `uartload.py` says so before
 it starts rather than leaving a progress bar to be interpreted.
 
-**This has not been run on hardware**, and the reason is no longer "it does not
-boot in simulation". What stands between here and a board is a list, and it is
-in [fpga/README.md](../../fpga/README.md): the last measured Fmax predates five
-RTL-changing commits and this design has 1.5% of margin at 25 MHz; the largest
-region of SDRAM ever proved on silicon is 256 KB against the ~28 MB a kernel
-needs; and nothing exercising the MMU, the PLIC or the ns16550 has ever been
-built into a bitstream, though every one of them has a simulation target. A
-22-minute transfer is worth spending once those are answered and not before.
+**This has been done**, in one attempt, with no dropped byte in 7.7 million:
+
+```
+7744876 bytes -> 0x90000000 (SDRAM), CRC32 7C7134CE
+  at 115200 baud that is about 22 minutes - it is stop-and-wait,
+  a round trip per byte (see below)
+knocking - press reset on the board
+  ROM answered
+  sent 7744876/7744876 (100%)
+  accepted; the board is running it
+
+UART loader: 0x00762D6C bytes at 0x90000000, CRC ok
+  starting program
+```
+
+and then OpenSBI, the kernel, and:
+
+```
+4000000.serial: ttyS0 at MMIO 0x4000000 (irq = 1, base_baud = 1562500) is a 16450
+printk: legacy bootconsole [sbi0] disabled
+Run /init as init process
+
+=== VERNIER-RV32: USERSPACE ===
+kernel  : Linux 6.18.45
+machine : riscv32
+pid     : 1
+isa     : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
+mmu     : sv32
+
+=== VERNIER-RV32-LINUX-BOOT-OK ===
+```
+
+The full transcript, and what each line of it settles about the hardware, is
+in [fpga/README.md](../../fpga/README.md#linux-on-the-board). Two things worth
+knowing before you try it:
+
+**The bitstream must have nothing preloaded** — `BOARD=ulx3s85`. A preloaded
+build makes the boot ROM jump straight to block RAM without ever opening the
+loader's knock window.
+
+**Timing margin at 25 MHz is approximately zero.** Two of six placement seeds
+fail to close, so `synth_ecp5.sh` retries; budget several place-and-route
+attempts per bitstream.

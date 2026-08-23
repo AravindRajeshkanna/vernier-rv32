@@ -35,11 +35,11 @@ card** (a 64 GB SDXC card never answers CMD0 — cards above 32 GB are not
 required to implement SPI mode, and the test bitstream sidesteps it by
 preloading RAM from the bitstream) and **video scan-out**, which is generated
 and simulated but not routed to the HDMI pins, since that needs a PLL and a
-TMDS serializer neither of which exists yet. **Linux boots on this SoC in
-simulation** — 6.18.45 rv32ima, through OpenSBI, to a userspace `/init` — and
-has never been run on a board; the ["Can this run Linux?"](#5-then-install-linux-and-test-cpu-performance--the-honest-picture)
-section is the full accounting, and `fpga/README.md` lists what to settle
-before the image is worth a 22-minute transfer.
+TMDS serializer neither of which exists yet. **Linux boots to userspace on the
+board** — 6.18.45 rv32ima, through OpenSBI, out of 32 MB of external SDRAM,
+with the image sent over the serial line by the boot ROM's own loader. The
+["Can this run Linux?"](#5-then-install-linux-and-test-cpu-performance--the-honest-picture)
+section is the full accounting and `fpga/README.md` has the transcript.
 
 ## What's here
 
@@ -184,14 +184,14 @@ formal:                  5 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 SDRAM controller:        against a model that says no    (make sim_sdram)
 SoC out of SDRAM:        99 KB program, 64 KB block RAM  (make sim_sdramboot)
-SDRAM on a board:        256 KB read/written, ULX3S 85F  (BOARD=ulx3s85-sdramcheck)
-  ...and in simulation:  all 32 MB, every row, 4.0 s retention (make verilator_sdramfull)
+SDRAM on a board:        all 32 MB, every row, 4.0 s retention (BOARD=ulx3s85-sdramfull)
 UART loader:             host -> ROM -> SDRAM -> running  (make sim_uartload)
   ...and its host script:  against a fake board on a pty    (make uartload-host)
 Sv32, megapages and 4 KB: page tables in SDRAM, both levels (make sim_mmusdram)
 OpenSBI:                 boots, detects the platform, hands off (make sim_opensbi)
 Linux 6.18 rv32ima:      boots to userspace on this SoC, and under
                          QEMU; /init runs and prints            (make sim_linux)
+  ...and on a board:     ULX3S 85F, 7.4 MB sent over UART       (BOARD=ulx3s85)
 99 KB program from SDRAM: on a ULX3S 85F, over the serial line
 ULX3S 85F bitstream:     27.41 MHz, 20% LUT, 51% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
 ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (predates the D-cache and SDRAM)
@@ -514,9 +514,14 @@ printing back the ISA string the kernel parsed from `dts/soc.dts`.
 The rest of the sentence stands. It was a large undertaking, it took the
 better part of this repository's history, and the list below is what it
 actually required — kept in its original shape, with each item marked by what
-now exists rather than rewritten to sound inevitable. **In simulation**: the
-image has never been sent to a board. `fpga/README.md` opens with what to
-settle before it is.
+now exists rather than rewritten to sound inevitable.
+
+**And on hardware.** A ULX3S / LFE5U-85F, 7,744,876 bytes sent over the serial
+line into external SDRAM, OpenSBI, the kernel, and `/init` at pid 1 printing
+back the ISA string the kernel parsed out of `dts/soc.dts` — transcript in
+`fpga/README.md`. What that boot did *not* prove is PLIC interrupt delivery:
+the controller is probed and its contexts claimed, but nothing in the boot
+requires an interrupt to be taken.
 
 - **RV32IMA or RV64IMA** — this core is now genuinely RV32IMA (the A
   extension landed alongside M/S/U privilege modes), so this box is
@@ -557,13 +562,12 @@ settle before it is.
   a genuine first-stage loader; **OpenSBI boots**, detects this platform
   from `dts/soc.dts` and hands off to S-mode (`make sim_opensbi`); and
   there is now **an rv32ima Linux with an initramfs**, built from source by
-  `software/linux/build-linux.sh`, which **boots to userspace on this
-  SoC** — `Run /init as init process`, and `/init` printing `uname` and
-  `/proc/cpuinfo` back, in `make sim_linux`. In *simulation*: the image has
-  never been sent to a board, and `fpga/README.md` opens with what to settle
-  before it is. `software/linux/README.md` records the defects that were in
-  the way and how each was caught. U-Boot is skipped: `mkimage.py` packs the kernel where
-  `fw_jump` expects it, so there is nothing for it to do.
+  `software/linux/build-linux.sh`, which **boots to userspace on this SoC —
+  on a board** — `Run /init as init process`, and `/init` printing `uname` and
+  `/proc/cpuinfo` back. `make sim_linux` does the same under Verilator, which
+  is where every defect in the way was found; `software/linux/README.md`
+  records them and how each was caught. U-Boot is skipped: `mkimage.py` packs
+  the kernel where `fw_jump` expects it, so there is nothing for it to do.
 - Performance that isn't so slow it's unusable — this core is pipelined
   and now has a branch predictor, but it's still single-issue and
   in-order, with no cache; real Linux-capable FPGA cores typically add

@@ -1,14 +1,14 @@
 # OpenSBI — status
 
-The goal here is an OpenSBI boot in simulation: M-mode firmware that prints
-its banner and hands off to an S-mode payload. That is the next real link in
+The goal here was an OpenSBI boot: M-mode firmware that prints its banner and
+hands off to an S-mode payload. That is the next real link in
 the RISC-V boot chain after this project's own boot ROM, and a meaningful
 milestone short of Linux.
 
-**Where it actually stands: it boots.** `make sim_opensbi` runs OpenSBI
-v1.9 on this SoC, in simulation, and it prints its banner, detects the
-platform from `dts/soc.dts`, builds its root domain and prepares to hand off
-to S-mode.
+**Where it actually stands: it boots, on a board.** OpenSBI v1.9 runs on a
+ULX3S / LFE5U-85F, detects the platform from `dts/soc.dts`, builds its root
+domain and hands off to a Linux kernel that reaches userspace.
+`make sim_opensbi` does the same under Verilator.
 
 | Step | Status |
 |---|---|
@@ -166,8 +166,27 @@ every byte and never noticed; the kernel wrote sixteen at a time and lost
 fifteen. It now says `"ns16450", "ns16550"`, which both firmwares match and
 only one of them was ever going to catch. docs/practices.md §32.
 
-## And to be clear about the caveats
+## What the board added to this
 
-Linux boots **in simulation**. It has never been tried on a board, and
-`fpga/README.md` opens with the list of what to settle first — starting with
-an Fmax that predates five RTL-changing commits against 1.5% of margin.
+The banner above is from simulation and the board prints the same thing, with
+three fields worth recording because they are properties of the hardware
+rather than of the firmware:
+
+```
+Firmware Size               : 569 KB
+Boot HART ISA Extensions    : zicntr
+Boot HART PMP Count         : 0
+Domain0 Next Arg1           : 0x91e00000
+```
+
+`zicntr` is OpenSBI reading `rtl/csr_file.v`'s counters and finding
+`cycle`/`time`/`instret` where the spec says they go. `PMP Count : 0` is
+honest — this core has no physical memory protection, which is why
+`Domain0 Region05` covers all of memory with no M-mode restriction, and why a
+domain model that would matter on a multi-tenant machine is decorative here.
+`Next Arg1` is the device tree at `0x91E0_0000`, the address that took two
+attempts to get right and is explained above.
+
+The one caveat left is timing rather than firmware: margin at the board's
+25 MHz is approximately zero and two of six placement seeds fail to close. See
+`fpga/README.md`.
