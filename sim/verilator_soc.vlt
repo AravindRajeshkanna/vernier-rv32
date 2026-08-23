@@ -196,3 +196,32 @@ public_flat_rd -module "uart" -var "divisor_r"
 public_flat_rd -module "uart" -var "write_thr"
 public_flat_rd -module "uart" -var "tx_state"
 public_flat_rd -module "uart" -var "wdata"
+
+// ---- 8. the wide core's second issue slot ----
+//
+// `+checkdecode` reads if_id_valid / if_id_pc / if_id_instr, and on a
+// dual-issue core those name **slot 0 only**. The note in section 5 above
+// records that as a caveat about reading a *trace* from the wide core; it is
+// really a hole in the strongest check this harness has, and it took a defect
+// that only the wide core exhibits to make the difference matter - a Linux
+// boot that runs the whole kernel correctly and then fails `execve` with
+// -EFAULT, with 52.8 million decoded instructions all matching their PC.
+//
+// "Half the machine" is how this was described before it was measured, and
+// that was an assumption. Adding slot 1 takes a wide-core Linux boot from
+// 52,823,404 checked instructions to 56,629,310 - about 7% more, because the
+// second slot only ever issues one class of single-cycle ALU op and most
+// cycles have nothing for it. Still a hole, and still exactly the part that
+// exists only on the core that fails; just a seventh of the machine rather
+// than a half.
+//
+// Slot 1 is formed at issue rather than at IF/ID, so its checkpoint is the
+// ID/EX register instead. `id_ex1_instr` is carried for observability only -
+// nothing in the datapath reads it - which is exactly what makes it the right
+// thing to compare against memory.
+//
+// core_ooo only. sim/verilator_soc.cpp guards the check with CORE_OOO, and
+// the Makefile now passes that to the C++ compiler as well as to Verilog.
+public_flat_rd -module "core_ooo" -var "id_ex1_valid"
+public_flat_rd -module "core_ooo" -var "id_ex1_pc"
+public_flat_rd -module "core_ooo" -var "id_ex1_instr"

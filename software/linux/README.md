@@ -111,13 +111,28 @@ that fails.
 a sample of control flow rather than all of it"). It was recorded as a caveat
 on a trace and is really a hole in the strongest instrument this project has.
 
-Extending `+checkdecode` to slot 1 is the next step and needs one piece of
-build plumbing: the slot-1 signals exist only in `rtl/ooo/core_ooo.v`, so the
-C++ has to compile conditionally on `CORE=ooo` rather than sharing one path
-as it does today. docs/practices.md section 31 is the general form — a check
-that reads one of its operands from the thing under test is not checking that
-operand, and a check that reads only half the machine is not checking the
-other half.
+**That hole is now closed, and it did not contain the bug.** `+checkdecode`
+checks both slots: the same boot goes from 52,823,404 checked instructions to
+**56,629,310**, and all of them still match their PC.
+
+Two corrections fall out of doing it. The unchecked fraction was **7%**, not
+the "half" assumed above — the second slot only issues one class of
+single-cycle ALU op, so most cycles have nothing for it. And the wide core
+decodes correctly in *both* slots, which rules out a whole class of cause: the
+`execve` failure is not an instruction fetched or paired wrongly.
+
+So four independent checks now pass on a boot that fails — bus reads,
+translations, slot-0 decodes and slot-1 decodes. What none of them look at is
+the *data* path: the values in registers, what stores write, CSR contents,
+privilege transitions. `-EFAULT` out of `execve` is consistent with any of
+those, and with the load/store path most of all. The next instrument would
+have to check register writeback against an independent model of what the
+instruction should have produced, which is a much larger thing than any probe
+here and is essentially what `tests/cosim.py` does against Spike for the
+in-order core.
+
+Pointing that cosimulation at the wide core is the obvious next step and is
+not attempted here.
 
 `CORE=ooo` is not in `make verify`'s Linux path for the same reason
 `sim_linux` is not in `make verify` at all: it needs a kernel tarball off the
