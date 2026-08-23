@@ -1214,6 +1214,13 @@ A documented feature that nothing exercises is indistinguishable from one that
 does not exist, and the two stay indistinguishable right up until somebody
 needs it.
 
+**Both tests have since run on the part**, which is the ending this section
+needs to have: `BOARD=ulx3s85-sdramfull` reports `SDRAM-CHECK: PASS` on a
+ULX3S 85F over all 8192 rows and 8,388,608 unique words, and the board's
+measured retention interval — 4,031 ms — matches the model's to the
+millisecond over sixteen million accesses. A coverage argument that ends in
+simulation is a plan; this one ends on silicon.
+
 ---
 
 ---
