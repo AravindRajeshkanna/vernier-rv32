@@ -303,6 +303,15 @@ verilator_check: sim_sdramboot $(VERILATOR_BIN)
 	@grep -aq "returned the wrong word" sim/verilator_soc.log && \
 	    { echo "FAILED: a read returned something the memory does not hold"; \
 	      exit 1; } || true
+# +checkfetch's failure line is "were the wrong word"; the read check above
+# prints "returned the wrong word". Close enough to look covered and different
+# enough not to be - for four PRs this target ran +checkfetch and then grepped
+# for a string it cannot print. A fetch-path change made during the timing
+# work produced exactly that output, mismatching fetches on every run, and
+# `make verify` stayed green. practices.md section 26.
+	@grep -aq "were the wrong word" sim/verilator_soc.log && \
+	    { echo "FAILED: a fetch returned something the memory does not hold"; \
+	      exit 1; } || true
 	@grep -aq "disagreed with the page tables" sim/verilator_soc.log && \
 	    { echo "FAILED: a translation disagreed with the page tables"; \
 	      exit 1; } || true
