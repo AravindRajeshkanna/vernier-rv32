@@ -47,6 +47,9 @@ BUILD=fpga/build
 #   BOARD=ulx3s85-ram        the acceptance test
 #   BOARD=ulx3s85-sdramcheck the SDRAM check, run from block RAM
 #   BOARD=ulx3s85-sdramfull  the same check over the whole 32 MB part
+#   BOARD=ulx3s85-mmutest    Sv32 with its page tables in real SDRAM
+#   BOARD=ulx3s85-plictest   an interrupt delivered to S-mode
+#   BOARD=ulx3s85-uarttest   the ns16550's divisor latch and register map
 #
 # and one that is not a SoC at all - a standalone SDRAM probe with no CPU,
 # for proving the memory before anything else is in the path:
@@ -169,6 +172,47 @@ case "$BOARD" in
         PRELOAD_RAM=1
         RAM_IMAGE=sim/sdramfullimage.hex
         RAM_ELF=software/soc/sdramfull.elf
+        ;;
+    ulx3s85-mmutest|ulx3s85-plictest|ulx3s85-uarttest)
+        # The three peripherals a Linux boot depends on, each in a bitstream
+        # of its own.
+        #
+        # All three had a simulation target and no BOARD= target, which is a
+        # specific kind of gap rather than an oversight: Sv32, PLIC interrupt
+        # delivery and the ns16550's divisor-latch path are the parts of this
+        # SoC that only *Linux* exercised on silicon, and Linux exercises them
+        # all at once, three million instructions in, with no way to attribute
+        # a failure to one of them. A bare-metal image that tests one thing
+        # and prints a verdict is what turns "the kernel died somewhere in
+        # early boot" into a question with an address on it.
+        #
+        # What each is for on a board, beyond what simulation already proves:
+        #
+        #   mmutest   Sv32 through real SDRAM. The page tables live in the
+        #             external part, so this is the walkers, the TLBs and
+        #             wb_ptw.v against a memory with actual latency.
+        #   plictest  the one thing Linux has *not* settled on silicon: it
+        #             maps 8 interrupts over 2 contexts and never needs one
+        #             delivered, because the 8250 console path polls. This
+        #             raises a GPIO interrupt and requires it to arrive in
+        #             S-mode through context 1.
+        #   uarttest  the divisor latch and the register map, including the
+        #             reprogramming-mid-character case that garbles on real
+        #             silicon and is meant to.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
+        PRELOAD_RAM=1
+        case "$BOARD" in
+            *-mmutest)  RAM_IMAGE=sim/mmuimage.hex
+                        RAM_ELF=software/soc/mmutest.elf ;;
+            *-plictest) RAM_IMAGE=sim/plicimage.hex
+                        RAM_ELF=software/soc/plictest.elf ;;
+            *-uarttest) RAM_IMAGE=sim/uart16550image.hex
+                        RAM_ELF=software/soc/uarttest.elf ;;
+        esac
         ;;
     ulx3s85-ram)
         # 85F with the acceptance-test program preloaded into RAM, so the
