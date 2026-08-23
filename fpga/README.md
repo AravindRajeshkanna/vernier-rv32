@@ -1,13 +1,21 @@
 # FPGA integration — status and honest caveats
 
-**The design builds to a ULX3S bitstream against that board's real pinout,
-closes timing at 25 MHz — 25.37 MHz on an 85F as of the page-table walkers
-moving onto the bus, 26.07 MHz without that change on the same toolchain,
-27.41 MHz on the older one — and has been loaded onto an
-LFE5U-85F, where it boots, passes its acceptance test, and runs a 99 KB
-program out of external SDRAM that was sent to it over the serial line.**
-Those are different claims, and two of them are
-still open:
+**This SoC boots Linux to userspace on a ULX3S / LFE5U-85F.** Built against
+the board's real pinout, closing timing at the board's 25 MHz, with a 7.4 MB
+image — OpenSBI, a device tree and an rv32ima kernel with an initramfs — sent
+over the serial line into 32 MB of external SDRAM by the boot ROM's own
+loader, and `/init` printing back the ISA string the kernel parsed out of
+`dts/soc.dts`.
+
+Everything below is measured on that board or on the same design in
+simulation, and which of the two is stated every time. What is still *not*
+proven on silicon is the SD card, video scan-out, and PLIC interrupt
+*delivery* — the controller is probed and mapped, but nothing has yet made it
+fire on hardware.
+
+Timing is the one number that should worry you: the margin at 25 MHz is
+approximately zero and two of six placement seeds fail to close. See [Fmax is
+a distribution](#fmax-is-a-distribution-not-a-number).
 
 | Artifact | Status |
 |---|---|
@@ -23,72 +31,124 @@ still open:
 | Surviving a reset | ✅ **fixed** — `.data` is rebuilt at startup; two consecutive board runs are byte-identical |
 | newlib / `printf` on a board | ✅ **works** — `NEWLIB-PROBE: PASS`; the old failure was the `.data` bug above, not libc |
 | SD card on a board | ❌ **CMD0 unanswered** by a 64 GB SDXC card; untested below 32 GB |
-| **SDRAM pins** | ✅ **confirmed on silicon** — 256 KB of unique addresses, byte and halfword lanes, refresh |
-| **All 8192 rows** | ⚠️ **in simulation** — every row address bit driven, and 32 MB swept densely with a measured 4.0 s retention interval. Never on a board: `BOARD=ulx3s85-sdramfull` |
+| **SDRAM pins** | ✅ **confirmed on silicon** — every address, bank and byte lane, and refresh |
+| **All 32 MB of SDRAM** | ✅ **confirmed on silicon** — every one of 8192 rows, 8M unique words, 4,031 ms measured retention. `BOARD=ulx3s85-sdramfull` |
 | **SDRAM as data, on a board** | ✅ **`SDRAM-CHECK: PASS`** — failed first at one word in a thousand; see the clock-phase diagnosis below |
 | Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
+| **Sv32 MMU on a board** | ✅ **confirmed on silicon** — Linux runs its whole linear map through it |
+| **PLIC on a board** | ⚠️ **probed, not fired** — Linux maps 8 interrupts over 2 contexts; no interrupt has been *delivered* on silicon |
+| **ns16550 console on a board** | ✅ **confirmed on silicon** — `ttyS0 ... is a 16450`, and the handover from the SBI earlycon is clean |
+| **Loading 7.4 MB over UART** | ✅ **confirmed on silicon** — 22 minutes, CRC ok, no retries |
+| **Linux to userspace on a board** | ✅ **`=== VERNIER-RV32-LINUX-BOOT-OK ===`** — see [Linux, on the board](#linux-on-the-board) |
 
-## Before a Linux boot is tried on a board
+## Linux, on the board
 
-Linux now boots to userspace **in simulation** (`software/linux/README.md`).
-Nothing below is a reason it would not boot on silicon; each is a thing this
-board has never been asked to do, and each one turns "Linux hangs on the
-board" from a hunt into a lookup. Sending the image costs 22 minutes, so the
-order matters.
+Verbatim from `software/soc/uartload.py`, which hands the console over once
+the transfer is accepted, on a ULX3S / LFE5U-85F built from `BOARD=ulx3s85`:
 
-**1. Shorten the critical path.** Re-measuring answered the wrong question
-first. Six placement seeds give 24.69, 24.87, 25.47, 26.62, 27.07 and
-27.63 MHz — **two of them under 25 MHz, which nextpnr fails the build over**.
-The margin is approximately zero and a bench build hit it on the first
-attempt. `synth_ecp5.sh` retries seeds so a bitstream can still be produced,
-but the design needs the path from `CPU.mem_wb_rd_r` through the forwarding
-comparators and `is_mret` to `pc` made shorter — 36.19 ns today. Area also
-grew to 17,435 TRELLIS_COMB against 14,260 LUT4 recorded, block RAM
-unchanged.
+```
+7744876 bytes -> 0x90000000 (SDRAM), CRC32 7C7134CE
+  at 115200 baud that is about 22 minutes - it is stop-and-wait,
+  a round trip per byte (see below)
+knocking - press reset on the board
+  ROM answered
+  sent 7744876/7744876 (100%)
+  accepted; the board is running it
 
-**2. ~~Prove SDRAM past 256 KB.~~ Done in simulation; still owed a board.**
-See [What 256 KB of SDRAM was and was not
-saying](#what-256-kb-of-sdram-was-and-was-not-saying). Every row address bit
-is now driven by a test that runs in `make verify`, and the whole 32 MB is
-swept densely by `make verilator_sdramfull`, which is the exact image
-`BOARD=ulx3s85-sdramfull` bakes into a bitstream. **Neither has been on a
-board**, and the read capture was marginal here at one word in a thousand
-before the `ODDRX1F` phase fix — margin is what scales with coverage, and only
-silicon has margin.
+UART loader: 0x00762D6C bytes at 0x90000000, CRC ok
+  starting program
 
-**3. Build the three peripherals Linux depends on into a bitstream.**
-`mmutest.c`, `plictest.c` and `uarttest.c` each have a simulation target and
-**no `BOARD=` target**. The acceptance test that has run on silicon covers
-AMO, LR/SC, `misa`, the counters, misaligned traps and FENCE.I — not Sv32, not
-PLIC interrupt delivery, not the ns16550 divisor-latch path. Sv32 is the one
-to want most: PR #28's defect lived in the ITLB, and only Linux ever pressures
-it. Each target is about ten lines of `synth/synth_ecp5.sh`, copying
-`ulx3s85-probe`.
+OpenSBI v1.9-11-gc0f87f10
+Platform Name               : From-scratch RV32IMA Wishbone SoC
+Platform Timer Device       : aclint-mtimer @ 25000000Hz
+Platform Console Device     : uart8250
+Firmware Base               : 0x90080000
+Firmware Size               : 569 KB
+Boot HART Base ISA          : rv32ima
+Boot HART ISA Extensions    : zicntr
+Boot HART PMP Count         : 0
+Domain0 Next Address        : 0x90400000
+Domain0 Next Arg1           : 0x91e00000
+Domain0 Next Mode           : S-mode
 
-**4. Two device-tree claims are false on a board.** `dts/soc.dts` declares
-256 KB at `0x8000_0000` — the simulation figure; a board build is
-`RAM_BYTES = 65536`. Probably harmless, since `arch/riscv` sets `phys_ram_base`
-to `0x9040_0000` and drops every range below it, but the same `.dtb` goes into
-the image the board receives.
+Linux version 6.18.45 (aravindrajeshkanna@iMac) (riscv64-unknown-elf-gcc
+  (g1b306039a) 15.1.0, Homebrew LLD 21.1.8) #2 Sat Aug 22 15:53:52 IST 2026
+OF: fdt: Ignoring memory block 0x80000000 - 0x80040000
+OF: fdt: Ignoring memory range 0x90000000 - 0x90400000
+Machine model: From-scratch RV32IMA Wishbone SoC
+riscv: base ISA extensions aim
+Memory: 24316K/28672K available (2384K kernel code, 512K rwdata, 410K rodata,
+  155K init, 188K bss, 3988K reserved, 0K cma-reserved)
+SBI misaligned access exception delegation ok
+clocksource: Switched to clocksource riscv_clocksource
+riscv-plic: plic@3000000: mapped 8 interrupts with 1 handlers for 2 contexts.
+4000000.serial: ttyS0 at MMIO 0x4000000 (irq = 1, base_baud = 1562500) is a 16450
+printk: legacy console [ttyS0] enabled
+printk: legacy bootconsole [sbi0] disabled
+clk: Disabling unused clocks
+Freeing unused kernel image (initmem) memory: 152K
+Run /init as init process
 
-**5. The transfer is all-or-nothing.** `sdram.bin` is 7,744,876 bytes;
-`UARTLOAD_BYTE_TIMEOUT_MS` is 200 ms and the ROM halts on the first timeout,
-with the CRC checked only at the end. One dropped byte in 7.7 million costs
-the whole 22 minutes. About 3 MB of that image is the zero gap between the end
-of OpenSBI and the kernel at `+0x400000`, so a run-length skip in the header
-roughly halves it; raising the baud is the other half.
+=== VERNIER-RV32: USERSPACE ===
+kernel  : Linux 6.18.45
+machine : riscv32
+pid     : 1
 
-**6. The 3.1% baud error has never run on silicon.** The boot ROM's console
-uses the reset divisor — `CLKS_PER_BIT = 25e6/115200 = 217`, essentially exact.
-OpenSBI and Linux both program the ns16550 divisor to **14**, which is 111,607
-baud. That is inside a frame's tolerance and it is what every byte after the
-ROM banner uses, so it is worth knowing which of the two channels a garbled
-board console is coming from before diagnosing anything else.
+--- /proc/cpuinfo ---
+processor       : 0
+hart            : 0
+isa             : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
+mmu             : sv32
+mvendorid       : 0x0
+marchid         : 0x0
+mimpid          : 0x0
+hart isa        : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
 
-The bitstream to send is **`BOARD=ulx3s85`** — plain ROM boot, no RAM preload,
-so the UART loader actually runs. The `-ram`/`-probe`/`-trapcheck` builds
-preload block RAM and never reach it.
+=== VERNIER-RV32-LINUX-BOOT-OK ===
+reboot: Power off not available: System halted instead
+```
+
+### What that transcript settles
+
+Six things were listed here as owed to a board before this was worth trying.
+All six are answered, and the answers are in the lines above rather than in a
+plan:
+
+**The Sv32 MMU runs on silicon.** `mmu : sv32`, and the kernel's entire linear
+map is 4 KB pages walked by `rtl/mmu.v`. Nothing before this had ever enabled
+paging on hardware — the ITLB defect fixed in #28 was found in simulation
+precisely because no bare-metal program here pressures a TLB.
+
+**The ns16550 is a real console.** `ttyS0 ... is a 16450` is the device tree
+correction from #32 taking effect on hardware, and the handover from the SBI
+earlycon to `ttyS0` is clean — which also settles the **3.1% baud error** this
+file has flagged since the beginning. OpenSBI and Linux both program divisor
+14 for 111,607 baud against the host's 115,200, and every byte after the
+handover in that transcript came through an FTDI at the nominal rate. It is
+inside a frame's tolerance and now it is inside a frame's tolerance
+*measured*.
+
+**The UART loader carries a 7.4 MB image.** 7,744,876 bytes, stop-and-wait, a
+round trip per byte, CRC verified by the ROM before it jumps — in one attempt,
+with no dropped byte in 7.7 million. That is the all-or-nothing risk this file
+warned about, retired by doing it.
+
+**`base_baud = 1562500`** is 25 MHz / 16, so the kernel derived the divisor
+from `clock-frequency` in `dts/soc.dts` and got the same answer OpenSBI did.
+
+**The device tree's block-RAM node was harmless, as predicted.**
+`OF: fdt: Ignoring memory block 0x80000000 - 0x80040000` — `dts/soc.dts`
+declares 256 KB there and a board build has 64 KB, and `arch/riscv` drops the
+range anyway because it sits below `phys_ram_base`. The lie never reached
+anything that could act on it. It is still a lie and still worth fixing.
+
+**PLIC interrupt delivery is the one thing not settled.** `mapped 8 interrupts
+with 1 handlers for 2 contexts` is a successful *probe*: the driver read the
+register map and claimed its contexts. Nothing in that boot proves an
+interrupt was ever *taken* — the 8250 console path polls `THRE`, and `/init`
+does not wait on anything. `make sim_plic` delivers one to S-mode in
+simulation; silicon has not.
 
 ## Fmax is a distribution, not a number
 
@@ -225,16 +285,60 @@ is measured off the CLINT's `mtime`, not derived from a spin count: the two
 comments on the old idle loop said "~100 ms" and "~10 ms" four lines apart,
 and the real answer is 20 ms.
 
-This is the exact image `BOARD=ulx3s85-sdramfull` bakes into a bitstream, run
-before it is flashed, which is what stops it being a bitstream nobody has
-executed (PRACTICES §4). Expect roughly six seconds on a board against a tenth
-of a second for the short one.
+### And on the part
 
-**None of this is silicon.** A behavioural model cannot show marginality — that
-is the lesson this file already carries from the clock-phase failure, where
-simulation proved the design self-consistent and one word in a thousand came
-back wrong on the part. What has changed is that the untested region is now
-named and the instrument to test it exists.
+`BOARD=ulx3s85-sdramfull` bakes that exact image into a bitstream, and it has
+now run. Verbatim from the board:
+
+```
+=== RV32IMA SoC boot ROM ===
+RAM already holds a program (first word 0x00009197)
+  skipping SD, starting it
+
+=== external SDRAM check (running from block RAM) ===
+SDRAM window at 0x90000000, sweeping 32768 KB of 32768 KB, against 64 KB of block RAM
+  rows 0..8191 of 8192, all 4 banks, all 512 columns
+
+  single word                   ok
+  walking ones, 32 bits         ok
+  all 8192 rows, one word each  ok
+  32 MB unique addresses        ok
+  4031 ms between writing the lowest address and reading it back
+  byte lanes                    ok
+  halfword lanes                ok
+  idled 20 ms
+  survives an idle              ok
+  block RAM still reachable     ok
+
+SDRAM-CHECK: PASS
+```
+
+**8,388,608 unique words, every row, every bank, every column, on silicon.**
+The claim this file carried for months — "256 KB of external SDRAM" — is now
+the whole 32 MB, and the seven row address bits that had never been driven
+high through the CPU have been.
+
+Two details in that transcript are worth more than the verdict.
+
+**The board and the model agree to the millisecond.** Simulation reports
+`4031 ms` and `idled 20 ms`; the board reports `4031 ms` and `idled 20 ms`.
+Both are counted off the CLINT's `mtime` over the same instruction sequence at
+the same 25 MHz, so agreement is what *should* happen — and it is worth
+checking precisely because it is the kind of thing that quietly does not. It
+says the modelled controller and the real part take the same number of cycles
+to do 16 million accesses, which is a stronger statement about
+`rtl/soc/wb_sdram.v` than either run alone.
+
+**Retention is now a measurement rather than an argument.** Four seconds
+between writing the lowest address and reading it back, under continuous
+traffic through the same controller, on the actual part at the actual refresh
+interval. The old evidence for refresh was a 100 ms idle in the CPU-less
+probe.
+
+What a behavioural model still cannot show is marginality — the lesson this
+file carries from the clock-phase failure, where simulation proved the design
+self-consistent and one word in a thousand came back wrong on the part. That
+is why this section ends with a board transcript and not a simulation log.
 
 ## Before you flash: check what the bitstream is
 
@@ -313,18 +417,17 @@ debugging the design. `docs/practices.md` §35.
 ## The hardware run
 
 Verbatim from `picocom -b 115200 /dev/cu.usbserial-D01595`, on a ULX3S with
-an LFE5U-85F configured from `BOARD=ulx3s85-ram ./fpga/synth/synth_ecp5.sh`
-(27.26 MHz post-route, PASS at the board's 25 MHz):
+an LFE5U-85F configured from `BOARD=ulx3s85-ram ./fpga/synth/synth_ecp5.sh`:
 
 ```
 === RV32IMA SoC boot ROM ===
-RAM already holds a program (first word 0x00001197)
+RAM already holds a program (first word 0x00009197)
   skipping SD, starting it
 
 MV
 
 === SoC acceptance test ===
-Running from RAM at 0x80001248
+Running from RAM at 0x800015F0
 
   RAM walking ones             ok
   RAM address uniqueness       ok
@@ -344,9 +447,16 @@ Running from RAM at 0x80001248
 SOC-TEST: PASS
 ```
 
-`0x00001197` is `_start`'s `auipc gp,0x1` and `0x80001248` is `main` — both
-match the ELF the bitstream was built from, which is what makes this a report
-about *that* build rather than about whatever was last flashed.
+`0x00009197` is `_start`'s `auipc gp,0x9` and `0x800015F0` is `main` — both
+match `nm software/soc/socprog.elf` for the build the bitstream was made from,
+which is what makes this a report about *that* build rather than about
+whatever was last flashed. (They read `0x00001197` and `0x80001248` when this
+was first captured; the link script gained a separate load and run region for
+`.data` since, which moved both.)
+
+`MV` is not noise. `main` prints `M` on entry and `V` once it has installed its
+own trap vector — two characters, before anything else can fail, so a board
+that stops between reset and the first test still says how far it got.
 
 The pinout is no longer fictional, which is a smaller claim than "this works"
 but a real one: the numbers above come from builds where every port is locked
@@ -362,12 +472,20 @@ there — a heartbeat, an SD probe, and the full SoC — and `ulx3s_diag.v` and
 `ulx3s_cmd0.v` are kept in the tree because that is what made each failure
 diagnosable rather than mysterious.
 
-**What a board has not settled**: the SD card. A 64 GB SDXC card never
-answers CMD0, which is permitted — SPI mode is optional above 32 GB — but
-that has not been distinguished from a wiring fault yet, because no smaller
-card has been tried. `BOARD=ulx3s-cmd0` answers it in seconds when one is.
-Nothing about temperature, long-run stability or the video pins is known
-either.
+**What a board has not settled**, and this is the current list:
+
+- **The SD card.** A 64 GB SDXC card never answers CMD0, which is permitted —
+  SPI mode is optional above 32 GB — and it has not been distinguished from a
+  wiring fault, because no smaller card has been tried. `BOARD=ulx3s-cmd0`
+  answers that in seconds when one is.
+- **PLIC interrupt delivery.** Linux probes the controller and claims both
+  contexts on hardware, and nothing in that boot requires an interrupt to
+  actually be taken — the 8250 console path polls. `make sim_plic` delivers
+  one to S-mode in simulation; silicon has not.
+- **Video scan-out**, which needs a PLL and a TMDS serializer.
+- **Temperature, and long-run stability.** The longest thing this board has
+  ever done is a 22-minute serial transfer followed by a Linux boot. Nothing
+  has run for hours, and the timing margin is approximately zero.
 
 ## Why newlib died on this board: `.data` was never re-initialised
 
@@ -753,24 +871,16 @@ refuses any address outside RAM or SDRAM, and the CRC is checked before it
 jumps. Then the script hands the console over, so a load and its output are
 one command:
 
-```
-99 KB -> 0x90000000 (SDRAM), CRC32 7A0D53AC
-knocking - press reset on the board
-  ROM answered
-  sent 102040/102040 (100%)
-  accepted; the board is running it
-```
-
 Verbatim from a ULX3S v3.1.8 / LFE5U-85F, `/dev/cu.usbserial-D01595`:
 
 ```
-102052 bytes -> 0x90000000 (SDRAM), CRC32 6C1A7DAD
+102196 bytes -> 0x90000000 (SDRAM), CRC32 8336D56D
 knocking - press reset on the board
   ROM answered
-  sent 102052/102052 (100%)
+  sent 102196/102196 (100%)
   accepted; the board is running it
 
-UART loader: 0x00018EA4 bytes at 0x90000000, CRC ok
+UART loader: 0x00018F34 bytes at 0x90000000, CRC ok
   starting program
 
 === SDRAM acceptance test ===
@@ -789,11 +899,13 @@ SDRAM-TEST: PASS
 ```
 
 **That is Phase 2's "done when", on silicon**: a program larger than the whole
-block RAM, fetched and executed out of external memory. `0x18EA4` is 102,052
+block RAM, fetched and executed out of external memory. `0x18F34` is 102,196
 bytes and matches what the host sent; the 96 KB of `.rodata` it checks is 96 KB
 that arrived over a serial line, went into SDRAM, and read back word for word.
 
-**A 500 KB image takes about 87 seconds** at 115200. It is stop-and-wait, one
+**A 500 KB image takes about 87 seconds** at 115200, and the 7.4 MB Linux
+image takes 22 minutes — both done, the second one in
+[Linux, on the board](#linux-on-the-board). It is stop-and-wait, one
 byte at a time, because `rtl/uart.v`'s receiver is one byte deep — see
 `docs/practices.md` §24 for why the chunked version that was twice as fast was
 also wrong.
