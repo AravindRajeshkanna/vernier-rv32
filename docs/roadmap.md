@@ -518,6 +518,15 @@ windows that offer a pair. The counters that say which clause of the issue rule
 is refusing them are in `rtl/ooo/core_ooo.v` as of this change, and that
 breakdown is the next thing worth acting on in this phase.
 
+**And it is now verified as well as counted.** Co-simulation against Spike had
+been running on this core the whole time and passing 82 of 82 traces — while
+retiring 63 instructions in slot 1 out of 28,262, with 70 of those traces
+retiring none. Corrupting every slot-1 result leaves 73 of the 82 still
+passing. `tests/vernier/pairing.S` is the workload built to close that: 6,143
+slot-1 retirements, instruction-exact against Spike on both cores, with a
+floor in `cosim.py` so a change to the issue rule cannot quietly turn it back
+into a single-issue test. See [practices.md §40](practices.md).
+
 
 ---
 

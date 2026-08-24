@@ -13,6 +13,14 @@
 # rv32si (supervisor). Compressed, float, and bitmanip suites are skipped
 # because the core does not implement those extensions - running them would
 # only prove that a missing extension is missing.
+#
+# tests/vernier/ is this project's own tests, built into the same manifest
+# and run by the same harness. They are separate from riscv-tests because
+# they check something riscv-tests has no reason to: riscv-tests establishes
+# that an RV32IMA core is an RV32IMA core, and says nothing about which
+# *implementation* is under it. tests/vernier/pairing.S exists because the
+# wide core's dual issue was retiring 63 instructions in slot 1 across the
+# entire upstream suite.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +35,7 @@ OBJCOPY=${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}
 NM=${RISCV_NM:-$(echo "$CC" | sed 's/gcc$/nm/')}
 
 SUITES="${SUITES:-rv32ui rv32um rv32ua rv32mi rv32si}"
+LOCAL_SUITES="${LOCAL_SUITES:-vernier}"
 
 if [ ! -d "$SRC/env/p" ]; then
     echo "riscv-tests not fetched yet - run tests/fetch.sh" >&2
@@ -42,13 +51,33 @@ mkdir -p "$OUT"
 # apply and the full rv32ima can be requested.
 ARCH=rv32ima_zicsr_zifencei
 CFLAGS="-march=$ARCH -mabi=ilp32 -static -mcmodel=medany -fvisibility=hidden \
-        -nostdlib -nostartfiles -DXLEN=32 -I$SRC/env/p -I$SRC/isa/macros/scalar"
+        -nostdlib -nostartfiles -DXLEN=32 -I$SRC/env/p -I$SRC/isa/macros/scalar \
+        -I$OUT"
 
 : > "$OUT/manifest.txt"
 count=0
 
-for suite in $SUITES; do
-    for src in "$SRC/isa/$suite"/*.S; do
+# This project's own tests are compiled against the same p environment and
+# the same link script, so the testbench, the manifest and cosim.py all treat
+# them identically. The only extra is the generated header: pairing.S refuses
+# to hardcode its expected value, so the value is derived here, into the
+# build directory, every time.
+python3 "$HERE/vernier/expected.py" > "$OUT/expected.h"
+
+for suite in $SUITES $LOCAL_SUITES; do
+    # Which tree a suite lives in is decided by where its directory actually
+    # is, not by matching its name: a second entry in LOCAL_SUITES that this
+    # loop did not recognize would look for it under riscv-tests, find
+    # nothing, and be skipped in silence by the `[ -e "$src" ]` guard below.
+    if [ -d "$HERE/$suite" ]; then
+        srcdir="$HERE/$suite"
+    elif [ -d "$SRC/isa/$suite" ]; then
+        srcdir="$SRC/isa/$suite"
+    else
+        echo "no such suite: $suite (looked in $HERE and $SRC/isa)" >&2
+        exit 1
+    fi
+    for src in "$srcdir"/*.S; do
         [ -e "$src" ] || continue
         base="$(basename "$src" .S)"
         name="$suite-p-$base"

@@ -31,6 +31,34 @@ is_expected_failure() {
         | awk -v n="$1" '$1==n{found=1} END{exit !found}'
 }
 
+# ---- the dual-issue floor -----------------------------------------------
+#
+# A verdict says the program reached its pass condition. It cannot say which
+# half of the machine got it there, and on the wide core that turned out to
+# matter: co-simulation reported 82 of 82 traces matching while the second
+# issue slot retired 63 instructions out of 28,262. See
+# tests/dual-issue-floor.txt and docs/practices.md section 40.
+#
+# This check is duplicated from tests/cosim.py deliberately, and the number
+# is not: both read the same file. cosim.py is a *local* gate - it needs
+# Spike, which .github/workflows/ci.yml explains is too expensive to build
+# per run - while this script is what CI's `riscv-tests (ooo)` job actually
+# executes. Leaving the floor only in cosim.py would mean a change that stops
+# forming pairs passes every job in CI.
+CORE="${CORE:-inorder}"
+# sim/tracer.v's trailer: "# retired N instructions (slot1 M)". Missing file
+# or missing trailer reads as 0, which fails the floor - the right direction
+# for a check whose whole purpose is to notice that something stopped
+# happening.
+trace_slot1() {
+    sed -n 's/^# retired [0-9]* instructions (slot1 \([0-9]*\))$/\1/p' \
+        "$1" 2>/dev/null | tail -1 | grep -E '^[0-9]+$' || echo 0
+}
+slot1_floor() {
+    grep -v '^#' "$HERE/dual-issue-floor.txt" 2>/dev/null \
+        | awk -v n="$1" '$1==n{print $2; found=1} END{exit !found}'
+}
+
 while read -r name tohost; do
     if [ -n "$FILTER" ] && [[ "$name" != *"$FILTER"* ]]; then continue; fi
 
@@ -43,6 +71,15 @@ while read -r name tohost; do
             ;;
     esac
 
+    # +trace= is only passed for the tests that have a floor: sim/tracer.v
+    # writes one line per retired instruction, and asking every test for one
+    # would write tens of thousands of lines nothing reads.
+    floor="$(slot1_floor "$name" || true)"
+    trace_arg=""
+    if [ -n "$floor" ]; then
+        trace_arg="+trace=$OUT/$name.trace"
+    fi
+
     # $readmemh warns about the unfilled tail of the RAM array on every run;
     # that is expected (the image is far smaller than the memory) and would
     # otherwise bury the actual verdict. The full output is kept, though, so
@@ -51,7 +88,7 @@ while read -r name tohost; do
     # test that simply failed, which cost real time chasing an intermittent
     # ISA-TIMEOUT whose actual cause was never printed.
     full="$(cd "$ROOT/sim" && vvp "$SIM" \
-              +hex="$OUT/$name.hex" +tohost="$tohost" 2>&1)"
+              +hex="$OUT/$name.hex" +tohost="$tohost" $trace_arg 2>&1)"
     line="$(echo "$full" | grep -E '^ISA-(PASS|FAIL|TIMEOUT|LOADFAIL)' | head -1)"
 
     # No recognizable verdict at all: the simulator died, or said something
@@ -82,8 +119,23 @@ while read -r name tohost; do
                 echo "$name XPASS" >> "$results"
                 xpass=$((xpass + 1))
                 xpass_names="$xpass_names $name"
+            elif [ -n "$floor" ] && [ "$CORE" = ooo ] && \
+                 [ "$(trace_slot1 "$OUT/$name.trace")" -lt "$floor" ]; then
+                # Passing, and no longer testing what it was written to test.
+                # Reported as a failure rather than a warning: a warning in a
+                # 83-line list is a warning nobody reads.
+                got="$(trace_slot1 "$OUT/$name.trace")"
+                printf '  %-28s UNDER-ISSUED (passed, but retired %s in slot 1; needs %s)\n' \
+                    "$name" "$got" "$floor"
+                echo "$name UNDER-ISSUED $got/$floor" >> "$results"
+                fail=$((fail + 1))
+                failed_names="$failed_names $name"
             else
-                printf '  %-28s PASS  (%s)\n' "$name" "${line#ISA-PASS }"
+                extra=""
+                if [ -n "$floor" ] && [ "$CORE" = ooo ]; then
+                    extra=", slot1=$(trace_slot1 "$OUT/$name.trace")"
+                fi
+                printf '  %-28s PASS  (%s%s)\n' "$name" "${line#ISA-PASS }" "$extra"
                 echo "$name PASS" >> "$results"
                 pass=$((pass + 1))
             fi

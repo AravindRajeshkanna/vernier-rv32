@@ -1093,8 +1093,8 @@ runs all of them; `tests/README.md` is the detailed writeup.
 | Layer | Question | Result |
 |---|---|---|
 | Directed tests | Does the feature I just wrote work? | `make sim`, `make sim_soc` pass |
-| riscv-tests | Does this implement *RISC-V*, judged by somebody else's suite? | 79 pass, 3 xfail |
-| Spike co-simulation | Did it execute the *same instructions* as the reference model? | 82/82 traces match |
+| riscv-tests | Does this implement *RISC-V*, judged by somebody else's suite? | 80 pass, 3 xfail |
+| Spike co-simulation | Did it execute the *same instructions* as the reference model? | 83/83 traces pass, 10.5% dual-issued |
 | Formal (yosys + z3) | Does this module hold for *every* input? | 5 proved, bound 12 cycles |
 
 The layering is not redundancy. A directed test only catches what its author

@@ -1,0 +1,34 @@
+# How much dual issue a test is required to contain, on the wide core.
+#
+#   <test-name>  <minimum slot-1 retirements>
+#
+# Read by both tests/run.sh and tests/cosim.py, so the number lives once.
+#
+# ---- why a floor exists at all ----
+#
+# A test written to exercise a mechanism will keep passing after it stops
+# exercising it, and give no sign. Set `issue_pair = 1'b0` in
+# rtl/ooo/core_ooo.v and vernier-p-pairing still reaches its own pass
+# condition *and* still matches Spike instruction for instruction - because
+# single-issuing that program is a correct execution of it. Nothing about the
+# answer is wrong. The test has simply stopped being about dual issue, and
+# would report PASS/MATCH forever.
+#
+# That is not hypothetical for this corpus. Co-simulation reported 82 of 82
+# traces matching on the wide core while retiring 63 instructions in slot 1
+# out of 28,262 - 0.22%, with 70 of those traces retiring none at all.
+# docs/practices.md section 40.
+#
+# ---- choosing the number ----
+#
+# vernier-p-pairing retires 6,143 in slot 1 today, out of 30,804. The floor
+# is set well below that because the quantity is microarchitectural - fetch
+# buffer depth and issue policy both move it, legitimately - and what is
+# being guarded against is a collapse to near zero, not drift. If a change
+# takes this below the floor for a good reason, the number here is meant to
+# be edited, with the reason in the commit message.
+#
+# Only enforced when CORE=ooo. cpu_core.v has no second slot, and on it the
+# same test is expected to retire zero.
+
+vernier-p-pairing 4000

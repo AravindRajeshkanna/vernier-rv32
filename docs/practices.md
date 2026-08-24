@@ -1492,6 +1492,72 @@ points at the instruction cache instead.
 
 ---
 
+## 40. A passing suite is not a suite that ran the mechanism
+
+`tests/cosim.py` is the strongest instrument in this project: it compares
+every retired instruction against Spike — pc, instruction word, destination
+register, written value — and on the wide core it reported **82 of 82 traces
+match**. That is true, and it was read as "the wide core executes riscv-tests
+correctly", which is also true.
+
+Counting which issue slot each retirement came out of says what it left out:
+
+| | |
+|---|---|
+| Retired across the whole corpus | 28,262 |
+| Retired in **slot 1** | **63** — 0.22% |
+| Traces retiring none at all | **70 of 82** |
+
+Dual issue is the *only* thing that makes `core_ooo.v` a different core from
+`cpu_core.v`. Everything else — the ISA, the CSRs, the traps, the memory
+system — is shared. So the suite that certified the wide core was running it
+in single issue for 99.78% of the instructions it checked.
+
+Corrupting every slot-1 result (`ex_mem1_wb_data <= s1_result ^ 1`) measures
+what that costs: **73 of the 82 upstream tests still pass.** The nine that
+fail are exactly the ones with any slot-1 activity at all — five loads and
+four divides — and they fail incidentally, because a stall happened to leave
+two instructions in the buffer, not because anything aimed at the second slot.
+
+**§26 was about a suite that did not run. This is a suite that ran, passed,
+and was correct.** No gate was broken and no result was wrong. The corpus
+simply had no reason to contain the workload: riscv-tests establishes that an
+RV32IMA core is an RV32IMA core, and is deliberately indifferent to which
+implementation is underneath. Expecting it to exercise a microarchitectural
+feature is asking it for something it never offered.
+
+**Three things worth taking from it.**
+
+*Correctness of the answer and coverage of the mechanism are different
+questions, and only one of them was being asked.* A trace that matches Spike
+proves the retirements that happened were right. It cannot distinguish
+"paired, and both halves were correct" from "never paired". Both are correct
+executions.
+
+*The measurement was one counter.* `sim/tracer.v` already emitted both slots;
+nothing counted them separately. The number that reframed the suite cost four
+lines and existed the moment someone asked "how much of what I am testing did
+this touch" rather than "did it pass".
+
+*A test written to exercise a mechanism needs a floor under the mechanism, or
+it decays into a test of something else.* `tests/vernier/pairing.S` retires
+6,143 instructions in slot 1 — 97× the entire upstream corpus. Refuse every
+pair (`issue_pair = 1'b0`) and it **still matches Spike instruction for
+instruction**, because single-issuing it is a correct execution. It would go
+on reporting MATCH forever. `tests/dual-issue-floor.txt` is what makes
+that a failure, and the failure message has to say the test passed — a reader
+who sees it fail will otherwise go looking for a wrong value that is not
+there.
+
+*Put the floor where the CI that would regress it can see it.* Co-simulation
+is a local gate; it needs Spike, which CI does not build. The floor is
+therefore enforced twice — in `cosim.py` and in `tests/run.sh`, reading one
+number from one file — because `riscv-tests (ooo)` is the job that runs on
+every pull request, and a guard that only fires on the maintainer's laptop is
+the same shape of gap as the probes that were not wired into `make verify`.
+
+---
+
 ---
 
 ## Conventions
