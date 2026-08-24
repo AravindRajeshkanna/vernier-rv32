@@ -345,6 +345,61 @@ Reading a single seed's critical path as "the" critical path is the same
 mistake §38 warns about for Fmax, and it was made once here before the other
 five seeds were looked at.
 
+#### Both shapes share a tail, and the tail is the bigger half
+
+Printed in full rather than truncated, the two paths converge:
+
+```
+seed 2   pc → IMMU.tlb_super → BUSADAPT.imem_addr → ic_data ──┐   19.9 ns
+seed 6   dc_tag (EBR) ────────────────────────────────────────┤   13.5 ns
+                                                              │
+         └→ BUS.sel_m0 / sel_m1  →  CPU stall network  →  ID/EX register
+                                                          ~22 ns, both seeds
+```
+
+Seed 6's total is **12.20 ns logic, 30.56 ns routing** — 42.76 ns, of which
+**71% is routing**.
+
+The tail runs from the bus arbitration decision through logic yosys named
+after `ex_mem_mem_we`, `is_muldiv`, `id_ex_is_fence_i`, `id_ex_is_sret` and
+`is_mret`, and ends at a pipeline register (`id_ex_rs2_data`). The RTL says
+what that chain is:
+
+```verilog
+wire dbus_stall    = dbus_wait || amo_stall;              // from the bus
+wire ex_busy_stall = div_stall || mmu_wait_stall || dbus_stall;
+wire id_ex_stall   = load_use_stall || ex_busy_stall;     // gates ID/EX
+```
+
+**A bus response reaches every pipeline register's enable combinationally, in
+the same cycle.** That is one signal fanning out across the die, which is why
+the path is routing-dominated rather than deep.
+
+#### What this means for the prescribed fix
+
+A fetch pipeline stage registers the translated address, so it cuts the
+**head**: `pc → ITLB → imem_addr → ic_data`, about 19.9 ns of seed 2. It does
+**nothing** for the ~22 ns tail, and nothing at all for seed 6, whose head is
+a block-RAM read it cannot touch.
+
+So the arithmetic to expect, rather than hope for:
+
+| | today | with a fetch stage |
+|---|---|---|
+| seed 2 (`pc`-sourced, 4 of 6) | ~42.8 ns | tail-bound, ~22 ns + whatever the new head costs |
+| seed 6 (`dc_tag`-sourced, 2 of 6) | 42.76 ns | **unchanged** |
+
+That is still worth doing — it would move four of six seeds — but it cannot
+close 25 MHz on its own, because the seeds it does not help would become the
+critical ones. **The tail is the shared work**, and it is a different change:
+breaking the combinational path from a bus wait to the pipeline register
+enables, which is a question about how a stall is delivered rather than about
+how an address is computed.
+
+Neither change is attempted here. What is recorded is that the head was the
+documented target and the tail is the larger and more general one, measured
+rather than argued.
+
 In words: the program counter is translated by the instruction TLB, the
 physical address goes to the bus, the bus decides whether the fetch master is
 granted, and that decision feeds the stall logic that clocks the pipeline
