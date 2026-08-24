@@ -1262,8 +1262,16 @@ consecutive seeds and cannot be built today. fpga/README.md has the numbers.
 critical path has been made and reverted — `fpga/README.md` has the path, the
 numbers and why the change did not ship. The measured chain is `pc` -> ITLB ->
 `imem_addr` -> bus arbitration -> the stall that clocks the pipeline
-registers, all in one cycle, and the answer is a fetch pipeline stage rather
-than any point fix.
+registers, all in one cycle.
+
+**A fetch pipeline stage addresses the first half of that chain, and the
+second half is bigger.** Printed in full, both critical-path shapes converge
+on a shared tail — bus arbitration through the stall network to the pipeline
+register enables — worth about 22 ns of a 42.76 ns path, present in every
+seed. The head a fetch stage would cut is ~19.9 ns on the four `pc`-sourced
+seeds and nothing on the two sourced at the D-cache tag. 71% of the path is
+routing, which is what one stall signal fanning out across the die looks
+like. `fpga/README.md` has the full paths and the arithmetic.
 
 **What is left is hart control**: halt, resume, single-step, and reading the
 CPU's registers. That needs debug mode, `dcsr`, `dpc`, `dret` and a debug ROM
