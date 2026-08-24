@@ -1667,6 +1667,39 @@ attributed to *how* two systems did the same thing, confirm they both did it.
 
 ---
 
+## 43. A trace of register writes cannot see a store
+
+`tests/cosim.py` compares every retired instruction against Spike on four
+fields: `(pc, instruction, destination register, written value)`. It is the
+strongest instrument in this project and it caught `misa` missing its S and U
+bits, a bug in the tracer itself, `mcountinhibit`, and vectored `mtvec`.
+
+**A store writes no register.** `rd` is absent, `value` is absent, and what
+remains is that a store instruction retired at the expected PC. Where it went
+and what it wrote are not compared, because the format has nowhere to put
+them — this is a property of Spike's `--log-commits`, which `cosim.py`
+deliberately mirrors so that neither side has to parse the other's
+disassembly.
+
+So a store to the wrong address passes riscv-tests, passes co-simulation,
+passes `+checkdecode`, and passes `+checkmmu`. Four layers, each answering
+something the one before it cannot, and none of them answering this.
+
+That matters here because the wide core's `execve` failure is a store page
+fault, and "an extra store, or a store whose effective address is wrong" is
+precisely the shape nothing was watching. `+writetrace` is the first probe in
+the tree that can see one, and it sees only the address range it is pointed
+at — which for a bug of unknown location is a lamp, not a net.
+
+**The general point is about layering, not about stores.** Section 15 of this
+file says a new layer earns its place by answering a question the others
+demonstrably cannot. The converse needs saying too: a layer's *shape* decides
+what it can never answer, and that is worth writing down beside it rather than
+discovering it while chasing something. Four fields per instruction is a
+choice with a consequence, and the consequence is the entire store path.
+
+---
+
 ---
 
 ## Conventions

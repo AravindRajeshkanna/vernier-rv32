@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml/badge.svg)](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml)
 [![License: Apache-2.0 WITH SHL-2.1](https://img.shields.io/badge/license-Apache--2.0%20WITH%20SHL--2.1-blue.svg)](LICENSE)
-[![riscv-tests](https://img.shields.io/badge/riscv--tests-80%20passed%2C%200%20failed%2C%203%20xfail-brightgreen.svg)](tests/README.md)
-[![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-83%2F83%20traces%20pass-brightgreen.svg)](tests/README.md)
+[![riscv-tests](https://img.shields.io/badge/riscv--tests-81%20passed%2C%200%20failed%2C%203%20xfail-brightgreen.svg)](tests/README.md)
+[![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-84%2F84%20traces%20pass-brightgreen.svg)](tests/README.md)
 [![Hardware](https://img.shields.io/badge/ULX3S%20LFE5U--85F-SOC--TEST%3A%20PASS-brightgreen.svg)](fpga/README.md)
 
 **An RV32IMA SoC that measures itself.**
@@ -182,8 +182,8 @@ priorities).
 ## Verification
 
 ```
-riscv-tests:             80 passed, 0 failed, 3 xfail   (make isa)
-co-simulation vs Spike:  83/83 traces pass              (make cosim)
+riscv-tests:             81 passed, 0 failed, 3 xfail   (make isa)
+co-simulation vs Spike:  84/84 traces pass              (make cosim)
 formal:                  5 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 SDRAM controller:        against a model that says no    (make sim_sdram)
