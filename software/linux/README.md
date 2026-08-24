@@ -251,6 +251,53 @@ store, or a store whose effective address is wrong. Which of the two is the
 next question, and it is a far smaller one than "somewhere in the data path".
 See [practices.md §42](../../docs/practices.md).
 
+### The faulting instruction, and a coincidence that is not yet a cause
+
+`load_elf_binary+0xc30` disassembles to Linux's `put_user`:
+
+```
+c013e5e0:  addi  s2,a4,4
+c013e5e4:  lui   a5,0x40          # a5 = 0x00040000, the sstatus.SUM bit
+c013e5e8:  csrs  sstatus,a5       # let the kernel touch user memory
+c013e5ec:  lw    a5,16(sp)        # a5 = the user pointer, reloaded
+c013e5f0:  sw    s5,0(a5)         # <- faults, stval = 0x00040000
+c013e5f4:  lui   a5,0x40
+c013e5f8:  csrc  sstatus,a5       # and put SUM back
+```
+
+**`stval` is exactly the value `lui` put in `a5` three instructions earlier.**
+The store looks to have used `a5` as it stood before the `lw` at `c013e5ec`
+overwrote it — a load-use hazard with a CSR write in front of it, which is a
+case riscv-tests has no reason to contain.
+
+**That reduction does not reproduce.** `tests/vernier/loaduse_csr.S` is those
+instructions in three variants — the load feeding the store's *base*, the load
+feeding the store's *data*, and the plain load-use with no CSR, so a failure
+would say which ingredient matters. All three pass on **both** cores. So
+"load-use behind a CSR write" is refuted as stated, and the coincidence stays
+a coincidence until something explains it.
+
+Two things the attempt is worth anyway. Nothing in riscv-tests puts a CSR
+write between a load and its dependent store, and now something does. And the
+address is not independent evidence: entry 0 covers the whole of
+`0x0`–`0x3fffff`, so *any* user address the kernel touched at that moment
+would have faulted, and `0x00040000` being the SUM mask may be why it is
+memorable rather than why it is wrong.
+
+### Why nothing here would have caught a wrong store address
+
+Co-simulation reduces each retired instruction to
+`(pc, instruction, destination register, written value)`. **A store writes no
+register**, so `rd` and `value` are both absent and the only thing compared is
+that the store retired at the right PC — not where it went, and not what it
+wrote.
+
+That is a limit of the format `cosim.py` shares with Spike's `--log-commits`
+rather than an oversight in it, and it belongs next to this finding: a store
+to the wrong address is invisible to riscv-tests, to co-simulation, to
+`+checkdecode` and to `+checkmmu`. `+writetrace` is the first probe here that
+can see one, and only in the range it is pointed at.
+
 `CORE=ooo` is not in `make verify`'s Linux path for the same reason
 `sim_linux` is not in `make verify` at all: it needs a kernel tarball off the
 network.

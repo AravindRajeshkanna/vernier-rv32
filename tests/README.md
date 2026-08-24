@@ -28,14 +28,14 @@ the same way - the only difference is what it is aimed at.
 
 ## Architectural tests (riscv-tests)
 
-79 of 82 upstream tests pass, plus `tests/vernier/pairing.S` — 80 of 83 in
+79 of 82 upstream tests pass, plus the two in `tests/vernier/` — 81 of 84 in
 the run below. The three that do not are listed in
 `expected-failures.txt` with reasons; `run.sh` reports them as XFAIL and
 fails the run if one of them starts *passing*, so that list cannot quietly go
 stale.
 
 ```
-riscv-tests: 80 passed, 0 failed, 3 xfail, 0 xpass, 0 skipped
+riscv-tests: 81 passed, 0 failed, 3 xfail, 0 xpass, 0 skipped
 ```
 
 Suites run: `rv32ui` (base integer), `rv32um` (M), `rv32ua` (A), `rv32mi`
@@ -88,8 +88,8 @@ destination register, written value)` - and diffs them. Neither side's
 disassembly is parsed or trusted.
 
 ```
-co-simulation vs Spike: 83/83 traces pass
-dual issue exercised:   6,206 of 59,066 retirements (10.5%) in slot 1
+co-simulation vs Spike: 84/84 traces pass
+dual issue exercised:   6,206 of 59,197 retirements (10.5%) in slot 1
 ```
 
 This asks a strictly harder question than the tests do. A test says "the
@@ -104,6 +104,13 @@ exercise rather than a way of dodging it:
   the moment riscv-tests' setup writes `pmpaddr0`.
 - `--isa=rv32ima_zicsr_zifencei_zicntr` — Spike's default also includes
   `zihpm` (hpmcounter3-31), which this core does not implement.
+
+**What the four fields cannot contain.** A store writes no register, so `rd`
+and `value` are empty for one and the comparison reduces to "a store retired
+at this PC". Where it went and what it wrote are not checked here, or by
+riscv-tests, or by `+checkdecode`, or by `+checkmmu` — see
+[practices.md §43](../docs/practices.md). `+writetrace` in
+`sim/verilator_soc.cpp` is the only probe that sees a store's address.
 
 Three classes of value are exempt from comparison, each for a stated reason:
 the cycle/instret counters (microarchitectural, not architectural), the
