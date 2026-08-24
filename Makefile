@@ -569,14 +569,23 @@ isa-build: tests/build/manifest.txt
 sim/sim_isa.out: $(ISA_TB) $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ $(ISA_TB) $(SOC_RTL)
 
+# CORE is exported rather than inferred, for the same reason cosim gets
+# --core: run.sh has to tell "the wide core issued nothing in slot 1" from
+# "this is the in-order core, which has no slot 1", and only this file knows
+# which one it just built. See tests/dual-issue-floor.txt.
 isa: sim/sim_isa.out isa-build
-	./tests/run.sh
+	CORE=$(CORE) ./tests/run.sh
 
 # ---- co-simulation against Spike ----
 # Stricter than the tests: compares every retired instruction, not just the
 # final verdict. Needs `spike` on PATH.
+#
+# --core is passed rather than detected: sim/sim_isa.out does not record which
+# core it was built from, and cosim.py's dual-issue floor has to be able to
+# tell "the wide core issued nothing in slot 1" (a failure) from "this is the
+# in-order core" (correct). Only this file knows which one it just built.
 cosim: sim/sim_isa.out isa-build
-	python3 tests/cosim.py --all
+	python3 tests/cosim.py --all --core=$(CORE)
 
 # ---- formal (yosys + yosys-smtbmc + z3) ----
 formal:

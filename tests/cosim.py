@@ -14,9 +14,18 @@ Both sides are reduced to the same four fields per retired instruction:
 Spike supplies them via `--log-commits`; the RTL supplies them via
 sim/tracer.v. Neither side's disassembly is parsed or trusted.
 
+Co-simulation also reports how much of the *machine* produced the trace, not
+just whether the trace was right. On the wide core a matching trace can still
+have been executed almost entirely in one issue slot, which is what the whole
+riscv-tests corpus was doing: 63 slot-1 retirements out of 28,262, with 70 of
+the 82 traces retiring none at all. "82/82 match" was true and said nothing
+about dual issue. So the summary always prints the slot-1 share, and
+MIN_SLOT1 below holds a floor under the one test written to exercise it.
+
 Usage:
     tests/cosim.py <test-name> [...]     # names from tests/build/manifest.txt
     tests/cosim.py --all
+    tests/cosim.py --all --core=ooo      # also enforce the dual-issue floor
 """
 import argparse
 import os
@@ -80,6 +89,27 @@ EXPECTED_DIVERGENCE = {
 }
 
 
+# The dual-issue floor, shared with tests/run.sh so the number lives in one
+# place. Without it, a test written to exercise pairing keeps passing after it
+# stops pairing: single-issuing tests/vernier/pairing.S is a *correct*
+# execution of it, so the trace still matches Spike and the verdict is still
+# PASS. tests/dual-issue-floor.txt has the reasoning and the measurement.
+def min_slot1():
+    path = os.path.join(HERE, "dual-issue-floor.txt")
+    floors = {}
+    if not os.path.exists(path):
+        return floors
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].split()
+            if len(line) == 2:
+                floors[line[0]] = int(line[1])
+    return floors
+
+
+MIN_SLOT1 = min_slot1()
+
+
 def value_exempt(insn):
     if (insn & 0x7F) != 0x73:          # SYSTEM
         return False
@@ -124,11 +154,25 @@ def spike_trace(elf, limit):
     return trace
 
 
+TRAILER = re.compile(r"^# retired (\d+) instructions \(slot1 (\d+)\)")
+
+
 def rtl_trace(path):
-    trace = []
+    """The trace, plus how many of its entries came out of the second slot.
+
+    sim/tracer.v writes the slot-1 count into the trailer rather than tagging
+    each line, because the line format is deliberately the same four fields
+    Spike reports and adding a fifth column would mean this file's parser and
+    the comparison both had to know about a field the reference model has no
+    equivalent for.
+    """
+    trace, slot1 = [], 0
     with open(path) as f:
         for line in f:
             if line.startswith("#"):
+                m = TRAILER.match(line)
+                if m:
+                    slot1 = int(m.group(2))
                 continue
             parts = line.split()
             if len(parts) != 4:
@@ -139,7 +183,7 @@ def rtl_trace(path):
             else:
                 trace.append((int(pc, 16), int(insn, 16),
                               int(rd[1:]), int(val, 16)))
-    return trace
+    return trace, slot1
 
 
 def fmt(entry):
@@ -163,7 +207,7 @@ def compare(name, rtl, spike):
     return None, None, None, None
 
 
-def run_one(name, verbose=False):
+def run_one(name, core="inorder", tally=None):
     elf = os.path.join(BUILD, f"{name}.elf")
     hexf = os.path.join(BUILD, f"{name}.hex")
     trace_path = os.path.join(BUILD, f"{name}.trace")
@@ -186,7 +230,10 @@ def run_one(name, verbose=False):
         cwd=os.path.join(ROOT, "sim"),
         capture_output=True, text=True, timeout=600)
 
-    rtl = rtl_trace(trace_path)
+    rtl, slot1 = rtl_trace(trace_path)
+    if tally is not None:
+        tally[0] += len(rtl)
+        tally[1] += slot1
     # Spike is asked for only as many instructions as the RTL actually
     # retired: the RTL stops at the tohost write, while Spike goes on to spin
     # in the test's exit loop, and a length mismatch there is not a bug.
@@ -198,7 +245,27 @@ def run_one(name, verbose=False):
             print(f"  {name:<28} XMATCH (expected to diverge but did not - "
                   f"remove it from EXPECTED_DIVERGENCE)")
             return False
-        print(f"  {name:<28} MATCH ({len(rtl)} instructions)")
+        note = f" ({len(rtl)} instructions"
+        if core == "ooo":
+            note += f", {slot1} in slot 1"
+        note += ")"
+        # A matching trace is not enough for the tests that exist to exercise
+        # a mechanism: check that the mechanism ran.
+        floor = MIN_SLOT1.get(name)
+        if core == "ooo" and floor is not None and slot1 < floor:
+            print(f"  {name:<28} UNDER-ISSUED{note}: expected at least "
+                  f"{floor} slot-1 retirements. The trace matches Spike, so "
+                  f"this is not a wrong answer - it is this test no longer "
+                  f"testing dual issue.")
+            return False
+        # The converse, and it costs nothing: cpu_core.v has no second slot,
+        # so anything counted here means sim/tb_isa.v wired slot 1 to
+        # something rather than tying it low.
+        if core != "ooo" and slot1 != 0:
+            print(f"  {name:<28} BAD-TRACE: {slot1} slot-1 retirements on a "
+                  f"single-issue core - check sim/tb_isa.v's tracer hookup.")
+            return False
+        print(f"  {name:<28} MATCH{note}")
         return True
 
     if name in EXPECTED_DIVERGENCE:
@@ -219,6 +286,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("names", nargs="*")
     ap.add_argument("--all", action="store_true")
+    # Which core sim/sim_isa.out was built from. The simulation binary does
+    # not record it (see the Makefile's verify_ooo, which deletes sim/*.out
+    # for exactly that reason), so the Makefile passes it down rather than
+    # this script guessing from the traces - guessing would read "no slot-1
+    # retirements at all" as "in-order core" and so could never report the
+    # one failure that matters most.
+    ap.add_argument("--core", default="inorder", choices=["inorder", "ooo"])
     args = ap.parse_args()
 
     if not os.path.exists(SIM):
@@ -234,10 +308,21 @@ def main():
                         "BUILD_FAILED", "NO_TOHOST"):
                     names.append(parts[0])
 
-    ok = sum(run_one(n) for n in names)
+    tally = [0, 0]                      # retired, of which in slot 1
+    ok = sum(run_one(n, args.core, tally) for n in names)
+    retired, slot1 = tally
     print()
     print("===================================================")
-    print(f"co-simulation vs Spike: {ok}/{len(names)} traces match")
+    # "pass", not "match": since MIN_SLOT1 a trace can fail while matching
+    # Spike perfectly, and a summary that said "match" would contradict the
+    # line above it.
+    print(f"co-simulation vs Spike: {ok}/{len(names)} traces pass")
+    if args.core == "ooo" and retired:
+        # Printed unconditionally, and phrased as coverage rather than as a
+        # statistic, because the number being small is the finding: it is how
+        # far a green suite can be from exercising the thing under test.
+        print(f"dual issue exercised:   {slot1:,} of {retired:,} "
+              f"retirements ({100.0 * slot1 / retired:.1f}%) in slot 1")
     print("===================================================")
     sys.exit(0 if ok == len(names) else 1)
 

@@ -128,11 +128,32 @@ privilege transitions. `-EFAULT` out of `execve` is consistent with any of
 those, and with the load/store path most of all. The next instrument would
 have to check register writeback against an independent model of what the
 instruction should have produced, which is a much larger thing than any probe
-here and is essentially what `tests/cosim.py` does against Spike for the
-in-order core.
+here and is essentially what `tests/cosim.py` does against Spike.
 
-Pointing that cosimulation at the wide core is the obvious next step and is
-not attempted here.
+**That cosimulation was already pointed at the wide core, and it passes.**
+`make verify_ooo` runs `verify CORE=ooo`, and `cosim` has been in `verify`'s
+list the whole time: 82 of 82 traces match Spike instruction for instruction,
+register writes included. So the data path *is* checked against an
+independent model — on riscv-tests.
+
+What that turned out to be worth is the finding. Counting which issue slot
+each retirement came from: **63 of 28,262 retirements in slot 1, and 70 of
+the 82 traces with none at all.** Corrupting every slot-1 result still leaves
+73 of those 82 tests passing. The instrument was real and the corpus had
+nothing in it for the mechanism to show up in — see
+[practices.md §40](../../docs/practices.md).
+
+`tests/vernier/pairing.S` is the workload that does exercise it: 6,143 slot-1
+retirements, 97× the whole upstream corpus, matching Spike exactly on both
+cores. **It did not reproduce the `execve` failure either.** So the wide core
+now has an instruction-exact check on a heavily dual-issued workload, and the
+bug is still not in reach of it — which narrows things further than the four
+probes did, because what riscv-tests and `pairing.S` share is that neither
+runs in user mode, neither has translation on, and neither is three million
+instructions long.
+
+The next instrument therefore has to be pointed at the *boot*, not at a test:
+the divergence is somewhere the ISA suites structurally cannot go.
 
 `CORE=ooo` is not in `make verify`'s Linux path for the same reason
 `sim_linux` is not in `make verify` at all: it needs a kernel tarball off the

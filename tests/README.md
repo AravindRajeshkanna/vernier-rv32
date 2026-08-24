@@ -5,7 +5,7 @@ Four layers, each answering a question the one before it cannot.
 | Layer | Question it answers | Run it with |
 |---|---|---|
 | Directed tests (`sim/tb_top.v`, `sim/tb_soc.v`) | Does the feature I just wrote work? | `make sim`, `make sim_soc` |
-| Architectural tests (riscv-tests) | Does this core implement *RISC-V*, as judged by somebody else's suite? | `make isa` |
+| Architectural tests (riscv-tests + `tests/vernier/`) | Does this core implement *RISC-V*, as judged by somebody else's suite? | `make isa` |
 | Co-simulation vs Spike | Did it execute the *same instructions* as the reference model, with the same results? | `make cosim` |
 | Formal (yosys + z3) | Does this module hold for *every* input, not just the ones a test tried? | `make formal` |
 
@@ -17,17 +17,25 @@ project did not write them - so they are fetched at a pinned commit
 (`make isa-fetch`, `make coremark-fetch`) and a regression can never be
 explained away by "upstream changed".
 
+That independence is also their limit. riscv-tests asks whether an RV32IMA
+core is an RV32IMA core and is deliberately indifferent to the
+microarchitecture underneath, so it has no reason to exercise anything
+specific to *this* implementation. `tests/vernier/` is where those go. It
+builds into the same manifest, runs under the same harness and co-simulates
+the same way - the only difference is what it is aimed at.
+
 ---
 
 ## Architectural tests (riscv-tests)
 
-79 of 82 pass. The three that do not are listed in
+79 of 82 upstream tests pass, plus `tests/vernier/pairing.S` — 80 of 83 in
+the run below. The three that do not are listed in
 `expected-failures.txt` with reasons; `run.sh` reports them as XFAIL and
 fails the run if one of them starts *passing*, so that list cannot quietly go
 stale.
 
 ```
-riscv-tests: 79 passed, 0 failed, 3 xfail, 0 xpass, 0 skipped
+riscv-tests: 80 passed, 0 failed, 3 xfail, 0 xpass, 0 skipped
 ```
 
 Suites run: `rv32ui` (base integer), `rv32um` (M), `rv32ua` (A), `rv32mi`
@@ -80,7 +88,8 @@ destination register, written value)` - and diffs them. Neither side's
 disassembly is parsed or trusted.
 
 ```
-co-simulation vs Spike: 82/82 traces match
+co-simulation vs Spike: 83/83 traces pass
+dual issue exercised:   6,206 of 59,066 retirements (10.5%) in slot 1
 ```
 
 This asks a strictly harder question than the tests do. A test says "the
@@ -103,6 +112,44 @@ the spec says 0 means "not implemented"), and one whole trace,
 `rv32mi-p-breakpoint`, listed in `EXPECTED_DIVERGENCE` because Spike
 implements debug triggers and this core does not.
 
+### Which issue slot, and why the number is printed
+
+Under `CORE=ooo` the summary reports how many retirements came out of the
+second issue slot. It is there because the suite was green and the number was
+**63 out of 28,262 — 0.22%**, with 70 of the 82 traces retiring none at all.
+
+Dual issue is the only thing that makes `rtl/ooo/core_ooo.v` a different core
+from `rtl/cpu_core.v`. Corrupting every slot-1 result
+(`ex_mem1_wb_data <= s1_result ^ 1`) leaves **73 of the 82 upstream tests
+still passing**; the nine that fail are the five loads and four divides,
+which fail incidentally because a stall happened to leave two instructions in
+the fetch buffer. Nothing in the corpus was aimed at the second slot, and
+nothing should have been — see [practices.md §40](../docs/practices.md).
+
+`tests/vernier/pairing.S` is the workload that is. Each iteration opens with
+a divide, whose 33 cycles in EX fill the 4-deep fetch buffer, and the run of
+independent ALU ops behind it drains that buffer two at a time: **6,143
+slot-1 retirements, 97× the entire upstream corpus**, matching Spike exactly.
+
+`tests/dual-issue-floor.txt` holds a floor under it, and that is not
+belt-and-braces. Set `issue_pair = 1'b0` and `pairing.S` **still reaches its
+own pass condition and still matches Spike instruction for instruction** —
+single-issuing it is a correct execution — so without the floor it would
+report PASS/MATCH forever while testing nothing.
+
+The floor is checked in two places on purpose, reading one number from one
+file. `cosim.py` needs Spike and is a local gate; `run.sh` is what CI's
+`riscv-tests (ooo)` job runs. With it only in `cosim.py`, a change that stops
+forming pairs passes every job in CI. With the fault injected:
+
+```
+  vernier-p-pairing            UNDER-ISSUED (passed, but retired 0 in slot 1; needs 4000)
+riscv-tests: 79 passed, 1 failed, 3 xfail, 0 xpass, 0 skipped
+```
+
+Both messages say the test *passed*, so a reader does not go hunting for a
+wrong value that is not there.
+
 ### What this found
 
 - **`misa` missing the S and U bits** — invisible to the ISA tests, caught
@@ -112,6 +159,8 @@ implements debug triggers and this core does not.
   as retiring once per stalled cycle. That is exactly the class of thing an
   end-of-test pass/fail check cannot see.
 - `mcountinhibit` and vectored `mtvec`, both as control-flow divergences.
+- **How little of the wide core it was covering**, above. Not a defect in the
+  RTL, and the most useful thing co-simulation has reported.
 
 ---
 

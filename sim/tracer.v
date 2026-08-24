@@ -52,6 +52,13 @@ module tracer (
     integer      fd = 0;
     reg [1023:0] path;
     integer      retired = 0;
+    // Counted separately, and reported in the trailer, because a trace that
+    // matches Spike says nothing about *how much of the machine* produced it.
+    // Across the whole riscv-tests corpus the wide core retires 63
+    // instructions here out of 28,262 - so "82/82 traces match" was a
+    // statement about a core running almost entirely in single issue.
+    // tests/cosim.py reads this number and holds a floor on it.
+    integer      retired1 = 0;
 
     initial begin
         if ($value$plusargs("trace=%s", path)) begin
@@ -74,6 +81,7 @@ module tracer (
             end
             if (valid1) begin
                 retired = retired + 1;
+                retired1 = retired1 + 1;
                 if (rd_we1 && rd1 != 5'd0)
                     $fdisplay(fd, "%08x %08x x%0d %08x", pc1, instr1, rd1, rd_data1);
                 else
@@ -84,7 +92,8 @@ module tracer (
 
     // Flush on exit; $finish alone does not guarantee the file is closed.
     final if (fd != 0) begin
-        $fdisplay(fd, "# retired %0d instructions", retired);
+        $fdisplay(fd, "# retired %0d instructions (slot1 %0d)",
+                  retired, retired1);
         $fclose(fd);
     end
 endmodule
