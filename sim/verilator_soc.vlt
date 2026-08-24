@@ -75,6 +75,28 @@ public_flat_rd -module "core_ooo" -var "instret_retire"
 public_flat_rd -module "csr_file" -var "mcause_r"
 public_flat_rd -module "csr_file" -var "mepc_r"
 public_flat_rd -module "csr_file" -var "mtval_r"
+// The supervisor set, for the same reason and one more. Linux runs in
+// S-mode and delegates its own faults there, so a trap taken while the
+// kernel is running touches scause/sepc/stval and leaves the machine set
+// untouched - a trap trace that reads only the M registers reports the last
+// thing OpenSBI did, over and over, for every fault Linux takes. That is not
+// a missing feature so much as a probe that answers confidently and wrongly.
+public_flat_rd -module "csr_file" -var "scause_r"
+public_flat_rd -module "csr_file" -var "sepc_r"
+public_flat_rd -module "csr_file" -var "stval_r"
+public_flat_rd -module "csr_file" -var "satp_r"
+// Which mode the hart was in when it trapped. A load page fault at the same
+// address means opposite things from U and from S: from U it is ordinary
+// demand paging, from S it is the kernel touching something it should have
+// been able to reach.
+public_flat_rd -module "csr_file" -var "current_priv"
+// And which set the trap wrote, taken from the delegation logic rather than
+// worked out from the trace. Inferring it - "whichever of the two CSR sets
+// changed since the last trap" - is wrong, because software writes these
+// registers too: OpenSBI sets mepc before every mret, so the machine set
+// moves without a trap and the inference reports the wrong one. That
+// mistake was made and is why this signal is exposed.
+public_flat_rd -module "csr_file" -var "trap_to_s"
 public_flat_rd -module "regfile" -var "regs"
 public_flat_rd -module "regfile_wide" -var "regs"
 // ---- 5. The shared bus, for checking what memory hands back ----

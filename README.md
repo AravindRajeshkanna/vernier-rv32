@@ -100,6 +100,7 @@ tests/
   build.sh            build the rv32ui/um/ua/mi/si suites into loadable images
   run.sh              run them all, with an XFAIL list that cannot go stale
   cosim.py            diff every retired instruction against Spike
+  traptrace.py        what each trap was, and what two boots disagree about
   vernier/            this project's own tests, where riscv-tests has no reason
                       to go: pairing.S is the workload that dual-issues
   dual-issue-floor.txt  how much of the wide core a test must actually run

@@ -55,3 +55,4 @@ formal/build/
 # FPGA build products (bitstream, PnR logs, synthesis JSON)
 fpga/build/
 __pycache__/
+sim/trap_*.txt
