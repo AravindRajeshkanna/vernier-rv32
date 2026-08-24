@@ -270,6 +270,24 @@ walked downward as the design has grown:
 | `ulx3s85-ram`, before the debug path | 1 of 3 | 24.69–26.62 MHz |
 | `ulx3s85`, with the debug path | 1 of 3 | 24.44–25.20 MHz |
 | `ulx3s85-plictest` | **0 of 4** | 23.67–24.81 MHz |
+| **`ulx3s85`, measured 2026-08-24** | **0 of 6** | **22.44–24.14 MHz** |
+
+That last row is the headline target, and **it does not build today**:
+
+```
+  seed 1  routed 22.86 FAIL      seed 4  routed 23.85 FAIL
+  seed 2  routed 23.83 FAIL      seed 5  routed 22.44 FAIL
+  seed 3  routed 24.14 FAIL      seed 6  routed 23.39 FAIL
+error: no placement seed closed timing in 6 attempts.
+```
+
+Whether that is a *regression* against the 24.44–25.20 MHz row above is **not
+established**, and the reason is §38 again: those numbers were measured on
+whatever toolchain was in use then, and this run is nextpnr 0.11.1-8-g7c0c1c40
+with yosys 0.68+118. Two runs that differ in the tool as well as the netlist
+cannot attribute a difference to either. What the row does establish, without
+any comparison, is that `BOARD=ulx3s85` produces no bitstream on this machine
+today — which is the second target to stop building, after `-plictest`.
 
 Those are different netlists rather than one experiment with a variable moved
 (§38), so the table is a description and not an attribution. The conclusion it
@@ -297,6 +315,35 @@ This is what is known about *why*, and what has been tried.
 CPU.pc  →  IMMU.tlb_super  →  BUSADAPT.imem_addr  →  BUS.sel_m0  →  stall terms
         →  CPU.id_ex_pred_target                                        39.68 ns
 ```
+
+**Re-measured across six seeds (2026-08-24), it is two paths, not one.** The
+critical path is sourced at `CPU.pc` in **four** of six seeds — the path above
+— and at `BUSADAPT.dc_tag`, the D-cache tag block RAM, in the other **two**:
+
+```
+seed 5  clk-to-q 5.83  Source SOC.BUSADAPT.dc_tag.0.0.DOB3
+                       ... → CPU.ex_mem_mem_we → BUS.sel_m1 → PLIC.claim_read_now
+seed 6  clk-to-q 5.83  Source SOC.BUSADAPT.dc_tag.0.0.DOB3
+                       ... → CPU.ex_mem_mem_we → BUS.sel_m1 → CLINT.addr
+```
+
+The D-cache tag variant was not in this file before and is worth naming, both
+because a fetch pipeline stage does nothing for it and because of where its
+time goes: **5.83 ns of clk-to-q** before any logic at all, which is EBR output
+timing and not something a refactor shortens, plus 5.05 ns of routing to
+leave the block. Ten of roughly forty-two nanoseconds are spent before the
+first LUT.
+
+**Both shapes are 23 logic levels deep**, and at ~0.24 ns per LUT4 that is
+about 5.5 ns of logic in a ~42 ns path. **The path is routing-dominated** —
+single nets in the report hop `(10,70) → (49,24)`, most of the way across the
+die. That is the argument for a register in the middle rather than for fewer
+levels of logic: what needs to stop is a signal crossing the chip and back
+inside one cycle.
+
+Reading a single seed's critical path as "the" critical path is the same
+mistake §38 warns about for Fmax, and it was made once here before the other
+five seeds were looked at.
 
 In words: the program counter is translated by the instruction TLB, the
 physical address goes to the bus, the bus decides whether the fetch master is
@@ -1488,6 +1535,27 @@ curl -L -o oss-cad-suite.tgz \
 tar xzf oss-cad-suite.tgz -C ~/tools
 export PATH=~/tools/oss-cad-suite/bin:$PATH
 ```
+
+**Check for it there before concluding it is missing.** `nextpnr-ecp5` lives
+six directories down from `/`, so a bounded `find / -maxdepth 4` returns
+nothing whether or not it is installed. That search was run, its silence was
+read as absence, and "the ECP5 flow is unavailable on this machine" went into
+three consecutive pull request write-ups while the tools sat in `~/tools`.
+
+The general form is [practices.md §41](../docs/practices.md): a probe that
+cannot reach a case is silent about it, not clean. `which nextpnr-ecp5` after
+sourcing the PATH above answers it in one command, and the version banners are
+worth pasting into whatever claims a timing number:
+
+```
+yosys          Yosys 0.68+118 (git sha1 144c707b7-dirty)
+nextpnr-ecp5   nextpnr-0.11.1-8-g7c0c1c40
+ecppack        Project Trellis 1.4-82-g3afe7b5
+```
+
+A measured Fmax is only comparable to another measured on the same tools -
+see the distribution table above, where it is why one row cannot be called a
+regression against another.
 
 ## Measured: the SoC synthesizes, and fits an ECP5
 
