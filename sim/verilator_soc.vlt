@@ -114,6 +114,13 @@ public_flat_rd -module "regfile_wide" -var "regs"
 // clean.
 public_flat_rd -module "wb_interconnect" -var "s_adr"
 public_flat_rd -module "wb_interconnect" -var "s_we"
+// The write half. +readtrace deliberately skips writes because a write's
+// `fin_dat` is not a claim about memory - the controller may ack before the
+// array has taken it. That is a reason to read the *request* rather than the
+// response, not a reason to have no write trace at all: what a store put on
+// the bus is exactly the question when a page-table entry does not appear.
+public_flat_rd -module "wb_interconnect" -var "s_dat_w"
+public_flat_rd -module "wb_interconnect" -var "s_sel"
 public_flat_rd -module "wb_interconnect" -var "fin_ack"
 public_flat_rd -module "wb_interconnect" -var "fin_dat"
 public_flat_rd -module "wb_interconnect" -var "sel_m1"

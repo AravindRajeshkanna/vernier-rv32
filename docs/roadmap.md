@@ -1315,9 +1315,13 @@ exception separates them: a supervisor store page fault at
 `load_elf_binary+0xc30`, storing to user virtual address `0x00040000`. The
 page really is unmapped — the root page table's entry 0 reads zero at the
 faulting cycle — so the MMU is right and a *store* that should have written a
-page-table entry did not. `software/linux/README.md` has the method and the
-numbers, and [practices.md §41](practices.md) has what `+checkmmu` was
-actually checking while this went past it.
+page-table entry did not — **and that reading turned out to be wrong**. The
+write trace shows the in-order core installing that entry only after `/init`
+is already running, so it never stores to the faulting address inside
+`load_elf_binary` either. The wide core is issuing a store the working core
+does not, rather than losing one. `software/linux/README.md` has the method
+and the numbers; [practices.md §41](practices.md) has what `+checkmmu` was
+checking while this went past it, and [§42](practices.md) has the correction.
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed. It
 self-reports rather than hanging silently, which is not the same as being

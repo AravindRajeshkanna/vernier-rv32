@@ -97,6 +97,21 @@
 //                     translation is the point of having one - so a wrong
 //                     physical address is invisible from inside the machine
 //                     and shows up only as whatever the program did next.
+//   +writetrace=ADDR:LEN:FILE
+//                     every write the interconnect completes inside
+//                     [ADDR, ADDR+LEN), as "cycle address data sel master".
+//                     The mirror of +readtrace, and it reads the *request*
+//                     (s_dat_w/s_sel) rather than the response: a write's
+//                     `fin_dat` is not a claim about memory, because the
+//                     controller may acknowledge before the array has taken
+//                     it. What the store put on the bus is the question when
+//                     a value that should be in memory is not.
+//
+//                     This exists because the wide core's execve -EFAULT is a
+//                     store page fault on a page whose PTE is zero, and "did
+//                     anything ever write that word, and with what" is not
+//                     answerable from a read trace, a trap trace or a memory
+//                     dump at the end.
 //   +readtrace=ADDR:LEN:FILE
 //                     log every SDRAM read the interconnect completes inside
 //                     [ADDR, ADDR+LEN) as "cycle address data master". For
@@ -992,6 +1007,26 @@ int main(int argc, char **argv) {
     uint32_t tt_priv       = 0;
     uint32_t tt_to_s       = 0;
 
+    // +writetrace=ADDR:LEN:FILE, parsed exactly like +readtrace below.
+    uint32_t  wt_lo = 0, wt_hi = 0;
+    FILE     *wt_fp = nullptr;
+    if (const char *spec = plusarg(argc, argv, "writetrace")) {
+        const std::string sp(spec);
+        const size_t c1 = sp.find(':');
+        const size_t c2 = sp.find(':', c1 + 1);
+        if (c1 == std::string::npos || c2 == std::string::npos) {
+            printf("writetrace \"%s\": expected ADDR:LEN:FILE\n", spec);
+        } else {
+            wt_lo = (uint32_t)strtoul(sp.substr(0, c1).c_str(), nullptr, 0);
+            wt_hi = wt_lo + (uint32_t)strtoul(
+                        sp.substr(c1 + 1, c2 - c1 - 1).c_str(), nullptr, 0);
+            wt_fp = fopen(sp.substr(c2 + 1).c_str(), "w");
+            if (!wt_fp) printf("writetrace: cannot write %s\n",
+                               sp.substr(c2 + 1).c_str());
+            else fprintf(wt_fp, "# cycle address data sel master\n");
+        }
+    }
+
     // +readtrace=ADDR:LEN:FILE
     uint32_t  rt_lo = 0, rt_hi = 0;
     FILE     *rt_fp = nullptr;
@@ -1064,6 +1099,19 @@ int main(int argc, char **argv) {
         // Writes are skipped rather than checked: the controller may
         // acknowledge one before the array has taken it, so a write's
         // `fin_dat` is not a claim about memory.
+        if (wt_fp &&
+            root->soc_top__DOT__BUS__DOT__fin_ack &&
+            root->soc_top__DOT__BUS__DOT__s_we) {
+            const uint32_t a = root->soc_top__DOT__BUS__DOT__s_adr;
+            if (a >= wt_lo && a < wt_hi)
+                fprintf(wt_fp, "%ld %08x %08x %x %s\n", cycles, a,
+                        root->soc_top__DOT__BUS__DOT__s_dat_w,
+                        root->soc_top__DOT__BUS__DOT__s_sel,
+                        root->soc_top__DOT__BUS__DOT__sel_m1 ? "data" :
+                        root->soc_top__DOT__BUS__DOT__sel_m2 ? "walker"
+                                                             : "fetch");
+        }
+
         if (rt_fp &&
             root->soc_top__DOT__BUS__DOT__fin_ack &&
             !root->soc_top__DOT__BUS__DOT__s_we) {
@@ -1418,6 +1466,7 @@ int main(int argc, char **argv) {
     const auto   wall_end = std::chrono::steady_clock::now();
     const double secs = std::chrono::duration<double>(wall_end - wall_start).count();
 
+    if (wt_fp) fclose(wt_fp);
     if (rt_fp) fclose(rt_fp);
     if (tt_fp) {
         // A trap in the very last cycle leaves its record pending with its

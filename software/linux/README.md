@@ -184,10 +184,12 @@ userspace `ecall`s the wide core never reaches, because `/init` never runs.
 **The fault is correct.** Freezing memory at the faulting cycle and reading
 the root page table at `satp` PPN `0x908cb` gives entry 0 — the one covering
 `0x00040000` — as `0x00000000`. The page genuinely is not mapped, and the MMU
-was right to fault. So this is not a spurious fault to be chased in `mmu.v`:
-something earlier failed to write a page-table entry that the in-order core
-writes. A store went missing or went elsewhere, which is where
-[the data path](#the-wide-core-everything-but-execve) was already pointing.
+was right to fault. So this is not a spurious fault to be chased in `mmu.v`.
+
+The obvious next reading — *something earlier failed to write a page-table
+entry that the in-order core writes* — is the one this file gave first, and
+it is wrong. "The missing write is not a missing write", below, is how that
+was established rather than assumed.
 
 ### What `+checkmmu` was actually checking
 
@@ -207,6 +209,47 @@ translations checked: 355033084, all agreed with the page tables
 
 **Four, out of 355 million — and one of the four is the defect.** See
 [practices.md §41](../../docs/practices.md).
+
+### The missing write is not a missing write
+
+`+writetrace=ADDR:LEN:FILE` is the mirror of `+readtrace`, and it reads the
+bus *request* (`s_dat_w`/`s_sel`) rather than the response: a write's
+`fin_dat` is not a claim about memory, because the controller may acknowledge
+before the array has taken it. Pointed at the failing process's root page
+table — physical `0x908cb000`, the same page on both cores, since both report
+`satp` `0x804908cb`:
+
+| | writes to entry 0, which covers VA `0x00040000` |
+|---|---|
+| in-order | zeroed at cycle 128,672,160, then **`0x24235001`** at 129,941,176 |
+| wide | zeroed at cycle 125,782,370, and **nothing else** |
+
+`0x24235001` is `V=1` with no `R`/`W`/`X` — a pointer to the level-0 table at
+physical `0x908d4000`. So the entry the wide core faults on is one the
+in-order core installs and it does not.
+
+**That is where the natural conclusion is wrong.** Three things say so:
+
+- The two cores write **byte-identical sequences of 1,419 writes** to this
+  page before diverging at all. Whatever differs is not broad.
+- **All 1,421** of the wide core's writes to this page happen *before* the
+  fault. Nothing was pending, and nothing was lost in flight.
+- The in-order core's write of `0x24235001` is the **last** root-page-table
+  write of its entire boot — 25,504 cycles after the *userspace* instruction
+  page fault at `0x00010094`, which is `/init` already running. It is demand
+  paging of `/init`'s text, and it happens after `execve` has returned.
+
+`0x00010094` and `0x00040000` share `vpn1 = 0`, so they share this entry. On
+the in-order core that entry is zero for the whole of `load_elf_binary` — so
+had the in-order core stored to VA `0x00040000` there, it would have taken
+exactly the fault the wide core takes. It takes **zero** store page faults
+anywhere in the boot.
+
+**So the in-order core never stores to that address at all.** The wide core is
+not losing a store; it is *executing* one the working core does not — an extra
+store, or a store whose effective address is wrong. Which of the two is the
+next question, and it is a far smaller one than "somewhere in the data path".
+See [practices.md §42](../../docs/practices.md).
 
 `CORE=ooo` is not in `make verify`'s Linux path for the same reason
 `sim_linux` is not in `make verify` at all: it needs a kernel tarball off the

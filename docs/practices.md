@@ -1619,6 +1619,54 @@ costs one character per trace line and removes the whole class of error.
 
 ---
 
+## 42. "It never happened" and "it happened wrongly" look identical from the far end
+
+The wide core's `execve` takes a store page fault on a page whose table entry
+is zero. The in-order core installs that entry — `0x24235001`, a pointer to
+the level-0 table — and boots. Written down at that point, in this
+repository's own notes:
+
+> something earlier failed to write a page-table entry that the in-order core
+> writes. A store went missing or went elsewhere.
+
+It reads as the only possibility. Both cores need the entry; one has it and
+one does not; the one that does not is the one that fails. Every word of the
+evidence is true and the conclusion does not follow.
+
+**What the write trace actually shows.** The in-order core's write of that
+entry is the **last** root-page-table write of its whole boot — 25,504 cycles
+*after* a userspace instruction page fault at `0x00010094`, which is `/init`
+already running. It is demand paging of the new program's text, and it
+happens after `execve` has returned. `0x00010094` and `0x00040000` share
+`vpn1`, so they share the entry, and it is zero for the entire duration of
+`load_elf_binary` on **both** cores.
+
+So had the in-order core stored to `0x00040000` inside `load_elf_binary`, it
+would have taken exactly the fault the wide core takes. It takes none. **The
+working core never performs that store at all.** The wide core is not losing a
+write; it is issuing one that should not exist.
+
+That is the opposite defect from the one the evidence appeared to name, and
+it is a smaller and better-posed question: an extra store, or a store whose
+effective address is wrong.
+
+**Two things worth taking from it.**
+
+*An absence at the end of a run does not date itself.* "The entry was never
+written" is a statement about a whole boot. Turning it into a claim about a
+particular moment needs the ordering, and the ordering here reversed the
+conclusion: 1,419 identical writes, then all of the wide core's writes landing
+*before* the fault, then the in-order core's decisive write landing after
+userspace had already started.
+
+*The control case has to be checked for the behaviour too, not just for the
+outcome.* The reasoning above quietly assumed the in-order core stored to that
+address and succeeded. Nobody checked. It does not store there, and one line —
+zero store page faults in 1,587 traps — settles it. When a difference is
+attributed to *how* two systems did the same thing, confirm they both did it.
+
+---
+
 ---
 
 ## Conventions
