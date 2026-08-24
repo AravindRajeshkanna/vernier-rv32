@@ -1558,6 +1558,67 @@ the same shape of gap as the probes that were not wired into `make verify`.
 
 ---
 
+## 41. A probe that skips a case is silent about it, not clean
+
+`+checkmmu` walks the page tables in C++ and compares them against what
+`mmu.v` resolved. On the wide core's failing Linux boot it reports:
+
+```
+translations checked: 355033084, all agreed with the page tables
+```
+
+Three hundred and fifty-five million. The loop that produces it begins:
+
+```c
+if (!t[k].resolved) continue;
+if (t[k].fault)    continue;                       // ← not compared
+uint32_t want;
+if (!Sv32::walk(sdram, t[k].satp, t[k].va, &want)) continue;   // ← nor these
+```
+
+Both `continue`s are correct. The model resolves addresses and does not model
+permissions, so it has nothing to say about whether a fault was *warranted*.
+Neither is a bug. What they are is **unreported** — and the sentence they
+produce, read at speed, is a statement about the MMU rather than about the
+successful half of it.
+
+Counting the skips took two variables:
+
+```
+  not compared: 4 faulted in hardware, 0 the model could not map
+```
+
+**Four out of 355,033,084 — and one of the four is the defect.** The wide
+core's `execve` `-EFAULT` is a supervisor store page fault in
+`load_elf_binary`, and it lives entirely inside the 0.000001% of events this
+probe was structurally unable to comment on.
+
+**This is §40 again with the ratio made vivid.** There the mechanism was
+under-exercised, at 0.22%; here it is under-*inspected*, at eleven parts per
+billion. In both cases a very large number was true, was quoted as evidence,
+and was silent about the one case that mattered.
+
+**Two things worth taking from it.**
+
+*The useful question about a probe is not "what did it check" but "what did it
+decline to check, and how would I know".* A skip is invisible in the output by
+default. Making the count a permanent part of the report - printed even when
+it is zero - costs nothing and means the headline number can never again be
+read as covering the whole.
+
+*Do not infer what the hardware already knows.* The trap trace this was found
+with first tried to work out whether a trap went to M or S by asking which
+CSR set had changed since the last one. That is wrong, and not obviously so:
+software writes those registers too, and OpenSBI sets `mepc` before every
+`mret`, so the machine set moves with no trap involved. An earlier attempt
+read `scause` unconditionally and reported a store page fault for every timer
+interrupt that followed one - counting a single fault as two, which was
+published in this session's own notes before the tool was corrected.
+`csr_file.v` has a `trap_to_s` wire that answers it exactly; exposing it
+costs one character per trace line and removes the whole class of error.
+
+---
+
 ---
 
 ## Conventions

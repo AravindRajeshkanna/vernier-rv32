@@ -132,12 +132,33 @@
 //                     instruction retires and its register write does not
 //                     appear - which no probe that samples the register file
 //                     can distinguish from sampling it at the wrong moment.
-//   +traptrace=FILE   every trap the core takes, as "cycle pc". Traps are
-//                     the one thing that can interrupt an instruction
-//                     sequence without appearing in it, so when a register
-//                     write goes missing between two adjacent instructions
-//                     this is what says whether anything happened in
-//                     between.
+//   +traptrace=FILE   every trap the core takes, as
+//                     "cycle pc priv to scause sepc stval mcause mepc mtval
+//                      satp". Traps are the one thing that can interrupt an
+//                     instruction sequence without appearing in it, so when a
+//                     register write goes missing between two adjacent
+//                     instructions this is what says whether anything
+//                     happened in between.
+//
+//                     `to` is S or M, taken from csr_file.v's own `trap_to_s`
+//                     rather than worked out here. Both CSR sets are recorded
+//                     beside it because only one of them is written by any
+//                     given trap and the values do not say which. Two ways of
+//                     deciding that from the trace alone were tried and are
+//                     both wrong: reading `scause` unconditionally reports a
+//                     store page fault for every timer interrupt that follows
+//                     one, and "whichever set changed since the last trap"
+//                     fails because software writes these registers too -
+//                     OpenSBI sets mepc before every mret. `priv` is the mode
+//                     the hart was in when the trap was taken, not the one it
+//                     landed in.
+//
+//                     The CSRs are captured one cycle after `trap` pulses,
+//                     because they are registered off it: sampling them in
+//                     the same cycle returns the *previous* trap. A one-deep
+//                     pending slot carries the record across, and is flushed
+//                     before a new trap is captured so back-to-back traps
+//                     cannot overwrite each other.
 //   +savemem=ADDR:LEN:FILE
 //                     write LEN bytes of SDRAM starting at ADDR to FILE when
 //                     the run ends. +peek reads a word; this reads a
@@ -923,6 +944,17 @@ int main(int argc, char **argv) {
     const bool   check_mmu  = plusarg(argc, argv, "checkmmu") != nullptr;
     long         xlat_checked = 0;
     long         xlat_bad     = 0;
+    // What the check skipped, counted rather than left silent. See the two
+    // `continue`s in the loop below: a translation the hardware *faulted* is
+    // not compared, and neither is one the C++ walk cannot map. Both are
+    // reasonable - this model resolves addresses and does not model
+    // permissions, so it has nothing to say about a fault - but "355,033,084
+    // translations checked, all agreed" reads as coverage of the whole MMU,
+    // and it is coverage of the successful half. On the wide core's failing
+    // Linux boot the skipped set is *four* translations, and one of them is
+    // the store page fault that ends the boot.
+    long         xlat_faulted = 0;
+    long         xlat_unmapped = 0;
     uart_check = plusarg(argc, argv, "checkuart") != nullptr;
 
     // +pipetrace=FROM:TO:FILE
@@ -950,7 +982,15 @@ int main(int argc, char **argv) {
     if (const char *f = plusarg(argc, argv, "traptrace")) {
         tt_fp = fopen(f, "w");
         if (!tt_fp) printf("traptrace: cannot write %s\n", f);
+        else fprintf(tt_fp, "# cycle pc priv to scause sepc stval "
+                            "mcause mepc mtval satp\n");
     }
+    // One-deep pending slot for the trap whose CSRs are not written yet.
+    bool     tt_pending    = false;
+    long     tt_cycle      = 0;
+    uint32_t tt_pc         = 0;
+    uint32_t tt_priv       = 0;
+    uint32_t tt_to_s       = 0;
 
     // +readtrace=ADDR:LEN:FILE
     uint32_t  rt_lo = 0, rt_hi = 0;
@@ -1164,9 +1204,13 @@ int main(int argc, char **argv) {
                  root->soc_top__DOT__CPU__DOT__MMU__DOT__pa},
             };
             for (int k = 0; k < 2; k++) {
-                if (!t[k].resolved || t[k].fault) continue;
+                if (!t[k].resolved) continue;
+                if (t[k].fault) { xlat_faulted++; continue; }
                 uint32_t want;
-                if (!Sv32::walk(sdram, t[k].satp, t[k].va, &want)) continue;
+                if (!Sv32::walk(sdram, t[k].satp, t[k].va, &want)) {
+                    xlat_unmapped++;
+                    continue;
+                }
                 xlat_checked++;
                 if (want != t[k].pa) {
                     xlat_bad++;
@@ -1206,9 +1250,35 @@ int main(int argc, char **argv) {
                     root->soc_top__DOT__BUSADAPT__DOT__ibus_wait ? "wait" : "-");
         }
 
-        if (top->trap && tt_fp)
-            fprintf(tt_fp, "%ld %08x\n", cycles,
-                    root->soc_top__DOT__CPU__DOT__id_ex_pc);
+        // Flush the previous cycle's trap first: its CSRs are written now.
+        // Doing this before capturing a new one is what makes back-to-back
+        // traps come out as two records rather than one.
+        if (tt_pending && tt_fp) {
+            tt_pending = false;
+            fprintf(tt_fp,
+                    "%ld %08x %u %c %08x %08x %08x %08x %08x %08x %08x\n",
+                    tt_cycle, tt_pc, tt_priv, tt_to_s ? 'S' : 'M',
+                    root->soc_top__DOT__CPU__DOT__CSR__DOT__scause_r,
+                    root->soc_top__DOT__CPU__DOT__CSR__DOT__sepc_r,
+                    root->soc_top__DOT__CPU__DOT__CSR__DOT__stval_r,
+                    root->soc_top__DOT__CPU__DOT__CSR__DOT__mcause_r,
+                    root->soc_top__DOT__CPU__DOT__CSR__DOT__mepc_r,
+                    root->soc_top__DOT__CPU__DOT__CSR__DOT__mtval_r,
+                    root->soc_top__DOT__CPU__DOT__CSR__DOT__satp_r);
+        }
+        if (top->trap && tt_fp) {
+            tt_pending = true;
+            tt_cycle   = cycles;
+            tt_pc      = root->soc_top__DOT__CPU__DOT__id_ex_pc;
+            // Sampled with the trap, not after it: `current_priv` is updated
+            // by the same edge that writes the cause registers, so a cycle
+            // later this would read the mode the trap landed in.
+            tt_priv    = root->soc_top__DOT__CPU__DOT__CSR__DOT__current_priv;
+            // Which set this trap will write, read out of the delegation
+            // logic itself. It is combinational off the cause, so it is only
+            // valid in the cycle `trap` pulses.
+            tt_to_s    = root->soc_top__DOT__CPU__DOT__CSR__DOT__trap_to_s;
+        }
 
         if (top->trap) {
             traps++;
@@ -1349,7 +1419,17 @@ int main(int argc, char **argv) {
     const double secs = std::chrono::duration<double>(wall_end - wall_start).count();
 
     if (rt_fp) fclose(rt_fp);
-    if (tt_fp) fclose(tt_fp);
+    if (tt_fp) {
+        // A trap in the very last cycle leaves its record pending with its
+        // CSRs unread. Writing it anyway, flagged, beats dropping it: the
+        // last trap before a run ends is the one most likely to be the
+        // interesting one.
+        if (tt_pending)
+            fprintf(tt_fp,
+                    "%ld %08x %u %c - - - - - - -  # csrs unread: run ended\n",
+                    tt_cycle, tt_pc, tt_priv, tt_to_s ? 'S' : 'M');
+        fclose(tt_fp);
+    }
     if (pt_fp) fclose(pt_fp);
 
 #if VM_TRACE
@@ -1397,6 +1477,14 @@ int main(int argc, char **argv) {
         else
             printf("translations checked: %ld, all agreed with the page "
                    "tables\n", xlat_checked);
+        // Printed every time, including when the count is zero, so the line
+        // above is never read as a statement about the whole MMU. This model
+        // resolves addresses; it does not model permissions, so it has
+        // nothing to say about whether a fault was *warranted* - and a fault
+        // the hardware raised wrongly is invisible here by construction.
+        printf("  not compared: %ld faulted in hardware, "
+               "%ld the model could not map\n",
+               xlat_faulted, xlat_unmapped);
     }
     if (uart_check) {
         // One byte may legitimately still be in the shift register when the

@@ -155,7 +155,8 @@ SD_BLOCKS = 128
         linuximage linuxpayload sim_linux \
         mmuimage plicimage uart16550image \
         check-program regen-program verify_ooo \
-        isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean
+        isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
+        linux_trapdiff
 
 all: sim
 
@@ -844,6 +845,40 @@ linuxpayload: sim/linuximage.hex
 # +maxcycles. The marker is the last line software/linux/initramfs/init.c
 # prints, so seeing it means everything before it also ran.
 LINUX_MARKER = VERNIER-RV32-LINUX-BOOT-OK
+
+# ---- the same boot on both cores, compared by the traps it took ----
+#
+# The wide core boots the whole kernel and then fails execve with -EFAULT.
+# Everything that could be checked against an independent model was already
+# passing on it - translations, bus reads, both decode slots, riscv-tests and
+# CoreMark - so the next instrument had to look at the boot rather than at a
+# test, and the cheapest thing a failing boot produces that a passing one does
+# not is a trap.
+#
+# Interrupts are what makes this non-trivial: the two cores take different
+# numbers of cycles for the same instructions, so a timer lands at a different
+# instruction in each and the raw traces diverge within a hundred traps for
+# reasons that are not defects. tests/traptrace.py drops interrupts and
+# compares exceptions by (privilege, target, cause, epc, tval).
+#
+# Both runs are allowed to exit non-zero. The wide core's boot *is* the
+# failing one - it never reaches the marker and stops on +maxcycles - so a
+# rule that required success here could only ever run when there was nothing
+# to diagnose.
+#
+# Not in `verify` for the same reason `sim_linux` is not: it needs a kernel
+# off the network.
+linux_trapdiff: sim/linuximage.hex
+	@$(MAKE) -s $(VERILATOR_MDIR)/Vsoc_top CORE=inorder
+	@$(MAKE) -s obj_dir_soc_ooo/Vsoc_top CORE=ooo
+	@cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage.hex \
+	    +uart_clks=224 +sdram_words=16777216 +maxcycles=400000000 +quiet \
+	    +stopon=$(LINUX_MARKER) +traptrace=trap_inorder.txt > /dev/null || true
+	@cd sim && ../obj_dir_soc_ooo/Vsoc_top +sdram=linuximage.hex \
+	    +uart_clks=224 +sdram_words=16777216 +maxcycles=400000000 +quiet \
+	    +stopon=$(LINUX_MARKER) +traptrace=trap_ooo.txt > /dev/null || true
+	python3 tests/traptrace.py sim/trap_inorder.txt sim/trap_ooo.txt \
+	    --map software/linux/build/System.map
 
 sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
 	@cd sim && ../$(VERILATOR_BIN) +sdram=linuximage.hex +uart_clks=224 \

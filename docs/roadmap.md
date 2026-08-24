@@ -1309,6 +1309,16 @@ an oversight.
 
 Open, unscheduled, and written down so they are not rediscovered.
 
+**The wide core's `execve` `-EFAULT`, now localized.** `make linux_trapdiff`
+boots the same image on both cores and compares the traps. Exactly one
+exception separates them: a supervisor store page fault at
+`load_elf_binary+0xc30`, storing to user virtual address `0x00040000`. The
+page really is unmapped — the root page table's entry 0 reads zero at the
+faulting cycle — so the MMU is right and a *store* that should have written a
+page-table entry did not. `software/linux/README.md` has the method and the
+numbers, and [practices.md §41](practices.md) has what `+checkmmu` was
+actually checking while this went past it.
+
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed. It
 self-reports rather than hanging silently, which is not the same as being
 fixed, and pretending otherwise is exactly the failure mode

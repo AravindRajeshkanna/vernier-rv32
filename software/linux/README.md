@@ -155,6 +155,59 @@ instructions long.
 The next instrument therefore has to be pointed at the *boot*, not at a test:
 the divergence is somewhere the ISA suites structurally cannot go.
 
+### Pointed at the boot, and it found the fault
+
+`make linux_trapdiff` boots the same image on both cores and compares the
+*traps*. That is the cheapest thing a failing boot produces that a passing one
+does not, and it needed one piece of care: the two cores take different
+numbers of cycles for the same instructions, so a timer interrupt lands at a
+different instruction in each and the raw traces diverge within a hundred
+traps for reasons that are not defects. `tests/traptrace.py` drops interrupts
+and compares exceptions by `(privilege, target, cause, epc, tval)`.
+
+Against 1,587 traps on one side and 5,761 on the other, one exception is
+present on the wide core and absent on the in-order one:
+
+```
+=== exceptions in the second run and not the first ===
+  x1  S->S  store/AMO page fault  at load_elf_binary+0xc30  tval 0x00040000
+```
+
+**A supervisor store page fault, in `load_elf_binary`, storing to user virtual
+address `0x00040000`.** That is `execve` copying the new program's image into
+the address space it just built, and `-EFAULT` is what a kernel access with a
+fixup returns when it faults. Everything else matches: both cores take the
+same 36 illegal instructions, the same instruction page fault, the same
+misaligned load, the same breakpoint. The only other difference is the
+userspace `ecall`s the wide core never reaches, because `/init` never runs.
+
+**The fault is correct.** Freezing memory at the faulting cycle and reading
+the root page table at `satp` PPN `0x908cb` gives entry 0 — the one covering
+`0x00040000` — as `0x00000000`. The page genuinely is not mapped, and the MMU
+was right to fault. So this is not a spurious fault to be chased in `mmu.v`:
+something earlier failed to write a page-table entry that the in-order core
+writes. A store went missing or went elsewhere, which is where
+[the data path](#the-wide-core-everything-but-execve) was already pointing.
+
+### What `+checkmmu` was actually checking
+
+The probe skips two cases, both by an explicit `continue`: a translation the
+hardware **faulted**, and one the C++ model cannot map. Both are defensible —
+the model resolves addresses and does not model permissions, so it has nothing
+to say about whether a fault was warranted — and together they mean
+`translations checked: 355,033,084, all agreed` is a statement about the
+*successful* half of the MMU.
+
+The counts are now printed alongside it, and they are the point:
+
+```
+translations checked: 355033084, all agreed with the page tables
+  not compared: 4 faulted in hardware, 0 the model could not map
+```
+
+**Four, out of 355 million — and one of the four is the defect.** See
+[practices.md §41](../../docs/practices.md).
+
 `CORE=ooo` is not in `make verify`'s Linux path for the same reason
 `sim_linux` is not in `make verify` at all: it needs a kernel tarball off the
 network.
