@@ -36,11 +36,17 @@
 #include "console.h"
 #include "trap.h"
 
-/* soc_top.v: irq_sources = {5'b0, 1'b0, gpio_irq, 1'b0}, so bit 1 of that
- * vector is source 2. Duplicated from the RTL with no check that they agree -
+/* soc_top.v: irq_sources = {5'b0, 1'b0, gpio_irq, uart_irq}, so bit 0 of that
+ * vector is source 1 and bit 1 is source 2. This comment said bit 0 was tied
+ * low, which was true when it was written and stopped being true when the
+ * UART got an interrupt - and that is exactly why the UART's delivery went
+ * untested until a Linux userspace failure pointed here.
+ *
+ * Duplicated from the RTL with no check that they agree -
  * practices.md section 11. Getting it wrong fails loudly: the claim returns a
  * different ID than the one this file asks about. */
 #define GPIO_SRC 2
+#define UART_SRC 1
 
 static int failures = 0;
 
@@ -95,9 +101,19 @@ static void s_irq_handler(void)
     s_claimed_id = id;
     s_irq_count++;
 
-    /* Stop the source re-asserting: the GPIO's pending bit is level-fed into
-     * the PLIC, so completing alone would hand it straight back. */
+    /* Stop the source re-asserting. Both of the sources this test uses are
+     * *level* inputs to the PLIC, so completing alone would hand the
+     * interrupt straight back: the GPIO's pending bit has to be cleared, and
+     * the UART's IER bit has to be turned off, because rtl/uart.v derives its
+     * irq from `ier_r[1] && thre` combinationally and THRE is true whenever
+     * the transmitter is idle.
+     *
+     * That is not a workaround. It is what a driver does, and it is the
+     * property that makes a level-triggered controller safe: there is no edge
+     * to miss, and no way to clear the interrupt except by fixing what caused
+     * it. */
     GPIO_IP = 0xFFFFu;          /* write-1-to-clear */
+    UART_IER = 0u;              /* drop ETBEI, and with it uart_irq */
     REG32(PLIC_ENABLE(PLIC_CTX_S)) = 0;
 
     if (id) REG32(PLIC_CLAIM(PLIC_CTX_S)) = id;   /* complete */
@@ -117,6 +133,32 @@ static void s_mode_main(void)
 
     report("S-mode took the interrupt", s_irq_count == 1u);
     report("claimed the right source", s_claimed_id == GPIO_SRC);
+
+    /* ---- and now the UART's, which is the one Linux depends on ----
+     *
+     * Everything above proves the PLIC delivers *a* source. This proves it
+     * delivers source 1, driven by rtl/uart.v, which is a different claim and
+     * the one that had never been made anywhere: the Linux boot on hardware
+     * only ever *probed* the controller, and its console output goes through
+     * the 8250 driver's polled path. `/init` writing to /dev/console is the
+     * first thing in the whole system that waits on this interrupt.
+     *
+     * ETBEI is the easiest trigger there is. `thre` is true whenever the
+     * transmitter is idle, so enabling the interrupt asserts it immediately -
+     * no data has to move and nothing has to be timed.
+     */
+    s_irq_count  = 0u;
+    s_claimed_id = 0xFFFFFFFFu;
+
+    REG32(PLIC_PRIORITY(UART_SRC)) = 3u;
+    REG32(PLIC_ENABLE(PLIC_CTX_S)) = 1u << UART_SRC;
+
+    UART_IER = 0x02u;           /* ETBEI: interrupt while THR is empty */
+
+    for (spin = 0; spin < 100000u && s_irq_count == 0u; spin++) { }
+
+    report("S-mode took the UART interrupt", s_irq_count == 1u);
+    report("claimed source 1, the UART", s_claimed_id == UART_SRC);
 
     put_str("\n");
     if (failures == 0) {

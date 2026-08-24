@@ -37,7 +37,7 @@ a distribution](#fmax-is-a-distribution-not-a-number).
 | Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
 | Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
 | **Sv32 MMU on a board** | ✅ **confirmed on silicon** — Linux runs its whole linear map through it |
-| **PLIC on a board** | ⚠️ **probed, not fired** — Linux maps 8 interrupts over 2 contexts; no interrupt has been *delivered* on silicon. `BOARD=ulx3s85-plictest` settles it in one flash |
+| **PLIC on a board** | ⚠️ **probed, not fired** — Linux maps 8 interrupts over 2 contexts; no interrupt has been *delivered* on silicon. `BOARD=ulx3s85-plictest` now covers both the GPIO's and the **UART's** source and settles it in one flash |
 | **ns16550 console on a board** | ✅ **confirmed on silicon** — `ttyS0 ... is a 16450`, and the handover from the SBI earlycon is clean |
 | **Loading 7.4 MB over UART** | ✅ **confirmed on silicon** — 22 minutes, CRC ok, no retries |
 | **Linux to userspace on a board** | ✅ **`=== VERNIER-RV32-LINUX-BOOT-OK ===`** — see [Linux, on the board](#linux-on-the-board) |
@@ -237,7 +237,7 @@ picocom -b 115200 /dev/cu.usbserial-XXXXXXX     # then tap reset
 | Target | Verdict | What it adds to what simulation already proves |
 |---|---|---|
 | `ulx3s85-mmutest` | `MMU-SDRAM: PASS` | Sv32 with its page tables in the **external** part — the walkers, both TLBs and `wb_ptw.v` against a memory with real latency |
-| `ulx3s85-plictest` | `PLIC-TEST: PASS` | **the one thing the Linux boot did not settle**: an interrupt actually *delivered*, to S-mode, through context 1 |
+| `ulx3s85-plictest` | `PLIC-TEST: PASS` | **the one thing the Linux boot did not settle**: an interrupt actually *delivered*, to S-mode, through context 1 — now for both the GPIO **and the UART**, which is the source Linux's tty path waits on |
 | `ulx3s85-uarttest` | `UART16550-TEST: PASS` | the divisor latch and register map, including reprogramming mid-character — which garbles on real silicon, and is meant to |
 
 Each preloads its program into block RAM, so the boot ROM jumps straight to it
@@ -532,18 +532,31 @@ The trap trace after userspace entry says where:
 | `0xc01e5cfc` | 54,676 | `uart_write + 0xa4` |
 | `0x000100e0` | 14 | *userspace* |
 
-**That is a specific suspicion rather than a general one.** Kernel output goes
-through the 8250 *console* path, which polls `THRE`. `/init`'s writes go
-through the *tty* path, which is interrupt-driven - it enables `THRI` and
-waits. So the phase that breaks is exactly the phase that depends on a UART
-interrupt being delivered through the PLIC, and that is the one link in the
-interrupt chain this project has never proved anywhere: the hardware Linux
-boot only ever *probed* the PLIC, and `BOARD=ulx3s85-plictest` cannot be built
-because of the margin these changes exist to fix.
+**That was a specific suspicion, and it has since been tested and did not hold
+up.** Kernel output goes through the 8250 *console* path, which polls `THRE`;
+`/init`'s writes go through the *tty* path, which enables `THRI` and waits for
+an interrupt. So the phase that breaks is the phase that depends on a UART
+interrupt reaching a handler through the PLIC - which made it the prime
+suspect, and which was the one link in the interrupt chain never proved
+anywhere.
 
-Whether the fetch change perturbs interrupt delivery, or merely exposes
-something already fragile in it, is not established. What is established is
-where to look, and that it is not the instruction cache.
+`software/soc/plictest.c` now proves it, in simulation:
+
+```
+  S-mode took the UART interrupt    ok
+  claimed source 1, the UART        ok
+```
+
+Source 1 driven by `rtl/uart.v`, through the PLIC, into `mip.SEIP`, taken by
+an S-mode handler, claimed and completed. **The path works.** So the userspace
+slowdown is not "the UART interrupt never arrives", and the suspicion above is
+recorded as one that was checked rather than one that was right.
+
+That makes three hypotheses tried and dropped for this failure - the stall
+logic, the instruction cache, and now interrupt delivery. What is left is
+narrower for it: the interaction between the fetch stalls and interrupt
+*timing*, or something in the tty path's use of the UART that a bare-metal
+ETBEI trigger does not reproduce. Neither has been tested.
 
 ### What would actually work
 
