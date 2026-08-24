@@ -1246,6 +1246,13 @@ the PLIC - the one link in the interrupt chain never proved on hardware or in
 a bare-metal test on this design. fpga/README.md has the four variants and
 the two wrong diagnoses that preceded this one.
 
+**Measured 2026-08-24: `BOARD=ulx3s85` closes 0 of 6 seeds**, routed
+22.44-24.14 MHz against a 25 MHz constraint. The headline target now joins
+`-plictest` in not building. The critical path is `CPU.pc`-sourced in four of
+those six seeds and `BUSADAPT.dc_tag`-sourced in the other two, both 23 logic
+levels deep and both routing-dominated. `fpga/README.md` has the numbers, the
+two path shapes, and why this is not called a regression.
+
 **The timing margin has stopped being a risk and started blocking work.**
 `BOARD=ulx3s85-plictest` - one of the three peripheral bitstreams added to
 close the last simulation-only gaps - failed to close timing on four
