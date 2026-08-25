@@ -156,7 +156,7 @@ SD_BLOCKS = 128
         mmuimage plicimage uart16550image \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
-        linux_trapdiff
+        linux_trapdiff linux-if-built
 
 all: sim
 
@@ -1118,7 +1118,34 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_uart16550 sim_uartload sim_jtag \
-        uartload-host check-program isa cosim formal
+        uartload-host check-program isa cosim linux-if-built formal
+
+# ---- the Linux boot, when there is a kernel to boot ----
+#
+# `sim_linux` cannot be a plain prerequisite of `verify`: it needs a kernel
+# tarball off the network, and a gate that fails on a machine that has not run
+# build-linux.sh is a gate people delete. So it runs when the image is there
+# and says so loudly when it is not.
+#
+# It is here because of a specific incident. PR #49 registered the peripheral
+# bridge's ack, recovered the timing margin, and **broke the Linux boot**: the
+# supervisor-external interrupt count went from 50 to 87,339 and userspace
+# never finished starting. It passed `make verify` on both cores and all eight
+# CI jobs, because the longest thing this project runs was in none of them.
+#
+# Every peripheral test still passed too - sim_plic claims and completes one
+# interrupt correctly. What broke needs a driver claiming and completing
+# thousands, which only Linux does here. docs/practices.md section 44.
+linux-if-built:
+	@if [ -f $(LINUX_IMAGE) ]; then \
+	    $(MAKE) --no-print-directory sim_linux; \
+	else \
+	    echo "==================================================="; \
+	    echo "sim_linux SKIPPED - $(LINUX_IMAGE) is not built."; \
+	    echo "This is the gate that would have caught PR #49."; \
+	    echo "  ./software/linux/build-linux.sh   (needs the network)"; \
+	    echo "==================================================="; \
+	fi
 
 clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \

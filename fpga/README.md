@@ -246,8 +246,9 @@ flashing — several targets write that one filename.
 
 ### One of them did not build, and now does
 
-**Resolved by [#49](https://github.com/AravindRajeshkanna/vernier-rv32/pull/49).**
-All three peripheral targets close on the *first* seed:
+**Was resolved by [#49](https://github.com/AravindRajeshkanna/vernier-rv32/pull/49),
+which has since been reverted for breaking the Linux boot.** With it applied,
+all three peripheral targets closed on the *first* seed:
 
 | target | seed 1 | bitstream |
 |---|---|---|
@@ -452,7 +453,16 @@ Neither change is attempted here. What is recorded is that the head was the
 documented target and the tail is the larger and more general one, measured
 rather than argued.
 
-#### The tail was eight lines, and it moved the distribution
+#### The tail was eight lines, it moved the distribution, and it broke Linux
+
+> **Reverted.** Everything in this subsection is accurate about timing and
+> was shipped as PR #49. It also broke the Linux boot — supervisor-external
+> interrupts went from 50 to 87,339 and userspace never finished starting —
+> and it is out of the tree. Kept because the timing measurement stands and
+> the next attempt should start from it, not repeat it. See
+> [practices.md §44](../docs/practices.md).
+
+
 
 `rtl/soc/wb_periph_bridge.v` acked combinationally — `assign wb_ack = wb_cyc
 && wb_stb`, zero wait states, matching peripherals that answer
@@ -468,9 +478,10 @@ data captured on the edge that ends it, gives:
 | before | 6 | 23.42 | 23.61 | 22.44–24.14 | **0 of 6** |
 | after | 6 | **24.57** | **24.56** | 23.18–25.92 | **2 of 6** |
 
-**`BOARD=ulx3s85` produces a bitstream again.** Same toolchain, same seeds,
+**`BOARD=ulx3s85` produced a bitstream again.** Same toolchain, same seeds,
 one variable — which is what makes this a comparison and PR #28's attempt not
-one.
+one. The timing result is real; the change that produced it is not in the
+tree, because of what else it did.
 
 The mechanism was checked, not just the outcome. Seed 6's critical path
 before ran `dc_tag → ex_mem_mem_we → BUS.sel_m1 → CLINT.addr → …`; after, it

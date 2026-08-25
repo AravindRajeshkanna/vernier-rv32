@@ -1253,14 +1253,20 @@ those six seeds and `BUSADAPT.dc_tag`-sourced in the other two, both 23 logic
 levels deep and both routing-dominated. `fpga/README.md` has the numbers, the
 two path shapes, and why this is not called a regression.
 
-**~~The timing margin has stopped being a risk and started blocking work.~~
-Fixed.** `BOARD=ulx3s85-plictest` failed to close timing on four consecutive
+**The timing margin has stopped being a risk and started blocking work — and
+the first fix for it had to be reverted.** `BOARD=ulx3s85-plictest` failed to close timing on four consecutive
 seeds and could not be built. All three peripheral bitstreams now close on the
-first seed at 25.28 MHz, after registering the peripheral bridge's ack (#49) -
+first seed at 25.28 MHz *with* the peripheral bridge's ack registered (#49) -
 the margin was going into a combinational round trip from the CPU to an MMIO
 slave and back into the stall network, not into the fetch path this file
-previously blamed. **None of the three has been on a board**, which is now the
-open half.
+previously blamed.
+
+**That change is reverted.** It broke the Linux boot: supervisor-external
+interrupts went from 50 to 87,339 and userspace never finished starting. The
+timing analysis stands and the fix does not. Whatever replaces it has to add
+latency to an MMIO access without disturbing the PLIC claim/complete loop,
+which is now the best-characterised bug in the project - see
+[practices.md §44](practices.md).
 
 **The timing margin is what gates the rest of it**, and one attempt at the
 critical path has been made and reverted — `fpga/README.md` has the path, the
