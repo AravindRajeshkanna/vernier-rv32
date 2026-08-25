@@ -966,6 +966,7 @@ module cpu_core #(
 
     // CSR read/write (RMW in one cycle - see csr_file.v)
     wire [31:0] csr_rdata;
+    wire [31:0] csr_rdata_rmw;
     wire [31:0] csr_mtvec, csr_stvec, csr_mepc, csr_sepc;
     wire        csr_trap_to_s;
     wire [31:0] csr_mie, csr_mip, csr_mideleg;
@@ -975,8 +976,11 @@ module cpu_core #(
     always @(*) begin
         case (id_ex_funct3[1:0])
             2'b01:   csr_new_value = csr_op_operand;                 // CSRRW/CSRRWI
-            2'b10:   csr_new_value = csr_rdata | csr_op_operand;     // CSRRS/CSRRSI
-            2'b11:   csr_new_value = csr_rdata & ~csr_op_operand;    // CSRRC/CSRRCI
+            // RS/RC compute from `csr_rdata_rmw`, not `csr_rdata`: for mip,
+            // the live half of SEIP must not write back into its software
+            // half. rd still gets `csr_rdata`, the OR - see csr_file.v.
+            2'b10:   csr_new_value = csr_rdata_rmw | csr_op_operand;  // CSRRS/CSRRSI
+            2'b11:   csr_new_value = csr_rdata_rmw & ~csr_op_operand; // CSRRC/CSRRCI
             default: csr_new_value = csr_rdata;
         endcase
     end
@@ -1075,7 +1079,7 @@ module cpu_core #(
     csr_file CSR (
         .clk(clk), .rst(rst),
         .addr(id_ex_csr_addr), .we(id_ex_valid && id_ex_csr_we && !interrupt_taken && ex_commit),
-        .wdata(csr_new_value), .rdata(csr_rdata),
+        .wdata(csr_new_value), .rdata(csr_rdata), .rdata_rmw(csr_rdata_rmw),
         .trap_en(take_trap), .trap_pc(id_ex_pc), .trap_cause(cause_for_csr), .trap_val(val_for_csr),
         .mtvec_out(csr_mtvec), .stvec_out(csr_stvec), .trap_to_s_out(csr_trap_to_s),
         .mret_en(mret_en), .mepc_out(csr_mepc),

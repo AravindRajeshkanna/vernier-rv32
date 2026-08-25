@@ -247,8 +247,13 @@ flashing — several targets write that one filename.
 ### One of them did not build, and now does
 
 **Was resolved by [#49](https://github.com/AravindRajeshkanna/vernier-rv32/pull/49),
-which has since been reverted for breaking the Linux boot.** With it applied,
-all three peripheral targets closed on the *first* seed:
+which has since been reverted for breaking the Linux boot - a breakage that
+is now root-caused to a latent `mip.SEIP` RMW latch-up in `rtl/csr_file.v`,
+not to the ack.** Any change that reshuffled the boot's cycle-level
+interleaving could arm it ([practices.md §45](../docs/practices.md)). With
+the CSR fix in, Linux boots to the marker with this bridge re-applied, so
+re-landing it is a matter of fresh timing numbers, not new design. With it
+applied, all three peripheral targets closed on the *first* seed:
 
 | target | seed 1 | bitstream |
 |---|---|---|

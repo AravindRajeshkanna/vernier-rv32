@@ -1759,6 +1759,52 @@ runs said this change was safe. They were all correct about what they checked.
 
 ---
 
+## 45. Five unrelated changes "caused" the same bug
+
+The supervisor-external storm - a hart trapping, claiming zero, returning,
+and trapping again, 87,339 times in one 400M-cycle boot - got #49 reverted
+(#51). A signature in the same neighbourhood, user mode 150x slower with the
+traps concentrated in the interrupt-driven tty path, had already condemned
+four fetch-path variants before it. Five changes, all reverted, none of them
+the cause.
+
+The cause sat in the CSR file the whole time. `mip.SEIP` is the OR of a
+software-writable bit and the PLIC's context-1 line, and the privileged spec
+attaches one sentence to that arrangement: "Only the software-writable SEIP
+bit participates in the read-modify-write sequence of a CSRRS or CSRRC
+instruction." This project implemented the OR and not the sentence. So an
+mip RMW executed in a cycle where the line happened to be high - OpenSBI's
+timer handler runs one on every timer event - wrote the line's momentary 1
+into the software half, where nothing ever cleared it, because every later
+RMW read the stuck bit back and rewrote it. In the reproducer the fatal csrc
+landed 1,858 cycles into a UART interrupt's trap entry, at cycle
+131,605,841 of a boot that then spent its remaining 268 million cycles
+storming.
+
+What made it wear five different disguises: the race's outcome is a
+deterministic function of the whole boot's cycle-level interleaving. A given
+build either always hits the window or never does. The tree without your
+change boots; the tree with it storms; both perfectly reproducibly - which
+is indistinguishable from your change being the cause, and five times in a
+row that was the conclusion. (Proven at cycle resolution for #49; for the
+four fetch variants the mechanism fits the symptom but was never traced,
+so it stays a hypothesis.) The tell, obvious only in retrospect: the same
+failure signature attaching itself to *unrelated* changes. A regression
+tracks its cause. A reshuffled dice roll tracks nothing.
+
+*When one signature is "caused" by unrelated changes, stop bisecting changes
+and look for latched state.* The storm survived sret after sret, so
+something was remembering. "Which bit stays set after everything that
+should clear it has run?" pointed at `seip_sw_r` in minutes, after the
+bisections had consumed days.
+
+*A bit built from two OR'd halves needs a test that raises both halves
+against each other.* plictest checked the software half with the line low,
+and the hardware half with the software half clear; both passed on broken
+RTL for as long as the bug existed. The failing case is the cross term - an
+RMW of one half while the other is high - and nothing anywhere exercised
+it. Section 3b now does, and went red on the old RTL in one poll loop.
+
 ---
 
 ## Conventions
