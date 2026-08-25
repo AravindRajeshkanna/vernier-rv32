@@ -244,7 +244,53 @@ Each preloads its program into block RAM, so the boot ROM jumps straight to it
 and the SD card is never touched. `cat fpga/build/ulx3s_top.bit.target` before
 flashing — several targets write that one filename.
 
-### One of them does not build today
+### One of them did not build, and now does
+
+**Resolved by [#49](https://github.com/AravindRajeshkanna/vernier-rv32/pull/49).**
+All three peripheral targets close on the *first* seed:
+
+| target | seed 1 | bitstream |
+|---|---|---|
+| `ulx3s85-plictest` | **25.28 MHz PASS** | yes |
+| `ulx3s85-mmutest` | **25.28 MHz PASS** | yes |
+| `ulx3s85-uarttest` | **25.28 MHz PASS** | yes |
+
+**Identical to two decimal places, and that is not a coincidence.** The three
+board cases set the same `DEVICE`, `TOP`, `LPF`, `BOARD_RTL` and
+`PRELOAD_RAM`, and differ only in `RAM_IMAGE` — the `$readmemh` contents of
+the block RAM. Memory *initialisation data* does not change how logic places
+or routes, so these are one netlist with three programs in it, and on the same
+seed they must give the same Fmax.
+
+That is worth knowing because of what the table above implied. The row
+`ulx3s85-plictest | 0 of 4 | 23.67–24.81 MHz` reads as evidence that
+`plictest` was a heavier design than `ulx3s85` — "the distribution has walked
+downward as the design has grown". It is the same netlist as `ulx3s85-ram`
+with different bytes in the RAM, so those four seeds were four more samples
+from one distribution, not a measurement of a bigger design. §38 again, from
+the other direction: the seed was varying and the netlist was not.
+
+**Only one `$TOP.bit` exists at a time.** All three write
+`fpga/build/ulx3s_top.bit`, so building one replaces the last. The
+`.bit.target` stamp beside it says which, and checking it before flashing is
+the point of it existing:
+
+```
+board:     ulx3s85-uarttest
+built:     2026-08-25T08:33:52Z
+```
+
+The plictest bitstream's stamp, from its own build:
+
+```
+board:     ulx3s85-plictest
+built:     2026-08-25T08:24:37Z
+preloaded: sim/plicimage.hex (from software/soc/plictest.elf)
+boots:     straight into the preloaded program; the SD card is not touched
+```
+
+The rest of this section is what it looked like before, kept because the
+history is the argument for the fix rather than a record of a wrong turn.
 
 `BOARD=ulx3s85-plictest` was run end to end to prove the target works, and it
 **failed to close timing on four consecutive placement seeds**:
@@ -291,10 +337,16 @@ today — which is the second target to stop building, after `-plictest`.
 
 Those are different netlists rather than one experiment with a variable moved
 (§38), so the table is a description and not an attribution. The conclusion it
-supports is weaker than a cause and strong enough to act on: **25 MHz is no
-longer reliably reachable, and a fetch pipeline stage is now blocking three
-things** — this bitstream, hart control in the Debug Module, and any further
-growth of the design.
+supported was weaker than a cause and strong enough to act on: 25 MHz was no
+longer reliably reachable.
+
+**What it was not was a fetch-path problem.** That conclusion — "a fetch
+pipeline stage is now blocking three things" — stood in this file until the
+critical path was printed in full and turned out to spend ~22 ns in a
+combinational round trip to a peripheral. Registering one ack recovered the
+margin. The fetch pipeline stage is still worth doing and is now aimed at the
+path that actually limits the design; it was never what was blocking these
+bitstreams.
 
 **Why `plictest` is the one to flash first.** `riscv-plic: mapped 8 interrupts
 with 1 handlers for 2 contexts` in the Linux transcript is a successful
