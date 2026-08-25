@@ -400,6 +400,39 @@ Neither change is attempted here. What is recorded is that the head was the
 documented target and the tail is the larger and more general one, measured
 rather than argued.
 
+#### The tail was eight lines, and it moved the distribution
+
+`rtl/soc/wb_periph_bridge.v` acked combinationally — `assign wb_ack = wb_cyc
+&& wb_stb`, zero wait states, matching peripherals that answer
+combinationally. So a CPU access to MMIO was the whole round trip in one
+cycle: arbitration, decode, the peripheral, the ack, `dbus_wait`,
+`ex_busy_stall`, `id_ex_stall`, and out to every pipeline register's enable.
+
+Registering the ack, with `p_we`/`p_re` gated to the first cycle and the read
+data captured on the edge that ends it, gives:
+
+| | n | mean | median | range | seeds closing 25 MHz |
+|---|---|---|---|---|---|
+| before | 6 | 23.42 | 23.61 | 22.44–24.14 | **0 of 6** |
+| after | 6 | **24.57** | **24.56** | 23.18–25.92 | **2 of 6** |
+
+**`BOARD=ulx3s85` produces a bitstream again.** Same toolchain, same seeds,
+one variable — which is what makes this a comparison and PR #28's attempt not
+one.
+
+The mechanism was checked, not just the outcome. Seed 6's critical path
+before ran `dc_tag → ex_mem_mem_we → BUS.sel_m1 → CLINT.addr → …`; after, it
+runs `pc → IMMU.tlb_super → imem_addr → ic_tag`, with no peripheral in it at
+all. **The critical path is now the fetch path** — so the fetch pipeline stage
+prescribed above is, as of this change, aimed at the path that actually
+limits the design.
+
+One number in this analysis was wrong on the way through. Seed 5 was read as
+20.09 MHz from a log that was still being written, and that is nextpnr's
+post-placement estimate rather than its routed result — the same two-numbers
+trap recorded further up this file. The routed value is 24.96. Reading a
+running log is reading an intermediate state.
+
 In words: the program counter is translated by the instruction TLB, the
 physical address goes to the bus, the bus decides whether the fetch master is
 granted, and that decision feeds the stall logic that clocks the pipeline
