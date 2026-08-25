@@ -1700,6 +1700,65 @@ choice with a consequence, and the consequence is the entire store path.
 
 ---
 
+## 44. The gate that would have caught it was the one nobody could run
+
+PR #49 registered the peripheral bridge's ack. It recovered the timing margin
+— `ulx3s85` went from 0 of 6 placement seeds to 2 of 6, and three bitstreams
+that could not be built started building. It passed:
+
+- `make verify` — 81 riscv-tests, 84 co-simulated traces, formal
+- `make verify_ooo` — the same, on the wide core
+- all **eight** CI jobs
+- `sim_plic`, which exists specifically to prove an interrupt is delivered,
+  claimed and completed in S-mode
+
+**And it broke the Linux boot.** Supervisor-external interrupts went from 50 to
+**87,339**, userspace never finished starting, and the run timed out at 400
+million cycles instead of reaching the marker at 133 million.
+
+Nothing in the list above is weak. `sim_plic` claims and completes *one*
+interrupt and the claim returns the right source. What broke needs a driver
+claiming and completing thousands in a loop, and the only thing here that does
+that is Linux — which was in no gate at all, because it needs a kernel tarball
+off the network and `make verify` has to work on a machine that has not
+fetched one.
+
+**The hole was structural and known.** `sim_linux` was documented as "not in
+`verify` because it needs a kernel", stated as a reason and never revisited.
+That is the same sentence shape as `+checkmmu`'s two `continue`s in §41: a
+defensible exclusion, written down once, that quietly becomes the place
+defects live.
+
+`linux-if-built` is the fix, and the shape of it is the point: **run the gate
+when it can run, and say loudly when it cannot.**
+
+```
+sim_linux SKIPPED - software/linux/build/Image is not built.
+This is the gate that would have caught PR #49.
+```
+
+A gate that hard-fails on a machine missing an optional dependency gets
+deleted. A gate that silently passes is worse than no gate. Announcing the
+skip is the only version that survives contact with more than one machine.
+
+**Three things worth taking from it.**
+
+*Coverage of a mechanism is not coverage of its use at scale.* `sim_plic`
+proved the interrupt path works. The defect was in what happens on the
+thousandth claim, and no amount of care in a single-shot test reaches that.
+§40 was the same lesson about dual issue: the mechanism ran, but 0.22% of the
+time.
+
+*The longest thing a project runs is where regressions hide, and it is the
+thing least likely to be in a gate*, because it is slow, or needs the network,
+or needs a board. That is a reason to work harder at including it, not a
+reason it is excused.
+
+*A green suite is evidence about the suite.* Eight CI jobs and two full local
+runs said this change was safe. They were all correct about what they checked.
+
+---
+
 ---
 
 ## Conventions

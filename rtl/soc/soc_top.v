@@ -371,7 +371,6 @@ module soc_top #(
     wire [31:0] clint_addr, clint_wdata, clint_rdata;
     wire        clint_we, clint_re;
     wb_periph_bridge CLINT_BR (
-        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_CLINT]), .wb_we(s_we),
         .wb_adr(s_adr), .wb_dat_w(s_dat_w),
         .wb_dat_r(s_dat_r[32*S_CLINT +: 32]), .wb_ack(s_ack[S_CLINT]),
@@ -397,7 +396,6 @@ module soc_top #(
     wire [31:0] plic_addr, plic_wdata, plic_rdata;
     wire        plic_we, plic_re;
     wb_periph_bridge PLIC_BR (
-        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_PLIC]), .wb_we(s_we),
         .wb_adr(s_adr), .wb_dat_w(s_dat_w),
         .wb_dat_r(s_dat_r[32*S_PLIC +: 32]), .wb_ack(s_ack[S_PLIC]),
@@ -418,7 +416,6 @@ module soc_top #(
     wire [31:0] uart_addr, uart_wdata, uart_rdata;
     wire        uart_we, uart_re;
     wb_periph_bridge UART_BR (
-        .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_UART]), .wb_we(s_we),
         .wb_adr(s_adr), .wb_dat_w(s_dat_w),
         .wb_dat_r(s_dat_r[32*S_UART +: 32]), .wb_ack(s_ack[S_UART]),
