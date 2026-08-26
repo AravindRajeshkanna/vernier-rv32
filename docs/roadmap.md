@@ -908,8 +908,14 @@ Two caches now rest on that estimate instead of one.
 - **Spatial locality: more than one word per line.** Both caches fetch exactly
   the word that missed. The D-cache's residual 3.7% miss rate is compulsory,
   which is the miss a fill state machine reaches and a bigger cache does not.
-- **Interrupt-driven UART.** The interrupt is already wired to the PLIC; the
-  driver simply polls. Small, independent.
+- **~~Interrupt-driven UART~~** — done. `software/soc/uartirq.c` (`make
+  sim_uartirq`) is a driver that queues a message, arms ETBEI once, and lets
+  the S-mode handler drain it one interrupt per byte, instead of every
+  `put_char` in this repository polling LSR.THRE. Not a CoreMark number -
+  CoreMark does no UART I/O in its measured loop, so this doesn't move that
+  score - the thing it proves is that the CPU is free during the transfer: a
+  5,000-iteration unrelated busy loop next to the send finds the transfer
+  already done after 218 of them.
 - **Hardware PTE accessed/dirty update** in the MMU walker, so it does not
   fault when software has not pre-set those bits.
 

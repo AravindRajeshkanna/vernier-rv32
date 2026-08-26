@@ -41,6 +41,8 @@
 #                         interrupt delivered to S-mode through context 1
 #   make sim_uart16550 -> the ns16550 map: DLAB, the divisor latch, IIR, and
 #                         the UART's interrupt arriving through PLIC source 1
+#   make sim_uartirq   -> a driver that actually uses that interrupt to send,
+#                         instead of polling THRE - docs/roadmap.md Phase 3
 #   make sim_uartload  -> the boot ROM's UART loader: a host sends a program
 #                         over the serial line and the SoC runs it from SDRAM
 #   make uartload-host -> the host script against a fake board on a pty
@@ -150,7 +152,7 @@ SD_BLOCKS = 128
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         sim_jtag \
-        sim_mmusdram sim_plic sim_uart16550 \
+        sim_mmusdram sim_plic sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
         linuximage linuxpayload sim_linux \
         mmuimage plicimage uart16550image \
@@ -958,6 +960,31 @@ sim/sim_plic.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
 	cd sim && $(VVP) sim_plic.out $(VVP_DUMP)
 
+# ---- interrupt-driven UART TX: using the interrupt, not just proving it ----
+#
+# plictest.c proves the PLIC delivers the UART's interrupt to S-mode, and
+# disarms it the moment it has. software/soc/uartirq.c is the driver that was
+# still missing: a ring buffer fed one byte per interrupt, and a demonstration
+# that the hart does unrelated work while the transfer is in flight instead of
+# blocking on LSR.THRE the way every put_char in this repository still does.
+UARTIRQTEST_SRCS = $(SOCRT_SRCS) software/soc/uartirq.c
+
+software/soc/uartirq.elf: $(UARTIRQTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	    -o $@ $(UARTIRQTEST_SRCS)
+
+sim/uartirqimage.hex: software/soc/uartirq.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/uartirq.elf software/soc/uartirq.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/uartirq.bin > $@
+
+sim/sim_uartirq.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uartirqimage.hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+
+sim_uartirq: sim/bootrom.hex sim/uartirqimage.hex sim/sim_uartirq.out
+	cd sim && $(VVP) sim_uartirq.out $(VVP_DUMP)
+
 # ---- Sv32 with the page tables in external SDRAM ----
 #
 # The test for the two changes that let a page table live in DRAM at all:
@@ -1117,7 +1144,7 @@ verify_ooo:
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
-        sim_mmusdram sim_plic sim_uart16550 sim_uartload sim_jtag \
+        sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         uartload-host check-program isa cosim linux-if-built formal
 
 # ---- the Linux boot, when there is a kernel to boot ----
@@ -1166,12 +1193,14 @@ clean:
 	       sim/sim_mmusdram.out sim/mmuimage.hex \
 	       sim/sim_plic.out sim/plicimage.hex \
 	       sim/sim_uart16550.out sim/uart16550image.hex \
+	       sim/sim_uartirq.out sim/uartirqimage.hex \
 	       sim/sim_jtag.out sim/jtagram.hex sim/jtag.log \
 	       sim/sbiimage.hex sim/opensbi.log sim/linuximage.hex sim/linux.log \
 	       software/linux/build/sdram.bin \
 	       software/opensbi/build/sbi_stub.elf \
 	       software/opensbi/build/sbi_stub.bin \
 	       software/soc/uarttest.elf software/soc/uarttest.bin \
+	       software/soc/uartirq.elf software/soc/uartirq.bin \
 	       software/soc/plictest.elf software/soc/plictest.bin \
 	       software/soc/mmutest.elf software/soc/mmutest.bin \
 	       sim/sim_uartload.out sim/uartimage.hex sim/wave_uartload.vcd \
