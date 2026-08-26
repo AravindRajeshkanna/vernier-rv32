@@ -8,7 +8,8 @@ which matters more than the total count.
 |---|---|
 | UART console | ✅ working, used by every software flow here |
 | Instruction tracer | ✅ working, and load-bearing (drives the Spike co-simulation) |
-| JTAG / RISC-V Debug Module / OpenOCD | ❌ not implemented |
+| JTAG TAP / Debug Module (System Bus Access) | ✅ working, gated in `make verify` |
+| Halt/resume, register access, breakpoints, OpenOCD/gdb | ❌ not implemented |
 
 ## UART console
 
@@ -120,28 +121,26 @@ so treat a surprising reading as a question about the probe first:
 | `+pipetrace=FROM:TO:FILE` | one line per cycle over a window: fetch PC, the PC and instruction in IF/ID, the writeback, and the redirect and prediction state. For a 33-million-cycle boot where a waveform is not an option - an unwindowed VCD of one once filled a 228 GB disk. |
 | `+stopon=TEXT` | end the run when TEXT comes out of the UART. Software this project did not write ends a boot by printing, not by storing a verdict word. |
 
-## JTAG and OpenOCD: not implemented
+## OpenOCD/gdb: still not implemented
 
-This is the honest gap. `open-ocd` is a `brew install` away and
-`riscv-software-src/riscv/riscv-openocd` is in the tap already used by this
-project's toolchain, so the host side is not the obstacle. The hardware is.
+**Update:** the two pieces below marked done were built after the "three
+pieces" analysis in this section was first written, and shipped the JTAG TAP
+and Debug Module (#34). The section is kept as-is rather than rewritten,
+because the remaining gap (item 3) is exactly the reasoning that was already
+here — only the status of items 1 and 2 changed.
 
-### What it would actually take
+A working `openocd` → `gdb` flow needs three pieces:
 
-A working `openocd` → `gdb` flow needs three pieces, none of which exist
-here:
+1. ~~**A JTAG TAP**~~ — **done.** `rtl/debug/jtag_tap.v`: the 4-wire state
+   machine (TCK/TMS/TDI/TDO), an IDCODE register, and the two RISC-V
+   debug-transport registers `dtmcs` and `dmi`, crossing from the JTAG clock
+   domain into the core clock domain through `rtl/debug/dmi_cdc.v`.
 
-1. **A JTAG TAP** — the 4-wire state machine (TCK/TMS/TDI/TDO), an IDCODE
-   register, and the two RISC-V debug-transport registers `dtmcs` and `dmi`.
-   This is the smallest piece and the most mechanical. It also has to cross
-   from the JTAG clock domain into the core clock domain, which means real
-   synchronizers, and clock-domain crossings are the one part of this design
-   that could not be verified in simulation the way everything else here is.
-
-2. **A Debug Module** (RISC-V Debug Spec 0.13/1.0) — the `dmcontrol`,
-   `dmstatus`, `hartinfo`, `abstractcs`, `command` and `data0..n` registers,
-   plus either a program buffer or abstract-command access to registers and
-   memory. This is where most of the work is.
+2. ~~**A Debug Module**~~ — **partly done.** `rtl/debug/dm.v` implements the
+   `dmcontrol`/`dmstatus`/DMI register set and System Bus Access (a fourth
+   Wishbone master that reads and writes memory without the hart's
+   cooperation). It does not implement the program buffer or abstract-command
+   register/memory access, which is what the rest of this section is about.
 
 3. **Debug mode in the core** — and this is the part that reaches into
    `cpu_core.v` rather than bolting on beside it:
