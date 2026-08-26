@@ -39,6 +39,11 @@ module cpu_wb (
     input  wire [31:0] imem_addr,
     output wire [31:0] imem_rdata,
     output wire        ibus_wait,
+    // High while `imem_addr` is a held address from an in-flight ITLB walk,
+    // not a translation of the fetch the core actually wants. See the
+    // `fetch_hit`/`iwb_cyc` gating below and rtl/cpu_core.v's `itlb_pa_hold`
+    // comment for why this exists.
+    input  wire        itlb_wait_stall,
 
     input  wire [31:0] dmem_addr,
     input  wire [31:0] dmem_wdata,
@@ -128,7 +133,18 @@ module cpu_wb (
     wire [IC_IDX_BITS-1:0] ic_idx     = imem_addr[IC_IDX_BITS+1:2];
     wire [IC_TAG_BITS-1:0] ic_tag_now = imem_addr[31:IC_IDX_BITS+2];
 
-    wire fetch_hit = ic_valid[ic_idx] && (ic_tag[ic_idx] == ic_tag_now);
+    wire fetch_hit_raw = ic_valid[ic_idx] && (ic_tag[ic_idx] == ic_tag_now);
+
+    // While an ITLB walk is in flight, `imem_addr` is the held address from
+    // before the walk started (rtl/cpu_core.v's `itlb_pa_hold`), not a
+    // translation of the fetch the core actually wants. That held address
+    // happening to already be cached is what has kept the fetch off the bus
+    // during a walk so far - convenient, but never enforced by anything.
+    // `itlb_wait_stall` makes it explicit instead of accidental: neither a
+    // cache hit nor a new bus request (see `iwb_cyc` below) is reported
+    // while it's high, so correctness stops depending on which address
+    // happens to be sitting in `imem_addr` mid-walk.
+    wire fetch_hit = fetch_hit_raw && !itlb_wait_stall;
 
     // ---- the fetch currently on the bus ----
     // Now that memory takes a wait state, a fetch spans more than one cycle,
@@ -144,7 +160,13 @@ module cpu_wb (
 
     wire [31:0] bus_addr = f_busy ? f_addr : imem_addr;
 
-    assign iwb_cyc = f_busy || !fetch_hit;
+    // `f_busy` alone is enough to keep a transfer already in flight going -
+    // it was issued before `itlb_wait_stall` had any say, and Wishbone
+    // requires `cyc`/`stb` to stay asserted until the ack regardless of
+    // anything that changes about `imem_addr` in the meantime (see
+    // `bus_addr` below). Only the decision to issue a *new* request is
+    // gated on the walk.
+    assign iwb_cyc = f_busy || (!itlb_wait_stall && !fetch_hit_raw);
     assign iwb_stb = iwb_cyc;
     assign iwb_adr = {bus_addr[31:2], 2'b00};
 

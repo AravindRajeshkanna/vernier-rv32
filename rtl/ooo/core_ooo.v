@@ -135,6 +135,10 @@ module core_ooo #(
     // instruction memory port (physical address, post-translation if active)
     output wire [31:0] imem_addr,
     input  wire [31:0] imem_rdata,
+    // High while an ITLB walk for the fetch we want has not yet resolved -
+    // see rtl/cpu_core.v's port of the same name and its `itlb_pa_hold`
+    // comment for the full account.
+    output wire         itlb_wait_stall,
 
     // data memory port (physical address, post-translation if active)
     output wire [31:0] dmem_addr,
@@ -336,7 +340,7 @@ module core_ooo #(
     wire itlb_answer_stale = itlb_pa_va != pc;
     wire itlb_ok           = itlb_resolved && !itlb_answer_stale;
 
-    wire itlb_wait_stall = itlb_req && !itlb_ok;
+    assign itlb_wait_stall = itlb_req && !itlb_ok;
     wire itlb_fault_now  = itlb_req && itlb_ok && itlb_fault;
     // ---- what to fetch while the ITLB is still walking ----
     //
@@ -348,12 +352,13 @@ module core_ooo #(
     // `!x` is `x`. One unresolved fetch address wedges main memory for the
     // rest of the simulation.
     //
-    // Holding the last address that *was* valid keeps the wire defined and,
-    // because that address was fetched moments ago and is still in the
-    // instruction cache, issues no bus cycle at all - which matters now that
-    // the page-table walkers are a bus master competing for the same
-    // interconnect. See rtl/cpu_core.v for the full account and
-    // software/soc/mmutest.c for the test that found it.
+    // Holding the last address that *was* valid keeps the wire defined.
+    // Whether that address hits the cache no longer matters here the way it
+    // used to: `itlb_wait_stall` above is now wired into rtl/soc/cpu_wb.v to
+    // keep a stale address from hitting or issuing a request while a walk is
+    // in flight, rather than relying on it happening to hit. See
+    // rtl/cpu_core.v for the full account and software/soc/mmutest.c for the
+    // test that found the X-propagation bug this hold exists for.
     reg [31:0] itlb_pa_hold;
     wire [31:0] fetch_phys_addr =
         itlb_req ? (itlb_ok ? itlb_pa : itlb_pa_hold) : pc;

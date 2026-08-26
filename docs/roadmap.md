@@ -1236,21 +1236,24 @@ no way to read it.
 `make verify`; `formal/fv_interconnect.v` proves the arbitration with the
 fourth master.
 
-**Before the timing margin: something in user mode depends on the fetch
-path's behaviour during an ITLB walk.** Four attempts at that path all left
-the kernel boot untouched - within 1,301 cycles of each other to `Freeing
-unused` - and all made *user mode* at least 150x slower, with the traps
-concentrating in `uart_write`. That is the interrupt-driven tty path rather
-than the polled console one, which points at UART interrupt delivery through
-the PLIC - the one link in the interrupt chain never proved on hardware or in
-a bare-metal test on this design. fpga/README.md has the four variants and
-the two wrong diagnoses that preceded this one. A third candidate now exists
-and is the strongest: the `mip.SEIP` RMW latch-up of
-[practices.md §45](practices.md) produces exactly "user mode crawls in the
-interrupt-driven tty path", and its trigger is any reshuffle of the boot's
-interleaving - which a fetch-path change is. Unproven for these four
-variants; re-running one of them on top of the CSR fix is the cheap
-experiment that would settle it.
+**Before the timing margin: something in user mode depended on the fetch
+path's behaviour during an ITLB walk - and for the simplest of four
+attempts, it did not.** All four left the kernel boot untouched - within
+1,301 cycles of each other to `Freeing unused` - and all made *user mode* at
+least 150x slower, with the traps concentrating in `uart_write`. That is the
+interrupt-driven tty path rather than the polled console one, which pointed
+at UART interrupt delivery through the PLIC - the one link in the interrupt
+chain never proved on hardware or in a bare-metal test on this design.
+fpga/README.md has the four variants and the two wrong diagnoses that
+preceded the right one: the `mip.SEIP` RMW latch-up of
+[practices.md §45](practices.md), which produces exactly "user mode crawls
+in the interrupt-driven tty path" and arms on any reshuffle of the boot's
+interleaving - which every one of the four fetch-path variants is, by
+construction. Re-running the simplest of them - explicit gating instead of
+an accidental cache hit, `rtl/cpu_core.v`'s `itlb_wait_stall` - on top of the
+CSR fix settled it: both cores boot within 15,000 cycles of baseline, not
+150x slower. [fpga/README.md has the numbers](../fpga/README.md); the other
+three variants were not re-run.
 
 **Measured 2026-08-24: `BOARD=ulx3s85` closes 0 of 6 seeds**, routed
 22.44-24.14 MHz against a 25 MHz constraint. The headline target now joins
