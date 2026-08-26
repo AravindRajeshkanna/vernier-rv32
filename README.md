@@ -148,6 +148,8 @@ docs/
   debug.md       UART, tracer, and an honest account of the missing JTAG
   toolchain.md   every tool and version this was built with, and which
                  flow uses which
+  comparison.md  how this sits next to SERV, PicoRV32, Ibex, VexRiscv,
+                 NEORV32, SweRV, Rocket Chip and CVA6 - and where it's behind
 dts/
   soc.dts        device tree describing the SoC (`make dtb`)
 fpga/
@@ -630,6 +632,7 @@ the same as being fixed.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
 | [docs/practices.md](docs/practices.md) | The working rules — twenty-seven of them, each attached to the incident on this repo that produced it |
 | [docs/roadmap.md](docs/roadmap.md) | Where this goes next, in phases, in dependency order |
+| [docs/comparison.md](docs/comparison.md) | How this compares to SERV, PicoRV32, Ibex, VexRiscv, NEORV32, SweRV, Rocket Chip and CVA6 |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Reporting privilege-boundary and MMU bugs, and an honest scope statement |
 | [AI_USAGE.md](AI_USAGE.md) | Disclosure of how this project was built, and the policy for contributions |
