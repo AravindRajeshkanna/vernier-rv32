@@ -1277,9 +1277,11 @@ an mip CSRRS/CSRRC computed its write-back from the OR'd live SEIP and
 latched the PLIC's momentarily-high line into the software half, permanently.
 Fixed in `rtl/csr_file.v` with the spec's own carve-out; `plictest` section
 3b is the directed regression, and Linux boots to the marker with #49's
-registered ack re-applied on top of the fix. **Re-landing the registered ack
-is unblocked** - as its own change, with fresh nextpnr numbers, since the
-timing evidence is a build old. [practices.md §45](practices.md) is the
+registered ack re-applied on top of the fix. **The registered ack is
+re-landed**, with fresh nextpnr numbers: `ulx3s85` closes on seed 3 of 6 at
+25.96 MHz routed (2026-08-26), and all three peripheral bitstreams still
+close on the first seed at 25.28 MHz - unchanged, because the ack itself is
+byte-for-byte what #49 shipped. [practices.md §45](practices.md) is the
 post-mortem.
 
 **The timing margin is what gates the rest of it**, and one attempt at the

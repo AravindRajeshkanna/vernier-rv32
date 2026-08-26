@@ -13,9 +13,13 @@ proven on silicon is the SD card, video scan-out, and PLIC interrupt
 *delivery* — the controller is probed and mapped, but nothing has yet made it
 fire on hardware.
 
-Timing is the one number that should worry you: the margin at 25 MHz is
-approximately zero and two of six placement seeds fail to close. See [Fmax is
-a distribution](#fmax-is-a-distribution-not-a-number).
+Timing is the one number that should worry you: with the peripheral bridge's
+registered ack back in the tree (re-landed after the mip.SEIP fix, see
+["one of them did not build, and now
+does"](#one-of-them-did-not-build-and-now-does)), a full six-seed sweep of
+this design closes on only 2 of 6 seeds (23.18–25.92 MHz). `synth_ecp5.sh`
+retries seeds and stops at the first close — the normal build closes by seed
+3. See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number).
 
 | Artifact | Status |
 |---|---|
@@ -24,7 +28,7 @@ a distribution](#fmax-is-a-distribution-not-a-number).
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
 | Resource usage | ✅ **measured** — 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F; the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ⚠️ **24.69–27.63 MHz** (85F, six placement seeds) — **two of six land under the board's 25 MHz and nextpnr fails the build**. Margin is approximately zero; `synth_ecp5.sh` retries seeds. See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
+| **Fmax with I/O constrained** | ⚠️ **23.18–25.92 MHz** (85F, six placement seeds, with the registered ack) — **4 of 6 land under the board's 25 MHz**. Margin is thin; `synth_ecp5.sh` retries seeds and normally closes by seed 3 (confirmed 2026-08-26: seed 3, 25.96 MHz routed). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
@@ -467,7 +471,18 @@ rather than argued.
 > the next attempt should start from it, not repeat it. See
 > [practices.md §44](../docs/practices.md).
 
-
+> **Re-landed.** The bridge went back in unchanged from what this subsection
+> describes, on top of the mip.SEIP RMW fix ([practices.md
+> §45](../docs/practices.md)) that the Linux regression actually traced to —
+> see ["one of them did not build, and now
+> does"](#one-of-them-did-not-build-and-now-does) above. Re-measured
+> (2026-08-26), `ulx3s85` closes on seed 3 of 6 at **25.96 MHz routed** (PASS
+> at 25.00 MHz); seeds 1 and 2 route at 23.43 and 24.74 MHz (FAIL). Critical
+> path is still `CPU.pc`-sourced, same shape as before — through
+> `IMMU.tlb_super`, the bus select signals and the stall network — ending
+> this time at `CPU.if_id_pred_target`'s clock enable: 38.51 ns total (7.91 ns
+> logic, 30.60 ns routing, 79% of it routing). One seed is one sample, not the
+> distribution; see [Fmax is a distribution](#fmax-is-a-distribution-not-a-number).
 
 `rtl/soc/wb_periph_bridge.v` acked combinationally — `assign wb_ack = wb_cyc
 && wb_stb`, zero wait states, matching peripherals that answer
