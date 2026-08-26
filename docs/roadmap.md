@@ -903,11 +903,106 @@ LUT RAM rather than block RAM, and 256 entries of data plus 22-bit tags is
 roughly another 900 LUT4s on an estimate rather than a place-and-route result.
 Two caches now rest on that estimate instead of one.
 
+### Spatial locality: measured six ways, and it doesn't pay for itself here
+
+Both caches fetch exactly the word that missed - no line fill, no burst.
+The D-cache's residual 3.7% miss rate is compulsory, which is the miss a
+fill state machine reaches and a bigger cache does not, and that gap is
+exactly what "more than one word per line" was supposed to close. Six
+configurations were built, measured, and none beat the one-word baseline
+on CoreMark - 454,010 cycles. In order:
+
+| Configuration | Cycles | vs. baseline |
+|---|---|---|
+| Baseline (both caches, one word/line) | 454,010 | — |
+| 4-word line, both caches, fixed-order fill | 510,710 | +12.5% |
+| 4-word line, both caches, critical-word-first | 495,496 | +9.1% |
+| 2-word line, both caches, critical-word-first | 469,466 | +3.4% |
+| 2-word line, D-cache only (I-cache reverted) | 455,036 | +0.23% |
+| 2-word line, D-cache only, preemptable background fetch | 454,982 | +0.21% |
+| 2-word line, D-cache only, capacity doubled (256 sets, not 128) | hung | not measured |
+
+**The fixed-order attempt** filled the whole line before reporting the
+miss resolved, in address order. Simple, and measurably worse: losing the
+one-word cache's same-cycle bypass and paying up to three extra round
+trips before the *first* word ever reached the core cost more than the
+improved hit rate gave back.
+
+**Critical-word-first fixed that specific problem** - the missed word is
+fetched first and delivered the moment its own transfer acks, exactly the
+one-word cache's latency, with the rest of the line filling in behind it
+while the core is already running. Still a regression, at both four words
+and two: fetch happens every cycle, so even a modest "also fetch the
+neighbor" tax multiplies fast, and it dominated the two-word, both-caches
+measurement - 38,054 of 44,016 tallied tax cycles came from the
+instruction side, against 5,962 from the data side, despite the two
+having a similar miss count. Reverting the I-cache to its original
+one-word form and keeping only the (much cheaper, near-break-even)
+D-cache widening is what got the gap down to +0.23% - a result close
+enough to call settled, not close enough to call a win.
+
+**Closing the last +0.23% needed the background fetch to be preemptable**
+- deferred, not just queued, so a store or an unrelated hit could use the
+bus instead of waiting on a fetch nobody but this adapter cared about yet.
+It closed 54 of the remaining 1,026 cycles. Diminishing returns at every
+step: +12.5% → +9.1% → +3.4% → +0.23% → +0.21%, each increment of
+sophistication buying less than the one before it.
+
+**Why even the best variant didn't cross zero, checked against how real
+cores do this:** every configuration above held total D-cache capacity
+fixed at 256 words and widened the line by *shrinking the set count*
+(256 sets → 128 for a two-word line). VexRiscv's cache plugins, Rocket
+Chip and Ibex all widen lines by growing total capacity instead, precisely
+to avoid this: fewer sets means more addresses alias to the same line, and
+a small cache already has few sets to spare. CoreMark's list, matrix and
+state-processing sub-benchmarks each hold their own working set resident
+at once, which is exactly the access pattern most exposed to the resulting
+conflict misses. The capacity-preserving variant - line width doubled,
+set count held at 256, so total capacity doubles to 512 words - was
+built to test that directly and hung before producing a number: a third
+distinct bug, on top of the two below, not debugged before the investigation
+was closed out. Area was never the obstacle - the existing 256-word cache
+costs roughly 900 LUT4s against an 85F's 84k.
+
+**Three real, previously-latent bugs surfaced along the way**, each found
+by a genuine hang or a silent infinite loop, not by inspection - all fixed
+in the code that produced the numbers above, none shipped because none of
+the surrounding designs were:
+
+1. `dbus_wait` missing a `want &&` guard - stalled the whole pipeline
+   permanently the instant nothing was requesting the data bus, because
+   `ex_busy_stall` (`rtl/cpu_core.v`) folds `dbus_stall` into `pc_freeze`.
+   Unrelated to line width; would have broken any design that touched
+   this signal.
+2. A multi-word fill's tag only updates when the fill completes, but its
+   data words land progressively as each one acks. An address that
+   collides on the same line index while a fill for a *different* line is
+   still in flight could read a line that is part old data, part new - a
+   false hit on a torn line, under a tag that still matched the previous
+   occupant. Fixed by invalidating the line the instant a new fill claims
+   its index, not once the fill finishes.
+3. In the preemptable design, a store could jump the queue ahead of a
+   pending background fetch even when it targeted the *same* line that
+   fetch was for. The store's write-through still reached memory
+   correctly, but `dc_store` requires `dc_present`, which was false until
+   the fetch finished - so the cache's already-resident critical word
+   never picked up the store, and once the line went valid it served that
+   stale word forever. Fixed by excluding same-line accesses from the
+   "can jump the queue" condition.
+
+Whoever picks this up next has three real, specific leads rather than a
+blank page: the capacity-preserving variant's unfound bug, a genuinely
+non-blocking (not just preemptable-before-starting) fill for the fetch
+side specifically since that is where the tax concentrates, or a
+different line width on top of a wider capacity-preserving cache. None of
+that is on this branch - every configuration above regressed the metric
+this phase is measured on, so none of it shipped.
+
 - **~~An I-cache alone would be a large win~~** — done, above.
 - **~~A D-cache~~** — done, above.
-- **Spatial locality: more than one word per line.** Both caches fetch exactly
-  the word that missed. The D-cache's residual 3.7% miss rate is compulsory,
-  which is the miss a fill state machine reaches and a bigger cache does not.
+- **~~Spatial locality: more than one word per line~~** — measured six
+  ways, above; none beat baseline, and the closest (+0.21%) is documented
+  rather than shipped.
 - **~~Interrupt-driven UART~~** — done. `software/soc/uartirq.c` (`make
   sim_uartirq`) is a driver that queues a message, arms ETBEI once, and lets
   the S-mode handler drain it one interrupt per byte, instead of every
