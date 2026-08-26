@@ -41,6 +41,9 @@ module csr_file (
     input  wire        we,
     input  wire [31:0] wdata,
     output reg  [31:0] rdata,
+    // What a CSRRS/CSRRC computes its write-back from. Identical to `rdata`
+    // except for mip - see the assign below the read mux.
+    output wire [31:0] rdata_rmw,
 
     // trap-entry port: on trap_en, latches epc/cause/tval and pushes the
     // *IE bit into *PIE (clearing *IE) for whichever of M/S this trap
@@ -335,6 +338,23 @@ module csr_file (
             default: rdata = 32'b0;
         endcase
     end
+
+    // "Only the software-writable SEIP bit participates in the
+    // read-modify-write sequence of a CSRRS or CSRRC instruction" - the
+    // privileged spec, on mip. The OR in `seip_live` is what a *read*
+    // returns; feeding it back through a write is what that sentence rules
+    // out. Without this carve-out, any mip RMW that executes while the
+    // PLIC's line happens to be high - OpenSBI's timer handler does one on
+    // every timer event - copies the line into `seip_sw_r`, where nothing
+    // ever clears it, because every later RMW reads the stuck bit back and
+    // rewrites it. From then on mip.SEIP is 1 no matter what the PLIC says:
+    // one Linux boot took 87,339 spurious supervisor-external traps that
+    // way, and *which* RTL change the storm got blamed on depended only on
+    // which one last perturbed the cycle-level interleaving.
+    // software/soc/plictest.c section 3b is the directed version.
+    assign rdata_rmw = (addr == 12'h344)
+                     ? {rdata[31:10], seip_sw_r, rdata[8:0]}
+                     : rdata;
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin

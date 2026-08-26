@@ -231,6 +231,38 @@ int main(void)
     GPIO_IP = 0xFFFFu;
     report("SEIP drops when cleared", wait_seip(0, 1000u));
 
+    /* ---- 3b. the read-modify-write carve-out ----
+     *
+     * "Only the software-writable SEIP bit participates in the
+     * read-modify-write sequence of a CSRRS or CSRRC instruction" - the
+     * privileged spec, on mip. The csrc below is OpenSBI's timer handler in
+     * miniature: an RMW on mip that has nothing to do with SEIP, issued at a
+     * moment when the PLIC's line happens to be high.
+     *
+     * Without the carve-out the RMW's old value is the OR, so bit 9 writes
+     * back as 1 into the software half - where nothing ever clears it,
+     * because every later RMW reads the stuck bit back and rewrites it. From
+     * then on mip.SEIP is 1 no matter what the PLIC says, and an S-mode
+     * kernel takes an external trap, claims 0, returns, and takes it again,
+     * forever: 87,339 spurious traps in one 400M-cycle Linux boot. Whether a
+     * given build storms depends on whether *some* mip RMW in a 10^8-cycle
+     * boot lands inside *some* cycles-wide window where the line is high -
+     * which is why the storm kept being attributed to whatever RTL change
+     * most recently reshuffled the timing, rather than to the CSR file.
+     *
+     * Sections 2 and 3 pass on RTL with this bug: 2 exercises the software
+     * half with the line low, 3 the hardware half with the software half
+     * clear. Only both at once - the line high *during* the RMW - reaches
+     * it. */
+    GPIO_OUT = 0x0001u;
+    report("line high again, for the RMW", wait_seip(1, 1000u));
+
+    __asm__ volatile ("csrc mip, %0" :: "r"(1u << 5));   /* STIP - not SEIP */
+
+    GPIO_OUT = 0x0000u;
+    GPIO_IP = 0xFFFFu;
+    report("RMW under a high line: no latch", wait_seip(0, 1000u));
+
     /* ---- 4. delivery to S-mode ---- */
     /* Delegate the supervisor external interrupt, point stvec at the handler,
      * enable SEIE in mie and SIE in mstatus (which is sstatus.SIE seen from

@@ -1244,7 +1244,13 @@ concentrating in `uart_write`. That is the interrupt-driven tty path rather
 than the polled console one, which points at UART interrupt delivery through
 the PLIC - the one link in the interrupt chain never proved on hardware or in
 a bare-metal test on this design. fpga/README.md has the four variants and
-the two wrong diagnoses that preceded this one.
+the two wrong diagnoses that preceded this one. A third candidate now exists
+and is the strongest: the `mip.SEIP` RMW latch-up of
+[practices.md §45](practices.md) produces exactly "user mode crawls in the
+interrupt-driven tty path", and its trigger is any reshuffle of the boot's
+interleaving - which a fetch-path change is. Unproven for these four
+variants; re-running one of them on top of the CSR fix is the cheap
+experiment that would settle it.
 
 **Measured 2026-08-24: `BOARD=ulx3s85` closes 0 of 6 seeds**, routed
 22.44-24.14 MHz against a 25 MHz constraint. The headline target now joins
@@ -1261,12 +1267,20 @@ the margin was going into a combinational round trip from the CPU to an MMIO
 slave and back into the stall network, not into the fetch path this file
 previously blamed.
 
-**That change is reverted.** It broke the Linux boot: supervisor-external
-interrupts went from 50 to 87,339 and userspace never finished starting. The
-timing analysis stands and the fix does not. Whatever replaces it has to add
-latency to an MMIO access without disturbing the PLIC claim/complete loop,
-which is now the best-characterised bug in the project - see
-[practices.md §44](practices.md).
+**That change is reverted, and the revert's diagnosis was wrong.** It broke
+the Linux boot - supervisor-external interrupts went from 50 to 87,339 and
+userspace never finished starting - but the claim/complete loop this file
+said it disturbed was never disturbed: the bus trace shows 24 interrupts
+claimed and completed correctly, then 87,339 claims of zero. The storm was a
+latent CSR bug armed by *any* change to the boot's cycle-level interleaving:
+an mip CSRRS/CSRRC computed its write-back from the OR'd live SEIP and
+latched the PLIC's momentarily-high line into the software half, permanently.
+Fixed in `rtl/csr_file.v` with the spec's own carve-out; `plictest` section
+3b is the directed regression, and Linux boots to the marker with #49's
+registered ack re-applied on top of the fix. **Re-landing the registered ack
+is unblocked** - as its own change, with fresh nextpnr numbers, since the
+timing evidence is a build old. [practices.md §45](practices.md) is the
+post-mortem.
 
 **The timing margin is what gates the rest of it**, and one attempt at the
 critical path has been made and reverted — `fpga/README.md` has the path, the

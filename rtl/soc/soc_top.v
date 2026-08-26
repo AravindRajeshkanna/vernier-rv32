@@ -31,7 +31,8 @@
 // separate *bus masters*, not separate address spaces.
 //
 // ---- PLIC interrupt source assignment ----
-//   1 = UART (unused for now: the UART is polled)
+//   1 = UART - the line Linux's tty path waits on: the kernel console is
+//       polled, but /init writing to /dev/console blocks on this interrupt
 //   2 = GPIO
 //   3..8 = spare, tied low
 module soc_top #(
