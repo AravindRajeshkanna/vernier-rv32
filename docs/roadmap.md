@@ -1339,6 +1339,70 @@ acceptance test off the card rather than out of block RAM.
 
 ---
 
+## Phase 8 — PCIe
+
+**Blocked on a board, not on anything in this project.** Every phase above is
+ordered by what it unblocks on the ULX3S / LFE5U-85F this project has run on
+since Phase 0. That board has no PCIe connector and the 85F has no SerDes -
+no hardened PCIe, no soft endpoint has anywhere to plug in. This phase starts
+when a board with both exists, and which board that is has not been decided.
+Nothing below is a spec; it's the shape of the work once that choice is made.
+
+**Board selection is the first open item**, and it constrains everything
+after it: whether PCIe comes from a hardened hard IP or has to be a soft
+endpoint depends on the part, and the endpoint core to use follows from that.
+Guessing at a lane count or generation before the board is chosen would be
+exactly the kind of estimate `docs/practices.md` exists to catch - "numbers
+quoted are measured, not estimated" applies to specs as much as to Fmax.
+
+**What plugs in once it exists**, in the shape every other peripheral here
+already takes: `rtl/soc/wb_periph_bridge.v` is the template for a
+register-mapped endpoint (BAR space as a Wishbone slave), the same as the
+UART, CLINT and PLIC. A PCIe endpoint doing its own DMA is a different case -
+a *bus master*, like `rtl/debug/dm.v` and the page-table walkers are today -
+and `rtl/soc/wb_interconnect.v` would be gaining a fifth one rather than a
+new slave. Which shape this needs depends on what the endpoint is for, which
+is also not yet decided.
+
+**Done when:** a real PCIe host's `lspci` sees the device, and a register
+read or write round-trips on real hardware - the same bar Phase 0 set for
+the pipeline and Phase 7 sets for the SD card: simulated first, then proven
+on silicon, not asserted from the simulation alone.
+
+---
+
+## Phase 9 — DDR
+
+**Also blocked on a board.** The SDRAM this project has (32 MB, confirmed on
+silicon in Phase 2 - every address, bank and byte lane, 4,031 ms measured
+retention, `fpga/README.md`) is single-data-rate. DDR is not that memory
+running faster; it is different memory, on a part that supports it, and the
+ULX3S/85F does not. This phase starts when that board is chosen, same as
+Phase 8, and for the same reason it is last rather than absent.
+
+**A DDR controller is a bigger design than `rtl/soc/wb_sdram.v`, not a
+version of it.** SDR SDRAM's controller is what Phase 2 measured against
+board revisions of a mode register and a refresh counter. DDR needs a
+calibrated PHY - read/write leveling, delay-locked strobes - which has no
+equivalent in this codebase today. Whether that PHY is a vendor hard block or
+a soft one is, again, a question the board answers, not this file.
+
+**Bus integration follows the existing pattern**: a Wishbone slave beside
+`wb_sdram.v`, the same way `wb_sdram.v` sits beside `wb_ram.v` - so the
+caches and the MMU walkers that already treat "external memory" as an
+address range gain the new one without changing. "Improve," once a first
+controller exists, most likely means what Phase 3 already flagged and left
+open for the caches - spatial locality, more than one word per transfer -
+mattering more here than it does against the current SDRAM, because DDR's
+burst mode is built for exactly that access pattern.
+
+**Done when:** DDR confirmed on silicon to the standard Phase 2 already set -
+every address, bank and lane checked, a measured retention or timing margin,
+not "it linked and didn't hang" - and something running from it, the way
+`SDRAM-TEST: PASS` runs 99 KB of code out of the current memory today.
+
+---
+
 ## Beyond the phases
 
 **PMP**, which [SECURITY.md](../SECURITY.md) lists as a known gap rather than
