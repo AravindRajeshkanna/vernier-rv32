@@ -830,6 +830,20 @@ was the SEIP latch-up, observed through whichever unrelated change happened
 to be reshuffling timing that week - fetch-path variants included, and
 [Phase 6's own history](../docs/roadmap.md) is one more entry on that list.
 
+**Timing: closes, and the gate isn't the reason either way.** `BOARD=ulx3s85`
+with this change: seed 1 24.66 MHz, seed 2 24.10 MHz, seed 3 24.91 MHz, seed
+4 **25.23 MHz routed, PASS**. All four inside the 23.18-25.92 MHz range
+already measured for this design ([Fmax is a
+distribution](#fmax-is-a-distribution-not-a-number)), so this is one more
+sample of the existing spread, not a new one - and closing on the fourth
+seed rather than the third proves nothing on its own, for the same reason.
+What is worth reading rather than sampling: the closing seed's critical path
+is the pre-existing D-cache-tag-sourced shape (`BUSADAPT.dc_tag` through
+`BUS.sel_m0`/`sel_m1`, `CLINT.addr`, `PLIC.claim_read_now`, into
+`CPU.dbus_stall`) - the *data* side, unrelated to `itlb_wait_stall` or
+anything on the instruction-fetch path this change touches. The new gate
+does not appear in it.
+
 ## What 256 KB of SDRAM was and was not saying
 
 `SDRAM-CHECK: PASS` over 256 KB has been this project's evidence that external
