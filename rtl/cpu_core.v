@@ -73,6 +73,12 @@ module cpu_core #(
     // instruction memory port (physical address, post-translation if active)
     output wire [31:0] imem_addr,
     input  wire [31:0] imem_rdata,
+    // High while an ITLB walk for the fetch we want has not yet resolved -
+    // i.e. `imem_addr` is `itlb_pa_hold`, not a translation of the current
+    // PC. A bus adapter uses this to keep that held address from ever
+    // hitting the cache or issuing a request while it's stale; see the
+    // `itlb_pa_hold` comment below and rtl/soc/cpu_wb.v.
+    output wire         itlb_wait_stall,
 
     // data memory port (physical address, post-translation if active)
     output wire [31:0] dmem_addr,
@@ -273,7 +279,7 @@ module cpu_core #(
     wire itlb_answer_stale = itlb_pa_va != pc;
     wire itlb_ok           = itlb_resolved && !itlb_answer_stale;
 
-    wire itlb_wait_stall = itlb_req && !itlb_ok;
+    assign itlb_wait_stall = itlb_req && !itlb_ok;
     wire itlb_fault_now  = itlb_req && itlb_ok && itlb_fault;
 
     // ---- what to fetch while the ITLB is still walking ----
@@ -303,13 +309,12 @@ module cpu_core #(
     // master competing for the same interconnect, and a fetch of an address
     // the core cannot yet compute has no business ahead of it.
     //
-    // **That side effect is load-bearing, and nothing here enforces it.**
-    //
-    // Four attempts to change the fetch path (fpga/README.md) all left the
-    // *kernel* boot untouched - within 1,301 cycles of 127,920,017 to
+    // **That side effect was load-bearing, and until now nothing enforced
+    // it.** Four attempts to change the fetch path (fpga/README.md) all left
+    // the *kernel* boot untouched - within 1,301 cycles of 127,920,017 to
     // `Freeing unused`, one part in a hundred thousand - and all made **user
     // mode** at least 150x slower, turning a 5-million-cycle phase into one
-    // that has not finished at 900 million. Not a hang, and not the
+    // that had not finished at 900 million. Not a hang, and not the
     // instruction cache: the traps concentrate in `uart_write`, which is the
     // interrupt-driven tty path rather than the polled console one, so the
     // phase that breaks is the phase that needs a UART interrupt delivered
@@ -320,11 +325,21 @@ module cpu_core #(
     // inferred from a gate reporting a timeout - and then that the cost was
     // paid in the instruction cache, which a mid-boot measurement refuted.)
     //
-    // So: anything that touches this - a virtually indexed cache, a fetch
-    // pipeline stage, a different hold policy - inherits a performance
-    // property that is currently free and accidental, and should measure a
-    // full boot rather than trusting a functional test. `make sim_mmusdram`
-    // passes on every variant that made Linux 7x slower.
+    // All four attempts predate the mip.SEIP RMW fix in rtl/csr_file.v
+    // (docs/practices.md §45): an RMW landing while the PLIC's line was
+    // momentarily high could latch it into the software half permanently,
+    // and any change that reshuffles the boot's cycle-level interleaving -
+    // which every one of these variants does, by construction - could arm
+    // it. A UART interrupt permanently failing to arrive again is exactly
+    // what that latch-up looks like from the trap trace.
+    //
+    // `itlb_wait_stall` (this module's own output, of the same name) is now
+    // wired into rtl/soc/cpu_wb.v to *enforce* - rather than accidentally
+    // rely on - "the fetch neither hits nor requests while a walk is in
+    // flight". That is the simplest of the four historical variants,
+    // re-run on top of the CSR fix to test the latch-up hypothesis
+    // directly rather than argue it. fpga/README.md has the measured
+    // result.
     reg [31:0] itlb_pa_hold;
     wire [31:0] fetch_phys_addr =
         itlb_req ? (itlb_ok ? itlb_pa : itlb_pa_hold) : pc;

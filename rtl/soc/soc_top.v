@@ -170,6 +170,7 @@ module soc_top #(
     wire        dmem_we, dmem_re, dmem_is_amo, dmem_rvalid;
     wire [1:0]  dmem_size;
     wire        ibus_wait, dbus_wait;
+    wire        itlb_wait_stall;
     wire        ptw_req, ptw_gnt, iptw_req, iptw_gnt;
     wire [31:0] ptw_addr, ptw_rdata, iptw_addr, iptw_rdata;
     wire        mtip, msip;
@@ -205,6 +206,7 @@ module soc_top #(
 `endif
         .clk(clk), .rst(rst_soc),
         .imem_addr(imem_addr), .imem_rdata(imem_rdata),
+        .itlb_wait_stall(itlb_wait_stall),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size),
         .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid), .dmem_is_amo(dmem_is_amo),
@@ -221,6 +223,7 @@ module soc_top #(
     cpu_wb BUSADAPT (
         .clk(clk), .rst(rst_soc),
         .imem_addr(imem_addr), .imem_rdata(imem_rdata), .ibus_wait(ibus_wait),
+        .itlb_wait_stall(itlb_wait_stall),
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_is_amo(dmem_is_amo),
         .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),

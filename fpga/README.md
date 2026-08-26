@@ -791,6 +791,45 @@ verification rather than being appended to something else. It is also the
 thing standing between this design and hart control in the Debug Module
 (`rtl/debug/README.md`).
 
+### A fifth attempt, and this time there was nothing to fix
+
+Everything above was measured before `rtl/csr_file.v`'s mip.SEIP RMW fix
+existed ([practices.md §45](../docs/practices.md)) - an RMW landing while the
+PLIC's line was momentarily high could latch it into the software half
+permanently, and any change that reshuffles a boot's cycle-level
+interleaving could arm it. Every one of the four fetch-path variants above
+does exactly that, by construction. So does re-running any of them now that
+the bug is fixed - which is the experiment "what would actually work" above
+did not consider, because at the time nothing suggested the fetch path
+itself was innocent.
+
+The simplest of the four - "gating both the hit and the request on a
+'translation is current' signal, so the fetch neither hit nor requested,"
+[reported hung above](#a-third-variant-and-what-all-three-actually-proved) -
+is now `rtl/cpu_core.v`'s `itlb_wait_stall` output, wired into
+`rtl/soc/cpu_wb.v` to gate `fetch_hit` and `iwb_cyc` explicitly instead of
+relying on the held address happening to hit. Re-measured on top of the CSR
+fix, both cores:
+
+| | Baseline (unmodified, this branch) | With the gate |
+|---|---|---|
+| In-order, cycles to `VERNIER-RV32-LINUX-BOOT-OK` | 133,029,432 | **133,020,733** |
+| Wide core, cycles to `VERNIER-RV32-LINUX-BOOT-OK` | 130,037,131 | **130,023,019** |
+
+Both within 15,000 cycles of baseline - one part in ten thousand, the same
+order of noise Phase 6's kernel-boot comparisons call unaffected. Not 150x.
+Not measurably slower at all. `make verify` and `make verify_ooo` both pass
+in full, including `+checkfetch`'s per-fetch invariant over the whole boot.
+
+**This does not mean variants 2 through 4 would also come back clean** -
+they were not re-run, and unlike this one they change what address the
+fetch unit's bus master issues while a walk is in flight, not just whether
+it does. What it does mean: the simplest variant, which for over a year read
+as "changing this hangs the boot," was never a fetch-path defect at all. It
+was the SEIP latch-up, observed through whichever unrelated change happened
+to be reshuffling timing that week - fetch-path variants included, and
+[Phase 6's own history](../docs/roadmap.md) is one more entry on that list.
+
 ## What 256 KB of SDRAM was and was not saying
 
 `SDRAM-CHECK: PASS` over 256 KB has been this project's evidence that external
