@@ -319,8 +319,20 @@ module tb_uartload;
     // protocol has two places it can wedge - a knock nobody answers, and an
     // acknowledgement that never comes - and both would otherwise sit here
     // sending probes forever.
+    //
+    // This bound was 200_000_000 (5,000,000 cycles at CLK_PERIOD=40) until
+    // CI's wide-core leg reached it for real for the first time: a genuine
+    // PASSING run (CORE=inorder) finishes in 742,442 cycles, so 5,000,000
+    // was almost 7x more headroom than any real transfer needs, and Icarus
+    // simulating a full SoC takes long enough per cycle that the difference
+    // is minutes, not seconds - GitHub's runner took over 15 and still had
+    // not reached it when the job's own 45-minute budget ran out. 2,000,000
+    // cycles (2.7x the passing run) keeps the same generous margin a legitimate
+    // slow CI day might need while cutting the wall-clock cost of the known,
+    // documented CORE=ooo speculative-load hazard (docs/roadmap.md, "Stage
+    // 1d was built anyway") reaching this watchdog by more than half.
     initial begin
-        #200_000_000;
+        #80_000_000;
         $display("\nUARTLOAD TEST FAILED (timeout: the board stopped talking)");
         $display("  last state: transfer_active=%b, bytes sent=%0d of %0d",
                  transfer_active, sent, image_len);
