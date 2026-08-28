@@ -99,7 +99,7 @@ regression against.
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
 | 1c | Scoreboard: out-of-order completion, in-order retire | ✅ done — store buffer and load-completion buffer, +0.34% |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | designed, **not scheduled** — a redesign with no independently useful piece, and the data cache took its measured ceiling from 2.9% to **0.56%** |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | **built anyway** — see below. `make verify_ooo` green except one pre-existing, unrelated ISA failure and one newly-found, documented-not-fixed hazard; CoreMark **448,728 cycles**, slower than the cheaper stage 1b+1c core it was meant to replace; Linux still does not boot to userspace |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
@@ -517,6 +517,162 @@ cheaper things above it in the same file. What would change this:
 windows that offer a pair. The counters that say which clause of the issue rule
 is refusing them are in `rtl/ooo/core_ooo.v` as of this change, and that
 breakdown is the next thing worth acting on in this phase.
+
+#### Stage 1d was built anyway
+
+The section above is what the numbers said before anyone wrote a line of it.
+It was built anyway, on top of the identical-port-list `rtl/ooo/core_ooo.v`
+stage 1b/1c had already been using, with the RAT, physical register file, ROB
+and general out-of-order issue the earlier sections describe. What follows is
+what actually happened, measured the same way the case against it was
+measured.
+
+**`make verify_ooo`.** riscv-tests 81/81 (up from 79/81 — see the dirty-bit
+note below), cosim 83/84, formal 5/5 proved, 0 refuted. Green except one
+thing, worth naming precisely rather than folding into a bare pass count:
+
+- **`sim_uartload` fails, deterministically, every run.** Root cause: an
+  out-of-order load can issue speculatively — before an older, unresolved
+  branch is known to be correctly predicted — and speculation is free for
+  ordinary RAM (a squashed load's result is just discarded) but not for a
+  register with a real read side effect. The boot ROM's UART receive loop
+  polls the UART's status register in a tight loop whose exit branch
+  mispredicts on the very last byte it needs; the load that reads the data
+  register on the mispredicted path had already dequeued the real byte from
+  the UART's one-deep receive buffer by the time the misprediction was
+  discovered and the load's own result discarded. The byte is gone — nothing
+  puts it back — and the ROM waits forever for a byte that already arrived
+  and was thrown away. Traced to the instruction level: the loop needs
+  exactly 15 reads of the UART's RBR register to fill a 16-byte header buffer
+  (1 from a leading skip-probe check, 15 from the main loop); the hardware
+  shows the register was genuinely read 15 times, but only 14 of those reads
+  ever reach the loop's own store-and-increment bookkeeping. `sim_uart16550`,
+  `sim_uartirq` and `sim_plic` all pass, because none of them poll a
+  side-effecting register through a branch that mispredicts on exit. This is
+  a real, general hazard in the out-of-order load path, not specific to the
+  UART — it would reach any MMIO register with a read side effect (the
+  PLIC's claim register is the other one this SoC has) under the right branch
+  pattern. **Not fixed.** A proper fix means either teaching the core which
+  addresses are side-effecting (new, SoC-specific knowledge the core does not
+  otherwise have — `cpu_wb.v`'s D-cache already carries an address-based
+  exclusion list for exactly this reason, but core_ooo.v's own load-issue
+  logic has no equivalent) or not issuing any load until it is known
+  non-speculative (which gives up most of what out-of-order load issue is
+  for). Documented here rather than patched under time pressure.
+
+Three other real bugs were found and fixed getting this far, all keyed off the
+same root idea: out-of-order issue means an instruction can compute its
+answer *before* the core has proven it is allowed to. **A store or load whose
+address needed Sv32 translation was letting its real bus request —
+`dmem_we`/`dmem_re`, the actual memory access — fire before
+`head_mmu_wait_stall` cleared**, using whatever `mmu.v` happened to be
+outputting mid-walk. On a TLB hit this raced harmlessly (the answer is ready
+the same cycle). On a TLB miss it was not: the CPU asserted a write with a
+garbage, mid-walk address, and because `wb_interconnect.v` gives the CPU's
+own data master strict priority over the page-table walker (by design, so an
+atomic's read-modify-write cannot be preempted mid-gap), that spurious write
+held the bus and starved the walker of the very access that would have
+resolved the address and cleared the stall — a self-sustaining deadlock,
+reachable only on a genuine TLB miss under real concurrent bus traffic, which
+is why the small synthetic Sv32 test in `tb_top.v` never found it but a real
+Linux boot did (below). Fixed by also requiring `!head_mmu_wait_stall` before
+a store, a head-issued load, or an AMO may own the bus. That fix alone left a
+second, narrower race: `head_mmu_wait_stall` clears the instant the walk
+resolves, *fault or not*, so a store whose translation resolved to a page
+fault could still reach the bus on the very same cycle — this time with a
+*real*, correctly-translated address, since the walk had by then actually
+fetched the PTE. `sim_mmusdram`'s read-only-page checks caught it directly
+("store to read-only faults" correctly `ok`, "read-only page unchanged"
+`FAILED`). Fixed by also excluding `head_mmu_fault_now`.
+
+A third instance of the exact same shape was missed in the same pass and
+shipped: **a misaligned store, AMO, or head-routed load could take its trap
+*and* still write to the bus in the same cycle**, because
+`head_plain_store_now`/`amo_active`/`head_load_owns_port` excluded
+`head_mmu_wait_stall` and `head_mmu_fault_now` but never
+`head_mem_misaligned` — the out-of-order load path already got this right
+(`loadL_can_start` excludes `issL_misaligned`), but the three head-based
+signals above did not. This was not caught before `make verify_ooo` first
+went green: `rv32mi-p-ma_addr` was already failing at that point, and it was
+mischaracterized — without checking it against an actual pre-stage-1d
+baseline — as the project's known, pre-existing, unrelated `ma_addr`
+divergence, and shipped that way in this stage's first pull request. CI
+caught it: `riscv-tests (ooo)` failed while `riscv-tests (inorder)` passed
+on the same test, which a real pre-existing gap could not do, since nothing
+in this change touches the in-order core. Root-caused with a targeted
+cycle-by-cycle trace on the failing subtest (`sh zero,1(s0)` at address
+`0x80002001`, riscv-tests' `ma_addr` case 22): the misalignment was detected
+correctly and the trap fired on the very first possible cycle with no
+delay, but the write reached the bus in that same cycle anyway, zeroing the
+byte at the faulting address before the trap handler's own sanity check
+(`lb t0,(t0); beqz t0, fail`) read it back and found zero where it expected
+the original, nonzero data. Fixed by adding the same `!head_mem_misaligned`
+exclusion to all three signals.
+
+That second fix had an unplanned side effect: `rv32si-p-dirty`, one of the two
+riscv-tests failures this project already carried before stage 1d existed (a
+genuine gap, not a deliberate one — `tests/expected-failures.txt` was never
+asked to cover it), now passes riscv-tests' own pass/fail check. Cosimulation
+still finds a divergence in it, but at a *later* instruction than it ever
+reached before: the corruption this fix removed was previously making the run
+stop before it got there, not making it agree with Spike. What is now visible
+is a real, narrower, still-unresolved Sv32 dirty-bit semantic difference from
+Spike, one instruction wide, shared with the in-order core's own known
+limitation in this area and not new to this stage.
+
+**CoreMark, one iteration.** 448,728 cycles, correctness self-checked by
+CoreMark's own CRC (`BENCHMARK PASSED`). For comparison, on the same D-cached
+bus adapter:
+
+| | Cycles | |
+|---|---|---|
+| In-order core | 453,844 | unchanged by this stage |
+| Wide core, stage 1b+1c (dual issue, no ROB) | 434,822 | what 1d was meant to replace |
+| **Wide core, stage 1d (renaming, ROB, general OOO issue)** | **448,728** | slower than 1b+1c, barely faster than in-order |
+
+Dispatched 380,146, retired 359,619 — 0.80 instructions retired per cycle,
+under one, let alone the "more than one instruction retiring per cycle" this
+phase's own done-when criterion (above) named as the bar. The reordering is
+real and substantial — 157,625 of 181,428 ALU issues and 64,986 of 71,975 load
+issues actually left program order — and the net result is still a worse
+cycle count than the design it was meant to supersede. This is the
+CoreMark answer to the question the D-cache measurement above already asked:
+the ROI case against 1d was not wrong.
+
+**Linux.** `Makefile`'s own `linux_trapdiff` target already documented, before
+this stage existed, that the wide core's Linux boot does not reach
+`VERNIER-RV32-LINUX-BOOT-OK` and is not expected to — "the wide core's boot
+*is* the failing one... a rule that required success here could only ever run
+when there was nothing to diagnose." That is still true, but the *way* it
+fails changed, and the change matters. Before the `head_mmu_wait_stall` fix
+above, `sim_linux CORE=ooo` hung completely — not one line of the kernel's
+own console output, only OpenSBI's banner, timing out at 400,000,000 cycles
+with 38 traps, all attributable to OpenSBI's own init. That is the deadlock
+described above, reached for the first time at the scale a real boot's
+page-table traffic produces. After the fix, the same boot gets deep into
+kernel initialisation (PLIC mapped, thousands of traps, misaligned-access
+delegation confirmed working) but still never reaches user mode: a trap-trace
+diff against the in-order core's own successful boot (`make linux_trapdiff`,
+which drops interrupts and compares real exceptions only) shows zero `U->S`
+transitions across the whole run, against 3.8x more `S->M` "ecall from S"
+calls than in-order's *entire* successful boot needed for its whole run — the
+kernel is ticking normally via the timer (a CLINT path, unrelated to the
+PLIC) but never scheduling anything that reaches userspace. Timer interrupts
+fine, nothing that depends on an external, PLIC-routed interrupt ever
+completing: that pattern points at a second, distinct, not-yet-root-caused
+interrupt-delivery gap specific to this core. Investigated to that point and
+stopped there rather than chased further; `make verify_ooo` does not gate on
+`sim_linux`, and this did not look like the class of bug a bounded amount
+more tracing was likely to close quickly.
+
+**Not measured: Fmax and utilisation.** `nextpnr-ecp5` and `ecppack` are not
+installed in the environment this stage was built in, and no board is
+reachable from it — the existing 85F numbers elsewhere in this file came from
+a differently-provisioned session. `make coremark` is a pure simulation and
+needed neither; a real place-and-route run for `CORE=ooo` is open work, and
+given the physical register file and ROB the roadmap already flagged as
+block-RAM pressure, it is the single most important number this stage is
+still missing.
 
 **And it is now verified as well as counted.** Co-simulation against Spike had
 been running on this core the whole time and passing 82 of 82 traces — while

@@ -118,37 +118,24 @@ module tb_bench;
         $display("\n---------------------------------------------");
         $display("total cycles (including startup and console I/O): %0d", cycles);
 `ifdef CORE_OOO
-        // How many instructions retired in slot 1 - i.e. how many dual-issue
-        // pairs actually formed on a real workload. Reported next to the
-        // cycle count rather than instead of it: a pair rate without a cycle
-        // count says nothing about whether the pairing was worth having.
-        $display("dual-issue pairs (slot 1 retirements): %0d", DUT.CPU.dual_issue_count);
-        $display("  ...out of %0d cycles that offered a second instruction", DUT.CPU.pair_window_count);
-        $display("  windows that did not pair, by cause:");
-        $display("    slot 0 out of class / predicted taken: %0d", DUT.CPU.pair_blk_slot0);
-        $display("    slot 1 out of class:                   %0d", DUT.CPU.pair_blk_class);
-        $display("    slot 1 reads slot 0's result:          %0d", DUT.CPU.pair_blk_raw);
-        $display("    slot 1 reads a load still in EX:       %0d", DUT.CPU.pair_blk_loaduse);
-        $display("stall cycles by cause:");
-        $display("  divide        %0d", DUT.CPU.stall_div_count);
-        $display("  MMU walk      %0d", DUT.CPU.stall_mmu_count);
-        $display("  data bus      %0d  in %0d waits", DUT.CPU.stall_dbus_count, DUT.CPU.dbus_event_count);
-        $display("  load-use      %0d", DUT.CPU.stall_loaduse_count);
-        $display("  fetch empty   %0d", DUT.CPU.stall_ifetch_count);
-        $display("stores handed to the store buffer: %0d", DUT.CPU.store_buffered_count);
-        $display("load bus-wait cycles: %0d, of which recoverable by a", DUT.CPU.load_wait_count);
-        $display("  load-completion buffer: %0d (taken: %0d)",
-                 DUT.CPU.defer_candidate_count, DUT.CPU.defer_taken_count);
-        $display("  missed - successor depends on the load: %0d", DUT.CPU.defer_blk_dep);
-        $display("  missed - slot 1's pipeline in use:      %0d", DUT.CPU.defer_blk_slot1);
-        $display("load-use stall cycles with an independent instruction in the");
-        $display("  fetch buffer - the ceiling on out-of-order issue:");
-        $display("    an ALU op was available:            %0d", DUT.CPU.loaduse_oo_alu);
-        $display("    only a load/store/branch was:       %0d", DUT.CPU.loaduse_oo_any);
-        $display("    nothing independent was available:  %0d", DUT.CPU.loaduse_oo_none);
-        $display("  window behind the stall: %0d entries summed over %0d stalls, full %0d times",
-                 DUT.CPU.loaduse_window_sum, DUT.CPU.stall_loaduse_count,
-                 DUT.CPU.loaduse_window_full);
+        // Stage 1d replaced stage 1c's adjacent-pair dual issue with real
+        // out-of-order issue over the whole ROB (rtl/ooo/core_ooo.v's
+        // header). These counters are the equivalent of stage 1b/1c's
+        // dual_issue_count/pair_window_count: without them, "out-of-order
+        // issue works" is unfalsifiable in exactly the way
+        // docs/practices.md section 1 warns about. `_reorder_count` is the
+        // stronger claim - not just that a Class-B/B2 instruction issued,
+        // but that it issued out of program order, i.e. reordering
+        // actually happened rather than merely being available.
+        $display("out-of-order ALU issues: %0d (%0d actually reordered)",
+                 DUT.CPU.ooo_alu_issue_count, DUT.CPU.ooo_alu_reorder_count);
+        $display("out-of-order load issues: %0d (%0d actually reordered)",
+                 DUT.CPU.ooo_load_issue_count, DUT.CPU.ooo_load_reorder_count);
+        $display("out-of-order store address/data computations: %0d",
+                 DUT.CPU.ooo_store_issue_count);
+        $display("dispatched %0d, retired %0d, ROB-full stalls %0d",
+                 DUT.CPU.dispatch_count, DUT.CPU.retire_count, DUT.CPU.rob_full_stall_count);
+        $display("branch mispredicts (ROB rollback): %0d", DUT.CPU.mispredict_count);
 `endif
         // The bus adapter's caches. Reported for both cores, because
         // rtl/soc/cpu_wb.v is shared and neither cache is a core feature.

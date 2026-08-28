@@ -89,7 +89,24 @@ module tb_top;
     // the jump, so one taken jump (and its cold-miss mispredict) no longer
     // executes. That is a control-flow change in the program, which is
     // exactly the case this comment says to recompute for.
+    //
+    // CORE_OOO differs from that baseline by exactly one, and legitimately
+    // so: stage 1d's `d_is_alu_class` classified an instruction purely by
+    // opcode bits, with no legality check, so Part 4's deliberately-illegal
+    // R-type (a well-formed OP opcode, an undefined funct7) was routed to
+    // the out-of-order ALU class instead of the ROB head, where the only
+    // logic that ever takes a trap lives - it completed as an undefined
+    // ALU result and retired normally, no trap, ever. Fixed by excluding
+    // `illegal` from `d_is_alu_class`. The trap now genuinely fires, and
+    // firing it is a real, only-now-possible control-flow redirect the BTB
+    // was never trained to predict (an illegal instruction was never a
+    // branch), so it costs exactly one more mispredict here than the
+    // shared in-order baseline this same value serves below.
+`ifdef CORE_OOO
+    localparam EXPECT_MISPREDICTS = 54;
+`else
     localparam EXPECT_MISPREDICTS = 53;
+`endif
 
     reg clk = 0;
     reg rst = 1;
@@ -148,8 +165,12 @@ module tb_top;
         // one with a zero-latency memory: it shows what the issue rule does
         // when the fetch port is not the constraint, which is the contrast
         // that makes the SoC number mean something.
-        $display("dual-issue pairs (slot 1 retirements): %0d", DUT.CPU.dual_issue_count);
-        $display("  ...out of %0d cycles that offered a second instruction", DUT.CPU.pair_window_count);
+        $display("out-of-order ALU issues: %0d (%0d actually reordered)",
+                 DUT.CPU.ooo_alu_issue_count, DUT.CPU.ooo_alu_reorder_count);
+        $display("out-of-order load issues: %0d (%0d actually reordered)",
+                 DUT.CPU.ooo_load_issue_count, DUT.CPU.ooo_load_reorder_count);
+        $display("dispatched %0d, retired %0d, ROB-full stalls %0d",
+                 DUT.CPU.dispatch_count, DUT.CPU.retire_count, DUT.CPU.rob_full_stall_count);
 `endif
 
         if ({DUT.DMEM.mem[7], DUT.DMEM.mem[6], DUT.DMEM.mem[5], DUT.DMEM.mem[4]} == 32'h0 &&
