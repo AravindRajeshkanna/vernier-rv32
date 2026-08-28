@@ -527,10 +527,9 @@ and general out-of-order issue the earlier sections describe. What follows is
 what actually happened, measured the same way the case against it was
 measured.
 
-**`make verify_ooo`.** riscv-tests 80/81 (up from 79/81 — see the dirty-bit
-note below), cosim 82/84, formal 5/5 proved, 0 refuted. Green except two
-things, both worth naming precisely rather than folding into a bare pass
-count:
+**`make verify_ooo`.** riscv-tests 81/81 (up from 79/81 — see the dirty-bit
+note below), cosim 83/84, formal 5/5 proved, 0 refuted. Green except one
+thing, worth naming precisely rather than folding into a bare pass count:
 
 - **`sim_uartload` fails, deterministically, every run.** Root cause: an
   out-of-order load can issue speculatively — before an older, unresolved
@@ -560,12 +559,8 @@ count:
   logic has no equivalent) or not issuing any load until it is known
   non-speculative (which gives up most of what out-of-order load issue is
   for). Documented here rather than patched under time pressure.
-- `rv32mi-p-ma_addr` still fails riscv-tests — the same pre-existing,
-  unrelated divergence documented before this stage, confirmed via cosim to
-  diverge from Spike at one instruction, present on the in-order core too,
-  out of scope for this change.
 
-Two other real bugs were found and fixed getting this far, both keyed off the
+Three other real bugs were found and fixed getting this far, all keyed off the
 same root idea: out-of-order issue means an instruction can compute its
 answer *before* the core has proven it is allowed to. **A store or load whose
 address needed Sv32 translation was letting its real bus request —
@@ -589,6 +584,30 @@ fault could still reach the bus on the very same cycle — this time with a
 fetched the PTE. `sim_mmusdram`'s read-only-page checks caught it directly
 ("store to read-only faults" correctly `ok`, "read-only page unchanged"
 `FAILED`). Fixed by also excluding `head_mmu_fault_now`.
+
+A third instance of the exact same shape was missed in the same pass and
+shipped: **a misaligned store, AMO, or head-routed load could take its trap
+*and* still write to the bus in the same cycle**, because
+`head_plain_store_now`/`amo_active`/`head_load_owns_port` excluded
+`head_mmu_wait_stall` and `head_mmu_fault_now` but never
+`head_mem_misaligned` — the out-of-order load path already got this right
+(`loadL_can_start` excludes `issL_misaligned`), but the three head-based
+signals above did not. This was not caught before `make verify_ooo` first
+went green: `rv32mi-p-ma_addr` was already failing at that point, and it was
+mischaracterized — without checking it against an actual pre-stage-1d
+baseline — as the project's known, pre-existing, unrelated `ma_addr`
+divergence, and shipped that way in this stage's first pull request. CI
+caught it: `riscv-tests (ooo)` failed while `riscv-tests (inorder)` passed
+on the same test, which a real pre-existing gap could not do, since nothing
+in this change touches the in-order core. Root-caused with a targeted
+cycle-by-cycle trace on the failing subtest (`sh zero,1(s0)` at address
+`0x80002001`, riscv-tests' `ma_addr` case 22): the misalignment was detected
+correctly and the trap fired on the very first possible cycle with no
+delay, but the write reached the bus in that same cycle anyway, zeroing the
+byte at the faulting address before the trap handler's own sanity check
+(`lb t0,(t0); beqz t0, fail`) read it back and found zero where it expected
+the original, nonzero data. Fixed by adding the same `!head_mem_misaligned`
+exclusion to all three signals.
 
 That second fix had an unplanned side effect: `rv32si-p-dirty`, one of the two
 riscv-tests failures this project already carried before stage 1d existed (a

@@ -1237,9 +1237,27 @@ module core_ooo #(
     // and this port-ownership path both fire off `head_mmu_resolved`, and
     // nothing between them stopped the second from writing to a page the
     // first was in the middle of rejecting.
+    // `&& !head_mem_misaligned`: a third instance of the same shape as the
+    // two above, missed in the same pass - a misaligned store is supposed
+    // to take a trap *instead of* writing (the load path already gets this
+    // right: `loadL_can_start` below excludes `issL_misaligned`), but this
+    // port-ownership condition had no misalignment check of its own, so it
+    // fired anyway on the very same cycle `head_take_trap` did, writing the
+    // (misaligned) address before the trap it also took ever reached
+    // software. Found via CI on riscv-tests' own rv32mi-p-ma_addr, which
+    // this session's local `make verify_ooo` runs had already been hitting
+    // and mischaracterizing as the project's pre-existing, unrelated
+    // ma_addr divergence rather than checking it against a real baseline -
+    // root-caused precisely with a targeted trace: `sh zero,1(s0)` at
+    // 0x80002001 correctly computed its address and correctly took a
+    // misaligned-store trap on the first possible cycle, but the byte at
+    // that address read back as the just-written zero instead of its
+    // original nonzero value, because `head_plain_store_now` had let the
+    // write reach the bus in the same cycle.
     wire head_plain_store_now = headS_valid && rob_is_store[rob_head] &&
                                 rob_issued[rob_head] && headS_ready &&
-                                !head_mmu_wait_stall && !head_mmu_fault_now;
+                                !head_mmu_wait_stall && !head_mmu_fault_now &&
+                                !head_mem_misaligned;
     wire head_store_absorbed  = head_plain_store_now && !port_taken_by_load && !sb_valid && dbus_wait;
 
     reg        amo_wr_phase;
@@ -1253,6 +1271,7 @@ module core_ooo #(
     // buffer already owns it - same reasoning as `head_store_absorbed`.
     wire amo_active = headS_valid && rob_is_amo[rob_head] && headS_ready &&
                       !head_mmu_wait_stall && !head_mmu_fault_now &&
+                      !head_mem_misaligned &&
                       !port_taken_by_load && !port_taken_by_store;
     reg [31:0] amo_new_value;
     wire amo_writes = (rob_is_amo[rob_head] && !head_is_lr_ex && !head_is_sc_ex) || sc_success;
@@ -1352,6 +1371,7 @@ module core_ooo #(
     // true before that - this only asserts once it can actually go.
     wire head_load_owns_port = load_via_head && headS_ready &&
                                !head_mmu_wait_stall && !head_mmu_fault_now &&
+                               !head_mem_misaligned &&
                                !port_taken_by_load && !sb_valid;
 
     assign dmem_addr  = port_taken_by_load ? loadL_addr_phys :
