@@ -32,6 +32,19 @@ set -eu
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 
+# Which core, mirroring the Makefile's CORE ?= inorder / CORE_RTL /
+# CORE_DEFINES exactly: regfile_phys.v is only pulled in for the wide core,
+# never alongside plain regfile.v (rtl/cpu_core.v's 2R/1W file, still needed
+# there), and -DCORE_OOO is what soc_top.v's own `ifdef switches on to pick
+# core_ooo over cpu_core - the same define this script already threads
+# through to yosys for -DSYNTHESIS/-DPRELOAD_RAM below.
+CORE=${CORE:-inorder}
+case "$CORE" in
+    inorder) CORE_RTL="rtl/regfile.v rtl/cpu_core.v"; CORE_DEFINES="" ;;
+    ooo)     CORE_RTL="rtl/ooo/regfile_phys.v rtl/ooo/core_ooo.v"; CORE_DEFINES="-DCORE_OOO" ;;
+    *) echo "error: unknown CORE='$CORE' (known: inorder, ooo)" >&2; exit 1 ;;
+esac
+
 PACKAGE=${PACKAGE:-CABGA381}
 BUILD=fpga/build
 
@@ -291,7 +304,7 @@ esac
 # simulation only and which yosys unrolls into one assignment per word - the
 # single thing that used to make this script appear to hang. See
 # rtl/soc/wb_ram.v.
-YOSYS_DEFINES="-DSYNTHESIS"
+YOSYS_DEFINES="-DSYNTHESIS $CORE_DEFINES"
 
 if [ "$PRELOAD_RAM" = "1" ]; then
     YOSYS_DEFINES="$YOSYS_DEFINES -DPRELOAD_RAM"
@@ -319,8 +332,8 @@ fi
 if [ "$DIAG_ONLY" = "1" ]; then
   RTL="$BOARD_RTL"
 else
-RTL="rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
-     rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
+RTL="rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
+     rtl/uart.v rtl/btb.v rtl/mmu.v $CORE_RTL \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ptw.v \
      rtl/soc/wb_ram.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
