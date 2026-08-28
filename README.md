@@ -3,7 +3,7 @@
 [![CI](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml/badge.svg)](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml)
 [![License: Apache-2.0 WITH SHL-2.1](https://img.shields.io/badge/license-Apache--2.0%20WITH%20SHL--2.1-blue.svg)](LICENSE)
 [![riscv-tests](https://img.shields.io/badge/riscv--tests-81%20passed%2C%200%20failed%2C%203%20xfail-brightgreen.svg)](tests/README.md)
-[![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-84%2F84%20traces%20pass-brightgreen.svg)](tests/README.md)
+[![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-83%2F84%20traces%20pass-brightgreen.svg)](tests/README.md)
 [![Hardware](https://img.shields.io/badge/ULX3S%20LFE5U--85F-SOC--TEST%3A%20PASS-brightgreen.svg)](fpga/README.md)
 
 **An RV32IMA SoC that measures itself.**
@@ -57,9 +57,10 @@ rtl/
   uart.v         TX+RX serial console, polled (txdata/rxdata/status)
   cpu_core.v     the CPU itself: 5-stage pipeline (IF/ID/EX/MEM/WB)
   ooo/
-    core_ooo.v   the wide core being built for roadmap Phase 1, same port
-                 list; `make verify_ooo` runs the whole suite against it
-    regfile_wide.v  4-read/2-write register file for the dual-issue pair
+    core_ooo.v   the wide, out-of-order core built for roadmap Phase 1, same
+                 port list as cpu_core.v; `make verify_ooo` runs the whole
+                 suite against it, and CORE=ooo builds every target with it
+    regfile_phys.v  64-entry physical register file behind the RAT/ROB
   top.v          flat top level (cpu + imem + dmem + clint + plic + uart)
   soc/
     soc_top.v          the SoC: CPU on a Wishbone bus, unified address space
@@ -185,7 +186,7 @@ priorities).
 
 ```
 riscv-tests:             81 passed, 0 failed, 3 xfail   (make isa)
-co-simulation vs Spike:  84/84 traces pass              (make cosim)
+co-simulation vs Spike:  83/84 traces pass              (make cosim)
 formal:                  5 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 SDRAM controller:        against a model that says no    (make sim_sdram)
@@ -199,7 +200,9 @@ Linux 6.18 rv32ima:      boots to userspace on this SoC, and under
                          QEMU; /init runs and prints            (make sim_linux)
   ...and on a board:     ULX3S 85F, 7.4 MB sent over UART       (BOARD=ulx3s85)
 99 KB program from SDRAM: on a ULX3S 85F, over the serial line
-ULX3S 85F bitstream:     27.41 MHz, 20% LUT, 51% BRAM   (BOARD=ulx3s85 ...synth_ecp5.sh)
+ULX3S 85F bitstream:     23.18-25.92 MHz (a distribution, not a single
+                         number - see fpga/README.md), 20% LUT, 38% BRAM
+                                          (BOARD=ulx3s85 ...synth_ecp5.sh)
 ULX3S 45F bitstream:     28.78 MHz, 29% LUT, 97% BRAM   (predates the D-cache and SDRAM)
 ```
 
@@ -222,12 +225,22 @@ suite is going to enumerate.
 Debug infrastructure — UART console, instruction tracer, and why there is no
 JTAG — is in `docs/debug.md`.
 
-It does **not** implement superscalar issue or out-of-order execution —
-still single-issue, in-order. That's the natural next step, but it's a
-full microarchitecture redesign (register renaming, a reorder buffer,
-reservation stations/scoreboard, multiple execution units) rather than an
-additive change like everything above, so it's being treated as a
-separate future effort instead of bolted onto this pipeline.
+The default core (`cpu_core.v`, `CORE=inorder`) is still single-issue,
+in-order. A second, parallel core — `rtl/ooo/core_ooo.v`, `CORE=ooo` — adds
+register renaming, an 8-entry reorder buffer, and general out-of-order
+issue, and `make verify_ooo` runs the same architectural/co-simulation/
+formal suite against it that the default core carries; both are gated in
+CI. It was built to answer whether renaming and a ROB were worth adding at
+all, and the honest answer, from CoreMark, is not on their own: the wide
+core measures 448,728 cycles against the in-order core's 453,844 — barely
+faster — and *slower* than the narrower, cheaper dual-issue design it was
+meant to replace (434,822 cycles, no renaming). `docs/roadmap.md`'s Phase 1
+section has the full accounting, including why: register renaming and a
+scoreboard remove hazards that in-order issue never has in the first
+place, so most of what they cost goes to proving nothing broke, not to
+real independent work. It stays in the tree, verified and measured rather
+than deleted, because the number is the point — see the project's own
+name, above.
 
 ## 1. Simulate it on your Mac
 
@@ -574,10 +587,16 @@ requires an interrupt to be taken.
   is where every defect in the way was found; `software/linux/README.md`
   records them and how each was caught. U-Boot is skipped: `mkimage.py` packs
   the kernel where `fw_jump` expects it, so there is nothing for it to do.
-- Performance that isn't so slow it's unusable — this core is pipelined
-  and now has a branch predictor, but it's still single-issue and
-  in-order, with no cache; real Linux-capable FPGA cores typically add
-  both a cache hierarchy and superscalar/out-of-order execution.
+- Performance that isn't so slow it's unusable — this core is pipelined,
+  has a branch predictor, and now an I-cache and D-cache too (shared by
+  both cores, in the bus adapter). The core that actually boots Linux is
+  still single-issue and in-order; a separate out-of-order core exists
+  (`CORE=ooo`, Phase 1d) but measures *slower* on CoreMark than the
+  narrower design it replaced and does not itself boot Linux to userspace
+  yet. Real Linux-capable FPGA cores often add superscalar/out-of-order
+  execution too — whether it pays for itself here is a measured, open
+  question this project reports honestly rather than assumes the answer
+  to.
 
 None of that is a natural extension of the file set above — it's a
 different scale of project.
@@ -593,7 +612,7 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | 1a–1c done — `rtl/ooo/core_ooo.v` dual-issues ALU pairs, buffers stores, and completes independent work under a waiting load. Worth 0.05% until the Phase 3 I-cache landed and 7.2% after it, on largely unchanged RTL. **1d (renaming, reorder buffer, LSQ) is designed and not scheduled**: the Phase 3 D-cache took its measured ceiling from 2.9% to 0.56% |
+| 1 | **Superscalar issue and out-of-order execution** | ✅ **built and measured, all the way through 1d** — `rtl/ooo/core_ooo.v` now has register renaming, an 8-entry reorder buffer and general out-of-order issue, `make verify_ooo` green. CoreMark says the honest thing: 448,728 cycles, barely faster than the in-order core (453,844) and slower than the narrower 1b+1c design it replaced (434,822) — the ROI case made *before* 1d was built held up once it was measured. Full accounting, including why, in `docs/roadmap.md` |
 | 2 | Break the memory ceiling — external DRAM | ✅ **done, on silicon** — a 99 KB program sent over the serial line into external SDRAM on a ULX3S 85F and executed from there. 64 KB of block RAM is no longer the ceiling |
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache **1.79×** and D-cache **1.11×** on CoreMark, both in the bus adapter and shared by both cores. Interrupt-driven UART and multi-word lines remain |
 | 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
@@ -619,9 +638,15 @@ Phase 7 needs a card of 32 GB or less and about five minutes. It is last
 because nothing else is blocked by it — every hardware run preloads the program
 into the bitstream and that works — not because it is hard.
 
-One known defect is open and unscheduled: the intermittent `ISA-TIMEOUT` under
-`make verify`. It self-reports rather than hanging silently now, which is not
-the same as being fixed.
+Several known defects are open and unscheduled, written down rather than
+left to be rediscovered — among them the intermittent `ISA-TIMEOUT` under
+`make verify` (still undiagnosed; it self-reports rather than hanging
+silently now, which is not the same as being fixed), the wide core's Linux
+boot still not reaching userspace, and `CORE=ooo` having no measurable Fmax
+at all — place-and-route's static timing analysis fails outright on a
+combinational loop in its completion-bus muxing, a different and more
+significant gap than a missed frequency. `docs/roadmap.md`'s own "Known
+defects" section has the full, current list.
 
 ---
 
