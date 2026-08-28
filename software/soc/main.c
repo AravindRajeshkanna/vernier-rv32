@@ -99,7 +99,8 @@ static int test_address_uniqueness(void) {
     for (i = 0; i < TEST_REGION_WORDS; i++)
         p[i] = TEST_REGION_BASE + i * 4u;
     for (i = 0; i < TEST_REGION_WORDS; i++)
-        if (p[i] != TEST_REGION_BASE + i * 4u) return 0;
+        if (p[i] != TEST_REGION_BASE + i * 4u)
+            return 0;
     return 1;
 }
 

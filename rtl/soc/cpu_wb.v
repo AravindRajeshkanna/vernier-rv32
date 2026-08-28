@@ -380,6 +380,7 @@ module cpu_wb (
         else if (dc_update) dc_valid[dc_idx] <= 1'b1;
     end
 
+
     // Read data latched at ack so it stays stable past the ack cycle. The
     // core samples `dmem_rdata` in the cycle `dmem_rvalid` is high, which is
     // the ack cycle itself and is served by the bypass below - but an AMO's

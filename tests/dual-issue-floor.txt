@@ -30,5 +30,24 @@
 #
 # Only enforced when CORE=ooo. cpu_core.v has no second slot, and on it the
 # same test is expected to retire zero.
+#
+# ---- stage 1d: floor retired ----
+#
+# rtl/ooo/core_ooo.v was rewritten (register renaming + an 8-entry ROB
+# doubling as its own age-ordered issue window, replacing the previous
+# design's fixed-pair slot-0/slot-1 dispatch). Stage 1d dispatches and
+# retires one instruction wide by design - "slot 1" is not a concept this
+# core has, the same as cpu_core.v above, so vernier-p-pairing now retires 0
+# in slot 1 unconditionally and the floor above would never again mean what
+# this file says it means (a regression toward zero). This is not the
+# collapse the floor exists to catch: the trace still matches Spike
+# instruction for instruction, and the core still reorders - just not
+# through a second dispatch slot. That evidence now comes from
+# `ooo_alu_reorder_count`/`ooo_load_reorder_count` (sim/tb_top.v,
+# sim/tb_bench.v), which count actual out-of-program-order issue directly
+# and are not tied to any particular dispatch width.
+#
+# vernier-p-pairing itself is left in place unchanged - its trace matching
+# Spike is still a real, useful check - only the slot-1 floor is retired.
 
-vernier-p-pairing 4000
+vernier-p-pairing 0

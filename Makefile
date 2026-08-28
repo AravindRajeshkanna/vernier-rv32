@@ -67,10 +67,12 @@ IVERILOG      = iverilog
 # The knob exists so a regression in one cannot hide behind the other.
 CORE         ?= inorder
 ifeq ($(CORE),ooo)
-# regfile_wide.v is only in this list, never the in-order one: rtl/regfile.v
+# regfile_phys.v is only in this list, never the in-order one: rtl/regfile.v
 # (2R/1W) still serves cpu_core.v, and building both cores against the same
-# register file would remove the point of having two cores.
-CORE_RTL      = rtl/ooo/core_ooo.v rtl/ooo/regfile_wide.v
+# register file would remove the point of having two cores. Stage 1d
+# replaced regfile_wide.v's dual-issue register file with a renamed
+# physical one - see rtl/ooo/core_ooo.v's header.
+CORE_RTL      = rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
 CORE_DEFINES  = -DCORE_OOO
 else
 CORE_RTL      =
