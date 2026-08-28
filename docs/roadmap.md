@@ -680,6 +680,35 @@ stopped there rather than chased further; `make verify_ooo` does not gate on
 `sim_linux`, and this did not look like the class of bug a bounded amount
 more tracing was likely to close quickly.
 
+**Update: a regression had started masking this point behind an earlier,
+unrelated panic**, and got fixed on the way to reconfirming the above.
+`head_misaligned_cause` - the trap cause the OOO core reports at the ROB head for a
+misaligned access - was hardcoded to 32'd6 (store/AMO address misaligned)
+regardless of whether the access was a load or a store, unlike
+`cpu_core.v`'s own `misaligned_cause`, which has always correctly returned
+32'd4 for a load. Bare-metal riscv-tests never caught it: an out-of-order-
+issued load's own misalignment check (`issL_trap_now`) already used the
+correct cause, and that is the *only* path a misaligned load can take with
+paging off. Under Sv32, every load instead takes `load_via_head` (the OOO
+load port has no MMU of its own) and hits the buggy head-level check instead
+- invisible until something did a misaligned load with paging on. Linux's own
+`check_unaligned_access_emulated` self-test does exactly that at boot,
+deliberately, to probe whether misalignment is hardware-emulated; told it was
+a store fault instead of a load fault, the kernel's store-misaligned handler
+failed to decode what was actually a load and panicked outright, well into
+kernel console output (memory init, the clocksource, "SBI misaligned access
+exception delegation ok") but still PID 1 `swapper/0`, before any driver
+probing - `sim_linux CORE=ooo` then timed out at 400,000,000 cycles with the
+kernel long since wedged, nowhere near the `ecall`-storm point above. Fixed
+by making the cause conditional on
+`rob_is_store`/`rob_is_amo`, exactly mirroring `cpu_core.v`. After the fix,
+`make linux_trapdiff` confirms the boot is back exactly at the point this
+section already describes: zero `U->S` transitions, and 2,909 `S->M` "ecall
+from S" traps against in-order's 773 for the same boot (3.76x, matching the
+3.8x above), with the store-page-fault-at-`load_elf_binary+0xc30` signature
+this doc used to lead with (see "Known defects" below) absent from the trace
+entirely - not fixed, just not yet reachable again.
+
 **Fmax and utilisation: attempted, and blocked on something worth naming.**
 The toolchain was not installed in the session that built the rest of this
 stage; it is in a later one, and `fpga/synth/synth_ecp5.sh` had never had a
@@ -1726,19 +1755,31 @@ an oversight.
 
 Open, unscheduled, and written down so they are not rediscovered.
 
-**The wide core's `execve` `-EFAULT`, now localized.** `make linux_trapdiff`
-boots the same image on both cores and compares the traps. Exactly one
-exception separates them: a supervisor store page fault at
-`load_elf_binary+0xc30`, storing to user virtual address `0x00040000`. The
-page really is unmapped — the root page table's entry 0 reads zero at the
-faulting cycle — so the MMU is right and a *store* that should have written a
-page-table entry did not — **and that reading turned out to be wrong**. The
-write trace shows the in-order core installing that entry only after `/init`
-is already running, so it never stores to the faulting address inside
-`load_elf_binary` either. The wide core is issuing a store the working core
-does not, rather than losing one. `software/linux/README.md` has the method
-and the numbers; [practices.md §41](practices.md) has what `+checkmmu` was
-checking while this went past it, and [§42](practices.md) has the correction.
+**The wide core's Linux boot does not reach userspace.** `make linux_trapdiff`
+boots the same image on both cores and compares the traps; the "Stage 1d was
+built anyway" section above has the current, authoritative account of where
+it stops - zero `U->S` transitions across the whole run, against 3.8x more
+`S->M` "ecall from S" calls than in-order's *entire successful boot* needed,
+pointing at an interrupt-delivery gap specific to this core, not yet
+root-caused.
+
+This entry used to say something different: a supervisor store page fault at
+`load_elf_binary+0xc30`, storing to user virtual address `0x00040000`
+(`software/linux/README.md` and [practices.md §41-42](practices.md) have that
+investigation in full). That finding is not wrong, but it is no longer
+reachable - the boot now stops earlier than `execve`, at the point above, so
+whether the stray store still exists cannot currently be reconfirmed either
+way. Two fixes changed the failure point since: `head_mmu_wait_stall` (this
+section) moved it from a complete hang to the `ecall`-storm point; a fixed
+`head_misaligned_cause` (PR fixing the OOO core hardcoding cause 6 for every
+misaligned access at the ROB head, including loads reaching it via
+`load_via_head`, where cause 4 is correct) removed a newer regression that
+had started masking that same point behind an earlier kernel panic -
+Linux's own `check_unaligned_access_emulated` self-test deliberately issues a
+misaligned load, got told it was a store fault, and the kernel's
+store-misaligned handler failed to decode a load and panicked. Fixing it did
+not move the boot past the `ecall`-storm point; it restored the boot *to*
+it.
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed. It
 self-reports rather than hanging silently, which is not the same as being
