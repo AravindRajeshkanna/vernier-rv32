@@ -665,14 +665,51 @@ stopped there rather than chased further; `make verify_ooo` does not gate on
 `sim_linux`, and this did not look like the class of bug a bounded amount
 more tracing was likely to close quickly.
 
-**Not measured: Fmax and utilisation.** `nextpnr-ecp5` and `ecppack` are not
-installed in the environment this stage was built in, and no board is
-reachable from it — the existing 85F numbers elsewhere in this file came from
-a differently-provisioned session. `make coremark` is a pure simulation and
-needed neither; a real place-and-route run for `CORE=ooo` is open work, and
-given the physical register file and ROB the roadmap already flagged as
-block-RAM pressure, it is the single most important number this stage is
-still missing.
+**Fmax and utilisation: attempted, and blocked on something worth naming.**
+The toolchain was not installed in the session that built the rest of this
+stage; it is in a later one, and `fpga/synth/synth_ecp5.sh` had never had a
+`CORE=` knob at all — hardcoded to `rtl/cpu_core.v`, never run against
+`core_ooo.v` once. Added one, mirroring the Makefile's own `CORE_RTL`/
+`CORE_DEFINES` exactly, and confirmed it first against `CORE=inorder`: the
+regression run reproduces the documented 85F numbers closely (80 DP16KD/38%,
+17,814 TRELLIS_COMB/21%, 4 MULT18X18D, timing closed on seed 3 at 26.28 MHz —
+next to the prior "seed 3, 25.96 MHz" entry above), so the knob itself is not
+the story.
+
+`CORE=ooo`, `BOARD=ulx3s85`, for the first time: **synthesis succeeds with
+real numbers** — 78 DP16KD/37% (barely different from in-order's 80/38%, so
+the physical register file and ROB did *not* turn out to be the block-RAM
+pressure this file worried about before it was measured), 52,042/83,640
+TRELLIS_COMB/**62%** (against in-order's 21% — roughly three times the logic,
+which tracks with renaming, an 8-entry CAM-like ROB, and three completion
+buses where the flat core has one), and 12 MULT18X18D against 4. **But
+place-and-route's own static timing analysis fails outright, deterministically,
+on all six placement seeds**: `ERROR: Timing analysis failed due to
+combinational loops.` Not "too slow" — nextpnr cannot produce an Fmax number
+for this design at all via the standard flow, which is a different and more
+important finding than a missing digit.
+
+This is almost certainly the same cycle `sim/verilator_soc.vlt`'s own
+`UNOPTFLAT` waiver already names — one loop nextpnr reports (its internal
+number 3941) touches exactly the CDB-bypass network that comment describes:
+`regfile_phys`'s write-data muxes, the out-of-order ALU (Class B) operand
+path, the divider, and the MMU's `va` all appear in the same reported cycle.
+The `.vlt` file's own reasoning — "a specific tag match is a runtime
+condition, always false for a producer reading its own not-yet-computed
+result, by construction" — is sound for a value-level simulator, which is
+exactly why Icarus and Verilator both execute this design correctly (`make
+verify_ooo` is green; see above). It says nothing to a static timing
+analyzer, which reasons about the wire graph, not runtime values, and a
+structural cycle in silicon is a structural cycle regardless of which tag
+matches ever really fire. Whether that is only a nextpnr-STA limitation
+(the loop is genuinely inert, and a real board would work) or a real
+metastability/settling risk on that path (the loop is not as inert in an
+analog sense as it is in a simulated one) is now the open question, and it
+is a different and harder one than "what is the Fmax" — worth its own
+investigation with its own budget, not a fix folded into this stage.
+Documented here rather than attempted under time pressure: breaking this
+cycle structurally means restructuring the completion-bus muxing this stage
+built, not a local patch.
 
 **And it is now verified as well as counted.** Co-simulation against Spike had
 been running on this core the whole time and passing 82 of 82 traces — while
@@ -1698,3 +1735,19 @@ fixed, and pretending otherwise is exactly the failure mode
 holds that, but the labels are named for byte offsets because the original had
 no symbol names to recover. Anyone extending the core regression will be
 working with that.
+
+**`CORE=ooo` has no Fmax: nextpnr's static timing analysis fails outright on
+a combinational loop.** Six placement seeds, `BOARD=ulx3s85`, six identical
+`ERROR: Timing analysis failed due to combinational loops` — not a missed
+frequency, no timing report produced at all. One reported loop (nextpnr's
+internal number 3941) runs through `regfile_phys`'s write-data muxes, the
+out-of-order ALU operand path, the divider, and the MMU's `va`, which is
+exactly the CDB-bypass network `sim/verilator_soc.vlt`'s `UNOPTFLAT` waiver
+already names and reasons is functionally inert (`make verify_ooo` is green;
+Icarus and Verilator both execute it correctly). That reasoning is about
+runtime values and does not help a static timing analyzer, which sees only
+the wire graph. Whether the loop is genuinely electrically inert on real
+silicon or a real metastability risk is open, and it is a different, harder
+question than "what is the Fmax" — see the "Stage 1d was built anyway"
+section above for the full measurement and reasoning. Fixing it means
+restructuring the completion-bus muxing, not a local patch.
