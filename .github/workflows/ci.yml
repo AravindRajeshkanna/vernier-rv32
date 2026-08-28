@@ -139,15 +139,14 @@ jobs:
     runs-on: ubuntu-24.04
     # Raised from 30 when the SDRAM boot test landed: that run is 2.2 M
     # cycles of full-SoC simulation on its own, and the wide core's leg of
-    # this job was already at 21 minutes. Raised again, 45 to 60, when
-    # stage 1d's known, documented speculative-load hazard (docs/roadmap.md,
-    # "Stage 1d was built anyway") turned "the wide core's UART loader test
-    # fails" into "the wide core's UART loader test spends real wall-clock
-    # minutes reaching sim/tb_uartload.v's own hang-detection watchdog before
-    # it can fail" - a cost a passing run never paid. That watchdog is sized
-    # generously against a legitimate transfer already (see its own comment),
-    # and this job's budget needs to be sized generously against it in turn.
-    timeout-minutes: 60
+    # this job was already at 21 minutes. Briefly raised again, 45 to 60,
+    # while stage 1d's out-of-order load port could speculatively lose a
+    # real UART byte (docs/roadmap.md, "Stage 1d was built anyway"): the
+    # wide core's UART loader test spent real wall-clock minutes reaching
+    # sim/tb_uartload.v's own hang-detection watchdog before it could fail,
+    # a cost a passing run never paid. Back to 45 now that the bug is fixed
+    # and that run passes normally again, in ordinary time.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -299,30 +298,18 @@ jobs:
       # no user at all before this loader existed.
       - name: Boot ROM UART loader
         run: make sim_uartload | tee uartload.log
-      # In-order: an ordinary hard pass requirement, like every other check
-      # here. Wide core: a known, deliberate, documented gap - a speculative
-      # out-of-order load can dequeue a real byte from the UART's receive
-      # register before an older branch's misprediction is discovered and
-      # the load's own result is thrown away, so the boot ROM waits forever
-      # for a byte that already arrived and was lost (docs/roadmap.md,
-      # "Stage 1d was built anyway"; tests/expected-failures.txt's own header
-      # explains why riscv-tests handles this class of thing by name rather
-      # than by a bare skip - this does the same, checking for the *specific*
-      # known failure line rather than merely not requiring PASS, so a change
-      # to the failure mode - the bug getting fixed, or a new and different
-      # bug replacing it - still fails this check and gets noticed here
-      # rather than passing silently).
-      - name: Check UART loader verdict (in-order)
-        if: matrix.core == 'inorder'
+      # An ordinary hard pass requirement, both cores. The wide core carried
+      # a known, deliberate, documented gap here for a while - a speculative
+      # out-of-order load could dequeue a real byte from the UART's receive
+      # register before an older branch's misprediction was discovered, so
+      # the boot ROM waited forever for a byte that already arrived and was
+      # lost - and this step was briefly split per-core, checking for that
+      # exact failure line on `CORE=ooo` rather than requiring PASS. Fixed
+      # (docs/roadmap.md, "Stage 1d was built anyway"; the out-of-order
+      # load-issue scan now excludes side-effecting addresses the same way
+      # `cpu_wb.v`'s D-cache already does), so back to one check for both.
+      - name: Check UART loader verdict
         run: grep -q "UARTLOAD TEST PASSED" uartload.log
-      - name: Check UART loader verdict (wide core, known gap)
-        if: matrix.core == 'ooo'
-        # "(timeout" without the rest of the message: a literal `: ` in an
-        # unquoted YAML scalar starts a nested mapping, not a grep pattern -
-        # this much is still unique to sim/tb_uartload.v's hang-detection
-        # message, versus its other two failure strings ("the loaded program
-        # reported failure" and "%0d protocol errors").
-        run: grep -q "UARTLOAD TEST FAILED (timeout" uartload.log
 
   # ---------------------------------------------------------------------
   # Architectural tests: somebody else's suite, pinned to a commit.
