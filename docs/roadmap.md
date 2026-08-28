@@ -709,6 +709,60 @@ from S" traps against in-order's 773 for the same boot (3.76x, matching the
 this doc used to lead with (see "Known defects" below) absent from the trace
 entirely - not fixed, just not yet reachable again.
 
+**Update 2: localized well past "an interrupt-delivery gap."** The `3.8x
+more ecalls, zero U->S` framing above is real but was read at too coarse a
+grain - it describes the whole rest of the boot, not where it starts going
+wrong. Bisecting on `+maxcycles` (rerunning `sim_linux` at successively
+narrower cycle counts and reading `pc over the last 2000 cycles` against
+`software/linux/build/System.map` each time) narrows the actual point of no
+return to a ~300,000-cycle window, cycle 94.5-94.8M of the run's eventual
+400M-cycle timeout: `Serial: 8250/16550 driver, 4 ports` prints
+(`serial8250_init`, `8250_platform.c`), and Linux's own `initcall_debug` boot
+parameter (which prints every driver-model `probe()` as it starts and
+returns) shows why nothing after it ever prints again - `probe of
+serial8250:0`, `:0.0`, `:0.1`, and `:0.2` each return successfully in a few
+thousand microseconds; `:0.3`, the fourth and structurally identical to the
+other three, never returns. `CORE=inorder`, same kernel image, same
+`initcall_debug` build: all five probes (`:0` through `:0.3`, plus a final
+`serial8250` summary probe) return, and `serial8250_init` itself returns
+after 192ms. This is not a platform or kernel-config gap - the same binary
+works on the other core - it is a wide-core correctness bug, now genuinely
+localized, not yet root-caused at the RTL level.
+
+What the cycle-bisected trace actually shows, in order: `kernfs_create_dir_ns`
+and `kernfs_add_one` (a new sysfs directory going in), then `kobject_uevent_env`
+allocating and formatting a netlink environment buffer (`device_add()`'s final
+step), then - in the *next* narrower window - `kernfs_free_rcu` and
+`delete_node` (a kernfs node coming back *out*, via RCU, which is what a
+failed or superseded registration's cleanup looks like, not what a plain
+success does), an SBI `ecall` (most likely a timer rearm), and finally
+`__schedule()` itself, after which every subsequent window is `do_idle()`
+and nothing else, permanently. Something legitimately blocks - `schedule()`
+is a deliberate call, not a stall - and whatever is supposed to wake it
+never does, even though the periodic timer interrupt that would have to
+carry that wakeup keeps firing on schedule for the remaining ~305,000,000
+cycles of the run. That last point rules out a blunt "PLIC interrupts are
+broken" reading: the timer *is* delivered, throughout; it is one specific
+task's wakeup that never happens.
+
+Not yet pinned down further: pure PC-trace bisection has a floor.
+`riscv64-unknown-elf-addr2line -e software/linux/build/vmlinux` resolves
+function names from `vmlinux`'s symbol table but not source lines (the debug
+build here does not carry full line-number DWARF), and there is no call-stack
+walker in the harness - `pc over the last 2000 cycles` shows control-flow
+edges, not frames, so the actual *caller* of `schedule()` at this exact site,
+and the wait primitive it used (a completion, a workqueue flush, a name
+collision's error-recovery path - the `kernfs_free_rcu`/`delete_node` pairing
+is circumstantial evidence for the last of these, not proof), is still open.
+Closing that gap needs either a stack-aware trace (this SoC's own JTAG debug
+module, `rtl/debug/dm.v`, could in principle drive a live GDB session against
+the Verilator simulation, but wiring that up is its own project) or a
+narrower, purpose-built RTL trace once there is a specific signal to watch
+for. The reproduction itself is solid and cheap: `make sim_linux CORE=ooo`
+with `+maxcycles=94800000` lands inside the steady-state idle loop every
+time, and the same image passes on `CORE=inorder` in the same run for
+comparison.
+
 **Fmax and utilisation: attempted, and blocked on something worth naming.**
 The toolchain was not installed in the session that built the rest of this
 stage; it is in a later one, and `fpga/synth/synth_ecp5.sh` had never had a
@@ -1757,11 +1811,24 @@ Open, unscheduled, and written down so they are not rediscovered.
 
 **The wide core's Linux boot does not reach userspace.** `make linux_trapdiff`
 boots the same image on both cores and compares the traps; the "Stage 1d was
-built anyway" section above has the current, authoritative account of where
-it stops - zero `U->S` transitions across the whole run, against 3.8x more
-`S->M` "ecall from S" calls than in-order's *entire successful boot* needed,
-pointing at an interrupt-delivery gap specific to this core, not yet
-root-caused.
+built anyway" section above has the current, authoritative account, including
+"Update 2," which localizes this well past the `ecall`/interrupt-count framing
+this entry used to lead with. The short version: cycle-bisecting `sim_linux
+CORE=ooo` (`+maxcycles`, narrowed until `pc over the last 2000 cycles` stops
+changing) lands the point of no return at cycle 94.5-94.8M of 400M, inside
+`serial8250_init`'s legacy-port registration loop - the fourth of four
+structurally identical `uart_add_one_port()` calls (confirmed via Linux's own
+`initcall_debug`: probes `serial8250:0` through `:0.2` return in a few
+thousand microseconds each, `:0.3` never does) triggers `kernfs_create_dir_ns`,
+then in the next window `kernfs_free_rcu`/`delete_node` (a registration
+apparently unwinding, not succeeding) and a `schedule()` that never returns.
+`CORE=inorder`, identical kernel image and `initcall_debug` build, passes all
+five probes and reaches userspace - ruling out a platform/kernel-config
+explanation. The periodic timer interrupt that would carry the eventual
+wakeup keeps firing for the rest of the run regardless, so this is not a
+blanket "PLIC interrupts don't work" - one specific task's wakeup does not
+happen. Not yet root-caused past that: no call-stack walker exists in the
+harness to see who actually called `schedule()` or what it was waiting on.
 
 This entry used to say something different: a supervisor store page fault at
 `load_elf_binary+0xc30`, storing to user virtual address `0x00040000`
@@ -1807,3 +1874,20 @@ silicon or a real metastability risk is open, and it is a different, harder
 question than "what is the Fmax" — see the "Stage 1d was built anyway"
 section above for the full measurement and reasoning. Fixing it means
 restructuring the completion-bus muxing, not a local patch.
+
+**`nextpnr-ecp5 --ignore-loops` was tried, as the obvious cheap way around
+the above, and it is not a usable shortcut.** The flag exists precisely to
+let timing analysis proceed past a known-false combinational loop instead of
+refusing outright - but "proceed" is not "produce a meaningful number."
+Every seed tried (five of six placement seeds, `BOARD=ulx3s85`, before the
+sixth was killed to free the machine for other work) reports the *same*
+symptom: `clk_25mhz`'s max frequency comes back as 0.40-0.45 MHz against a
+25 MHz requirement - not a close miss, four orders of magnitude off - paired
+with dozens of hold-time violations on the clock input buffer itself, which
+is not where a real timing problem in this design would show up. Ignoring
+the loop does not make the analyzer treat it as zero-delay or otherwise
+benign; it appears to make the analyzer treat *some* path through it as
+absurdly slow instead, which is a different kind of wrong, not a smaller
+one. This does not change the "not a local patch" conclusion above - if
+anything it reinforces it, since the tool's own escape hatch for this class
+of loop produces garbage rather than an answer.
