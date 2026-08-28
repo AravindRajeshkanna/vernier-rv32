@@ -859,19 +859,25 @@ module core_ooo #(
         end
     end
 
-    // A load's misalignment was never checked anywhere: `head_mem_misaligned`
-    // only fires for `rob_is_store`/`rob_is_amo` at the ROB head, and loads
-    // deliberately never reach the head via `headS` (they retire out of
-    // order through Class B2). A misaligned `lw` silently read across a
-    // word boundary using a single, wrongly-aligned bus transaction instead
-    // of trapping for the software handler to emulate, as the RV spec
-    // requires when hardware does not support it. Found via a Spike
-    // co-simulation diff on rv32mi-p-lw-misaligned. Fixed by checking here,
-    // at issue, and - if misaligned - never touching the bus at all;
-    // instead the entry is marked done-with-a-pending-trap-event (below)
-    // and `headS_valid` is widened just enough to let a trap-flagged load
-    // reach the existing Class S trap-taking logic once it becomes the
-    // head, the same path illegal-instruction/ecall traps already use.
+    // An out-of-order-issued load's misalignment was never checked at issue:
+    // this covers a load taking the OOO load port directly (Class B2
+    // retirement), which never touches `head_mem_misaligned` below at all.
+    // A misaligned `lw` silently read across a word boundary using a
+    // single, wrongly-aligned bus transaction instead of trapping for the
+    // software handler to emulate, as the RV spec requires when hardware
+    // does not support it. Found via a Spike co-simulation diff on
+    // rv32mi-p-lw-misaligned. Fixed by checking here, at issue, and - if
+    // misaligned - never touching the bus at all; instead the entry is
+    // marked done-with-a-pending-trap-event (below) and `headS_valid` is
+    // widened just enough to let a trap-flagged load reach the existing
+    // Class S trap-taking logic once it becomes the head, the same path
+    // illegal-instruction/ecall traps already use.
+    //
+    // A load that instead takes `load_via_head` (MMU translation, or a
+    // side-effecting address) *does* reach the ROB head and does hit
+    // `head_mem_misaligned` below - `head_is_mem_op`'s third disjunct is
+    // exactly that case. See `head_misaligned_cause`'s own comment for the
+    // bug that gap left.
     reg issL_misaligned;
     always @(*) begin
         case (rob_mem_size[issL_idx])
@@ -1042,7 +1048,17 @@ module core_ooo #(
     end
     wire head_mem_misaligned = head_is_mem_op && !head_mmu_busy &&
                           (rob_is_amo[rob_head] ? (|head_mem_addr_virt[1:0]) : head_misaligned_sized);
-    wire [31:0] head_misaligned_cause = 32'd6;
+    // Store/AMO address misaligned (cause 6) per the RV privileged spec,
+    // *unless* the head instruction is a load - `load_via_head` (MMU
+    // translation, or, since the sim_uartload fix, a side-effecting
+    // address) is the third disjunct in `head_is_mem_op` above, and a
+    // misaligned load is cause 4. Mirrors `cpu_core.v`'s own
+    // `misaligned_cause` exactly. A misaligned `lw` under Sv32 - which
+    // riscv-tests, running bare-metal, never exercises - hit this: Linux's
+    // own `check_unaligned_access_emulated` self-test deliberately issues
+    // one, and the wrong cause routed it to the kernel's store-misaligned
+    // handler, which then failed to decode a load and panicked.
+    wire [31:0] head_misaligned_cause = (rob_is_store[rob_head] || rob_is_amo[rob_head]) ? 32'd6 : 32'd4;
 
     wire head_need_translate = head_is_mem_op && !head_mem_misaligned &&
                                satp_mode && (effective_priv_for_data != PRIV_M);

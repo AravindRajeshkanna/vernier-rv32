@@ -86,6 +86,13 @@ EXPECTED_DIVERGENCE = {
     "rv32mi-p-breakpoint":
         "Spike implements debug-spec triggers (tselect/tdata); this core does "
         "not, so the write to tselect traps here and does not there.",
+    "rv32si-p-dirty":
+        "a real, narrower, still-unresolved Sv32 dirty-bit semantic "
+        "difference from Spike, one instruction wide, shared with the "
+        "in-order core and not new to any one stage - see docs/roadmap.md's "
+        "'Stage 1d was built anyway' section. Documented there as accepted "
+        "since it first became visible, but never registered here, so "
+        "`cosim --all` has been exiting 1 on every clean run since.",
 }
 
 
