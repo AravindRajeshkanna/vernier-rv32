@@ -99,7 +99,7 @@ regression against.
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
 | 1c | Scoreboard: out-of-order completion, in-order retire | ✅ done — store buffer and load-completion buffer, +0.34% |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | **built anyway** — see below. `make verify_ooo` green except one pre-existing, unrelated ISA failure and one newly-found, documented-not-fixed hazard; CoreMark **448,728 cycles**, slower than the cheaper stage 1b+1c core it was meant to replace; Linux still does not boot to userspace |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | **built anyway** — see below. `make verify_ooo` fully green; CoreMark **448,346 cycles**, slower than the cheaper stage 1b+1c core it was meant to replace; Linux still does not boot to userspace |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
@@ -528,11 +528,12 @@ what actually happened, measured the same way the case against it was
 measured.
 
 **`make verify_ooo`.** riscv-tests 81/81 (up from 79/81 — see the dirty-bit
-note below), cosim 83/84, formal 5/5 proved, 0 refuted. Green except one
-thing, worth naming precisely rather than folding into a bare pass count:
+note below), cosim 83/84, formal 5/5 proved, 0 refuted, `sim_uartload`
+passing. Fully green, with a fourth bug behind the last of those numbers that
+is worth naming precisely rather than folding into a bare pass count:
 
-- **`sim_uartload` fails, deterministically, every run.** Root cause: an
-  out-of-order load can issue speculatively — before an older, unresolved
+- **`sim_uartload` used to fail, deterministically, every run.** Root cause:
+  an out-of-order load can issue speculatively — before an older, unresolved
   branch is known to be correctly predicted — and speculation is free for
   ordinary RAM (a squashed load's result is just discarded) but not for a
   register with a real read side effect. The boot ROM's UART receive loop
@@ -540,25 +541,39 @@ thing, worth naming precisely rather than folding into a bare pass count:
   mispredicts on the very last byte it needs; the load that reads the data
   register on the mispredicted path had already dequeued the real byte from
   the UART's one-deep receive buffer by the time the misprediction was
-  discovered and the load's own result discarded. The byte is gone — nothing
-  puts it back — and the ROM waits forever for a byte that already arrived
-  and was thrown away. Traced to the instruction level: the loop needs
-  exactly 15 reads of the UART's RBR register to fill a 16-byte header buffer
-  (1 from a leading skip-probe check, 15 from the main loop); the hardware
-  shows the register was genuinely read 15 times, but only 14 of those reads
-  ever reach the loop's own store-and-increment bookkeeping. `sim_uart16550`,
-  `sim_uartirq` and `sim_plic` all pass, because none of them poll a
-  side-effecting register through a branch that mispredicts on exit. This is
-  a real, general hazard in the out-of-order load path, not specific to the
-  UART — it would reach any MMIO register with a read side effect (the
-  PLIC's claim register is the other one this SoC has) under the right branch
-  pattern. **Not fixed.** A proper fix means either teaching the core which
-  addresses are side-effecting (new, SoC-specific knowledge the core does not
-  otherwise have — `cpu_wb.v`'s D-cache already carries an address-based
-  exclusion list for exactly this reason, but core_ooo.v's own load-issue
-  logic has no equivalent) or not issuing any load until it is known
-  non-speculative (which gives up most of what out-of-order load issue is
-  for). Documented here rather than patched under time pressure.
+  discovered and the load's own result discarded. The byte was gone —
+  nothing puts it back — and the ROM waited forever for a byte that already
+  arrived and was thrown away. Traced to the instruction level: the loop
+  needs exactly 15 reads of the UART's RBR register to fill a 16-byte header
+  buffer (1 from a leading skip-probe check, 15 from the main loop); the
+  hardware showed the register genuinely read 15 times, but only 14 of those
+  reads ever reached the loop's own store-and-increment bookkeeping.
+  `sim_uart16550`, `sim_uartirq` and `sim_plic` all passed regardless,
+  because none of them poll a side-effecting register through a branch that
+  mispredicts on exit. This was a real, general hazard in the out-of-order
+  load path, not specific to the UART — it would reach any MMIO register
+  with a read side effect (the PLIC's claim register is the other one this
+  SoC has) under the right branch pattern.
+  **Fixed.** `core_ooo.v`'s out-of-order load-issue scan now excludes any
+  address outside RAM (`0x80xxxxxx`) or the boot ROM (`0x00xxxxxx`) —
+  mirroring `cpu_wb.v`'s own `dc_cacheable` test exactly, the same
+  address-range check that already keeps the D-cache from caching a
+  side-effecting register, applied here to keep the out-of-order load port
+  from *speculating* on one. The exclusion sits at scan/discovery time, not
+  at the port's own go-signal (`loadL_can_start`, which already excludes the
+  one other case a load must not start out of order — an active Sv32 walk):
+  gating discovery instead lets a side-effecting load simply be skipped in
+  favor of a younger, safe one also waiting in the ROB, the same way an
+  address-hazard-blocked candidate already is, rather than being "found" and
+  then perpetually refused — which would have serialized the whole
+  out-of-order load port behind it until it retired. `load_via_head`
+  (previously only for a load needing Sv32 translation) picks up a
+  side-effecting load the same way once it becomes the ROB head: only once
+  it is provably the oldest instruction, with no older branch left that
+  could still squash it, does it actually touch the register. CoreMark is
+  unaffected (448,346 cycles against 448,728 before — noise, not a
+  regression; CoreMark's own workload has nothing MMIO-heavy for this
+  exclusion to touch).
 
 Three other real bugs were found and fixed getting this far, all keyed off the
 same root idea: out-of-order issue means an instruction can compute its
@@ -620,7 +635,7 @@ is a real, narrower, still-unresolved Sv32 dirty-bit semantic difference from
 Spike, one instruction wide, shared with the in-order core's own known
 limitation in this area and not new to this stage.
 
-**CoreMark, one iteration.** 448,728 cycles, correctness self-checked by
+**CoreMark, one iteration.** 448,346 cycles, correctness self-checked by
 CoreMark's own CRC (`BENCHMARK PASSED`). For comparison, on the same D-cached
 bus adapter:
 
@@ -628,7 +643,7 @@ bus adapter:
 |---|---|---|
 | In-order core | 453,844 | unchanged by this stage |
 | Wide core, stage 1b+1c (dual issue, no ROB) | 434,822 | what 1d was meant to replace |
-| **Wide core, stage 1d (renaming, ROB, general OOO issue)** | **448,728** | slower than 1b+1c, barely faster than in-order |
+| **Wide core, stage 1d (renaming, ROB, general OOO issue)** | **448,346** | slower than 1b+1c, barely faster than in-order |
 
 Dispatched 380,146, retired 359,619 — 0.80 instructions retired per cycle,
 under one, let alone the "more than one instruction retiring per cycle" this

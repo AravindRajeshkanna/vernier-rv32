@@ -28,8 +28,15 @@
 //     M, OP-IMM, LUI, AUIPC - the class stage 1b's second decode slot
 //     already isolated, now issued from anywhere in the window rather
 //     than only from an adjacent pair), and loads. A load may issue once
-//     its address is known and no older, still-pending store might alias
-//     it - see "The load-store queue" below.
+//     its address is known, no older, still-pending store might alias it -
+//     see "The load-store queue" below - and its target is ordinary memory
+//     (mirrors `cpu_wb.v`'s own D-cache `dc_cacheable` test): a load to a
+//     register with a real read side effect never issues speculatively,
+//     because a squashed load's result being merely discarded is not the
+//     same as the side effect - the byte a UART's receive register handed
+//     over, say - never having happened. Such a load instead defers to the
+//     ROB head the same way a load needing address translation already
+//     did, and only executes once it is provably the oldest instruction.
 //   - Everything else - branches/JAL/JALR, CSR ops, ECALL/EBREAK/MRET/
 //     SRET/fences, MUL/DIV, AMO/LR/SC - executes only once it is the ROB
 //     head. This is deliberate: these are exactly the instructions whose
@@ -809,7 +816,40 @@ module core_ooo #(
                         (cdbL_valid && (cdbL_preg == issL_scan_tag)) ? cdbL_val :
                                                                         rob_r1_val[issL_scan_idx];
                     issL_scan_addr = issL_scan_addr + rob_imm[issL_scan_idx];
-                    if (lsq_load_ok(issL_scan_idx, issL_scan_addr)) begin
+                    // `issL_scan_addr[31:24] == 8'h80 || == 8'h00`: mirrors
+                    // rtl/soc/cpu_wb.v's `dc_cacheable` exactly (RAM at
+                    // 0x80xxxxxx, ROM at 0x00xxxxxx are the only addresses
+                    // without a read side effect - see that wire's own
+                    // comment). A load whose target is neither must not be
+                    // allowed to issue speculatively: speculation is free
+                    // for ordinary RAM (a squashed load's result is just
+                    // discarded) but not for a register with a real read
+                    // side effect, and this core has no rollback for a
+                    // hardware event that already happened. Found via
+                    // sim_uartload: the boot ROM's UART receive loop polls
+                    // the UART's status register in a tight loop whose exit
+                    // branch mispredicts on the very last byte it needs, and
+                    // the load reading the data register on the mispredicted
+                    // path had already dequeued the real byte from the
+                    // UART's one-deep receive buffer by the time the
+                    // misprediction was discovered and the load's own result
+                    // discarded - the byte was gone, and the ROM waited
+                    // forever for one that had already arrived.
+                    //
+                    // Excluded here, at discovery, rather than at
+                    // `loadL_can_start` below (where `!dmem_mmu_active`
+                    // already excludes the *other* case a load must not
+                    // start out of order): gating discovery instead of the
+                    // go-signal lets a side-effecting load simply be skipped
+                    // in favor of a younger, safe one also waiting in the
+                    // ROB, the same way an address-hazard-blocked candidate
+                    // already is by `lsq_load_ok` below - rather than
+                    // "found" and then perpetually refused, which would
+                    // serialize the whole out-of-order load port behind it
+                    // until it reaches the ROB head. `load_via_head` below
+                    // picks it up once it does.
+                    if ((issL_scan_addr[31:24] == 8'h80 || issL_scan_addr[31:24] == 8'h00) &&
+                        lsq_load_ok(issL_scan_idx, issL_scan_addr)) begin
                         issL_found     = 1'b1;
                         issL_idx       = issL_scan_idx;
                         issL_addr_calc = issL_scan_addr;
@@ -907,8 +947,24 @@ module core_ooo #(
     // traced back through the CDB to a load's own completion.
     wire [1:0] effective_priv_for_data = (current_priv == PRIV_M && csr_mstatus_mprv) ? csr_mstatus_mpp : current_priv;
     wire dmem_mmu_active = satp_mode && (effective_priv_for_data != PRIV_M);
+    // The ROB-head-specific counterpart of the out-of-order scan's own
+    // address-range exclusion above (same reasoning, same `dc_cacheable`-
+    // mirroring test) - needed here too because `issL_idx`/`issL_addr_calc`
+    // can point at a *different*, younger ROB entry than `rob_head` (if the
+    // head is not yet r1-ready, a later load can be the one currently
+    // found), so this re-derives the head's own target address directly
+    // from `head_mem_addr_virt` below instead of reusing those. Gated on
+    // `rob_r1_ready[rob_head]`: until the base register is known the address
+    // cannot be evaluated, and until it is, this load has not been "found"
+    // by the scan above either, so nothing is lost by waiting the same way.
+    // `head_mem_addr_virt` depends only on `headS_op1`/`rob_imm[rob_head]`,
+    // neither of which depends on `load_via_head` or `headS_valid`, so
+    // reading it here (defined later in this file) is an ordinary forward
+    // wire reference, not a new dependency loop.
+    wire load_target_needs_head = rob_is_load[rob_head] && rob_r1_ready[rob_head] &&
+        !(head_mem_addr_virt[31:24] == 8'h80 || head_mem_addr_virt[31:24] == 8'h00);
     wire load_via_head = rob_is_load[rob_head] && !rob_is_trap_event[rob_head] &&
-                         dmem_mmu_active && !rob_issued[rob_head];
+                         !rob_issued[rob_head] && (dmem_mmu_active || load_target_needs_head);
     wire headS_valid = !rob_empty && rob_valid[rob_head] && !rob_is_alu_class[rob_head] &&
                        (!rob_is_load[rob_head] || rob_is_trap_event[rob_head] || load_via_head);
     // `load_via_head ||`: a load's r2 tag is never meaningful (loads are
