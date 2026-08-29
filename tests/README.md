@@ -88,9 +88,23 @@ destination register, written value)` - and diffs them. Neither side's
 disassembly is parsed or trusted.
 
 ```
+$ tests/cosim.py --all --core=ooo
 co-simulation vs Spike: 84/84 traces pass
-dual issue exercised:   6,206 of 59,197 retirements (10.5%) in slot 1
+dual issue exercised:   0 of 59,197 retirements (0.0%) in slot 1
 ```
+
+The second line only ever prints under `--core=ooo` - it reads as a
+regression and is not one; see "Which issue slot, and why the number is
+printed" below for why 0 is now the permanent, correct value there. "84/84
+traces pass" counts an accepted, registered divergence as a pass, same as it
+always has for `rv32mi-p-breakpoint` - and one of the 84 here is exactly
+that: `rv32si-p-dirty`, which diverges from Spike only on the wide core
+(`tests/cosim.py`'s `EXPECTED_DIVERGENCE_CORES`). Plain `tests/cosim.py
+--all` (`CORE=inorder`, what `make cosim` runs by default) is also
+**84/84**, but for a different reason - `rv32si-p-dirty` genuinely matches
+there, not registered - and has no second line, since the in-order core has
+no slot 1 to
+report on.
 
 This asks a strictly harder question than the tests do. A test says "the
 program reached its own pass condition"; a core can get there through a wrong
@@ -121,33 +135,49 @@ implements debug triggers and this core does not.
 
 ### Which issue slot, and why the number is printed
 
-Under `CORE=ooo` the summary reports how many retirements came out of the
-second issue slot. It is there because the suite was green and the number was
-**63 out of 28,262 — 0.22%**, with 70 of the 82 traces retiring none at all.
+**This section is history, not current behavior.** It describes stage
+1b/1c's fixed slot-0/slot-1 dual dispatch. Stage 1d replaced that design
+with register renaming and an age-ordered ROB (`docs/roadmap.md`'s "Stage 1d
+was built anyway"): the core now dispatches and retires one instruction
+wide, "slot 1" is not a concept it has, and `vernier-p-pairing` retires 0
+in slot 1 unconditionally — see `tests/dual-issue-floor.txt`'s "stage 1d:
+floor retired" note. The incident below is why the floor mechanism existed
+at all, and is left in place for that reason; it is not a live check
+anymore. Its replacement is `ooo_alu_reorder_count`/`ooo_load_reorder_count`
+(`sim/tb_bench.v`, `sim/tb_top.v`): not just that an instruction issued, but
+that it issued *out of program order* — the stronger claim, and one that
+does not depend on any particular dispatch width.
 
-Dual issue is the only thing that makes `rtl/ooo/core_ooo.v` a different core
-from `rtl/cpu_core.v`. Corrupting every slot-1 result
-(`ex_mem1_wb_data <= s1_result ^ 1`) leaves **73 of the 82 upstream tests
-still passing**; the nine that fail are the five loads and four divides,
-which fail incidentally because a stall happened to leave two instructions in
-the fetch buffer. Nothing in the corpus was aimed at the second slot, and
+Under stage 1b/1c's `CORE=ooo`, the summary reported how many retirements
+came out of the second issue slot. It was there because the suite was green
+and the number was **63 out of 28,262 — 0.22%**, with 70 of the 82 traces
+retiring none at all.
+
+Dual issue was, at the time, the only thing that made `rtl/ooo/core_ooo.v` a
+different core from `rtl/cpu_core.v`. Corrupting every slot-1 result
+(`ex_mem1_wb_data <= s1_result ^ 1`) left **73 of the 82 upstream tests
+still passing**; the nine that failed were the five loads and four divides,
+which failed incidentally because a stall happened to leave two instructions
+in the fetch buffer. Nothing in the corpus was aimed at the second slot, and
 nothing should have been — see [practices.md §40](../docs/practices.md).
 
-`tests/vernier/pairing.S` is the workload that is. Each iteration opens with
-a divide, whose 33 cycles in EX fill the 4-deep fetch buffer, and the run of
-independent ALU ops behind it drains that buffer two at a time: **6,143
-slot-1 retirements, 97× the entire upstream corpus**, matching Spike exactly.
+`tests/vernier/pairing.S` was the workload built to be. Each iteration opened
+with a divide, whose 33 cycles in EX filled the 4-deep fetch buffer, and the
+run of independent ALU ops behind it drained that buffer two at a time:
+**6,143 slot-1 retirements, 97× the entire upstream corpus**, matching Spike
+exactly.
 
-`tests/dual-issue-floor.txt` holds a floor under it, and that is not
-belt-and-braces. Set `issue_pair = 1'b0` and `pairing.S` **still reaches its
-own pass condition and still matches Spike instruction for instruction** —
-single-issuing it is a correct execution — so without the floor it would
-report PASS/MATCH forever while testing nothing.
+`tests/dual-issue-floor.txt` held a floor under it, and that was not
+belt-and-braces. Set `issue_pair = 1'b0` and `pairing.S` **still reached its
+own pass condition and still matched Spike instruction for instruction** —
+single-issuing it was a correct execution — so without the floor it would
+have reported PASS/MATCH forever while testing nothing.
 
-The floor is checked in two places on purpose, reading one number from one
+The floor was checked in two places on purpose, reading one number from one
 file. `cosim.py` needs Spike and is a local gate; `run.sh` is what CI's
 `riscv-tests (ooo)` job runs. With it only in `cosim.py`, a change that stops
-forming pairs passes every job in CI. With the fault injected:
+forming pairs would have passed every other job in CI. With the fault
+injected, back when the floor was 4,000:
 
 ```
   vernier-p-pairing            UNDER-ISSUED (passed, but retired 0 in slot 1; needs 4000)
@@ -155,7 +185,11 @@ riscv-tests: 79 passed, 1 failed, 3 xfail, 0 xpass, 0 skipped
 ```
 
 Both messages say the test *passed*, so a reader does not go hunting for a
-wrong value that is not there.
+wrong value that is not there. `tests/dual-issue-floor.txt` still holds a
+floor for `vernier-p-pairing` — it is `0` now, by design, per the "stage 1d:
+floor retired" note there, so this exact failure mode cannot be demonstrated
+against current `main`. It stays here as the record of why the check exists
+and how it reads when it fires.
 
 ### What this found
 

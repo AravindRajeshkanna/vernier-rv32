@@ -3,7 +3,7 @@
 [![CI](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml/badge.svg)](https://github.com/AravindRajeshkanna/vernier-rv32/actions/workflows/ci.yml)
 [![License: Apache-2.0 WITH SHL-2.1](https://img.shields.io/badge/license-Apache--2.0%20WITH%20SHL--2.1-blue.svg)](LICENSE)
 [![riscv-tests](https://img.shields.io/badge/riscv--tests-81%20passed%2C%200%20failed%2C%203%20xfail-brightgreen.svg)](tests/README.md)
-[![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-83%2F84%20traces%20pass-brightgreen.svg)](tests/README.md)
+[![Spike co-simulation](https://img.shields.io/badge/vs%20Spike-84%2F84%20traces%20pass-brightgreen.svg)](tests/README.md)
 [![Hardware](https://img.shields.io/badge/ULX3S%20LFE5U--85F-SOC--TEST%3A%20PASS-brightgreen.svg)](fpga/README.md)
 
 **An RV32IMA SoC that measures itself.**
@@ -186,7 +186,10 @@ priorities).
 
 ```
 riscv-tests:             81 passed, 0 failed, 3 xfail   (make isa)
-co-simulation vs Spike:  83/84 traces pass              (make cosim)
+co-simulation vs Spike:  84/84 traces pass              (make cosim)
+  (make cosim CORE=ooo:  84/84 too, but one of the 84 is an accepted
+                          divergence unique to the wide core - see
+                          tests/README.md)
 formal:                  5 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 SDRAM controller:        against a model that says no    (make sim_sdram)
@@ -655,7 +658,7 @@ defects" section has the full, current list.
 | | |
 |---|---|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, what a good pull request looks like, and what gets pushed back on |
-| [docs/practices.md](docs/practices.md) | The working rules — twenty-seven of them, each attached to the incident on this repo that produced it |
+| [docs/practices.md](docs/practices.md) | The working rules — forty-five of them, each attached to the incident on this repo that produced it |
 | [docs/roadmap.md](docs/roadmap.md) | Where this goes next, in phases, in dependency order |
 | [docs/comparison.md](docs/comparison.md) | How this compares to SERV, PicoRV32, Ibex, VexRiscv, NEORV32, SweRV, Rocket Chip and CVA6 |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
