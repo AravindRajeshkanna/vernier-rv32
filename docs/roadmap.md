@@ -1204,6 +1204,41 @@ did. `docs/practices.md` §25: a correction fitted to one measurement is a
 guess with a number on it - the fix stands on `sim_uartirq`'s own evidence,
 not on an assumption about Linux it was never actually shown to satisfy.
 
+**Correction to the paragraph above, found immediately after shipping it:**
+"same two addresses" was true as a string of hex digits and wrong as a
+claim about what they are. `riscv64-unknown-elf-nm` on the same
+`vmlinux`: `__div64_32` is at `c018d934`. `0xc0049b44`/`0xc024d770`/
+`0xc024e6e8` are `do_idle`, `arch_cpu_idle`, and `default_idle_call`. The
+"last 2000 cycles" trace, at a 400M-cycle timeout, shows whatever is
+running *when the timeout fires* - which, if the system genuinely went
+idle at cycle ~94.8M and nothing ever wakes it, is correctly the idle loop
+for the remaining ~305M cycles, not the original fault. That is not
+evidence against Update 3's `__div64_32` finding; it is a different claim
+than the one that would be evidence either way, and the paragraph above
+stated it as if it were the latter. Re-bisected properly this time,
+`+maxcycles` narrowed the same way Update 3 did it: forward progress
+(different symbols each step - `up_write`/`down_write`, `sched_domains`
+code, ordinary init-time locking) continues cleanly through 94.78M cycles
+and the trace is already the stable idle loop by 94.80M - the point of no
+return is in that 20,000-cycle window, essentially unchanged from Update
+3's original 94.5-94.8M and not moved by this fix, as expected given the
+fix cannot even activate under `dmem_mmu_active` (see the `Update 9` fix
+comment in `core_ooo.v`: `!dmem_mmu_active` already gates `loadL_can_start`
+off whenever Sv32 is on, which is continuously true by this point in
+boot). A wider trace at the transition (`+maxcycles=94790000
++branch_hist=300`) shows the *last* activity before idle is inside
+OpenSBI (M-mode, `0x9008xxxx`/`0x9009xxxx` addresses, no Linux symbol
+resolves there) - consistent with an SBI call the kernel made on its way
+to sleeping, not with still being inside `__div64_32`'s own address range
+at all at this point. Whether `__div64_32` is still involved earlier in
+this same window, and what the specific SBI call is, is not established -
+this correction fixes what was overclaimed, it does not extend the
+finding. `docs/practices.md` §20 ("do not reason from a measurement you
+have already called invalid") applies to the corrected claim now, not just
+the original one: treat "goes through an SBI call, then idles, around
+94.8M cycles" as the current state of the evidence, not as a new,
+confirmed root cause.
+
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
 SoC integration + Linux bring-up, stabilization + polish. Read literally it
