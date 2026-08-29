@@ -2386,3 +2386,23 @@ now every other `tb_ramboot.v`/`tb_uartload.v`/`tb_sdram.v`/`tb_sdramboot.v`-
 based target looks like them too. The testbenches themselves were not
 touched - the fix is entirely in what the Makefile does with output they
 already produced.
+
+**And that fix changes nothing in CI, because CI does not call these
+targets at all.** `.github/workflows/*.yml` never runs plain `make verify`
+or `make verify_ooo` - the "SoC, firmware and traps" job reimplements a
+curated, explicit list of individual steps instead, each its own `make
+<target>` plus its own `grep` check written directly in the workflow file.
+`grep -rn "sim_uartirq\|sim_probe\|sim_div64test" .github/workflows/`
+returns nothing: all three are absent from that list, on either core, by
+any path. This is not new - `.github/workflows/*.yml` already carries a
+comment recording the same class of gap once before, about a different
+check: "the self-checking probes... were only ever running in someone's
+local `make verify`", until the device-tree-FIFO bug made that obvious and
+the fix was adding a named step for it. `sim_uartirq` and `sim_probe` are
+old absences, unrelated to this change. `sim_div64test` is not - it is the
+regression test this same stage (Update 4/5, and the PR that shipped it)
+built specifically to guard the `__div64_32` finding, and it currently
+provides no protection in CI at all: a future change that broke it would
+still show every check above green. Documented rather than fixed here, on
+the same reasoning as the entry above it - this is a Makefile PR, and
+`.github/workflows/*.yml` is deliberately not touched by it.
