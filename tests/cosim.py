@@ -88,12 +88,41 @@ EXPECTED_DIVERGENCE = {
         "not, so the write to tselect traps here and does not there.",
     "rv32si-p-dirty":
         "a real, narrower, still-unresolved Sv32 dirty-bit semantic "
-        "difference from Spike, one instruction wide, shared with the "
-        "in-order core and not new to any one stage - see docs/roadmap.md's "
+        "difference from Spike, one instruction wide - see docs/roadmap.md's "
         "'Stage 1d was built anyway' section. Documented there as accepted "
         "since it first became visible, but never registered here, so "
-        "`cosim --all` has been exiting 1 on every clean run since.",
+        "`cosim --all` has been exiting 1 on every clean run since. Briefly "
+        "removed entirely mid-session on the strength of one clean-looking "
+        "rerun (Update 6), then put back after the very next full gate run "
+        "reproduced the exact same divergence on CORE=ooo (Update 7). A "
+        "second full gate run, immediately after, found CORE=inorder's own "
+        "trace matching Spike exactly - so unlike Update 6's claim, this is "
+        "not a case of the divergence vanishing on both cores; it is "
+        "CORE=ooo-specific, and EXPECTED_DIVERGENCE_CORES below says so "
+        "rather than this registration silently covering a core it no "
+        "longer applies to (Update 8).",
 }
+
+# Which core(s) each EXPECTED_DIVERGENCE entry actually applies to. Absent
+# from this dict means "every core" - true of rv32mi-p-breakpoint, a debug-
+# spec difference from Spike that has nothing to do with the core's
+# microarchitecture. rv32si-p-dirty is not: it is registered but, per
+# Update 8 above, only actually diverges on CORE=ooo. Without this,
+# XMATCH's "expected to diverge but did not" check has no way to tell
+# "the divergence is fixed, remove the entry" apart from "the divergence
+# was always core-specific, and this is the core it was never on" - and
+# cosim would fail CORE=inorder forever for a reason that is not a
+# regression in anything.
+EXPECTED_DIVERGENCE_CORES = {
+    "rv32si-p-dirty": {"ooo"},
+}
+
+
+def divergence_expected(name, core):
+    if name not in EXPECTED_DIVERGENCE:
+        return False
+    cores = EXPECTED_DIVERGENCE_CORES.get(name)
+    return cores is None or core in cores
 
 
 # The dual-issue floor, shared with tests/run.sh so the number lives in one
@@ -248,7 +277,7 @@ def run_one(name, core="inorder", tally=None):
 
     idx, why, r, s = compare(name, rtl, spike)
     if idx is None:
-        if name in EXPECTED_DIVERGENCE:
+        if divergence_expected(name, core):
             print(f"  {name:<28} XMATCH (expected to diverge but did not - "
                   f"remove it from EXPECTED_DIVERGENCE)")
             return False
@@ -275,7 +304,7 @@ def run_one(name, core="inorder", tally=None):
         print(f"  {name:<28} MATCH{note}")
         return True
 
-    if name in EXPECTED_DIVERGENCE:
+    if divergence_expected(name, core):
         print(f"  {name:<28} XDIVERGE at {idx} (expected): "
               f"{EXPECTED_DIVERGENCE[name]}")
         return True

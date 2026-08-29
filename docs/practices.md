@@ -232,9 +232,36 @@ image is decided by the `bin2hex` flags there — without it, changing a
 memory's organisation leaves an image that loads silently and wrong, which
 cost real debugging time when `wb_ram.v` went from byte- to word-organised.
 
+**`CORE` is the same failure mode with no filesystem trace at all.**
+`sim/sim_isa.out` is built from `$(SOC_RTL)`, which includes `$(CORE_RTL)` —
+a different Verilog file set for `CORE=inorder` than for `CORE=ooo`. But Make
+tracks prerequisites by file mtime, not by the *value* a variable expanded
+to, and switching `CORE` does not touch any file's mtime. Build
+`sim/sim_isa.out` once under one `CORE` and Make will happily hand the
+identical binary back under the other — no error, no warning, just the
+wrong core's answer wearing the right core's label. `verify_ooo`'s own
+recipe knows this and brackets itself with `rm -f sim/*.out` on both sides
+for exactly this reason. What it does not protect against is a command run
+by hand outside that bracket: a one-off `python3 tests/cosim.py --core=ooo`
+after switching `CORE`, run without first confirming `sim/sim_isa.out` was
+rebuilt, silently re-graded whatever core happened to be sitting in that
+file. It produced a real false result — `rv32si-p-dirty` briefly reported as
+newly matching Spike on `CORE=ooo` (`docs/roadmap.md`'s "Stage 1d was built
+anyway" section, "Update 6"), retracted one gate cycle later when the
+ordinary `make verify_ooo` → `make verify` sequence reproduced the original
+divergence (same section, "Update 7"). Nothing else about the RTL or the
+test had changed in between; only which binary the hand-run command was
+actually reading.
+
 **The rule.** Build products carry their provenance. `synth_ecp5.sh` stamps
 each bitstream with a copy of the image inside it, so "which program is in
-this `.bit`?" is answerable from the filesystem rather than from memory.
+this `.bit`?" is answerable from the filesystem rather than from memory. For
+anything gated by `CORE`, provenance is cheaper bought as a habit than built
+into the file: `rm -f sim/*.out` before switching `CORE` in either
+direction, and treat a hand-run, CORE-sensitive command as informative only
+when it runs immediately after a command that rebuilds its inputs — `make
+isa CORE=$X` or `make verify_ooo`/`make verify` themselves — never on the
+strength of "I built it for that core earlier in this session."
 
 ## 13. Fail fast, and say what to do
 

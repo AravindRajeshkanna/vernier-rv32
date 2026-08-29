@@ -632,8 +632,13 @@ still finds a divergence in it, but at a *later* instruction than it ever
 reached before: the corruption this fix removed was previously making the run
 stop before it got there, not making it agree with Spike. What is now visible
 is a real, narrower, still-unresolved Sv32 dirty-bit semantic difference from
-Spike, one instruction wide, shared with the in-order core's own known
-limitation in this area and not new to this stage.
+Spike, one instruction wide. Believed at the time to be shared with the
+in-order core's own known limitation in this area and not new to this
+stage - **that belief does not hold up**: see "Update 8" below, where two
+clean, dependency-graph-driven `cosim` runs, one per core, back to back,
+found `CORE=ooo` diverging and `CORE=inorder` matching Spike exactly.
+Whether it was ever really shared, or this was already the same class of
+stale-artifact illusion Update 6/7 later caught red-handed, is not known.
 
 **CoreMark, one iteration.** 448,346 cycles, correctness self-checked by
 CoreMark's own CRC (`BENCHMARK PASSED`). For comparison, on the same D-cached
@@ -763,6 +768,252 @@ with `+maxcycles=94800000` lands inside the steady-state idle loop every
 time, and the same image passes on `CORE=inorder` in the same run for
 comparison.
 
+**Update 3: found the actual loop, not just where it starts.** "No call-stack
+walker" turned out not to matter - `sim/verilator_soc.cpp`'s existing "last
+control transfers" ring only kept 16 entries, and the `do_idle` loop alone
+produces about nine per pass, so it was overwritten thousands of times over
+before this point was ever reached. Raising `BRANCH_RING` (16 -> 4096, later
+200,000 for this specific search - two `uint32_t` per entry, so even the
+larger figure is 1.6 MB) and adding `+branch_hist=N` to control how much of
+it prints - the default stays 16, so this changes nothing about any other
+run's output - turns the same mechanism into an effective, if brute-force,
+call-stack recovery: walk far enough back and the *caller's* edge is in
+there too.
+
+It was. `schedule()`'s own wrapper (not `__cond_resched()`, which keeps
+appearing and returning normally throughout - that path is fine) calls
+`__schedule()` fourteen times in the traced window; the first thirteen
+return. The fourteenth doesn't, and what runs immediately after it - still
+inside `__schedule`, which fully executes `sched_clock`/`rcu_qs`/
+`update_rq_clock` on the way, all normally - is `dequeue_task_fair` ->
+`dequeue_entities` -> `update_curr` -> `update_deadline` -> `avg_vruntime` ->
+`div_s64_rem` -> **`__div64_32`**: the CFS/EEVDF scheduler's own vruntime
+accounting for the task being switched away from, hitting the generic
+(`lib/math/div64.c`) 64-bit-by-32-bit software division routine every 32-bit
+RISC-V kernel needs, because RV32 has no 64-by-32 divide in hardware.
+Execution never leaves it.
+
+That routine's core loop is provably bounded:
+
+```c
+do {
+    if (rem >= b) { rem -= b; res += d; }
+    b >>= 1;
+    d >>= 1;
+} while (d);
+```
+
+`d` is a 64-bit value produced by repeated doubling, then repeatedly
+right-shifted; the loop cannot run more than 64 times before `d` reaches
+zero, regardless of `rem`, `b`, or the divisor. `riscv64-unknown-elf-objdump`
+against `software/linux/build/vmlinux` (`__div64_32`, `0xc018d934`-`0xc018da8c`)
+shows what `-O2` made of it: a hand-scheduled, software-pipelined ~40
+instruction sequence spread across nine registers (`a0,a1,a3,a4,a5,a6,a7,t4,
+t6` carry the two live 64-bit values' halves; `s0-s2,t0,t3,t5` are scratch
+for the borrow/carry chain), computing the conditional-subtract branchily
+rather than predicated and folding next iteration's shift into the current
+one's tail. Faithful by construction, not by re-derivation - it is the
+actual code Linux runs, disassembled, not a reconstruction of the C.
+
+The infinite loop is inside that block, cycling among a fixed small set of
+its instruction addresses. A CPU correctly executing sixteen ordinary
+integer instructions - shifts, adds, subtracts, unsigned compares, all on
+values already in registers - cannot fail to make `d` reach zero. Something
+in this dependency chain is computing wrong, and it is only reachable this
+way: `+watchpc`'s register dump (`sim/verilator_soc.cpp`, designed for and
+so far only exercised against the in-order core) reads
+`soc_top.CPU.RF.regs[0..31]` directly, which for `CORE=ooo` is the first 32
+of `regfile_phys`'s 64 *physical* registers, not the architectural ones a
+renaming core has long since scattered elsewhere - so the dump it produced
+here (`sp=0`, implausible for a live kernel stack) is meaningless for this
+core as the mechanism stands, and is not evidence of anything by itself.
+Getting real operand values needs either fixing that (resolving each
+architectural register through the current RAT before reading
+`regfile_phys`) or a dedicated debug hook - not attempted here, kept as the
+next concrete step rather than a vague one.
+
+**Update 4: attempted a standalone reproduction, and it did not reproduce -
+which is real information, not a dead end.** `software/soc/div64test.c`
+(`make sim_div64test`) is `__div64_32`, copied verbatim, called with 14
+operand pairs chosen to cover both of its code paths and several edge
+cases, each checked against a host-computed answer so a bug shared between
+the reference and the target cannot cancel out. Phase 1 - no interrupts,
+just the function - passes on both cores: `__div64_32`'s arithmetic itself
+is not data-independently wrong, ruling out the simplest version of the
+hypothesis.
+
+Phase 2 re-runs the same 14 cases 400 times (5,600 calls) with the CLINT
+machine timer interrupt live throughout, rearmed every 97 cycles - short
+and not a multiple of the loop's own length, so successive calls catch the
+interrupt at a different point in the instruction stream each time rather
+than always the same one. `CORE=ooo`: 67,201 interrupts delivered across
+the run, zero of 5,600 calls wrong. This rules out the next-simplest
+version too: an M-mode timer interrupt landing mid-loop, on its own, is not
+enough to reproduce whatever `sim_linux` hit.
+
+What phase 2 does not cover, and the more specific hypothesis worth trying
+next: Linux runs this in **S-mode**, reached via the OpenSBI-mediated
+machine-to-supervisor timer delegation path (`SBI TIME extension`, `mip`/
+`sip` bits, `stvec`), not a direct M-mode handler - the same general
+category of mechanism as PR #52's `mip.SEIP` bug from earlier in this
+project's history, where the defect was specifically in cross-privilege
+interrupt bookkeeping and nothing about the interrupt *arriving* was wrong.
+`div64test.c`'s phase 2 tests "an interrupt lands mid-loop"; it does not
+test "an interrupt lands mid-loop, gets bounced through M-mode delegation,
+and resumes in S-mode" - and that second shape is what the real boot
+actually does every ~250,000 cycles.
+
+**Update 5: built that too, and it still did not reproduce.** Phase 3 sets
+`mideleg` bit 5 (supervisor timer; never-delegatable cause 7 still traps M
+first, which is why an M-mode side exists at all), drops to S-mode, and
+runs the same 14 cases with the real cross-privilege mechanism live: M
+sets `mip.STIP` on the genuine `mtip`, S-mode traps via delegation, and -
+unable to clear `STIP` itself, matching real hardware (`csr_file.v`'s `sip`
+write path reaches only `SSIP`) - `ecall`s back to M to have it cleared,
+the same shape OpenSBI's SBI TIME extension uses. `CORE=ooo`: 198 delegated
+S-mode interrupts, 199 `mtip` traps, 198 `ecall`s, zero of anything else,
+zero of 840 calls wrong. The mechanism itself - the same general class as
+PR #52's `mip.SEIP` bug - is not where this lives either, at least not in
+the shape this file can drive it.
+
+(One dead end on the way there, left in a comment in `div64test.c` rather
+than repeated here: the first version of phase 3 timed out on
+`CORE=inorder` too, which said plainly this was the test's own arithmetic,
+not a CPU defect, before any RTL was ever in question. `S_TIMER_INTERVAL`
+too short for the delegation round trip's own overhead created a livelock
+- the timer kept re-firing before the interrupted code could ever resume -
+and separately, `STRESS_ROUNDS_P3`'s first value made phase 3 too slow for
+`sim/tb_ramboot.v`'s fixed-wall-clock watchdog, which looks identical to a
+hang in the output and is not one. Both were caught by the in-order control
+failing the same way, which is exactly the check that is supposed to catch
+"my test is wrong" before it gets read as "the CPU is wrong.")
+
+Two independent, deliberately different reproduction attempts - an
+interrupt landing mid-loop, and the full cross-privilege delegation
+sequence Linux actually uses - both pass cleanly on `CORE=ooo`. That
+narrows what is left rather than closing the question: whatever the real
+boot's failure needs, it is not simply "an interrupt during this
+function," in either shape this file can drive. Left open, and worth
+naming plainly rather than guessing further: the register pressure and
+live values `dequeue_task_fair`'s own call chain puts around this exact
+call - which `div64test.c` cannot recreate calling the function fresh from
+a shallow stack - or a specific micro-architectural timing window neither
+of this file's two interrupt patterns happened to land on. `div64test.c`
+is a real, permanent addition to the test suite regardless of any of that:
+it passes on both cores today, in both phase 2's and phase 3's interrupt
+shapes, and will keep proving this specific routine's arithmetic - and now
+its behavior under both direct and delegated interrupts - if anything here
+ever changes.
+
+**Update 6: `rv32si-p-dirty` stopped diverging, on both cores, while gating
+the above - unrelated to any of it, and not fully explained.** The
+"83/84" figure a few paragraphs up, and `tests/cosim.py`'s
+`EXPECTED_DIVERGENCE` registration of it (added in #64, after this same
+divergence had been going unregistered and failing every clean `cosim`
+run), both describe a real, previously-reproducible one-instruction
+difference from Spike. A fresh `cosim --all` on both cores, run to gate
+this update, shows **84/84 on both**: `rv32si-p-dirty` now `XMATCH`es
+against the entry that expects it to diverge - it does not diverge at all
+anymore, and neither `core_ooo.v` nor `cpu_core.v` (this stage's own
+changes touched only the former) has anything in this diff that plausibly
+explains an MMU dirty-bit semantic changing on the in-order core too.
+Removed from `EXPECTED_DIVERGENCE` rather than left registered-but-wrong,
+since a divergence that no longer happens is not "expected" by any
+reading of the word - but removed with this note attached rather than
+silently, because the mechanism is genuinely not understood: whether this
+is an actual fix (of something upstream of both cores - Spike's own
+version, the pinned riscv-tests commit, the toolchain building it - none
+of which this session touched deliberately) or a marginal, build- or
+address-layout-sensitive case that happened to land on the matching side
+of it this time is an open question. If it reappears, that is not a
+regression in anything gated here; put it back in `EXPECTED_DIVERGENCE`
+when it does, with whatever is learned about why.
+
+**Update 7: it reappeared, immediately, on the very next run - so Update 6
+is wrong and is being left above rather than deleted, as the record of a
+false lead.** The removal above was gated on one `cosim --all` pass on
+each core, run by hand. The next thing this branch did was a full,
+sequential `make verify_ooo` then (clean) `make verify` - the normal
+Makefile dependency graph building `sim/sim_isa.out` fresh as a prerequisite
+of `cosim`, not a hand-run sequence with room for a stale artifact to sneak
+in. That run's `cosim --all --core=ooo` reproduced `rv32si-p-dirty`
+`DIVERGED at instruction 112: different written value` - the identical
+signature as the original discovery (`rtl: x5=0x800001d4` vs
+`spike: x5=0x00000000`). Same RTL, same test binary, same Spike build as
+the "fixed" run days earlier; deterministic Icarus simulation does not
+explain two different answers from two runs of the same inputs, which
+means the two runs were not actually run against the same inputs - most
+likely the earlier "84/84" was contaminated by exactly the kind of stale
+cross-`CORE` build artifact this doc has already documented biting
+`verilator_check` (see the `verify_ooo`→`verify` sequencing note
+elsewhere in this stage's history): `cosim`'s ELF/trace inputs are not
+cleaned by the same `rm -f sim/*.out` that fixes `verilator_check`'s
+version of this, so a leftover in-order build sitting under the paths
+`cosim --core=ooo` reads from would produce exactly this false "now it
+matches" result. Not confirmed - the stale artifacts from that run are
+long gone - but it is the only explanation that doesn't require Icarus to
+be nondeterministic. `rv32si-p-dirty` is back in `EXPECTED_DIVERGENCE`,
+`README.md`'s badge is back to 83/84, and the lesson kept for next time
+is: a single hand-run `cosim` after switching `CORE=` is not evidence:
+trust the result from the ordinary `make verify_ooo`/`make verify`
+dependency chain, which rebuilds its own inputs, over a hand-run
+`cosim --core=X` in isolation right after a `CORE=` switch.
+
+**Update 8: the badge moved again, on the same evidence this time, because
+the trustworthy runs said something more specific than Update 7 gave them
+credit for.** Update 7's fix put `rv32si-p-dirty` back in
+`EXPECTED_DIVERGENCE` unconditionally, which makes `cosim` expect it to
+diverge on *every* core - the same shape of claim as the original,
+pre-session registration text ("shared with the in-order core"). But the
+run that produced Update 7's evidence was a *pair*: `make verify_ooo`
+immediately followed by a clean `make verify` (`CORE=inorder`), both
+dependency-graph-driven, neither hand-run. Its `CORE=ooo` leg is what
+Update 7 quotes - `DIVERGED at instruction 112`. Its `CORE=inorder` leg,
+read in full rather than stopped at the first number, said something
+different: `rv32si-p-dirty XMATCH (expected to diverge but did not)` -
+`cosim`'s own name for "this is registered as expected to diverge and it
+just didn't", which is a hard failure by design (`tests/cosim.py` lines
+255-258). Unconditional registration cannot be right for a divergence that
+one clean run confirms on one core and the very next clean run confirms
+*absent* on the other: something has to give, and per this doc's own
+[practices.md §23](practices.md) - the bench is right - the two clean
+measurements win over the inherited comment, not the other way round.
+
+`EXPECTED_DIVERGENCE` in `tests/cosim.py` was never core-aware; nothing
+needed it to be until now. It is, as of this update:
+`EXPECTED_DIVERGENCE_CORES = {"rv32si-p-dirty": {"ooo"}}`, read by a small
+`divergence_expected(name, core)` helper that both call sites (the XMATCH
+check and the XDIVERGE check) now go through instead of a bare
+`name in EXPECTED_DIVERGENCE`. Confirmed by direct measurement rather than
+inference: with the fix in place, `tests/cosim.py --all --core=inorder`
+against the just-built `sim/sim_isa.out` (the same binary the clean
+`verify` run had just produced - no rebuild, no `CORE=` switch, nothing
+for the Update-7-class staleness bug to act on) reports **84/84**, with
+`rv32si-p-dirty` a plain `MATCH`; `divergence_expected` was also checked
+directly for all four combinations of `{rv32si-p-dirty, rv32mi-p-breakpoint}
+× {ooo, inorder}` and returns exactly `{True, False, True, True}` in that
+order, matching the intended per-core semantics rather than assumption.
+
+So, precisely, as measured: `rv32si-p-dirty` diverges from Spike on
+`CORE=ooo` and matches exactly on `CORE=inorder`. That is not what either
+the original registration or Update 6 claimed (both treated it as an
+all-or-nothing property of the test), and it is not fully explained -
+whether the in-order side was always clean and the original "shared with
+the in-order core" text was itself wrong from the start (possibly the very
+first instance of this session's stale-`CORE`-artifact class, just never
+caught), or whether something between then and now genuinely fixed it on
+one core and not the other, is not known. What is known, twice over now,
+is which core currently diverges and which does not. `README.md`'s badge
+is **84/84** again - `make cosim`'s actual default (`CORE=inorder`) output.
+`make cosim CORE=ooo` is also 84/84 - a registered, accepted divergence
+counts as a pass in `cosim.py`'s own tally, the same way
+`rv32mi-p-breakpoint`'s always has - but for a different reason than
+`CORE=inorder`'s 84/84: one of `CORE=ooo`'s 84 is `rv32si-p-dirty`'s
+`XDIVERGE`, not a genuine match. Both counts being 84 is not evidence the
+core-aware fix did nothing; the number that actually moved is which test
+needed the exemption on which core, and that is what
+`EXPECTED_DIVERGENCE_CORES` now records instead of leaving implicit.
+
 **Fmax and utilisation: attempted, and blocked on something worth naming.**
 The toolchain was not installed in the session that built the rest of this
 stage; it is in a later one, and `fpga/synth/synth_ecp5.sh` had never had a
@@ -818,6 +1069,196 @@ slot-1 retirements, instruction-exact against Spike on both cores, with a
 floor in `cosim.py` so a change to the issue rule cannot quietly turn it back
 into a single-issue test. See [practices.md §40](practices.md).
 
+#### What stage 1d resolved, closed against the original list, and what a generic OoO-RV32 checklist gets right and wrong about this one
+
+The seven-piece table at the top of this phase was a requirements list, not a
+progress bar, and nothing since has gone back and closed it against what
+stage 1d actually shipped:
+
+| # | Piece | Landed as |
+|---|---|---|
+| 1 | Register renaming — RAT + PRF | **Done.** `rtl/ooo/regfile_phys.v`: `PREGS=64` (32 architectural + 32 free), 6-bit tags; `rat[0:31]` in `core_ooo.v`, one entry per architectural register |
+| 2 | Reorder buffer, for precise traps | **Done** — this is what stage 1d added over 1b/1c |
+| 3 | Reservation stations / scoreboard | **Done**: general out-of-order issue over the whole ROB, not 1b/1c's fixed slot-0/slot-1 pairing |
+| 4 | Multiple execution units | **Done**, inherited from 1b/1c |
+| 5 | LSQ with memory disambiguation | **Done, but deliberately conservative** — see below |
+| 6 | Misprediction recovery | **Done, as rollback, not checkpointing** — see below |
+| 7 | Wider fetch and decode | **Not done.** Fetch is still one instruction per cycle into `FB_DEPTH`; stage 1b's own measurement is the reason this row was meant to come first, and it still has not |
+
+A generic list of OoO-RV32 concerns (variable-length fetch, renaming/x0,
+memory disambiguation, control-flow speculation) is a reasonable checklist to
+run this design against, but running it turns up one item that does not
+apply, one that is finished and worth stating plainly as finished, and two
+that are real and still open.
+
+**Compressed instructions do not apply.** Neither core implements the C
+extension — `dts/soc.dts`'s `riscv,isa` string is `rv32ima_zicsr_zifencei`,
+no `c`, and `cpu_core.v`'s own comment on why misaligned-fetch detection
+stops at 4-byte alignment says so directly: "Misaligned instruction fetch
+(cause 0). Without the C extension...". Fetch and decode work on fixed
+32-bit instructions only, on both cores. The aligner/multi-ported-mux cost a
+variable-length ISA would add to the fetch buffer is real, but it is not a
+cost this design pays today, and nothing in this roadmap plans to add it.
+
+**x0 is guarded twice, and the second guard is not redundancy.** Dispatch
+never allocates a physical register for a write to `x0` in the first place
+(`dispatch_needs_preg` excludes `d_rd == 5'd0`), so `rat[0]` never leaves its
+reset value. Physical register 0 is *also* hardwired to zero at the PRF's
+own read ports and write-enable gating, independent of whatever the RAT
+says. `regfile_phys.v`'s own comment calls this "belt-and-braces against a
+renaming bug rather than something the steady state depends on" — a
+reasoned decision to keep the second guard, not an oversight left in.
+
+**Recovery is rollback, not checkpointing, and that was a choice, not a
+gap.** The original table left piece 6 open as "RAT checkpointing or
+rollback." Stage 1d picked rollback: on a mispredict or trap, the ROB is
+walked tail-to-culprit, each entry restoring the RAT mapping it overwrote
+and freeing the physical register it had allocated, rather than
+snapshotting the whole RAT at every branch and restoring a snapshot in one
+cycle. `core_ooo.v`'s own header states the reasoning plainly: "no separate
+checkpoint storage, because the ROB's own entries are already an undo log."
+The cost is recovery latency proportional to how deep the mispredicted
+branch sat in the ROB, rather than a flat one cycle — nothing in this repo
+has measured what that costs on this project's actual workload mix, which is
+the honest gap in this paragraph, not a claim either way. One real bug
+already came out of this exact path: on the recovery cycle, the culprit
+instruction's completion-bus write bypassed the ordinary busy-bit clear,
+stalling any waiter on that physical register forever — caught by cosim on
+`rv32ui-p-jal`, not by any of riscv-tests' own directed tests.
+
+**Two items are real and still open, and neither has been measured yet —
+which is the reason neither is a "next stage" commitment, just a candidate
+with a stated first step:**
+
+- **No store-to-load forwarding.** The LSQ does real address-based
+  disambiguation: an issued store with a known address blocks a younger load
+  only at the same word, not every younger load. But `core_ooo.v`'s header is
+  explicit that "an aliasing load simply waits for the store to retire
+  rather than receiving a forwarded value - simpler, at some cost this core
+  does not try to hide." That cost is unmeasured: CoreMark and riscv-tests
+  were never built to stress store/load aliasing density, so the honest
+  first step, in the same spirit as stage 1c's store-buffer measurement
+  above, is a counter — aliasing loads that stalled to a store's retire, next
+  to loads that did not need to — before any forwarding logic gets written.
+- **No return-address stack.** `rtl/btb.v` is one generic, direct-mapped
+  64-entry PC-indexed target cache that predicts every branch, `jal`, and
+  `jalr` — `ret` included — the same way: whatever target it last saw at
+  that PC. A RAS beats this specifically for call/return pairs, where a
+  single `ret` site's correct target changes with call depth and one BTB
+  slot cannot hold more than the most recent one. Nothing here currently
+  counts how often that actually costs a misprediction, and recursive or
+  deeply-nested call patterns are not obviously dense in the
+  riscv-tests/CoreMark/Linux-boot mix this project measures against — so, as
+  above, the first step is a `jalr`-mispredict counter split by whether the
+  site looks `ret`-shaped, not a RAS built ahead of that evidence.
+
+Both are independent of each other and of whatever gets called `1e`; either
+could be built alone, and `docs/practices.md` §1 applies to both exactly as
+it applied to stage 1c's counters — a change here needs a counter it can
+move, not just an argument that it should help.
+
+#### Curated against a generic "build an OoO RV32-to-Linux core" plan
+
+A second generic checklist arrived after the one above, structured as four
+build phases: minimum-viable OoO, memory system + full privileged features,
+SoC integration + Linux bring-up, stabilization + polish. Read literally it
+implies starting from an empty repo. Curated against what is actually here,
+most of it already exists — the value in the exercise is in the specific
+items that turned out to be real gaps, and in correcting the "phase 1" frame
+for the rest, so the next reader does not go looking for a CDB, a device
+tree, or OpenSBI and conclude they need to be built.
+
+**Minimum viable OoO, item by item.** Fetch+decode with compressed-instruction
+support: not applicable, see "compressed instructions" above. Register
+renaming (map table + free list): done, see "register renaming/x0" above.
+ROB for in-order commit and precise exceptions: done — this is what stage 1d
+added over 1b/1c, and it is exactly how this core takes a misaligned-access,
+page, or illegal-instruction trap and still names the faulting instruction in
+`mepc`. Reservation stations / issue queues: done, general out-of-order
+issue over the whole ROB rather than a fixed 1-2-wide window. Functional
+units (ALU, MUL/DIV, simple LSU): done, inherited from 1b/1c. **Common Data
+Bus for wakeup: done, and under that exact name** — `core_ooo.v` calls them
+"Completion buses (CDB): one per completion source," three of them
+(`cdbS`/`cdbB`/`cdbL` for store/ALU-branch/load), broadcast to every waiting
+reservation-station entry for wakeup. It is not incidental to the one open
+item in "Known defects" below either: the CDB-bypass network is exactly what
+`nextpnr-ecp5`'s static timing analysis finds a combinational loop through.
+Basic branch handling: done (BTB, see above), with the RAS gap already
+covered.
+
+**Key correctness requirements for Linux.** Precise exceptions and
+interrupts: the ROB is what makes this possible at all, and one of the two
+still-open Linux-boot investigations ("Stage 1d was built anyway," Updates
+1-5) is entirely about a wakeup-delivery timing question in exactly this
+area — not settled, actively being narrowed. Memory ordering and atomics:
+`core_ooo.v`'s own header states the strategy plainly - AMO/LR/SC "execute
+only at the ROB head, because 'the reservation and the write happen in the
+same indivisible step' is far easier to keep true when nothing is reordered
+around it." That is atomicity by construction (nothing to reorder around),
+not atomicity proven to survive reordering, and it is tested via riscv-tests'
+`rv32ua` suite plus cosim on `CORE=ooo` (one real AMO bug was already found
+this way, `core_ooo.v:766-770`) - not by a test built specifically to stress
+address collisions between an in-flight AMO and surrounding loads/stores.
+Speculative recovery restoring architectural state cleanly: done for
+registers (the ROB-rollback mechanism described above); CSR writes follow
+the same ROB-head-only discipline as AMO/LR/SC per `core_ooo.v`'s header
+("the trap/CSR/MMU/AMO logic below is close to stage 1c's, retargeted"), so
+there is no speculative CSR state to unwind in the first place - a stronger
+guarantee than "restores cleanly," bought the same way atomicity was, by not
+speculating there at all. TLB side effects specifically under speculation:
+the I-side got a real, recent, named fix here (PR #55, `aae2576`) -
+`itlb_wait_stall` now explicitly gates `fetch_hit`/`iwb_cyc` during a walk,
+replacing what had been an accidental invariant rather than an enforced one.
+**The D-side has no equivalent discussion anywhere in this document** - not
+flagged as fine, not flagged as open, just silent. That silence is itself
+worth recording as a gap. Misaligned accesses: trapped, and the OOO-specific
+cause-selection bug in that exact path was this stage's own PR #64. Fences:
+no dedicated discussion of `FENCE`/`FENCE.I` under reordering exists in this
+document either, alongside the D-TLB gap above - two silences in the same
+paragraph of the generic checklist, not one.
+
+**Verification emphasis - two real, unmet asks, alongside the two open
+items already logged above (LSQ forwarding, RAS).** Directed tests for
+renaming/ROB/exception recovery specifically: `tests/vernier/` has
+`loaduse_csr.S` and `pairing.S`, neither aimed at rename/ROB/recovery by
+name. The one real recovery bug found in this design (a completion-bus
+write bypassing the busy-bit clear on the ROB-rollback path) was "caught by
+cosim on `rv32ui-p-jal`, not by any of riscv-tests' own directed tests" -
+this project's own words for incidental coverage, not purpose-built
+coverage. Random instruction streams against Spike: absent. `cosim.py` is
+directed (a fixed corpus, compared exactly) and that is a real, brutal
+check on its own terms, but it is not what a random-stream fuzzer would
+catch - inputs nobody wrote a test for. Neither is a criticism of what is
+here; both are honestly-scoped gaps the same way the LSQ-forwarding and RAS
+items above are, and belong in the same queue, not ahead of it by default.
+
+**Everything else in that generic plan already exists, at a phase number
+that is not this one, done in enough detail that repeating it here would
+just be a worse copy:**
+
+| Generic-plan phase | Where it actually lives | Status, briefly |
+|---|---|---|
+| Data/instruction cache | Phase 3 — "Make it fast enough to be interesting" | Done: 1.79× CoreMark from the I-cache alone; D-cache +1.11% |
+| Full Sv32 under speculation | Phase 5 — "Run software this project did not write" | I-side speculation gated (PR #55); D-side has no discussion, per the gap above |
+| CLINT-style timer, interrupt controller | Phase 0 (CLINT) / already in every phase since | Done, on hardware, since Phase 0 |
+| Debug module | Phase 6 — "Debug infrastructure" | Done: JTAG, `dm.v`, used throughout this session's own investigation |
+| Complete SoC, interconnect, UART | Phase 0 | Done, on hardware |
+| Device tree | `dts/soc.dts`, 302 lines | Real and load-bearing — OpenSBI and Linux both parse and act on it; three device-tree bugs already found and fixed (a UART FIFO claim, a timebase-frequency error, an FDT address placed outside mapped RAM) |
+| OpenSBI / M-mode firmware | `software/opensbi/` | Real `PLATFORM=generic` FDT-driven port, boots on board and in `make sim_opensbi`; five real firmware defects already found and fixed there |
+| U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
+| Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** `CORE=inorder` reaches `/init` and prints a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` does not reach userspace at all — that is the still-open investigation this whole section is about |
+| fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
+| Multi-core / SMP | — | Never mentioned anywhere in this repo, not even as "deferred." Unlike PMP (named as a known gap), this is a silent single-hart assumption — the PLIC has exactly one hart's worth of M/S contexts wired |
+| Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
+
+**One item from the generic plan's "Key Risks" section is worth quoting
+back rather than curating, because this project already lives it rather
+than needing to be told it:** "Continuous co-simulation against a golden
+model (Spike/NEMU) saves enormous debug time." Every bug fix cited in this
+document by a `core_ooo.v` line number was found this way, not by
+inspection - `docs/practices.md` §23, "when the bench and your reasoning
+disagree, the bench is right," is this project's own version of the same
+advice, arrived at independently.
 
 ---
 
@@ -1827,8 +2268,14 @@ five probes and reaches userspace - ruling out a platform/kernel-config
 explanation. The periodic timer interrupt that would carry the eventual
 wakeup keeps firing for the rest of the run regardless, so this is not a
 blanket "PLIC interrupts don't work" - one specific task's wakeup does not
-happen. Not yet root-caused past that: no call-stack walker exists in the
-harness to see who actually called `schedule()` or what it was waiting on.
+happen. That "no call-stack walker" gap did get closed - "Update 3" above
+found the exact loop (`__div64_32`, the kernel's software 64-bit division
+routine, reached from the CFS/EEVDF scheduler's own vruntime accounting)
+by widening an existing testbench ring rather than building a new tool -
+and "Update 4" and "Update 5" describe two different, deliberately
+constructed reproductions of it (`software/soc/div64test.c`) that both
+passed cleanly on `CORE=ooo`, narrowing but not yet closing what it
+actually takes to trigger.
 
 This entry used to say something different: a supervisor store page fault at
 `load_elf_binary+0xc30`, storing to user virtual address `0x00040000`
@@ -1891,3 +2338,45 @@ absurdly slow instead, which is a different kind of wrong, not a smaller
 one. This does not change the "not a local patch" conclusion above - if
 anything it reinforces it, since the tool's own escape hatch for this class
 of loop produces garbage rather than an answer.
+
+**Interrupt-driven UART TX (#56) fails on `CORE=ooo` and nothing has ever
+said so.** `make sim_uartirq CORE=ooo`: `all bytes handed to the UART
+FAILED`, `exactly one interrupt per byte sent FAILED`, `transfer finished
+during the unrelated work FAILED`, `finished after never of 5000
+unrelated-work iterations`, `UART-IRQ-TEST: FAIL (3)`. The identical image
+on `CORE=inorder`: all three `ok`, `finished after 218 of 5000
+unrelated-work iterations`, `UART-IRQ-TEST: PASS`. Reproduced twice, in two
+independent full `make verify_ooo` runs, identical signature both times, and
+it is not new - the first of those two runs was captured before this
+stage's own changes touched anything, so this has been the `CORE=ooo`
+behavior since PR #56 merged (`fd34879`), not a regression introduced while
+gating something else. Not yet root-caused: "finished after never" reads as
+the driver's queue-and-interrupt handshake never actually firing under
+`CORE=ooo`'s interrupt timing, which is exactly the kind of thing this
+phase's speculation/recovery machinery could plausibly disturb, but that is
+a hypothesis, not a finding - nobody has traced it yet.
+
+**And CI cannot see it, because `sim_uartirq` is not the only target that
+cannot fail the build.** `sim/tb_ramboot.v` decides PASS/FAIL and reports it
+with `$display` - `RAMBOOT TEST PASSED`/`RAMBOOT TEST FAILED` - then calls
+plain `$finish`, which exits Icarus 0 regardless of which string it just
+printed. [practices.md §6](practices.md) states the intended design
+("every SoC simulation ends with the firmware writing a magic word... the
+result is a value rather than an impression") and names `sim_rerun` as the
+example that actually does it - "greps its own log and fails the build."
+The Makefile recipes for `sim_uartirq`, `sim_plic`, `sim_uart16550`,
+`sim_mmusdram`, `sim_ramboot`, `sim_sdramcheck`, `sim_div64test`,
+`sim_probe`, `sim_uartload`, `sim_sdram`, and `sim_sdramboot` are all one
+line, `cd sim && $(VVP) foo.out $(VVP_DUMP)`, with nothing after it to grep
+or check - confirmed directly for `sim_uartirq`: the run above kept going
+through every later target in `verify_ooo` and only stopped at the
+pre-existing `sim_linux` failure, which *is* checked. Not confirmed for
+every target on this list individually - only that the pattern in the
+Makefile is the same for all of them, and that this is the exact anti-pattern
+[practices.md §1](practices.md) is titled after: a test that cannot fail is
+not verifying anything, it is producing console output someone has to
+choose to read. `sim_rerun`, `tests/run.sh`, `sim/trapcheck.sh`,
+`cosim.py`, and `sim_linux`'s own watchdog check are the counter-examples
+already in the tree, and the fix - when it happens - is making every other
+`tb_ramboot.v`-based target look like those, not a change to the testbench
+itself.

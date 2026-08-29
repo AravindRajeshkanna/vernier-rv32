@@ -936,8 +936,14 @@ int main(int argc, char **argv) {
     long         watch_cycle = -1;  // when the sample was taken
     long         watch_count = 0;
     uint32_t     watch_regs[32] = {0};
-    static const int BRANCH_RING = 16;
+    // Capacity is cheap - two uint32_t per entry - and was 16 for years,
+    // which is enough to see a tight spin but not enough to see who called
+    // into a function a dozen calls deep before wedging. `+branch_hist=N`
+    // (below) controls how many of these get printed; the default there is
+    // still 16, so nothing about a plain run's output changes.
+    static const int BRANCH_RING = 200000;
     uint32_t     branch_from[BRANCH_RING] = {0}, branch_to[BRANCH_RING] = {0};
+    const long   branch_print_n = plusarg_long(argc, argv, "branch_hist", 16);
     long         branch_n = 0;
     uint32_t     prev_pc = 0;
     uint32_t     pc_lo = 0xFFFFFFFFu, pc_hi = 0;
@@ -1632,7 +1638,8 @@ int main(int argc, char **argv) {
     }
     if (branch_n) {
         printf("last control transfers (oldest first):\n");
-        const long first = branch_n > BRANCH_RING ? branch_n - BRANCH_RING : 0;
+        const long cap = branch_print_n < BRANCH_RING ? branch_print_n : BRANCH_RING;
+        const long first = branch_n > cap ? branch_n - cap : 0;
         for (long i = first; i < branch_n; i++)
             printf("  0x%08x -> 0x%08x\n",
                    branch_from[i % BRANCH_RING], branch_to[i % BRANCH_RING]);

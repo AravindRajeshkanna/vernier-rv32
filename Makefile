@@ -1007,6 +1007,32 @@ sim/sim_uartirq.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 sim_uartirq: sim/bootrom.hex sim/uartirqimage.hex sim/sim_uartirq.out
 	cd sim && $(VVP) sim_uartirq.out $(VVP_DUMP)
 
+# ---- __div64_32, isolated ----
+#
+# docs/roadmap.md's "Stage 1d was built anyway" section ("Update 3") has why:
+# sim_linux CORE=ooo was found permanently stuck inside this exact kernel
+# routine. software/soc/div64test.c is the same function, copied verbatim,
+# called with a spread of operands and checked against host-computed
+# answers - a fast, deterministic way to ask whether CORE=ooo gets it wrong
+# without a 90-million-cycle Linux boot in the way.
+DIV64TEST_SRCS = $(SOCRT_SRCS) software/soc/div64test.c
+
+software/soc/div64test.elf: $(DIV64TEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	    -o $@ $(DIV64TEST_SRCS)
+
+sim/div64testimage.hex: software/soc/div64test.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/div64test.elf software/soc/div64test.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/div64test.bin > $@
+
+sim/sim_div64test.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"div64testimage.hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+
+sim_div64test: sim/bootrom.hex sim/div64testimage.hex sim/sim_div64test.out
+	cd sim && $(VVP) sim_div64test.out $(VVP_DUMP)
+
 # ---- Sv32 with the page tables in external SDRAM ----
 #
 # The test for the two changes that let a page table live in DRAM at all:
@@ -1167,6 +1193,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
+        sim_div64test \
         uartload-host check-program isa cosim linux-if-built formal
 
 # ---- the Linux boot, when there is a kernel to boot ----
