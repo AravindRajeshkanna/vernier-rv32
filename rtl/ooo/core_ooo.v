@@ -1388,8 +1388,32 @@ module core_ooo #(
     // `!dmem_mmu_active`: while data-side paging is on, every load defers
     // to `load_via_head` instead (see the note above `headS_valid`) rather
     // than starting out-of-order with an untranslated virtual address.
+    //
+    // `!head_load_owns_port`: the missing half of the symmetry
+    // `head_load_owns_port` itself already keeps (its own definition ends
+    // `!port_taken_by_load && !sb_valid` - it already yields to loadL and
+    // to the store buffer). Without this, a ROB-head load that must go via
+    // `load_via_head` - any MMIO/peripheral address, per
+    // `load_target_needs_head`, not just while paging - can finish with
+    // `dmem_rvalid` high on the exact cycle a *different*, younger loadL
+    // load is starting. `loadL_early_done <= dmem_rvalid` (below) has no way
+    // to tell that the response and its own address never met: the address
+    // mux gives head_load_owns_port strict priority over `loadL_can_start`
+    // (see `dmem_addr` below), so loadL's own request was never actually
+    // driven that cycle, but its early-done latch fires anyway and claims
+    // whatever `dmem_rdata` shows - the head load's data, not its own.
+    // Found by instruction-level tracing on `sim_uartirq CORE=ooo`: the
+    // handler's `tx_irq_count++` read back 1 on its very first execution
+    // (nothing had ever written anything but 0), one cycle after the PLIC
+    // claim read completed with `rdata=1` (a real, correct claim ID for
+    // `UART_SRC`) - the very next load stole it. The claimed source then
+    // never got its matching `complete` write (the instruction that was
+    // meant to issue it ran off a since-corrupted register state instead),
+    // leaving it `in_service` forever and the interrupt permanently unable
+    // to re-arm - `docs/roadmap.md`'s Known Defects entry for
+    // `sim_uartirq CORE=ooo`.
     wire loadL_can_start = issL_found && !issL_misaligned && !port_owned_by_store &&
-                           !loadL_active && !dmem_mmu_active;
+                           !loadL_active && !dmem_mmu_active && !head_load_owns_port;
     // `loadL_active && !loadL_early_done`: the extra cycle after an
     // early-done load (see the note above loadL_early_done) must not
     // re-request the bus - the data is already latched, and re-asserting

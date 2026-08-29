@@ -1157,7 +1157,52 @@ could be built alone, and `docs/practices.md` §1 applies to both exactly as
 it applied to stage 1c's counters — a change here needs a counter it can
 move, not just an argument that it should help.
 
-#### Curated against a generic "build an OoO RV32-to-Linux core" plan
+**Update 9: a real bug was found and fixed by a different route -
+`sim_uartirq CORE=ooo`, not another attempt at `div64test.c` - and it is not
+the Linux hang.** Said plainly, because the temptation not to say it
+plainly is exactly what made this worth writing down: the two symptoms
+looked alike. `sim_uartirq`'s "finished after never of 5000 unrelated-work
+iterations" (Known Defects, above) and Linux's "a `schedule()` that never
+returns" are both "something waiting on an interrupt-driven completion,
+under `CORE=ooo`, that never arrives." That resemblance was the whole
+reason to chase `sim_uartirq` first: it is 100% reproducible in seconds,
+where the Linux hang needs 94.5M cycles and two rounds of purpose-built
+reproduction (Updates 4 and 5) had already failed to trigger it any other
+way.
+
+Instruction-level tracing (temporary `$display` probes in `rtl/plic.v` and
+`rtl/ooo/core_ooo.v`, removed before shipping - the technique, not the
+probes, is what's reusable) found a real, previously-undiagnosed bug: the
+handler's very first `tx_irq_count++` read back `1` when nothing had ever
+written anything but `0` - one cycle after the PLIC's claim register
+finished a *different* read with `rdata=1` (a genuinely correct claim ID
+for `UART_SRC`). `loadL_can_start` (the out-of-order load-issue path) has
+no check for `head_load_owns_port` (the ROB-head-only path every
+peripheral/MMIO load must take, per `load_target_needs_head`) being active
+on the same cycle; the address mux correctly gives `head_load_owns_port`
+priority, so the out-of-order load's own request was never actually driven
+that cycle, but `loadL_early_done <= dmem_rvalid` doesn't know that and
+latches "done" off a `dmem_rvalid` that belongs to someone else's
+transaction. The stolen claim's completion write, downstream, never
+happened - it ran off since-corrupted state instead - which is what
+permanently wedged the interrupt. Fixed with one added term,
+`!head_load_owns_port`, restoring the symmetry `head_load_owns_port`
+already keeps on its own side. `make sim_uartirq CORE=ooo` now passes: 60
+of 60 interrupts, exactly one per byte, `UART-IRQ-TEST: PASS`.
+
+Then `make sim_linux CORE=ooo` was run again, specifically to test whether
+this was the Linux hang wearing a different address. **It is not.** Same
+signature, same two addresses trading control forever
+(`0xc0049b44`↔`0xc024e6e8`/`0xc024d770`), same `never seen in 400000000
+cycles`. The `loadL`-vs-`head_load_owns_port` race is real, was worth
+fixing on its own terms, and rules out one specific hypothesis about the
+Linux hang rather than confirming it - which is a real result, not a null
+one: two symptom-alike bugs with different root causes is itself
+information, and the honest record of a hypothesis that didn't survive
+contact with the bench is worth exactly as much shelf space as one that
+did. `docs/practices.md` §25: a correction fitted to one measurement is a
+guess with a number on it - the fix stands on `sim_uartirq`'s own evidence,
+not on an assumption about Linux it was never actually shown to satisfy.
 
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
@@ -2339,22 +2384,24 @@ one. This does not change the "not a local patch" conclusion above - if
 anything it reinforces it, since the tool's own escape hatch for this class
 of loop produces garbage rather than an answer.
 
-**Interrupt-driven UART TX (#56) fails on `CORE=ooo`, and now `make` says so
-instead of staying silent.** `make sim_uartirq CORE=ooo`: `all bytes handed
-to the UART FAILED`, `exactly one interrupt per byte sent FAILED`,
-`transfer finished during the unrelated work FAILED`, `finished after never
-of 5000 unrelated-work iterations`, `UART-IRQ-TEST: FAIL (3)`. The
-identical image on `CORE=inorder`: all three `ok`, `finished after 218 of
-5000 unrelated-work iterations`, `UART-IRQ-TEST: PASS`. Reproduced multiple
-times, identical signature every time, and it is not new - the first
-capture predates this stage's own changes entirely, so this has been the
-`CORE=ooo` behavior since PR #56 merged (`fd34879`), not a regression
-introduced while gating something else. **Still not root-caused** -
-"finished after never" reads as the driver's queue-and-interrupt handshake
-never actually firing under `CORE=ooo`'s interrupt timing, which is exactly
-the kind of thing this phase's speculation/recovery machinery could
-plausibly disturb, but that is a hypothesis, not a finding. This is the one
-piece of this entry that is genuinely still open.
+**RESOLVED - Interrupt-driven UART TX (#56) failed on `CORE=ooo`; root-caused
+and fixed. See "Stage 1d was built anyway," Update 9, for the full account
+and why it was chased in the first place** (a resemblance to the still-open
+Linux hang below, which the fix turned out not to explain). Left here,
+struck rather than deleted, as the record of what this entry used to say:
+`make sim_uartirq CORE=ooo`: `all bytes handed to the UART FAILED`,
+`exactly one interrupt per byte sent FAILED`, `transfer finished during the
+unrelated work FAILED`, `finished after never of 5000 unrelated-work
+iterations`, `UART-IRQ-TEST: FAIL (3)`, against a clean `CORE=inorder` pass.
+Root cause: `rtl/ooo/core_ooo.v`'s out-of-order load-issue path
+(`loadL_can_start`) could start on the same cycle a `head_load_owns_port`
+transaction (every peripheral/MMIO load, per `load_target_needs_head`)
+completed, and its early-completion latch had no way to tell that the
+`dmem_rvalid`/`dmem_rdata` it just grabbed belonged to that other
+transaction rather than its own - never-issued - request. Fixed by adding
+`!head_load_owns_port` to `loadL_can_start`, restoring a symmetry
+`head_load_owns_port` already kept on its own side. `make sim_uartirq
+CORE=ooo` now passes cleanly on both cores.
 
 **The reason CI couldn't see it is fixed.** `sim/tb_ramboot.v` decides
 PASS/FAIL and reports it with `$display` - `RAMBOOT TEST PASSED`/`RAMBOOT
