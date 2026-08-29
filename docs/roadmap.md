@@ -1338,6 +1338,96 @@ for `CORE=ooo`, and the retirement of PC-window bisection as a reliable
 signal for "did this make progress," in favor of the semantic marker this
 project already had.
 
+**Update 11: a real gap found via upstream Linux/RISC-V precedent - plain
+`FENCE` was a no-op on `CORE=ooo` - and fixing it moves the stall, but does
+not close it.** Asked to check open-source OOO-core and Linux-kernel
+precedent for this class of bug rather than continuing to probe this
+project's own RTL in isolation. Two real upstream references turned up: an
+LKML thread ("riscv pending interrupts freezes the kernel...") describing an
+unrelated platform's IRQ-controller bug, and an RFC
+("riscv: Switch back to CSR_STATUS masking when going idle") describing the
+generic gotcha that a WFI executed with interrupts masked via `CSR_IE`
+rather than `sstatus.SIE` can never wake. Checked this kernel's config for
+the Pseudo-NMI/`CSR_IE`-masking mode that gotcha requires - `arch/riscv/Kconfig`
+has no such option at all in this tree, and the periodic timer interrupt was
+already independently confirmed (Update 10) to keep waking the CPU
+throughout the run, so that exact bug class does not apply here. But getting
+to that RFC meant reading `arch/riscv/include/asm/cpuidle.h`'s
+`cpu_do_idle()`:
+
+```c
+static inline void cpu_do_idle(void)
+{
+	/*
+	 * Add mb() here to ensure that all
+	 * IO/MEM accesses are completed prior
+	 * to entering WFI.
+	 */
+	mb();
+	wait_for_interrupt();
+}
+```
+
+`mb()` is `RISCV_FENCE(rw, rw)` - a plain `fence rw,rw`, funct3 `000`, not
+`FENCE.I`. `cpu_core.v` treats plain `FENCE` as a no-op, with its own
+comment explaining why that is safe there: no store buffer, so nothing can
+be in flight for a later instruction to race against. `core_ooo.v` inherited
+the same "no-op" decode unchanged - but it is not safe there. `sb_valid`
+drains a store to the bus over cycles *after* the instruction that issued it
+has already retired (`head_store_absorbed`), which is exactly the delayed
+visibility a `fence rw,rw` exists to close: a store the kernel believes is
+already visible (an SBI timer arm, an interrupt-controller write) can still
+be sitting in the store buffer when `wait_for_interrupt()` executes right
+after. `FENCE.I` and `SFENCE.VMA` already had this handled correctly, via
+`head_fence_drain_stall` holding the ROB head until `sb_valid` clears; plain
+`FENCE` was simply never routed through it. Fixed by adding a third
+`rob_is_plain_fence` bit alongside the existing `rob_is_fence_i`/
+`rob_is_sfence_vma` ones, set at dispatch from `is_miscmem && !is_fence_i`,
+and OR'd into `head_fence_drain_stall`'s condition - the same mechanism,
+extended to the case it was missing, not new logic.
+
+**Tested directly against the actual goal, not assumed:** `make sim_linux
+CORE=ooo` still fails, but not identically - unlike Update 9's fix, this one
+does change the stall. With `+watchpc` bisection through `driver_init()`'s
+call sequence (`devices_init`, `buses_init`, `classes_init`, `firmware_init`,
+`faux_bus_init` all confirmed reached), `of_core_init` is now reached at
+cycle 55,327,794 - it was never reached before this fix (the stall was
+`serial8250:0.3`'s probe, at 94.5-94.8M, well inside `driver_init`'s later
+`platform_bus_init`). Inside `of_core_init`, `kset_create_and_add` is called
+(7 visits, last at cycle 55,328,072), then its `for_each_of_allnodes` loop
+attaching each device-tree node to sysfs runs (`__of_attach_node_sysfs`, 19
+visits, last at cycle 57,583,444), calling `kernfs_add_one` repeatedly (136
+visits total; the last one, at cycle 57,664,442, entered from
+`__kernfs_create_file` - a property file, not a directory). That count does
+not move between a 60M-cycle run and a 90M-cycle run of the same image: no
+further progress at all for 32M+ cycles. `of_core_init`'s own closing
+`proc_symlink` call (gated on `if (of_root)`, the last thing the function
+does before `driver_init` moves on to `platform_bus_init`) is never reached
+- the only hit on that address (0xc014d5c0) anywhere in the run is a single,
+earlier, unrelated caller at cycle 44,751,548. `platform_bus_init` itself is
+never reached either. The run's tail then shows the hart cycling through
+`default_idle_call`/`arch_cpu_idle` - the scheduler's idle path - repeating
+forever: whichever thread runs `do_initcalls()` (`kernel_init`, PID 1, per
+`rest_init()`'s split from the boot-context idle task) has gone to sleep and
+is never woken back up. `kernfs_add_one` takes `down_write(&root->kernfs_rwsem)`
+internally (`fs/kernfs/dir.c`); whether the sleep is on that rwsem, on
+something `__kernfs_create_file`'s caller chain waits on next, or something
+else entirely reachable only from inside that 136th call, is not resolved.
+
+Net position: a real, independently-motivated correctness fix - Linux's own
+documented invariant for `cpu_do_idle()` did not hold on this core before
+this change, regardless of what it does or does not do for this specific
+hang - and a real, measured effect on the hang it was chasing: the stall
+moves from `serial8250:0.3`'s probe (94.5-94.8M cycles) to somewhere in or
+immediately after `of_core_init`'s kernfs node/property population (57.6-60M
+cycles), a genuine behavioral change, not a wash. Whether that is the same
+underlying bug surfacing earlier under different timing, or a different bug
+this fix's changed timing now exposes, is exactly as unresolved as it
+sounds - not claimed either way. `make verify` (`CORE=inorder`, unaffected)
+and `make verify_ooo`'s every stage before `sim_linux` (`isa`, `cosim` 84/84,
+`riscv-tests` 81/0/3, JTAG, SDRAM, interrupt-driven UART TX, ...) pass
+cleanly with this change in place.
+
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
 SoC integration + Linux bring-up, stabilization + polish. Read literally it
@@ -2431,30 +2521,36 @@ Open, unscheduled, and written down so they are not rediscovered.
 
 **The wide core's Linux boot does not reach userspace.** `make linux_trapdiff`
 boots the same image on both cores and compares the traps; the "Stage 1d was
-built anyway" section above has the current, authoritative account, including
-"Update 2," which localizes this well past the `ecall`/interrupt-count framing
-this entry used to lead with. The short version: cycle-bisecting `sim_linux
-CORE=ooo` (`+maxcycles`, narrowed until `pc over the last 2000 cycles` stops
-changing) lands the point of no return at cycle 94.5-94.8M of 400M, inside
-`serial8250_init`'s legacy-port registration loop - the fourth of four
-structurally identical `uart_add_one_port()` calls (confirmed via Linux's own
-`initcall_debug`: probes `serial8250:0` through `:0.2` return in a few
-thousand microseconds each, `:0.3` never does) triggers `kernfs_create_dir_ns`,
-then in the next window `kernfs_free_rcu`/`delete_node` (a registration
-apparently unwinding, not succeeding) and a `schedule()` that never returns.
-`CORE=inorder`, identical kernel image and `initcall_debug` build, passes all
-five probes and reaches userspace - ruling out a platform/kernel-config
-explanation. The periodic timer interrupt that would carry the eventual
-wakeup keeps firing for the rest of the run regardless, so this is not a
-blanket "PLIC interrupts don't work" - one specific task's wakeup does not
-happen. That "no call-stack walker" gap did get closed - "Update 3" above
-found the exact loop (`__div64_32`, the kernel's software 64-bit division
-routine, reached from the CFS/EEVDF scheduler's own vruntime accounting)
-by widening an existing testbench ring rather than building a new tool -
-and "Update 4" and "Update 5" describe two different, deliberately
-constructed reproductions of it (`software/soc/div64test.c`) that both
-passed cleanly on `CORE=ooo`, narrowing but not yet closing what it
-actually takes to trigger.
+built anyway" section above has the current, authoritative account. As of
+"Update 11," the point of no return is cycle 57.6-60M of 400M, inside
+`of_core_init`'s device-tree-to-sysfs population (`kernfs_add_one`, called
+from `__kernfs_create_file`, 136 visits and then no more even 32M+ cycles
+later) - `platform_bus_init`, the very next call in `driver_init` after
+`of_core_init` returns, is never reached. The run's tail shows the hart
+parked in the scheduler's idle path (`default_idle_call`/`arch_cpu_idle`),
+repeating forever: the thread running `do_initcalls()` has gone to sleep and
+is never woken. This location is new as of Update 11's fix (plain `FENCE`
+now actually drains the store buffer, matching Linux's own documented
+`cpu_do_idle()` invariant, where before it was silently a no-op inherited
+from `cpu_core.v`) - the stall used to be at cycle 94.5-94.8M, inside
+`serial8250_init`'s legacy-port registration loop, the fourth of four
+structurally identical `uart_add_one_port()` calls (confirmed via Linux's
+own `initcall_debug`: probes `serial8250:0` through `:0.2` return in a few
+thousand microseconds each, `:0.3` never does). That finding is not wrong,
+but it is no longer reachable - Update 11 has the full account of both
+locations and exactly what changed. `CORE=inorder`, identical kernel image,
+still passes all probes and reaches userspace either way - ruling out a
+platform/kernel-config explanation. The periodic timer interrupt that would
+carry the eventual wakeup keeps firing for the rest of the run regardless,
+so this is not a blanket "PLIC interrupts don't work" - one specific task's
+wakeup does not happen. That "no call-stack walker" gap did get closed -
+"Update 3" above found the exact loop (`__div64_32`, the kernel's software
+64-bit division routine, reached from the CFS/EEVDF scheduler's own
+vruntime accounting) by widening an existing testbench ring rather than
+building a new tool - and "Update 4" and "Update 5" describe two different,
+deliberately constructed reproductions of it (`software/soc/div64test.c`)
+that both passed cleanly on `CORE=ooo`, narrowing but not yet closing what
+it actually takes to trigger.
 
 This entry used to say something different: a supervisor store page fault at
 `load_elf_binary+0xc30`, storing to user virtual address `0x00040000`

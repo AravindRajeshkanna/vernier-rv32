@@ -574,6 +574,23 @@ module core_ooo #(
     reg        rob_is_muldiv[0:ROB_DEPTH-1];
     reg        rob_is_sfence_vma[0:ROB_DEPTH-1];
     reg        rob_is_fence_i[0:ROB_DEPTH-1];
+    // Plain FENCE (`is_miscmem && !is_fence_i` - funct3 000, not 001):
+    // cpu_core.v's own comment says why it is a no-op there ("FENCE.I ...
+    // is not a no-op here even though plain FENCE is") - that pipeline has
+    // no store buffer, so nothing can be in flight for a later instruction
+    // to race against. This core does: `sb_valid` drains a store's write
+    // to the bus over cycles *after* the store has already retired (see
+    // `head_store_absorbed`/the store-buffer always-block). A plain FENCE
+    // inheriting the in-order core's "no-op" treatment gives Linux's
+    // `mb()` - `RISCV_FENCE(rw, rw)`, called by `cpu_do_idle()` specifically
+    // "to ensure that all IO/MEM accesses are completed prior to entering
+    // WFI" (arch/riscv/include/asm/cpuidle.h) - no actual guarantee on this
+    // core: a store the kernel believes is already visible (an SBI timer
+    // arm, an interrupt-controller write) can still be sitting in the
+    // store buffer when WFI executes right after. Tracked separately from
+    // `rob_is_fence_i`/`rob_is_sfence_vma` so `head_fence_drain_stall`
+    // below can wait on it exactly the same way.
+    reg        rob_is_plain_fence[0:ROB_DEPTH-1];
     reg        rob_is_alu_class[0:ROB_DEPTH-1];
     reg        rob_needs_mmu[0:ROB_DEPTH-1]; // a load that turned out to need translation - held to the head
 
@@ -1534,7 +1551,8 @@ module core_ooo #(
                              head_store_not_issued_stall ||
                              head_load_dbus_wait_stall || head_load_port_blocked;
     assign head_fence_drain_stall = headS_valid && sb_valid &&
-                                  (rob_is_fence_i[rob_head] || rob_is_sfence_vma[rob_head]);
+                                  (rob_is_fence_i[rob_head] || rob_is_sfence_vma[rob_head] ||
+                                   rob_is_plain_fence[rob_head]);
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -2085,6 +2103,7 @@ module core_ooo #(
                 rob_is_muldiv[rob_tail]  <= is_muldiv;
                 rob_is_sfence_vma[rob_tail]<= is_sfence_vma;
                 rob_is_fence_i[rob_tail] <= is_fence_i;
+                rob_is_plain_fence[rob_tail] <= is_miscmem && !is_fence_i;
                 // A load/store/AMO/branch/CSR/trap-event is never alu-class,
                 // even if suppressed (illegal etc.) - suppressed instructions
                 // still execute the Class-S path once at the head, producing
