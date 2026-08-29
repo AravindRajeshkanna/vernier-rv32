@@ -70,14 +70,21 @@
 //                     previous call's arguments and looks like a hardware
 //                     bug. It did, twice, in one afternoon. Zero reproduces
 //                     the old behaviour.
-//   +watchpc=ADDR     dump the integer registers the first time a *retired*
-//                     instruction is at ADDR. `+watchlast` takes the last
-//                     occurrence instead, which is what you want when the
-//                     address is inside a loop and only the final pass
-//                     failed. For firmware that gives up without a
-//                     console: the error code it decided to hang on is still
-//                     in a register at the point it branches to its hang
-//                     loop, and there is no other way to read it.
+//   +watchpc=ADDR     dump the *architectural* integer registers the first
+//                     time a *retired* instruction is at ADDR. `+watchlast`
+//                     takes the last occurrence instead, which is what you
+//                     want when the address is inside a loop and only the
+//                     final pass failed. For firmware that gives up
+//                     without a console: the error code it decided to hang
+//                     on is still in a register at the point it branches to
+//                     its hang loop, and there is no other way to read it.
+//                     On CORE=ooo this resolves each x0-x31 through the RAT
+//                     before reading the physical register file - reading
+//                     RF.regs[0..31] directly, as CORE=inorder's dump does,
+//                     would return whichever physical registers happen to
+//                     occupy the first 32 of 64 slots, not the
+//                     architectural values (docs/roadmap.md's "Stage 1d was
+//                     built anyway", Update 10).
 //   +checkreads       compare every SDRAM read the interconnect completes
 //                     against what the modelled part actually holds, and
 //                     report the first few that disagree. This asks a
@@ -1362,8 +1369,26 @@ int main(int argc, char **argv) {
         if (watch_arm >= 0 && watch_arm-- == 0) {
             watch_hit = true;
             watch_cycle = cycles;
+#ifdef CORE_OOO
+            // `RF` here is `regfile_phys` (core_ooo.v's `RF`), 64 physical
+            // registers with no fixed mapping to x0-x31 - reading its first
+            // 32 entries directly, as the in-order core's dump below does,
+            // returns whichever physical registers happen to occupy indices
+            // 0-31 at that moment, not the architectural values. The RAT
+            // (`rat[0:31]`, one entry per architectural register, holding
+            // its *current* physical register) is what makes the two
+            // correspond. x0 needs no special case: `rat[0]` never leaves
+            // its reset value (dispatch never renames a write to x0 - see
+            // core_ooo.v's `dispatch_needs_preg`), and `regfile_phys` also
+            // hardwires physical register 0 to read zero regardless.
+            for (int r = 0; r < 32; r++) {
+                const uint8_t phys = root->soc_top__DOT__CPU__DOT__rat[r];
+                watch_regs[r] = root->soc_top__DOT__CPU__DOT__RF__DOT__regs[phys];
+            }
+#else
             for (int r = 0; r < 32; r++)
                 watch_regs[r] = root->soc_top__DOT__CPU__DOT__RF__DOT__regs[r];
+#endif
         }
 
         // ---- a ring of the last control transfers ----
