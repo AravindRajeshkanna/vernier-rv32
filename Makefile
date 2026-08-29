@@ -479,13 +479,17 @@ sim/sim_ramboot.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_ramboot: sim/bootrom.hex sim/ramimage.hex sim/sim_ramboot.out
-	cd sim && $(VVP) sim_ramboot.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_ramboot.out $(VVP_DUMP) 2>&1 | tee ramboot.log
+	@grep -q "RAMBOOT TEST PASSED" sim/ramboot.log || \
+	    { echo "sim_ramboot FAILED"; exit 1; }
 
 sim/sim_probe.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
-	cd sim && $(VVP) sim_probe.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_probe.out $(VVP_DUMP) 2>&1 | tee probe.log
+	@grep -q "RAMBOOT TEST PASSED" sim/probe.log || \
+	    { echo "sim_probe FAILED"; exit 1; }
 
 # ---- does the program survive a reset? ----
 # Block RAM is initialised when the FPGA is *configured*, not when the CPU is
@@ -956,7 +960,9 @@ sim/sim_uart16550.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_uart16550: sim/bootrom.hex sim/uart16550image.hex sim/sim_uart16550.out
-	cd sim && $(VVP) sim_uart16550.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_uart16550.out $(VVP_DUMP) 2>&1 | tee uart16550.log
+	@grep -q "RAMBOOT TEST PASSED" sim/uart16550.log || \
+	    { echo "sim_uart16550 FAILED"; exit 1; }
 
 # ---- the PLIC: standard layout, two contexts, S-mode delivery ----
 #
@@ -980,7 +986,9 @@ sim/sim_plic.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
-	cd sim && $(VVP) sim_plic.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_plic.out $(VVP_DUMP) 2>&1 | tee plic.log
+	@grep -q "RAMBOOT TEST PASSED" sim/plic.log || \
+	    { echo "sim_plic FAILED"; exit 1; }
 
 # ---- interrupt-driven UART TX: using the interrupt, not just proving it ----
 #
@@ -1005,7 +1013,9 @@ sim/sim_uartirq.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_uartirq: sim/bootrom.hex sim/uartirqimage.hex sim/sim_uartirq.out
-	cd sim && $(VVP) sim_uartirq.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_uartirq.out $(VVP_DUMP) 2>&1 | tee uartirq.log
+	@grep -q "RAMBOOT TEST PASSED" sim/uartirq.log || \
+	    { echo "sim_uartirq FAILED"; exit 1; }
 
 # ---- __div64_32, isolated ----
 #
@@ -1031,7 +1041,9 @@ sim/sim_div64test.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_div64test: sim/bootrom.hex sim/div64testimage.hex sim/sim_div64test.out
-	cd sim && $(VVP) sim_div64test.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_div64test.out $(VVP_DUMP) 2>&1 | tee div64test.log
+	@grep -q "RAMBOOT TEST PASSED" sim/div64test.log || \
+	    { echo "sim_div64test FAILED"; exit 1; }
 
 # ---- Sv32 with the page tables in external SDRAM ----
 #
@@ -1067,7 +1079,9 @@ sim/sim_mmusdram.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_mmusdram: sim/bootrom.hex sim/mmuimage.hex sim/sim_mmusdram.out
-	cd sim && $(VVP) sim_mmusdram.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_mmusdram.out $(VVP_DUMP) 2>&1 | tee mmusdram.log
+	@grep -q "RAMBOOT TEST PASSED" sim/mmusdram.log || \
+	    { echo "sim_mmusdram FAILED"; exit 1; }
 
 # SDRAM_WORDS is the whole 32 MB part here, and it has to be: the row test in
 # sdramcheck.c touches one word in each of 8192 rows, and the top of the part
@@ -1082,7 +1096,9 @@ sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_sdramcheck: sim/bootrom.hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
-	cd sim && $(VVP) sim_sdramcheck.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_sdramcheck.out $(VVP_DUMP) 2>&1 | tee sdramcheck.log
+	@grep -q "RAMBOOT TEST PASSED" sim/sdramcheck.log || \
+	    { echo "sim_sdramcheck FAILED"; exit 1; }
 
 # ---- the JTAG debug path ----
 #
@@ -1141,7 +1157,9 @@ uartload-host:
 	python3 tests/uartload_host.py
 
 sim_uartload: sim/bootrom.hex sim/uartimage.hex sim/sim_uartload.out
-	cd sim && $(VVP) sim_uartload.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_uartload.out $(VVP_DUMP) 2>&1 | tee uartload.log
+	@grep -q "UARTLOAD TEST PASSED" sim/uartload.log || \
+	    { echo "sim_uartload FAILED"; exit 1; }
 
 # ---- external SDRAM (Phase 2) ----
 #
@@ -1153,7 +1171,9 @@ sim/sim_sdram.out: sim/tb_sdram.v sim/sdram_model.v rtl/soc/wb_sdram.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_sdram.v sim/sdram_model.v rtl/soc/wb_sdram.v
 
 sim_sdram: sim/sim_sdram.out
-	cd sim && $(VVP) sim_sdram.out $(VVP_DUMP)
+	@cd sim && $(VVP) sim_sdram.out $(VVP_DUMP) 2>&1 | tee sdram.log
+	@grep -q "SDRAM TEST PASSED" sim/sdram.log || \
+	    { echo "sim_sdram FAILED"; exit 1; }
 
 SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
 
@@ -1178,7 +1198,9 @@ sim/sim_sdramboot.out: sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
 # running Icarus a second time - this test is three minutes and `verify` runs
 # both targets. sim/*.log is gitignored.
 sim_sdramboot: sim/sdramimage.hex sim/sim_sdramboot.out
-	cd sim && $(VVP) sim_sdramboot.out $(VVP_DUMP) | tee sdramboot.log
+	@cd sim && $(VVP) sim_sdramboot.out $(VVP_DUMP) 2>&1 | tee sdramboot.log
+	@grep -q "SDRAMBOOT TEST PASSED" sim/sdramboot.log || \
+	    { echo "sim_sdramboot FAILED"; exit 1; }
 
 # Everything that can gate a change, in rough order of how fast it fails.
 # Rebuilds from scratch on purpose: the simulation binaries do not encode
