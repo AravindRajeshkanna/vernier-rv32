@@ -2339,44 +2339,70 @@ one. This does not change the "not a local patch" conclusion above - if
 anything it reinforces it, since the tool's own escape hatch for this class
 of loop produces garbage rather than an answer.
 
-**Interrupt-driven UART TX (#56) fails on `CORE=ooo` and nothing has ever
-said so.** `make sim_uartirq CORE=ooo`: `all bytes handed to the UART
-FAILED`, `exactly one interrupt per byte sent FAILED`, `transfer finished
-during the unrelated work FAILED`, `finished after never of 5000
-unrelated-work iterations`, `UART-IRQ-TEST: FAIL (3)`. The identical image
-on `CORE=inorder`: all three `ok`, `finished after 218 of 5000
-unrelated-work iterations`, `UART-IRQ-TEST: PASS`. Reproduced twice, in two
-independent full `make verify_ooo` runs, identical signature both times, and
-it is not new - the first of those two runs was captured before this
-stage's own changes touched anything, so this has been the `CORE=ooo`
-behavior since PR #56 merged (`fd34879`), not a regression introduced while
-gating something else. Not yet root-caused: "finished after never" reads as
-the driver's queue-and-interrupt handshake never actually firing under
-`CORE=ooo`'s interrupt timing, which is exactly the kind of thing this
-phase's speculation/recovery machinery could plausibly disturb, but that is
-a hypothesis, not a finding - nobody has traced it yet.
+**Interrupt-driven UART TX (#56) fails on `CORE=ooo`, and now `make` says so
+instead of staying silent.** `make sim_uartirq CORE=ooo`: `all bytes handed
+to the UART FAILED`, `exactly one interrupt per byte sent FAILED`,
+`transfer finished during the unrelated work FAILED`, `finished after never
+of 5000 unrelated-work iterations`, `UART-IRQ-TEST: FAIL (3)`. The
+identical image on `CORE=inorder`: all three `ok`, `finished after 218 of
+5000 unrelated-work iterations`, `UART-IRQ-TEST: PASS`. Reproduced multiple
+times, identical signature every time, and it is not new - the first
+capture predates this stage's own changes entirely, so this has been the
+`CORE=ooo` behavior since PR #56 merged (`fd34879`), not a regression
+introduced while gating something else. **Still not root-caused** -
+"finished after never" reads as the driver's queue-and-interrupt handshake
+never actually firing under `CORE=ooo`'s interrupt timing, which is exactly
+the kind of thing this phase's speculation/recovery machinery could
+plausibly disturb, but that is a hypothesis, not a finding. This is the one
+piece of this entry that is genuinely still open.
 
-**And CI cannot see it, because `sim_uartirq` is not the only target that
-cannot fail the build.** `sim/tb_ramboot.v` decides PASS/FAIL and reports it
-with `$display` - `RAMBOOT TEST PASSED`/`RAMBOOT TEST FAILED` - then calls
-plain `$finish`, which exits Icarus 0 regardless of which string it just
-printed. [practices.md §6](practices.md) states the intended design
-("every SoC simulation ends with the firmware writing a magic word... the
-result is a value rather than an impression") and names `sim_rerun` as the
-example that actually does it - "greps its own log and fails the build."
-The Makefile recipes for `sim_uartirq`, `sim_plic`, `sim_uart16550`,
-`sim_mmusdram`, `sim_ramboot`, `sim_sdramcheck`, `sim_div64test`,
-`sim_probe`, `sim_uartload`, `sim_sdram`, and `sim_sdramboot` are all one
-line, `cd sim && $(VVP) foo.out $(VVP_DUMP)`, with nothing after it to grep
-or check - confirmed directly for `sim_uartirq`: the run above kept going
-through every later target in `verify_ooo` and only stopped at the
-pre-existing `sim_linux` failure, which *is* checked. Not confirmed for
-every target on this list individually - only that the pattern in the
-Makefile is the same for all of them, and that this is the exact anti-pattern
-[practices.md §1](practices.md) is titled after: a test that cannot fail is
-not verifying anything, it is producing console output someone has to
-choose to read. `sim_rerun`, `tests/run.sh`, `sim/trapcheck.sh`,
-`cosim.py`, and `sim_linux`'s own watchdog check are the counter-examples
-already in the tree, and the fix - when it happens - is making every other
-`tb_ramboot.v`-based target look like those, not a change to the testbench
-itself.
+**The reason CI couldn't see it is fixed.** `sim/tb_ramboot.v` decides
+PASS/FAIL and reports it with `$display` - `RAMBOOT TEST PASSED`/`RAMBOOT
+TEST FAILED` - then calls plain `$finish`, which exits Icarus 0 regardless
+of which string it just printed. [practices.md §6](practices.md) states the
+intended design ("every SoC simulation ends with the firmware writing a
+magic word... the result is a value rather than an impression") and names
+`sim_rerun` as the example that actually does it - "greps its own log and
+fails the build." The Makefile recipes for `sim_uartirq`, `sim_plic`,
+`sim_uart16550`, `sim_mmusdram`, `sim_ramboot`, `sim_sdramcheck`,
+`sim_div64test`, `sim_probe`, `sim_uartload`, `sim_sdram`, and
+`sim_sdramboot` were all one line, `cd sim && $(VVP) foo.out $(VVP_DUMP)`,
+with nothing after it to grep or check - confirmed directly for
+`sim_uartirq`: `verify_ooo` used to keep going through every later target
+and only stop at the pre-existing `sim_linux` failure, which *was* checked.
+All eleven now `tee` their output to a per-target log and grep it for the
+right verdict string before continuing - `RAMBOOT TEST PASSED` for the
+eight built on `tb_ramboot.v`, `UARTLOAD TEST PASSED` / `SDRAM TEST PASSED`
+/ `SDRAMBOOT TEST PASSED` for the three that use their own testbenches
+instead, matching `sim_rerun`'s existing pattern exactly rather than
+inventing a new one. Confirmed working both directions, not just asserted:
+`make sim_uartirq CORE=ooo` now exits nonzero with `sim_uartirq FAILED`
+printed, and `make verify_ooo` now stops there instead of running another
+25 minutes to reach `sim_linux` - a real, measured side benefit, not just
+correctness. `make sim_uartirq` (`CORE=inorder`) still exits 0. `sim_rerun`,
+`tests/run.sh`, `sim/trapcheck.sh`, `cosim.py`, and `sim_linux`'s own
+watchdog check were already the counter-examples in the tree before this;
+now every other `tb_ramboot.v`/`tb_uartload.v`/`tb_sdram.v`/`tb_sdramboot.v`-
+based target looks like them too. The testbenches themselves were not
+touched - the fix is entirely in what the Makefile does with output they
+already produced.
+
+**And that fix changes nothing in CI, because CI does not call these
+targets at all.** `.github/workflows/*.yml` never runs plain `make verify`
+or `make verify_ooo` - the "SoC, firmware and traps" job reimplements a
+curated, explicit list of individual steps instead, each its own `make
+<target>` plus its own `grep` check written directly in the workflow file.
+`grep -rn "sim_uartirq\|sim_probe\|sim_div64test" .github/workflows/`
+returns nothing: all three are absent from that list, on either core, by
+any path. This is not new - `.github/workflows/*.yml` already carries a
+comment recording the same class of gap once before, about a different
+check: "the self-checking probes... were only ever running in someone's
+local `make verify`", until the device-tree-FIFO bug made that obvious and
+the fix was adding a named step for it. `sim_uartirq` and `sim_probe` are
+old absences, unrelated to this change. `sim_div64test` is not - it is the
+regression test this same stage (Update 4/5, and the PR that shipped it)
+built specifically to guard the `__div64_32` finding, and it currently
+provides no protection in CI at all: a future change that broke it would
+still show every check above green. Documented rather than fixed here, on
+the same reasoning as the entry above it - this is a Makefile PR, and
+`.github/workflows/*.yml` is deliberately not touched by it.
