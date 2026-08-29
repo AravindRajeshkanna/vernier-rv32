@@ -830,7 +830,10 @@ core as the mechanism stands, and is not evidence of anything by itself.
 Getting real operand values needs either fixing that (resolving each
 architectural register through the current RAT before reading
 `regfile_phys`) or a dedicated debug hook - not attempted here, kept as the
-next concrete step rather than a vague one.
+next concrete step rather than a vague one. **Done in Update 10 below**,
+exactly that way - `+watchpc` now resolves through `soc_top.CPU.rat[]`
+before indexing `RF.regs[]` on `CORE=ooo`, and produces plausible,
+`addr2line`-coherent values.
 
 **Update 4: attempted a standalone reproduction, and it did not reproduce -
 which is real information, not a dead end.** `software/soc/div64test.c`
@@ -1238,6 +1241,102 @@ have already called invalid") applies to the corrected claim now, not just
 the original one: treat "goes through an SBI call, then idles, around
 94.8M cycles" as the current state of the evidence, not as a new,
 confirmed root cause.
+
+**Update 10: a real, permanent tool fix - `+watchpc` now works on `CORE=ooo`
+- and a second, deeper methodology error caught inside the same
+investigation that fixed it.** `sim/verilator_soc.cpp`'s `+watchpc` dumped
+`soc_top.CPU.RF.regs[0..31]` on a match - correct for `cpu_core.v`, where
+`RF` is the architectural register file, but `core_ooo.v` also names its
+physical register file `RF` (64 entries, `regfile_phys`), so the same code
+read the *first 32 physical* registers, which correspond to no fixed
+architectural meaning at all. Already known and documented as broken for
+`CORE=ooo`. Fixed by resolving through the RAT first
+(`soc_top.CPU.rat[0..31]`, one entry per architectural register, holding
+its current physical index) before indexing into `RF.regs[]` - `#ifdef
+CORE_OOO` only; `cpu_core.v`'s path is untouched. `x0` needs no special
+case: the RAT never renames a write to it, and `regfile_phys` separately
+hardwires physical register 0 to read zero regardless. Verified two ways:
+`make verilator_check` passes cycle-for-cycle on both cores (the fix
+touches only code gated behind an unused-by-default plusarg, so this
+mainly confirms nothing else broke), and, positively, every `ra` value
+read back through the fix during this update's own investigation resolved
+via `addr2line` to a real function entry with a coherent, sensible calling
+context (`smpboot_thread_fn`, `serial8250_register_ports`, ...) - a
+broken resolution would have produced addresses `addr2line` could not
+place inside any function, not a coherent call graph.
+
+Used it to re-run this investigation's central check - `initcall_debug` on
+`CORE=ooo` - and it reproduces exactly what Update 3 already established,
+now on this stage's own current tree: `serial8250:0`, `:0.0`, `:0.1`,
+`:0.2` all probe and return in a few thousand microseconds each;
+`:0.3` never prints anything at all, success or failure. Not a new finding
+- confirmation that nothing in Updates 6-9's fixes moved this.
+
+Then three specific hypotheses, each chased with `+watchpc` on a real
+function address rather than guessed at from source alone, and each ruled
+out the same way - "never reached":
+
+- `kernfs_drain`'s own `wait_event` call site (the `jal schedule` inside
+  its hand-rolled wait loop, `rtl`-adjacent reasoning suggested this given
+  Update 3's `kernfs_free_rcu`/`delete_node` mention) - never reached.
+  `kernfs_drain` explicitly skips draining for nodes that were never
+  activated, "allowing embedding `kernfs_remove()` in create error paths
+  without worrying about draining" (its own comment) - the exact case a
+  failed `kernfs_create_dir_ns` would be, so this was always a plausible
+  dead end, just not a confirmed one until measured.
+- `of_platform_serial_probe` (the device-tree-matched 8250 probe entry
+  point) - never reached, at all, in the whole run. The naming
+  (`serial8250:0.0`-`0.3`, not per-DT-node) is the legacy static-array
+  registration path, not the OF one - a wrong assumption from reading
+  `8250_of.c` without checking which driver this kernel's boot actually
+  uses.
+- `serial8250_register_8250_port` - also never reached, for the same
+  reason: it is the newer registration API for hotpluggable 8250 devices,
+  not what the legacy static-array path (which is what this kernel/DTS
+  combination actually exercises) calls.
+
+What *is* confirmed, from `uart_add_one_port`'s own return address:
+`serial8250_register_ports()` (disassembled directly, `c026bc30`) is a
+straight loop over `serial8250_ports[0..nr_uarts-1]`, calling
+`uart_add_one_port` once per slot unless a per-slot skip condition is
+already true. It was reached and called `uart_add_one_port` successfully
+exactly 3 times (`+watchlast` on `uart_add_one_port`'s own entry) -
+consistent with 3 of the 4 legacy slots (`:0.0`-`:0.2`), not yet accounting
+for `:0.3`. Whether the loop's 4th iteration takes the skip path (and the
+actual `:0.3` probe/hang happens somewhere else entirely, later) or reaches
+`uart_add_one_port` a 4th time in a way this specific watch missed, is not
+resolved.
+
+**The methodology error, named plainly rather than left implicit:** this
+update's own re-bisection (in the correction above) leaned on "does `pc
+over the last 2000 cycles` look different" to distinguish real progress
+from settled idling. It doesn't reliably: `tick_handle_periodic`'s own call
+tree (`timekeeping_update_from_shadow`, `hrtimer_run_queues`,
+`rcu_sched_clock_irq`, `sched_tick`, ...) spans dozens of addresses on its
+own, so a 2000-cycle window sampled at two different points *inside one
+normal, repeating tick* looks exactly as "different" as two windows
+sampled during genuine forward progress. Confirmed directly: addresses
+this update's own earlier bisection step logged as "still progressing"
+(`0xc004dfc8`, `0xc0084ef8`) are ordinary addresses inside this same
+tick-handler call tree, not evidence of unique work. `+maxcycles`
+bisection on this window shape only ever answers "has the system reached
+steady-state idle+tick yet", not "is this the actual point of no return" -
+the two coincide by luck often enough to have looked reliable across
+several updates, not because they are the same question.
+`initcall_debug`/console-output timing (what Update 2's original finding
+actually used) does not have this failure mode, because it is tied to a
+semantic kernel event, not a raw PC sample - it is the correct tool for
+this question and this update's most reliable finding (the exact `:0.3`
+stall, confirmed twice now under different investigations) came from it,
+not from PC bisection.
+
+Net position, stated plainly: the stall is still `serial8250:0.3`'s probe,
+still not reaching `uart_add_one_port` a visible 4th time, and the specific
+statement (skip path vs. a call this trace missed) is not resolved. Two
+real, permanent things came out of chasing it anyway - a working `+watchpc`
+for `CORE=ooo`, and the retirement of PC-window bisection as a reliable
+signal for "did this make progress," in favor of the semantic marker this
+project already had.
 
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
