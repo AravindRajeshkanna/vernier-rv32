@@ -1681,6 +1681,102 @@ probes or equivalent) around cycle 51,620,040 specifically, not more static
 reading - this update's own two rule-outs are the return on the reading
 that was still worth doing first.
 
+**Update 15: found it, with the exact tool Update 14 named - and it is
+fixed.** Built the temporary, cycle-gated `$display` tracing Update 14 said
+was the actual next step (not part of this diff, stripped before shipping
+the fix below): every retirement of the contended `kernfs_iattr_rwsem`
+address, captured around cycle 51,620,040.
+
+The read itself turned out to be completely innocent - the first hypothesis
+this update ruled out. At cycle 51,620,031, the AMO's read phase completes
+with `dmem_rdata=0`, matching memory's actual, correct state (the last
+write really had been `0`, an ordinary unlock, at cycle 51,615,786). `0 +
+(-1) = 0xffffffff` is exactly what `up_write`'s `amoadd.w a4,a4,(a0)`
+(`a4=-1`) computes from that - Update 13/14's "bad AMO read" hypothesis is
+wrong; the CPU read what was actually there and computed correctly on it.
+
+Which reopened the "extra `up_write`" hypothesis, now checked by counting
+rather than guessing: filtering the full-boot trace to that one address and
+counting *completed instructions* (not cycles, which double-count
+multi-cycle waits and had made an earlier, narrower attempt at this exact
+count look inconclusive) gives 271 `lr.w` completions, 271 matching `sc.w`
+completions - every `down_write` on this lock succeeded on its first try,
+never once contended, the whole run - and 272 `amoadd.w` completions.
+Exactly one `up_write` too many. Widening the trace to the full gap between
+the last clean unlock and the corrupted write found no `lr.w`/`sc.w`
+activity on this address anywhere in it - the extra `up_write` has no
+missing partner nearby to blame; whatever produces it is local to that one
+instruction's own handling, not a bookkeeping gap between two calls.
+
+A second, `recovery_fire`-focused trace (`recovery_keep_culprit`, this
+project's own marker distinguishing "a plain branch mispredict, retire the
+culprit normally" from every other kind of ROB-head redirect - its own
+definition is `head_mispredict && !head_take_trap && !interrupt_taken`)
+found the answer sitting on the exact same cycle as the corrupted write's
+own `amo_done`: a redirect with `keep_culprit=0`, meaning not a plain
+mispredict - it coincides with `head_take_trap`, i.e. `interrupt_taken`.
+Reading `interrupt_taken`'s own gate explains why: `!head_busy_now`, and
+`head_busy_now` folds in `head_dbus_stall`, which folds in `amo_stall`,
+which is defined as `!amo_done` - so on the exact cycle an AMO's `amo_done`
+turns 1, `amo_stall` turns 0 in the same combinational step, and
+`head_busy_now` goes false with it. If a timer interrupt happens to be
+pending at that exact instant, `interrupt_taken` fires *instead of* the
+retirement this AMO had just earned. `csr_file` is given `rob_pc[rob_head]`
+unconditionally as `trap_pc` - right for a synchronous exception, which
+needs the faulting instruction re-executed once handled, wrong for an
+interrupt, which RISC-V defines as landing *between* instructions: `mepc`
+ends up pointing at this AMO's own PC rather than the next one's, so
+`mret`/`sret` returns straight back into it. For a plain ALU op that would
+be wasted work - the register write had not retired yet, so redoing it is
+harmless. For an AMO it is not: the read-modify-write had already reached
+the bus during the very cycle it was preempted, a genuinely external and
+irreversible effect, not a register waiting to be marked committed - and an
+unconditional AMO has no reservation to invalidate the way a re-executed
+`sc.w` would (which is exactly why `lr.w`/`sc.w` stayed perfectly balanced
+under the identical race: a re-executed `lr.w` is a harmless re-read, and a
+re-executed `sc.w` finds `reservation_valid` already cleared by
+`head_take_trap` and correctly fails instead of double-writing - only a
+plain, unconditional AMO like `amoadd` has no such guard).
+
+**The fix**, one added term: `head_busy_now` now includes `rob_is_amo
+[rob_head] && amo_done`, keeping the head "busy" (and therefore
+interrupt-ineligible) for the one cycle its own AMO is completing, so
+retirement wins that race instead of losing it. Not a new mechanism - the
+same `head_busy_now` gate that already protects `head_div_stall` and
+`head_mmu_wait_stall` from this exact class of preemption, extended to the
+one case it was missing.
+
+**Tested directly against the actual goal, not assumed - the whole reason
+this investigation existed:** `make sim_linux CORE=ooo` now reaches `/init`
+and prints `VERNIER-RV32-LINUX-BOOT-OK`; `+stopon` sees it at cycle
+129,835,614 of a 400M-cycle budget, `+checkuart` confirms all 6,335 UART
+bytes sent in order. `make isa CORE=ooo`: 81 passed, 0 failed, 3 xfail -
+unchanged. `make cosim CORE=ooo`: 84/84 traces match Spike, including the
+one already-accepted `rv32si-p-dirty` divergence - unchanged, and
+specifically including every `rv32ua-p-amo*`/`rv32ua-p-lrsc` trace and the
+30,804-instruction `vernier-p-pairing` stress test. `make formal`: 5
+proved, 0 refuted. `sim_uartirq`, `sim_plic`, and `sim_div64test` - the
+three existing tests that exercise interrupts most heavily, `sim_div64test`
+specifically delivering 198 delegated S-mode timer interrupts mid-workload
+- all still pass on `CORE=ooo`.
+
+**One gate did not run clean, and it is not this fix:** `make verify`'s
+`verilator_check` step failed on the `sdramboot` test - Icarus and
+Verilator's SDRAM refresh-timing models disagreeing (`sim/sdram_model.v`
+vs. `sim/verilator_soc.cpp`, neither of which is core-specific code) -
+*before* reaching either core's own gates. Reproduced identically twice on
+this branch, then reproduced identically a third time on a clean checkout
+of `main` with none of this fix's changes present, ruling this fix out as
+the cause with a real control, not an assumption. A new, separate,
+currently-undiagnosed defect - written down here rather than left to be
+rediscovered, and deliberately not chased further in the same change that
+fixes the Linux hang.
+
+Net position: the investigation this whole section documents - Update 2
+through Update 14, `serial8250:0.3`, the store-buffer/FENCE gap, `kernfs_
+add_one`, the corrupted rwsem word - ends here. `CORE=ooo` boots Linux to
+userspace.
+
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
 SoC integration + Linux bring-up, stabilization + polish. Read literally it
@@ -1709,10 +1805,11 @@ Basic branch handling: done (BTB, see above), with the RAS gap already
 covered.
 
 **Key correctness requirements for Linux.** Precise exceptions and
-interrupts: the ROB is what makes this possible at all, and one of the two
-still-open Linux-boot investigations ("Stage 1d was built anyway," Updates
-1-5) is entirely about a wakeup-delivery timing question in exactly this
-area — not settled, actively being narrowed. Memory ordering and atomics:
+interrupts: the ROB is what makes this possible at all, and the Linux-boot
+investigation that ran across "Stage 1d was built anyway," Updates 1-15,
+turned out to end in exactly this area - Update 15's fix is a precise-
+interrupt gap, an AMO's own completion racing `interrupt_taken` on the same
+cycle. Memory ordering and atomics:
 `core_ooo.v`'s own header states the strategy plainly - AMO/LR/SC "execute
 only at the ROB head, because 'the reservation and the write happen in the
 same indivisible step' is far easier to keep true when nothing is reordered
@@ -1768,7 +1865,7 @@ just be a worse copy:**
 | Device tree | `dts/soc.dts`, 302 lines | Real and load-bearing — OpenSBI and Linux both parse and act on it; three device-tree bugs already found and fixed (a UART FIFO claim, a timebase-frequency error, an FDT address placed outside mapped RAM) |
 | OpenSBI / M-mode firmware | `software/opensbi/` | Real `PLATFORM=generic` FDT-driven port, boots on board and in `make sim_opensbi`; five real firmware defects already found and fixed there |
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
-| Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** `CORE=inorder` reaches `/init` and prints a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` does not reach userspace at all — that is the still-open investigation this whole section is about |
+| Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
 | Multi-core / SMP | — | Never mentioned anywhere in this repo, not even as "deferred." Unlike PMP (named as a known gap), this is a silent single-hart assumption — the PLIC has exactly one hart's worth of M/S contexts wired |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
@@ -2772,7 +2869,16 @@ an oversight.
 
 Open, unscheduled, and written down so they are not rediscovered.
 
-**The wide core's Linux boot does not reach userspace.** `make linux_trapdiff`
+**RESOLVED - the wide core's Linux boot did not reach userspace; root-caused
+and fixed.** See "Stage 1d was built anyway," Update 15, for the full
+account. `make sim_linux CORE=ooo` now reaches `/init` and prints
+`VERNIER-RV32-LINUX-BOOT-OK` - `stopon` sees it at cycle 129,835,614 of a
+400M-cycle budget, all 6,335 UART bytes sent in order. Left here, struck
+rather than deleted, as the record of what this entry used to say (the last
+state before the fix, Update 13's "corrupted rwsem word" finding, and
+everything the chase through Updates 1-14 built up to reach it):
+
+`make linux_trapdiff`
 boots the same image on both cores and compares the traps; the "Stage 1d was
 built anyway" section above has the current, authoritative account. As of
 "Update 13," the point of no return is `kernfs_add_one`'s

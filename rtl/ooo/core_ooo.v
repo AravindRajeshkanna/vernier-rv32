@@ -1183,7 +1183,52 @@ module core_ooo #(
                                 m_sei ? 32'h8000_0009 : m_ssi ? 32'h8000_0001 : 32'h8000_0005) :
                                (s_sei ? 32'h8000_0009 : s_ssi ? 32'h8000_0001 : 32'h8000_0005);
 
-    wire head_busy_now = head_div_stall || head_mmu_wait_stall || head_dbus_stall;
+    // `rob_is_amo[rob_head] && amo_done`: an AMO/LR/SC's own `amo_stall`
+    // (folded into `head_dbus_stall` below) clears on the exact same cycle
+    // `amo_done` does - both combinational functions of the same
+    // `amo_active`/`amo_wr_phase`/`dbus_wait` signals - so without this
+    // term, `head_busy_now` goes false on that same cycle too, and if an
+    // interrupt is pending at that exact instant, `interrupt_taken` fires
+    // instead of the retirement this instruction earned. `csr_file` is
+    // given `rob_pc[rob_head]` unconditionally as `trap_pc` - correct for
+    // a synchronous exception, which needs the faulting instruction
+    // re-executed once the fault is handled, but wrong for an interrupt,
+    // which RISC-V defines as landing *between* instructions: `mepc` ends
+    // up pointing at this AMO's own PC rather than the next instruction's,
+    // so returning from the handler (`mret`/`sret`) re-fetches and
+    // re-executes it. For a plain ALU op that is merely wasted work - the
+    // register write hadn't retired yet, so redoing it is harmless. For an
+    // AMO it is not: its read-modify-write already reached the bus during
+    // this same completing cycle (a genuinely external, irreversible
+    // effect, unlike a register that simply had not been marked committed
+    // yet), and an unconditional AMO has no reservation to invalidate the
+    // way a re-executed SC would. The second pass reads the first pass's
+    // own result and writes again on top of it. Root-caused on
+    // `kernel/locking/rwsem.c`'s `up_write` (`amoadd.w a4,a4,(a0)`,
+    // `a4=-1`) during `CORE=ooo`'s Linux boot: `+writetrace` on the
+    // contended `kernfs_iattr_rwsem` word showed a clean, correctly
+    // alternating sequence of `1`/`0` (locked/unlocked) writes suddenly
+    // become `0xffffffff` then `0xfffffffe` twice - not reachable from
+    // `up_write`'s own disassembly for any legitimate read, but exactly
+    // `0 + (-1)` and then `(-1) + (-1)` computed twice more. Counting
+    // completed instructions (not cycles, which double-count multi-cycle
+    // waits) at that lock's address across the whole run: 271 `lr.w`
+    // completions, 271 matching `sc.w` completions - the lock was never
+    // once contended, every acquire succeeded first try - but 272
+    // `amoadd.w` completions, exactly one more `up_write` than
+    // `down_write`. A temporary cycle-gated `$display` (not part of this
+    // diff) pinned it further: a `recovery_fire` with `recovery_keep_
+    // culprit=0` (this project's own marker for "not a plain branch
+    // mispredict" - see that signal's definition) lands on the exact same
+    // cycle as that 272nd `amoadd.w`'s `amo_done`. `LR`/`SC` stayed
+    // perfectly balanced under the same race because a re-executed `lr.w`
+    // is a harmless re-read and a re-executed `sc.w` finds its reservation
+    // already invalidated (`head_take_trap` explicitly clears
+    // `reservation_valid` - see the block below) and correctly fails
+    // rather than double-writing; only an unconditional AMO like `amoadd`
+    // has no such guard.
+    wire head_busy_now = head_div_stall || head_mmu_wait_stall || head_dbus_stall ||
+                         (rob_is_amo[rob_head] && amo_done);
     assign interrupt_taken = headS_valid && rob_r1_ready[rob_head] && rob_r2_ready[rob_head] &&
                              any_interrupt_pending && !head_busy_now;
 
