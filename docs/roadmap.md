@@ -1522,6 +1522,106 @@ a different answer on a supposedly-identical rerun), not by design - worth
 naming so the next investigation checks `dts/soc.dts`'s actual committed
 state before trusting a cycle number pulled from an earlier session.
 
+**Update 13: found the lock word itself, and it is corrupted - not merely
+contended.** Update 12 named the concrete next step: read the actual
+contents of the rwsem word `kernfs_add_one`'s hung call blocks on, since
+`+watchpc` only dumps registers, not memory. It turned out unnecessary to
+build anything new - `sim/verilator_soc.cpp` already has `+writetrace=
+ADDR:LEN:FILE`, logging every write the interconnect completes inside a
+byte range, built for a different investigation entirely (the wide core's
+`execve -EFAULT`, per that flag's own doc comment) but exactly the right
+tool here too.
+
+Getting the address needed no struct-offset arithmetic: `down_write`
+(`kernel/locking/rwsem.c`) is not inlined, so `+watchpc=<down_write's
+entry> +watchlast` reads `a0` - the semaphore pointer - directly out of the
+argument register at the last call before the hang. Cross-referencing that
+call's `ra` against a disassembly of `kernfs_add_one` (two `down_write`
+call sites in the function: one on `root->kernfs_rwsem` at entry, one on
+`root->kernfs_iattr_rwsem` later, guarding a parent-timestamp update) pins
+it precisely: the hang is on `kernfs_iattr_rwsem`, not the main
+`kernfs_rwsem` Update 12 assumed. `a0` at that call gives the virtual
+address (`0xc0418144`); converting through this rv32 config's linear map
+(`PAGE_OFFSET=0xc0000000`, kernel RAM based at physical `0x90400000`, per
+`arch/riscv/include/asm/page.h` and this SoC's own boot log) gives the bus
+address `+writetrace` needs: `0x90818144`.
+
+The resulting trace, filtered to that one word across the whole run, is
+unambiguous: hundreds of clean alternations - `00000001` (write-locked),
+`00000000` (unlocked), repeating - one pair per successful
+`down_write`/`up_write` on this lock, matching `kernfs_add_one`'s calls one
+for one. The last clean pair is at cycle 51,615,576 (locked) / 51,615,790
+(unlocked). Then, at cycle 51,620,040, the word is written `0xffffffff`.
+Two further writes, `0xfffffffe` at 51,658,659 and again at 51,659,854, and
+then nothing - the word never changes again, matching everything Update 12
+already established about no forward progress past this point.
+
+**Why `0xffffffff` cannot come from `down_write`'s own code, checked by
+disassembly rather than assumed:** `down_write`'s fast path is the RISC-V
+LR/SC idiom for `atomic_long_try_cmpxchg_acquire(&sem->count, &tmp=0,
+RWSEM_WRITER_LOCKED=1)`:
+
+```
+li   a4, 1
+.L0: lr.w  a3, (a0)
+     bnez  a3, .L1        ; already nonzero - give up the fast path
+     sc.w  a2, a4, (a0)   ; try to store the constant 1
+     bnez  a2, .L0        ; SC failed - retry
+```
+
+The only value this loop's `sc.w` can ever store is the literal `1` loaded
+into `a4` once, before the loop starts. There is no path through this code
+that writes `0xffffffff` - ruling out the most obvious "software raced
+itself" reading of the trace. `up_write`'s fast path is different: a single
+native AMO, `amoadd.w a4, a4, (a0)` with `a4 = -1` -
+`atomic_long_add_return(-RWSEM_WRITER_LOCKED, &sem->count)` - which,
+applied to a correctly-read `0`, computes exactly `0 + (-1) = 0xffffffff`
+in ordinary two's-complement arithmetic. Nothing about that bit pattern is
+inherently alarming on its own; `rwsem.c`'s own flag layout
+(`RWSEM_WRITER_LOCKED=1`, `RWSEM_FLAG_WAITERS=2`, `RWSEM_FLAG_HANDOFF=4`,
+reader count from bit 8, `RWSEM_FLAG_READFAIL` at bit 31) makes `-1` look
+like "locked, waiters, handoff, and 8,388,607 phantom readers" only if you
+decode it as those fields - it is equally, and more simply, just what
+`0 - 1` is in binary.
+
+What is genuinely wrong is the *state*: for `up_write`'s AMO to legitimately
+read `0` and subtract 1, some `down_write` must have already put the count
+back to a state consistent with that read - but the trace shows the word
+was already `0` (unlocked) at cycle 51,615,790, with no `1` written between
+then and the `0xffffffff` write at 51,620,040. That is either an
+`up_write` called with no matching prior `down_write` success (a spurious
+or duplicate unlock), or a read that the CPU itself got wrong despite the
+bus-level trace looking clean - `+writetrace`/`+readtrace` only see
+Wishbone-level transactions, so a value an AMO's read-side got by internal
+forwarding (from this core's store buffer, without ever reaching the bus)
+would be invisible to both. Once the word is negative, the damage is
+self-sustaining without any further hardware involvement: `down_write`'s
+fast path requires reading exactly `0` to succeed (`bnez a3, .L1` sends it
+to the slow path otherwise), so no future acquirer can ever take the fast
+path again, and every subsequent `up_write` - there is no shortage of
+legitimate ones later in boot, on this shared, per-root lock - just
+subtracts 1 further from an already-negative count, which is exactly the
+second and third recorded writes (`0xfffffffe`, twice, from two more
+ordinary `up_write` calls piling onto the already-corrupted value).
+
+**Where this stopped, and why:** this is the most concrete evidence this
+investigation has produced - an exact corrupted value, at an exact cycle,
+on an exact memory word, with the two competing explanations (extra/
+duplicate AMO commit vs. a bad AMO read served from internal forwarding)
+narrowed by direct disassembly rather than assumed. Deciding between them
+needs reading `core_ooo.v`'s own AMO issue/completion logic - specifically
+whether an AMO's read-and-write are guaranteed to observe exactly one
+consistent memory state given the store buffer's delayed drain (Update
+11's mechanism, for a different instruction class), and whether an AMO can
+be issued, committed, or its result latched more than once. That is RTL
+reading and signal-level tracing this update did not do - the same kind of
+work that found and fixed PR #68's `loadL`/`head_load_owns_port` race, on
+the out-of-order load path specifically. Whether AMOs share that path or a
+different one (this session's own earlier port-arbitration audit found
+`amo_active` tied to `rob_head`, unlike `loadL` - mutually exclusive by
+construction, in principle not exposed to that exact race) is the open
+question the next session should check first.
+
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
 SoC integration + Linux bring-up, stabilization + polish. Read literally it
@@ -2616,19 +2716,26 @@ Open, unscheduled, and written down so they are not rediscovered.
 **The wide core's Linux boot does not reach userspace.** `make linux_trapdiff`
 boots the same image on both cores and compares the traps; the "Stage 1d was
 built anyway" section above has the current, authoritative account. As of
-"Update 12," the point of no return is a single, specific `kernfs_add_one`
-call (cycle 51,613,530 of 400M, corrected in Update 12 from an earlier
-number measured against a since-reverted diagnostic image) made from
-`__kernfs_create_file` while
-`of_core_init` populates the device tree into sysfs - it is entered but
-never returns; `platform_bus_init`, the very next call in `driver_init`
-after `of_core_init` returns, is never reached. `kernfs_add_one` itself is
-straight-line code whose only two blocking points are `down_write` on
-`kernfs_rwsem` and `kernfs_iattr_rwsem` - Update 12 has the return-address
-accounting that isolates which call this is and why a software bug in this
-heavily-exercised upstream code is unlikely, pointing instead at the same
-class of RTL ordering/read-modify-write gap this investigation keeps
-finding (Update 9, Update 11). The run's tail shows the hart parked in the
+"Update 13," the point of no return is `kernfs_add_one`'s
+`down_write(&root->kernfs_iattr_rwsem)` (cycle 51,613,530 of 400M for the
+call itself; the underlying corruption is at cycle 51,620,040) - and this is
+no longer just "entered but never returns": `+writetrace` on the rwsem's
+own memory word shows hundreds of clean, correctly-alternating
+lock/unlock writes, then one write of `0xffffffff` where legitimate
+software could only have written `0` or `1` at that point, then two more of
+`0xfffffffe` as later, ordinary `up_write` calls pile onto the
+now-permanently-negative count - after which the word never changes again.
+`platform_bus_init`, the very next call in `driver_init` after
+`of_core_init` returns, is never reached. Update 13 has the full trace,
+the disassembly proof that `down_write`'s own fast path cannot be the
+source (it can only ever write the literal `1`), and the two remaining
+hypotheses - a spurious/duplicate `up_write` commit, or an AMO read served
+by internal forwarding that never reached the bus `+writetrace` watches -
+neither yet distinguished from the other. Either way this points at the
+same class of RTL ordering/read-modify-write gap this investigation keeps
+finding (Update 9, Update 11), now narrowed from "somewhere in the
+memory-ordering machinery" to "this core's AMO issue/completion path
+specifically." The run's tail shows the hart parked in the
 scheduler's idle path (`default_idle_call`/`arch_cpu_idle`), repeating
 forever: the thread running `do_initcalls()` has gone to sleep and is never
 woken. This location is new as of Update 11's fix (plain `FENCE`
