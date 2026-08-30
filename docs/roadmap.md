@@ -1622,6 +1622,65 @@ different one (this session's own earlier port-arbitration audit found
 construction, in principle not exposed to that exact race) is the open
 question the next session should check first.
 
+**Update 14: two of the obvious hardware explanations for Update 13's
+corrupted word, ruled out by reading the actual RTL rather than assumed -
+the real one is still open.** Continuing directly from Update 13's own
+named next step, before reaching for signal-level tracing: read
+`core_ooo.v`'s AMO issue/completion logic and `rtl/soc/cpu_wb.v`'s data
+cache against the two most obvious ways an AMO could observe or produce a
+wrong value.
+
+**Ruled out: a stale cache read.** `cpu_wb.v`'s data cache (direct-mapped,
+one word per line, write-through - its own header comment names exactly
+why write-through, not write-back, matters here) documents that "AMOs
+bypass the cache on the read phase," and reading the actual logic confirms
+it does what it says: `dmem_re` is never asserted for an AMO (only
+`dmem_is_amo` is, per `cpu_wb.v`'s own comment on why), so `load_hit =
+dmem_re && dc_present` is always false for one, `req = want && !load_hit`
+always reaches the real bus, and `dmem_rvalid = load_hit || read_ack`
+therefore can only fire for an AMO on a genuine `dwb_ack`. There is no path
+by which an AMO's read phase is served the cache's data instead of the
+bus's.
+
+**Ruled out: a new speculative load preempting an already-active AMO's
+port.** This session's earlier port-arbitration audit (during the FENCE
+investigation, before Update 11) found `amo_active` itself tied to
+`rob_head`, and confirmed here more specifically: `amo_active`'s own guard
+(`!port_taken_by_load && !port_taken_by_store`) is re-evaluated every
+cycle, not latched at start, which looked like exactly the shape of race
+`head_load_owns_port`'s fix (the giant comment above `port_taken_by_load`
+in `core_ooo.v`) was written to prevent - a live transaction losing the bus
+to something that starts after it. But `loadL_can_start` explicitly checks
+`!port_owned_by_store`, and `port_owned_by_store` is defined as
+`!port_taken_by_load && (sb_valid || head_plain_store_now || amo_active)` -
+`amo_active` is one of its own OR'd terms. A new out-of-order load cannot
+start while an AMO already holds the port; nothing exists to preempt.
+Retirement was checked too: `rob_head`/`rob_valid[rob_head]` both advance
+in the same non-blocking assignment that clears on `retire_fire`, so the
+cycle after an AMO retires, `rob_is_amo[rob_head]` already names the next
+instruction - no window for the same AMO's `amo_active` to spuriously
+re-assert.
+
+**What is still open, narrowed to three shapes rather than one:** the
+corrupted write is `amo_new_value = amo_rdata_q + headS_op2` (the `amoadd`
+case, matching `up_write`'s `amoadd.w a4,a4,(a0)` with `a4=-1`) reaching
+memory as `-1` from a starting value that should have been `0` on the read
+side. That's consistent with (a) `amo_rdata_q` capturing the wrong value
+during the read phase despite `dmem_rvalid` looking correctly scoped, (b)
+`headS_op2` - the operand register, `-1` here - being wrong at the exact
+cycle `amo_new_value` is computed, a bypass/forwarding question this
+update did not check, or (c) the AMO's write actually committing twice,
+which static reading of the phase and retirement logic argues against but
+cannot fully rule out without seeing the actual cycle in question. Every
+one of the ideas ruled out in earlier updates and in this one was found by
+reading code with a specific, falsifiable question in mind, not by
+guessing - the same discipline says not to pick one of these three without
+watching the actual instance corrupt. That needs the same tool PR #68 used
+to root-cause its own race: temporary, instruction-scoped tracing (`$display`
+probes or equivalent) around cycle 51,620,040 specifically, not more static
+reading - this update's own two rule-outs are the return on the reading
+that was still worth doing first.
+
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
 SoC integration + Linux bring-up, stabilization + polish. Read literally it
