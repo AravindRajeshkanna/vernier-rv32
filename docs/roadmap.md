@@ -2949,6 +2949,31 @@ self-reports rather than hanging silently, which is not the same as being
 fixed, and pretending otherwise is exactly the failure mode
 [practices.md](practices.md) §7 is about.
 
+**`make verify_ooo`/`make verify`'s `verilator_check` step fails on
+`sim_sdramboot`: Icarus and Verilator disagree on cycle count and refresh
+count for the same test.** Found while gating #76 (the `CORE=ooo` Linux-boot
+fix - unrelated to it, confirmed by reproducing this identically on a clean
+`main` with none of that fix's changes present, a real control rather than
+an assumption). `cycles 1845770 (icarus) vs 2109474 (verilator)`, `refreshes
+9414 vs 10759` - Verilator takes 263,704 more cycles, roughly 14%, to reach
+the same result word. Not reproduced in this project's own CI (GitHub
+Actions' "SoC, firmware and traps" checks passed cleanly on #76, including
+this same test) - environment-specific to this development machine's
+Icarus/Verilator versions, or genuinely nondeterministic in a way CI's run
+happened not to trigger; not yet distinguished. Ruled out so far by reading
+`sim/sdram_model.v` against its C++ port in `sim/verilator_soc.cpp`
+(`SdramModel`) line for line: the protocol FSM, timing constants, and
+refresh-triggering logic (purely reactive to the real `wb_sdram.v`
+controller's own command issuance in both cases - neither model decides to
+refresh on its own) all match. The harness code that drives `SdramModel::edge()`
+- the half-period clock-offset arithmetic modeling the SDRAM part's 180°-shifted
+clock (`fpga/sdram_clk_out.v`) - also reads correctly on inspection. Closing
+this needs the same kind of empirical bisection that found the AMO race in
+Update 15, not more static reading: instrument both testbenches to find the
+first cycle their observable state (bank state, refresh count, or the
+read/write sequence itself) actually diverges, rather than only the final
+tally.
+
 **`sim/program.hex` is 440 instructions of recovered source.**
 `sim/program.S` reassembles to it byte for byte and `make check-program`
 holds that, but the labels are named for byte offsets because the original had
