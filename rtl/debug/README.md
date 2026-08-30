@@ -16,19 +16,19 @@ gn[5] TDO ─┘   (TCK domain)   (the one      (system
 |---|---|
 | `jtag_tap.v` | IEEE 1149.1 TAP: the sixteen-state machine, IR, and the DRs the RISC-V debug spec defines — `IDCODE`, `BYPASS`, `dtmcs`, `dmi` |
 | `dmi_cdc.v` | The single crossing between TCK and the system clock |
-| `dm.v` | Debug Module: DMI registers, System Bus Access as a fourth Wishbone master, halt/resume and Abstract Command register access (`CORE=inorder`, simulation only) |
+| `dm.v` | Debug Module: DMI registers, System Bus Access as a fourth Wishbone master, halt/resume, single-step and Abstract Command register access (`CORE=inorder`, simulation only) |
 
 ## What it does, and what it deliberately does not
 
 **It does:** read and write SDRAM, block RAM and every peripheral register;
 dump a device tree, a page table or a kernel log out of a machine that is not
 talking; load a program without the boot ROM's 22-minute serial transfer;
-assert `ndmreset` to restart the SoC without touching the board; halt, resume,
-and read/write GPRs, `dcsr`, and `dpc` on the in-order core's hart, in
-simulation.
+assert `ndmreset` to restart the SoC without touching the board; halt,
+resume, single-step, and read/write GPRs, `dcsr`, and `dpc` on the in-order
+core's hart, in simulation.
 
-**It does not:** single-step; execute the Program Buffer (there isn't one);
-set a breakpoint; halt/resume or touch a register on `CORE=ooo` at all; any
+**It does not:** execute the Program Buffer (there isn't one); set a
+breakpoint; halt/resume, step, or touch a register on `CORE=ooo` at all; any
 of the above on real hardware — no debug adapter has been connected to a
 board, so everything above is proven in simulation only.
 
@@ -62,6 +62,17 @@ the real DMI wire — single-cycle turnaround, no Wishbone traffic, no Program
 Buffer (`postexec` always gets `cmderr` = not-supported). None of it touches
 the timing-critical fetch path at all, which is what makes it safe to ship
 before Phase 3's margin work is done.
+
+**Single-step reuses the same admission-blocking idea rather than waiting
+for the instruction to retire.** The naive approach - resume, then re-halt
+once `instret_retire` pulses - has a real race: several more instructions
+could already be admitted behind the stepped one by the time retirement is
+observed. What's here blocks admission again the instant the one
+instruction is *admitted* (one cycle after resume), not when it retires, so
+there is never a second instruction to race - `dcsr.step` (a real, writable
+bit now) just tells the resume logic to arm that block immediately instead
+of leaving it open. Same reasoning as halt/resume: nothing added is on the
+fetch-redirect mux.
 
 `CORE=ooo` has none of this wired up. `dmstatus` says so honestly —
 `haltreq` is accepted and ignored, `allrunning` stays 1 — and an Abstract
@@ -111,12 +122,17 @@ arbitrating against a CPU hammering the bus**, which is the condition a
 debugger actually runs in; the block RAM image (`sim/jtagram.hex`) plants a
 real two-instruction increment loop at that same `RESET_PC` instead, so the
 register-access checks have a hart that is actually computing something to
-halt, not one already stuck in a trap loop that never touches a GPR.
+halt, not one already stuck in a trap loop that never touches a GPR. The
+same loop also carries the single-step check: `dcsr.step` written over DMI,
+one step, and confirmation the hart re-halted at the loop's other
+instruction with `dcsr.cause` = 4.
 
-`sim/tb_cpu_halt.v` drives halt/resume and register access directly against
-`rtl/cpu_core.v` — no DMI, no `dm.v` — as the more exhaustive check of the
-mechanism itself (GPR stability while halted, an unrecognized `regno`, a
-debug write surviving a resume/re-halt cycle).
+`sim/tb_cpu_halt.v` drives halt/resume, register access, and single-step
+directly against `rtl/cpu_core.v` — no DMI, no `dm.v` — as the more
+exhaustive check of the mechanism itself (GPR stability while halted, an
+unrecognized `regno`, a debug write surviving a resume/re-halt cycle, and
+two single-steps around the loop always landing back on the same
+instruction with `x5` up by exactly one).
 
 `formal/fv_interconnect.v` proves the arbitration properties with four
 masters, including that nothing without a write path can drive `s_we`.

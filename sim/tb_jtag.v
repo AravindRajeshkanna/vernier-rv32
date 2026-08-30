@@ -40,7 +40,10 @@
 //      stages 5-7 depend on), because the illegal-instruction-trap-forever
 //      pattern every earlier stage uses never writes a GPR, so a
 //      before/after register check would pass even if Abstract Command
-//      were a complete no-op.
+//      were a complete no-op. Also covers single-step (dcsr.step, written
+//      over the same Abstract Command path) - one step, just proving the
+//      protocol layer reaches it; sim/tb_cpu_halt.v has the exhaustive
+//      two-steps-return-to-the-same-instruction loop invariant.
 `timescale 1ns / 1ps
 
 module tb_jtag;
@@ -330,7 +333,7 @@ module tb_jtag;
     reg [31:0] v;
     integer    i;
     reg [2:0]  cerr;
-    reg [31:0] sentinel, x5_before;
+    reg [31:0] sentinel, x5_before, dpc_before;
 
     initial begin
         $display("\n=== JTAG debug path ===");
@@ -650,6 +653,37 @@ module tb_jtag;
         ac_read_reg(REGNO_X5, v, cerr);
         check("x5 advanced past the debug-written sentinel after resume",
               v > sentinel);
+
+        // ---- single-step over the real DMI protocol ----
+        //
+        // Just proving the protocol layer reaches it - one step, not the
+        // full two-steps-return-to-the-same-instruction loop invariant
+        // sim/tb_cpu_halt.v already checks exhaustively against
+        // rtl/cpu_core.v directly. dm.v itself needed no changes for this
+        // (Abstract Command already forwards any regno, dcsr included), so
+        // this is really asking "did that generality actually hold."
+        ac_write_reg(REGNO_DCSR, 32'h0000_0004, cerr);  // dcsr.step = 1
+        check("dcsr.step write over DMI: cmderr=none", cerr === CMDERR_NONE);
+        ac_read_reg(REGNO_DPC, dpc_before, cerr);
+
+        dmi_write(A_DMCONTROL, 32'h4000_0001);  // resumereq=1, haltreq=0, dmactive=1
+        begin : ac_wait_step
+            integer n;
+            reg     halted;
+            halted = 1'b0;
+            for (n = 0; n < 50 && !halted; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                halted = (v[9:8] === 2'b11);
+            end
+            check("halted again after a single-step resume", halted);
+        end
+        ac_read_reg(REGNO_DCSR, v, cerr);
+        check("dcsr.cause == 4 (step) after a single-step over DMI", v[8:6] == 3'd4);
+        ac_read_reg(REGNO_DPC, v, cerr);
+        check("dpc moved to the loop's other instruction after one DMI step",
+              v == (dpc_before ^ 32'd4));
+
+        ac_write_reg(REGNO_DCSR, 32'h0000_0000, cerr);  // step is sticky - clear it
 
         // Cleanup, not a check - leaves the hart running rather than ending
         // the test with it wedged halted, the same way stage 8 and
