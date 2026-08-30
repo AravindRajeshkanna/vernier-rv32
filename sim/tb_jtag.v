@@ -25,6 +25,15 @@
 //      point of the whole path.
 //   6. Autoincrement, because a host dumping a region relies on it and it is
 //      the one piece of sequencing this module does on its own.
+//   7. A distant address reads its own word - everything above could pass
+//      with an SBA that ignored sbaddress and always hit one location.
+//   8. Hart control: haltreq/resumereq over the real dmcontrol/dmstatus DMI
+//      registers - not register access yet (that needs Abstract Command
+//      support dm.v doesn't have, and sim/tb_cpu_halt.v covers it directly
+//      against rtl/cpu_core.v in the meantime), just proving the DMI
+//      protocol layer genuinely starts and stops the same illegal-
+//      instruction-trap-forever hart every SBA check above raced, and that
+//      SBA still works correctly afterward.
 `timescale 1ns / 1ps
 
 module tb_jtag;
@@ -380,6 +389,85 @@ module tb_jtag;
         dmi_write(A_SBADDRESS0, 32'h8000_3000);
         dmi_read(A_SBDATA0, v);
         check_hex("a distant address reads its own word", v, 32'hDEAD_0C00);
+
+        // ---- 8. hart control: halt/resume, over the real DMI protocol ----
+        //
+        // Register access (sim/tb_cpu_halt.v's job, driven directly against
+        // rtl/cpu_core.v) isn't implemented in dm.v yet, so this only proves
+        // the dmcontrol/dmstatus half. `allhalted`/`allrunning` are this
+        // Debug Module's only externally-visible signal for "is anything
+        // actually still executing," so that is what is polled, against the
+        // exact same illegal-instruction-trap-forever CPU every SBA check
+        // above has been racing.
+        //
+        // Split by core, because the correct answer genuinely differs:
+        // `CORE=inorder` really halts and resumes; `CORE=ooo` has no
+        // hart-control ports at all (rtl/soc/soc_top.v ties its `halted`
+        // input to 0 - docs/roadmap.md Phase 6) and dmstatus must keep
+        // reporting the hart as running, honestly, rather than accept
+        // haltreq and silently do nothing - this branch is what proves that
+        // honesty rather than assuming it.
+`ifdef CORE_OOO
+        dmi_read(A_DMSTATUS, v);
+        check("dmstatus says running before any haltreq (CORE=ooo)",
+              v[11:10] === 2'b11 && v[9:8] === 2'b00);
+
+        dmi_write(A_DMCONTROL, 32'h8000_0001);  // haltreq=1, dmactive=1
+        idle_cycles(30);
+        dmi_read(A_DMSTATUS, v);
+        check("CORE=ooo: haltreq is accepted but ignored - still running",
+              v[11:10] === 2'b11 && v[9:8] === 2'b00);
+
+        dmi_write(A_DMCONTROL, 32'h0000_0001);  // haltreq=0, dmactive=1
+`else
+        dmi_read(A_DMSTATUS, v);
+        check("dmstatus says running before any haltreq",
+              v[11:10] === 2'b11 && v[9:8] === 2'b00);
+
+        dmi_write(A_DMCONTROL, 32'h8000_0001);  // haltreq=1, dmactive=1
+        begin : wait_halt
+            integer n;
+            reg     halted;
+            halted = 1'b0;
+            for (n = 0; n < 50 && !halted; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                halted = (v[9:8] === 2'b11);
+            end
+            check("dmstatus reports halted within a bounded number of polls", halted);
+        end
+        dmi_read(A_DMSTATUS, v);
+        check("dmstatus says nothing is running while halted", v[11:10] === 2'b00);
+
+        // haltreq is sticky (rtl/debug/dm.v's own dmcontrol handling) - it
+        // has to be cleared here, in the same write as resumereq, or the
+        // hart re-halts on its very next cycle. sim/tb_cpu_halt.v's own
+        // dbg_resume task comment has the full reasoning; same rule, same
+        // protocol, from the DMI side this time.
+        dmi_write(A_DMCONTROL, 32'h4000_0001);  // resumereq=1, haltreq=0, dmactive=1
+        begin : wait_resume
+            integer n;
+            reg     running;
+            running = 1'b0;
+            for (n = 0; n < 50 && !running; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                running = (v[11:10] === 2'b11);
+            end
+            check("dmstatus reports running again within a bounded number of polls", running);
+        end
+        dmi_read(A_DMSTATUS, v);
+        check("dmstatus says nothing is halted after resume", v[9:8] === 2'b00);
+`endif
+
+        // SBA still has to work after a halt/resume cycle - proves the two
+        // paths (System Bus Access, hart control) genuinely don't interfere
+        // with each other, not just that each works in isolation. TEST_ADDR
+        // itself now holds section 5's write (0xC0FF_EE00), not the
+        // preloaded pattern - re-reading the word above it instead, which
+        // section 5 already established is undisturbed.
+        dmi_write(A_SBCS, 32'h0014_0000);
+        dmi_write(A_SBADDRESS0, TEST_ADDR + 32'd4);
+        dmi_read(A_SBDATA0, v);
+        check_hex("SBA reads correctly after a halt/resume cycle", v, 32'hDEAD_0801);
 
         $display("");
         if (failures == 0) $display("JTAG TEST PASSED");

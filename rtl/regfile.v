@@ -17,7 +17,14 @@ module regfile (
     input  wire [4:0]  rd,
     input  wire [31:0] wdata,
     output wire [31:0] rdata1,
-    output wire [31:0] rdata2
+    output wire [31:0] rdata2,
+    // Debug read port (rtl/debug/dm.v, via cpu_core.v's dbg_reg_* mux).
+    // Combinational, unbypassed: unlike rdata1/rdata2, it is only ever
+    // meaningful while the core is genuinely halted (cpu_core.v gates
+    // dbg_reg_valid on that), so there is nothing in flight for it to race
+    // and no same-cycle write to bypass around.
+    input  wire [4:0]  dbg_rs,
+    output wire [31:0] dbg_rdata
 );
     reg [31:0] regs [0:31];
     integer i;
@@ -32,6 +39,7 @@ module regfile (
 
     assign rdata1 = (rs1 == 5'd0) ? 32'b0 : (bypass1 ? wdata : regs[rs1]);
     assign rdata2 = (rs2 == 5'd0) ? 32'b0 : (bypass2 ? wdata : regs[rs2]);
+    assign dbg_rdata = (dbg_rs == 5'd0) ? 32'b0 : regs[dbg_rs];
 
     always @(posedge clk) begin
         if (we && rd != 5'd0)

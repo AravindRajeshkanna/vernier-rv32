@@ -12,13 +12,15 @@ module fv_regfile (
     input wire        clk,
     input wire        we,
     input wire [4:0]  rs1, rs2, rd,
-    input wire [31:0] wdata
+    input wire [31:0] wdata,
+    input wire [4:0]  dbg_rs
 );
-    wire [31:0] rdata1, rdata2;
+    wire [31:0] rdata1, rdata2, dbg_rdata;
 
     regfile DUT (
         .clk(clk), .we(we), .rs1(rs1), .rs2(rs2), .rd(rd),
-        .wdata(wdata), .rdata1(rdata1), .rdata2(rdata2)
+        .wdata(wdata), .rdata1(rdata1), .rdata2(rdata2),
+        .dbg_rs(dbg_rs), .dbg_rdata(dbg_rdata)
     );
 
     always @(*) begin
@@ -27,6 +29,10 @@ module fv_regfile (
         //    case a naive bypass gets wrong.
         if (rs1 == 5'd0) assert (rdata1 == 32'b0);
         if (rs2 == 5'd0) assert (rdata2 == 32'b0);
+        // 1b. Same property, third port. No bypass applies to it (see
+        //     regfile.v's header on the debug port), so nothing else about
+        //     it needs its own property beyond this.
+        if (dbg_rs == 5'd0) assert (dbg_rdata == 32'b0);
 
         // 2. A write in flight to a register being read this cycle is seen
         //    immediately (the write-to-read bypass), for both read ports.

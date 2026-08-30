@@ -94,6 +94,20 @@ module top #(
         .mtime_in(mtime),
         .fence_i(), // no instruction buffer on this top level - nothing to flush
         .trap(trap)
+`ifndef CORE_OOO
+        // Hart control (rtl/debug/dm.v) is not wired to this flat testbench
+        // harness at all - it exists to exercise the CPU/memory path
+        // sim/tb_soc.v's Wishbone one can't (zero-latency, no bus waits),
+        // not to test debug infrastructure. These must be tied to explicit
+        // constants, not omitted: an omitted input floats/reads as X in
+        // Icarus/Verilator, and dbg_haltreq feeds pc_freeze and the regfile
+        // write mux directly - an X there would poison every test that
+        // instantiates this module, which is most of `make verify`.
+        , .dbg_haltreq(1'b0), .dbg_resumereq(1'b0),
+        .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
+        .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
+        .dbg_halted(), .dbg_reg_rdata(), .dbg_reg_err()
+`endif
     );
 
     imem #(.MEM_WORDS(IMEM_WORDS), .INIT_FILE(INIT_FILE)) IMEM (
