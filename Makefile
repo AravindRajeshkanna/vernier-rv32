@@ -1106,9 +1106,25 @@ sim_sdramcheck: sim/bootrom.hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
 # the testbench bit-bangs TCK/TMS/TDI and checks only values a real debugger
 # reads. It needs no toolchain - the block RAM image is a generated pattern,
 # not a compiled program - so it runs on a bare runner like `make sim`.
+# Word 1024 (byte 0x8000_1000) is sim/tb_jtag.v's RESET_PC: everywhere else
+# keeps the 0xDEAD_00nn pattern the SBA checks in that testbench depend on,
+# but the hart-control checks need a real program to observe, not the
+# illegal-instruction-trap-forever it fetches everywhere else - an
+# increment loop (addi x5,x5,1 / jal x0,-4) that halt can genuinely freeze
+# and a debug write to x5 can genuinely be seen advancing past. Encoded via
+# the same field-packing a RISC-V assembler uses, not hand-typed hex - see
+# sim/tb_cpu_halt.v's header for why hand-derived encodings in this project
+# get checked against the real toolchain before being trusted, and this is
+# the same pair of instructions, independently re-derived here.
 sim/jtagram.hex: Makefile
-	@python3 -c "import sys;\
-	[sys.stdout.write('%08X\n' % (0xDEAD0000 + (n & 0xFFFF))) for n in range(16384)]" > $@
+	@python3 -c "\
+	import sys;\
+	i_type = lambda imm, rs1, f3, rd, op: ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	j_type = lambda imm, rd, op: (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	words = [0xDEAD0000 + (n & 0xFFFF) for n in range(16384)];\
+	words[1024] = i_type(1, 5, 0x0, 5, 0x13);\
+	words[1025] = j_type(-4, 0, 0x6F);\
+	[sys.stdout.write('%08X\n' % w) for w in words]" > $@
 
 sim/sim_jtag.out: sim/tb_jtag.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_jtag.v $(SOC_RTL)

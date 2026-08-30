@@ -16,40 +16,59 @@ gn[5] TDO ─┘   (TCK domain)   (the one      (system
 |---|---|
 | `jtag_tap.v` | IEEE 1149.1 TAP: the sixteen-state machine, IR, and the DRs the RISC-V debug spec defines — `IDCODE`, `BYPASS`, `dtmcs`, `dmi` |
 | `dmi_cdc.v` | The single crossing between TCK and the system clock |
-| `dm.v` | Debug Module: DMI registers, and System Bus Access as a fourth Wishbone master |
+| `dm.v` | Debug Module: DMI registers, System Bus Access as a fourth Wishbone master, halt/resume and Abstract Command register access (`CORE=inorder`, simulation only) |
 
 ## What it does, and what it deliberately does not
 
 **It does:** read and write SDRAM, block RAM and every peripheral register;
 dump a device tree, a page table or a kernel log out of a machine that is not
 talking; load a program without the boot ROM's 22-minute serial transfer;
-assert `ndmreset` to restart the SoC without touching the board.
+assert `ndmreset` to restart the SoC without touching the board; halt, resume,
+and read/write GPRs, `dcsr`, and `dpc` on the in-order core's hart, in
+simulation.
 
-**It does not:** halt, resume or single-step the hart; read CPU registers or
-CSRs; set a breakpoint.
+**It does not:** single-step; execute the Program Buffer (there isn't one);
+set a breakpoint; halt/resume or touch a register on `CORE=ooo` at all; any
+of the above on real hardware — no debug adapter has been connected to a
+board, so everything above is proven in simulation only.
 
-That split is the design, not a stopping point. The RISC-V spec offers two
-ways for a debugger to reach memory — abstract commands and the program
-buffer, which make the *hart* do it, and System Bus Access, which uses a bus
-master that has nothing to do with the hart. This implements the second.
-
-Two reasons, and the second is the one that decided it.
+The RISC-V spec offers two ways for a debugger to reach memory — abstract
+commands and the program buffer, which make the *hart* do it, and System Bus
+Access, which uses a bus master that has nothing to do with the hart. System
+Bus Access shipped alone first, for two reasons, and the second is the one
+that decided it.
 
 **It is the half this project keeps needing.** "OpenSBI hangs before its
 console comes up." "The boot ROM prints nothing." "Linux dies between
 `earlycon` and `ttyS0`." Every one of those is *the memory is fine and I
 cannot see it*, and none of them needed the hart stopped.
 
-**Halt/resume lands on the critical path.** It needs debug mode, `dcsr`,
-`dpc`, `dret` and a debug ROM the core vectors into — which touches the fetch
-redirect and the register file write port. Two of six placement seeds already
-fail to close 25 MHz (`fpga/README.md`). Adding to that path before the margin
-is fixed would turn an intermittent build failure into a permanent one. This
-module touches the CPU nowhere: it is a bus master and one reset term.
+**The RISC-V debug spec's full halt/resume model lands on the critical
+path.** It needs debug mode, `dcsr`-driven execution, `dret` and a debug ROM
+the core vectors into — which touches the fetch redirect and the register
+file write port. Two of six placement seeds already fail to close 25 MHz
+(`fpga/README.md`). Adding to that path before the margin is fixed would turn
+an intermittent build failure into a permanent one.
 
-`dmstatus` says all of this honestly — `allrunning` is hardwired 1, `haltreq`
-is accepted and ignored — so a debugger that tries to halt gets a hart that
-never halts rather than a lie.
+**What actually shipped is smaller than that model, on purpose.** Halt is one
+term added to `rtl/cpu_core.v`'s existing `pc_freeze`/`if_id`-hold stall
+machinery — the same class of stall the pipeline already handles for a
+load-use hazard — not a new entry into the fetch-redirect mux. Resume
+un-freezes it. Register access is a dedicated port into `regfile.v` plus two
+private registers (`dcsr`, `dpc`) that never join `csr_file.v`'s CSR-
+instruction path, so ordinary M/S/U-mode software has no way to reach them.
+`rtl/debug/dm.v`'s Abstract Command state machine drives that same port over
+the real DMI wire — single-cycle turnaround, no Wishbone traffic, no Program
+Buffer (`postexec` always gets `cmderr` = not-supported). None of it touches
+the timing-critical fetch path at all, which is what makes it safe to ship
+before Phase 3's margin work is done.
+
+`CORE=ooo` has none of this wired up. `dmstatus` says so honestly —
+`haltreq` is accepted and ignored, `allrunning` stays 1 — and an Abstract
+Command gets `cmderr` = halt/resume-required, the same as a real host would
+see against any hart it can't stop. A debugger gets a hart that never halts
+and a register access that never lies about succeeding, rather than either
+one silently doing nothing.
 
 ## Three things worth knowing if you change it
 
@@ -80,11 +99,24 @@ it cannot pass on a TAP that shifts the right bits into the wrong register.
 
 It checks IDCODE, BYPASS (one bit of delay, which is what proves the IR
 selects anything at all), `dtmcs`, the DMI round trip through the crossing,
-then SBA reads, writes, autoincrement and a distant address. Throughout,
-`RESET_PC` points into the test pattern so the CPU takes an illegal
-instruction, vectors to a zeroed ROM and traps forever — **every debug access
-in the test is arbitrating against a CPU hammering the bus**, which is the
-condition a debugger actually runs in.
+then SBA reads, writes, autoincrement and a distant address, then
+halt/resume and Abstract Command register access over the real `dmcontrol`/
+`dmstatus`/`abstractcs`/`command`/`data0` DMI registers — core-aware
+throughout, since the correct answer genuinely differs between
+`CORE=inorder` (a real halt/resume/register cycle) and `CORE=ooo`
+(`cmderr`/`dmstatus` report honestly that neither is possible). For most of
+the file, `RESET_PC` points into a pattern that makes the CPU take an
+illegal instruction and trap forever, so **every SBA access in the test is
+arbitrating against a CPU hammering the bus**, which is the condition a
+debugger actually runs in; the block RAM image (`sim/jtagram.hex`) plants a
+real two-instruction increment loop at that same `RESET_PC` instead, so the
+register-access checks have a hart that is actually computing something to
+halt, not one already stuck in a trap loop that never touches a GPR.
+
+`sim/tb_cpu_halt.v` drives halt/resume and register access directly against
+`rtl/cpu_core.v` — no DMI, no `dm.v` — as the more exhaustive check of the
+mechanism itself (GPR stability while halted, an unrecognized `regno`, a
+debug write surviving a resume/re-halt cycle).
 
 `formal/fv_interconnect.v` proves the arbitration properties with four
 masters, including that nothing without a write path can drive `s_we`.

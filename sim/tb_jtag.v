@@ -28,12 +28,19 @@
 //   7. A distant address reads its own word - everything above could pass
 //      with an SBA that ignored sbaddress and always hit one location.
 //   8. Hart control: haltreq/resumereq over the real dmcontrol/dmstatus DMI
-//      registers - not register access yet (that needs Abstract Command
-//      support dm.v doesn't have, and sim/tb_cpu_halt.v covers it directly
-//      against rtl/cpu_core.v in the meantime), just proving the DMI
-//      protocol layer genuinely starts and stops the same illegal-
-//      instruction-trap-forever hart every SBA check above raced, and that
-//      SBA still works correctly afterward.
+//      registers - not register access yet (that's stage 9, below), just
+//      proving the DMI protocol layer genuinely starts and stops the same
+//      illegal-instruction-trap-forever hart every SBA check above raced,
+//      and that SBA still works correctly afterward.
+//   9. Abstract Command register access - abstractcs/command/data0, over
+//      the real DMI protocol this time rather than sim/tb_cpu_halt.v's
+//      direct drive against rtl/cpu_core.v. Needs a real program to halt
+//      into: jtagram.hex plants a 2-instruction increment loop at
+//      RESET_PC for exactly this (everywhere else keeps the pattern
+//      stages 5-7 depend on), because the illegal-instruction-trap-forever
+//      pattern every earlier stage uses never writes a GPR, so a
+//      before/after register check would pass even if Abstract Command
+//      were a complete no-op.
 `timescale 1ns / 1ps
 
 module tb_jtag;
@@ -242,6 +249,7 @@ module tb_jtag;
     endtask
 
     localparam [6:0] A_DMCONTROL = 7'h10, A_DMSTATUS = 7'h11,
+                     A_ABSTRACTCS = 7'h16, A_COMMAND = 7'h17, A_DATA0 = 7'h04,
                      A_SBCS = 7'h38, A_SBADDRESS0 = 7'h39, A_SBDATA0 = 7'h3C;
 
     // Deliberately not RAM_BASE itself: the boot ROM's verdict word lives at
@@ -249,8 +257,80 @@ module tb_jtag;
     // its own footprint.
     localparam [31:0] TEST_ADDR = 32'h8000_2000;
 
+    // ---- Abstract Command (stage 9) ----
+    //
+    // Access Register command encoding, RISC-V Debug Spec 0.13 SS3.7.1.1:
+    // cmdtype[31:24]=0, aarsize[22:20], aarpostincrement[19], postexec[18],
+    // transfer[17], write[16], regno[15:0]. rtl/debug/dm.v's own header
+    // comment documents the same layout; independently re-derived here
+    // rather than shared, since this testbench deliberately never reaches
+    // into the design under test (see this file's own header).
+    function [31:0] cmd_access_reg;
+        input        do_write;
+        input [2:0]  aarsize;
+        input [15:0] regno;
+        begin
+            cmd_access_reg = {8'd0, 1'b0, aarsize, 1'b0, 1'b0, 1'b1, do_write, regno};
+        end
+    endfunction
+
+    localparam [15:0] REGNO_X5   = 16'h1005,   // 0x1000 + architectural register number
+                      REGNO_DCSR = 16'h07B0,
+                      REGNO_DPC  = 16'h07B1,
+                      REGNO_BAD  = 16'h2000;   // not a GPR, dcsr, or dpc
+
+    // Bounded the same way wait_halt/wait_resume below are: abstractcs.busy
+    // is a single-cycle window by rtl/debug/dm.v's own design (Abstract
+    // Command never touches the Wishbone bus), so this never loops more
+    // than once or twice in practice - the bound exists so a genuine hang
+    // here is a FAILED test, not a wedged simulation.
+    task ac_wait_done(output [2:0] cmderr);
+        integer n;
+        reg [31:0] cs;
+        reg        busy;
+        begin
+            busy = 1'b1;
+            for (n = 0; n < 50 && busy; n = n + 1) begin
+                dmi_read(A_ABSTRACTCS, cs);
+                busy = cs[12];
+            end
+            check("abstractcs.busy clears within a bounded number of polls", !busy);
+            cmderr = cs[10:8];
+        end
+    endtask
+
+    // W1C, per spec - any nonzero write to the field clears it. A stuck
+    // cmderr blocks every subsequent command (rtl/debug/dm.v's own AC_IDLE
+    // handling), so each negative-path check below clears it before going
+    // on to the next.
+    task ac_clear_cmderr;
+        begin
+            dmi_write(A_ABSTRACTCS, 32'h0000_0700);
+        end
+    endtask
+
+    task ac_read_reg(input [15:0] regno, output [31:0] data, output [2:0] cmderr);
+        begin
+            dmi_write(A_COMMAND, cmd_access_reg(1'b0, 3'd2, regno));
+            ac_wait_done(cmderr);
+            dmi_read(A_DATA0, data);
+        end
+    endtask
+
+    task ac_write_reg(input [15:0] regno, input [31:0] data, output [2:0] cmderr);
+        begin
+            dmi_write(A_DATA0, data);
+            dmi_write(A_COMMAND, cmd_access_reg(1'b1, 3'd2, regno));
+            ac_wait_done(cmderr);
+        end
+    endtask
+
+    localparam [2:0] CMDERR_NONE = 3'd0, CMDERR_NOTSUP = 3'd2, CMDERR_HALTRESUME = 3'd4;
+
     reg [31:0] v;
     integer    i;
+    reg [2:0]  cerr;
+    reg [31:0] sentinel, x5_before;
 
     initial begin
         $display("\n=== JTAG debug path ===");
@@ -468,6 +548,114 @@ module tb_jtag;
         dmi_write(A_SBADDRESS0, TEST_ADDR + 32'd4);
         dmi_read(A_SBDATA0, v);
         check_hex("SBA reads correctly after a halt/resume cycle", v, 32'hDEAD_0801);
+
+        // ---- 9. Abstract Command register access ----
+        //
+        // The hart is running again after stage 8's resume - which is
+        // exactly the state a register access has to be refused from.
+`ifdef CORE_OOO
+        // CORE=ooo has no hart-control ports at all, so `halted` is tied to
+        // 0 permanently (rtl/soc/soc_top.v) - dm.v refuses every command
+        // with cmderr=haltresume, honestly, rather than fabricating a
+        // register value for a hart it was never wired to touch.
+        ac_read_reg(REGNO_X5, v, cerr);
+        check("CORE=ooo: Abstract Command refused - cmderr=haltresume",
+              cerr === CMDERR_HALTRESUME);
+        ac_clear_cmderr;
+`else
+        ac_read_reg(REGNO_X5, v, cerr);
+        check("register access refused while running - cmderr=haltresume",
+              cerr === CMDERR_HALTRESUME);
+        ac_clear_cmderr;
+
+        // ---- halt again, the same protocol sequence stage 8 already proved works ----
+        dmi_write(A_DMCONTROL, 32'h8000_0001);  // haltreq=1, dmactive=1
+        begin : ac_wait_halt
+            integer n;
+            reg     halted;
+            halted = 1'b0;
+            for (n = 0; n < 50 && !halted; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                halted = (v[9:8] === 2'b11);
+            end
+            check("halted again for register-access testing", halted);
+        end
+
+        // GPR read is stable while genuinely halted - if Abstract Command
+        // were a no-op this would still pass on the trap-forever pattern
+        // every earlier stage uses, which is exactly why jtagram.hex plants
+        // a real increment loop at RESET_PC instead (see this file's header).
+        ac_read_reg(REGNO_X5, x5_before, cerr);
+        check("x5 read while halted: cmderr=none", cerr === CMDERR_NONE);
+        repeat (20) @(posedge clk);
+        ac_read_reg(REGNO_X5, v, cerr);
+        check_hex("x5 unchanged across idle cycles while halted", v, x5_before);
+
+        // dcsr/dpc - same fields sim/tb_cpu_halt.v checks directly against
+        // rtl/cpu_core.v, now read over the real DMI Abstract Command path.
+        ac_read_reg(REGNO_DCSR, v, cerr);
+        check("dcsr.cause == 3 (haltreq)", v[8:6] == 3'd3);
+        check("dcsr.prv == PRIV_M (2'b11)", v[1:0] == 2'b11);
+
+        // Unlike sim/tb_cpu_halt.v (RESET_PC=0, so "< 8" is the whole
+        // check), this harness's RESET_PC is 0x8000_1000 - the loop's two
+        // instructions live at that address and the one 4 bytes past it.
+        ac_read_reg(REGNO_DPC, v, cerr);
+        check("dpc points inside the 2-instruction loop (RESET_PC or +4)",
+              (v == 32'h8000_1000) || (v == 32'h8000_1004));
+
+        // ---- negative paths: unsupported aarsize, unrecognized regno ----
+        dmi_write(A_COMMAND, cmd_access_reg(1'b0, 3'd1, REGNO_X5));  // aarsize=1 (16-bit)
+        ac_wait_done(cerr);
+        check("16-bit access rejected - cmderr=not supported", cerr === CMDERR_NOTSUP);
+        ac_clear_cmderr;
+
+        ac_read_reg(REGNO_BAD, v, cerr);
+        check("unrecognized regno rejected - cmderr=not supported", cerr === CMDERR_NOTSUP);
+        ac_clear_cmderr;
+
+        // ---- write x5, read it back, still halted ----
+        sentinel = 32'hCAFE_F00D;
+        ac_write_reg(REGNO_X5, sentinel, cerr);
+        check("x5 write while halted: cmderr=none", cerr === CMDERR_NONE);
+        ac_read_reg(REGNO_X5, v, cerr);
+        check_hex("x5 reads back the debug write", v, sentinel);
+
+        // ---- resume: the write must be what the hart picks up and moves past ----
+        dmi_write(A_DMCONTROL, 32'h4000_0001);  // resumereq=1, haltreq=0, dmactive=1
+        begin : ac_wait_resume
+            integer n;
+            reg     running;
+            running = 1'b0;
+            for (n = 0; n < 50 && !running; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                running = (v[11:10] === 2'b11);
+            end
+            check("running again after resume", running);
+        end
+
+        repeat (30) @(posedge clk);
+
+        dmi_write(A_DMCONTROL, 32'h8000_0001);  // haltreq=1, dmactive=1
+        begin : ac_wait_rehalt
+            integer n;
+            reg     halted;
+            halted = 1'b0;
+            for (n = 0; n < 50 && !halted; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                halted = (v[9:8] === 2'b11);
+            end
+            check("halted a third time to confirm execution resumed", halted);
+        end
+        ac_read_reg(REGNO_X5, v, cerr);
+        check("x5 advanced past the debug-written sentinel after resume",
+              v > sentinel);
+
+        // Cleanup, not a check - leaves the hart running rather than ending
+        // the test with it wedged halted, the same way stage 8 and
+        // sim/tb_cpu_halt.v's own final dbg_resume do.
+        dmi_write(A_DMCONTROL, 32'h4000_0001);
+`endif
 
         $display("");
         if (failures == 0) $display("JTAG TEST PASSED");
