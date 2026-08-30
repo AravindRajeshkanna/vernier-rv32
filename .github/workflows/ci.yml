@@ -198,6 +198,16 @@ jobs:
       - name: Flat (non-SoC) software build and run
         run: make sim_software
 
+      # The newlib probe: which rung of libc actually works, preloaded the
+      # same way sim_ramboot is. Existed in `make verify` already but was
+      # never wired into CI - docs/roadmap.md's "Known defects" named this
+      # gap explicitly: a regression here would have shown every check
+      # above green.
+      - name: newlib probe
+        run: make sim_probe | tee probe.log
+      - name: Check probe verdict
+        run: grep -q "RAMBOOT TEST PASSED" probe.log
+
       # docs/roadmap.md Phase 2: the SoC executing a 99 KB program out of
       # external SDRAM, with block RAM present but holding nothing but the
       # verdict word. Matrixed over both cores like everything else here -
@@ -289,6 +299,24 @@ jobs:
         run: make sim_uart16550 | tee uart16550.log
       - name: Check ns16550 verdict
         run: grep -q "RAMBOOT TEST PASSED" uart16550.log
+
+      # An interrupt-driven UART TX driver, not the polled one everything
+      # above uses - and, like sim_probe below, in `make verify` already but
+      # never wired into CI (docs/roadmap.md's "Known defects").
+      - name: Interrupt-driven UART TX driver
+        run: make sim_uartirq | tee uartirq.log
+      - name: Check UART IRQ verdict
+        run: grep -q "RAMBOOT TEST PASSED" uartirq.log
+
+      # __div64_32, isolated - docs/roadmap.md's "Stage 1d was built anyway"
+      # section has the story: CORE=ooo was once found permanently stuck
+      # inside this exact kernel routine, and this is the fast, deterministic
+      # regression for it, without a 90-million-cycle Linux boot in the way.
+      # Also in `make verify` already but never wired into CI.
+      - name: __div64_32, isolated
+        run: make sim_div64test | tee div64test.log
+      - name: Check div64 verdict
+        run: grep -q "RAMBOOT TEST PASSED" div64test.log
 
       # The boot ROM's UART loader, end to end: a host sends a program over
       # the serial line and the SoC runs it out of external SDRAM. This is the
