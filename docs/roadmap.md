@@ -2798,12 +2798,33 @@ loop at `RESET_PC` instead of the illegal-instruction-trap-forever pattern
 every earlier stage uses, since that pattern never writes a GPR and would
 have let a no-op Abstract Command pass silently.
 
-**Fix the timing margin first** still applies to anything beyond this -
-single-step (needs the same-edge PC-hold/`if_id`/`id_ex`-flush precision a
-load-use stall already gets, not yet built) and any FPGA timing/board claim
-for this path remain gated on Phase 3's unfinished business, same as before;
-this round's whole design is what makes that possible to say cleanly, since
-nothing here touches the timing-critical path at all.
+**Single-step is real too, and turned out simpler than the plan that shipped
+the rest of this feared.** The worry was a race: wait for `instret_retire` to
+decide when to re-halt, and by the time it fires several more instructions
+could already be admitted behind the stepped one. The design that shipped
+sidesteps that instead of solving it - it blocks admission again the instant
+the one instruction is admitted (`dbg_step_admitted_r`, latched off the exact
+same condition the ordinary admission path uses, one cycle after resume),
+not when it retires, so a second instruction is never admitted in the first
+place rather than being caught after the fact. `dcsr.step` is a real,
+writable bit now (previously hardwired 0); writing it and then resuming
+walks exactly one instruction and re-halts with `dcsr.cause` = 4 (step), not
+3 (haltreq). `dcsr`/`dpc` gained real write paths as part of this - previously
+a write to either reported `cmderr` = success over DMI while silently
+changing nothing, because `rtl/cpu_core.v`'s debug-register mux only ever
+wired up GPR writes. `sim/tb_cpu_halt.v` proves the mechanism precisely:
+two single-steps around the 2-instruction test loop always execute the
+`addi` exactly once and land `dpc` back where it started, whichever of the
+loop's two instructions it started on - so the test does not need to know or
+assume which instruction was next. `sim/tb_jtag.v`'s stage 9 proves the same
+capability reaches over the real DMI wire, with `dm.v` needing zero changes
+to carry it (Abstract Command already forwarded any `regno` generically).
+
+**Fix the timing margin first** still applies to anything beyond this - any
+FPGA timing/board claim for this path remains gated on Phase 3's unfinished
+business, same as before. Nothing in halt, resume, register access, or
+single-step touches the timing-critical fetch-redirect path at all; that is
+what makes all four of them safe to ship before that margin is fixed.
 
 Also missing, and cheaper: no debug adapter has been connected to a board.
 The path is proven in simulation only.

@@ -161,6 +161,13 @@ module cpu_core #(
     // fetch redirect on a core two of six FPGA placement seeds already fail
     // to close 25 MHz on. This implementation touches `pc_freeze` and the
     // regfile's write mux only - nothing on the redirect-target side.
+    //
+    // Single-step (`dcsr.step`, near dbg_halt_admit_block below) is the
+    // same idea applied once: resuming with it set re-blocks admission the
+    // instant `dbg_step_admit_now` fires (one cycle after resume, once the
+    // stepped instruction is actually admitted), not when it retires -
+    // which is what makes it exactly one instruction rather than a race
+    // against however many land before `instret_retire` is next observed.
     input  wire         dbg_haltreq,     // level: dm.v wants the hart halted
     input  wire         dbg_resumereq,   // one-cycle pulse: dm.v wants it running again
     output wire         dbg_halted,      // level: genuinely frozen, safe to touch GPRs/dcsr/dpc
@@ -222,9 +229,11 @@ module cpu_core #(
     reg        reservation_valid;
     reg [31:0] reservation_addr;
     reg        dbg_halted_r, dbg_halt_pending;
+    reg        dbg_stepping_r, dbg_step_admitted_r;
     reg [31:0] dpc_r;
     reg [2:0]  dcsr_cause_r;
     reg [1:0]  dcsr_prv_r;
+    reg        dcsr_step_r;
 
     localparam OPC_LOAD    = 7'b0000011;
     localparam OPC_MISCMEM = 7'b0001111;
@@ -706,7 +715,7 @@ module cpu_core #(
                           1'b0,               // [5] reserved
                           1'b0,               // [4] mprven - no-op: no debug-mode memory access path
                           1'b0,               // [3] nmip - no NMI source in this core
-                          1'b0,               // [2] step - no single-step yet (reserved for stage 5)
+                          dcsr_step_r,        // [2] step - real now; see the resume logic below
                           dcsr_prv_r};        // [1:0]
 
     // 0x1000-0x101f, RISC-V debug spec's Abstract-Command GPR regno range:
@@ -722,6 +731,15 @@ module cpu_core #(
     assign      dbg_reg_err   = dbg_reg_valid && !dbg_reg_ok;
     wire        dbg_gpr_write = dbg_reg_valid && dbg_reg_ok && dbg_reg_we && is_gpr_regno;
     wire [31:0] dbg_gpr_rdata;
+
+    // dcsr/dpc writes land in the halt/resume always block below (near
+    // dbg_halted_r), not a new always block of their own - dpc_r already
+    // has one driver there (the halt-entry capture) and Verilog does not
+    // allow a second procedural block to also drive it. Only dcsr.step is
+    // writable; every other dcsr field stays the hardwired no-op the
+    // comment above already explains.
+    wire        dbg_dcsr_write = dbg_reg_valid && dbg_reg_we && is_dcsr_regno;
+    wire        dbg_dpc_write  = dbg_reg_valid && dbg_reg_we && is_dpc_regno;
 
     assign dbg_reg_rdata = is_gpr_regno  ? dbg_gpr_rdata :
                            is_dcsr_regno ? dcsr_r :
@@ -769,8 +787,29 @@ module cpu_core #(
     // the spec says to hold it, but nothing here should silently drop a
     // request that doesn't. `dbg_halted_r` keeps admission blocked for the
     // whole time the hart reports halted, not just the cycle it got there.
-    wire dbg_halt_admit_block = dbg_haltreq || dbg_halt_pending || dbg_halted_r;
+    // `dbg_stepping_r && dbg_step_admitted_r` is single-step's own block:
+    // resuming with `dcsr.step` set clears `dbg_halted_r` (see the always
+    // block below) without setting this term yet, so admission opens for
+    // exactly the cycles it takes `admitting_now` below to fire once - the
+    // moment it does, `dbg_step_admitted_r` latches and re-blocks admission
+    // before a second instruction can ever be admitted, which is what
+    // makes single-step exactly one instruction rather than "however many
+    // fit before the host notices."
+    wire dbg_halt_admit_block = dbg_haltreq || dbg_halt_pending || dbg_halted_r ||
+                                 (dbg_stepping_r && dbg_step_admitted_r);
     wire pc_freeze   = id_ex_stall || if_stall || dbg_halt_admit_block;
+    // True on a cycle that admits a new instruction into if_id while a
+    // single-step is waiting for its one admission - the same condition
+    // the if_id_valid register block's own final `else` branch uses, minus
+    // `!redirect_valid`. That term is provably moot here: this wire is only
+    // ever consulted (below) while `dbg_stepping_r && !dbg_step_admitted_r`,
+    // and until the first admission happens, if_id_valid has been 0 since
+    // before resume (nothing halted admits), so id_ex_valid is 0 too - and
+    // `redirect_valid` requires id_ex_valid, so it cannot be set on any
+    // cycle this wire's value actually changes the outcome. Leaving it out
+    // sidesteps forward-referencing `redirect_valid` (declared later, in
+    // the EX stage) purely for a term that cannot matter here.
+    wire dbg_step_admit_now = !id_ex_stall && !if_stall && !dbg_halt_admit_block;
 
     // =======================================================================
     // ID/EX pipeline register
@@ -1494,22 +1533,61 @@ module cpu_core #(
     // other stall - halting drains the pipeline instead of killing it.
     wire dbg_pipeline_quiescent = !if_id_valid && !id_ex_valid && !ex_mem_valid;
 
+    // Single-step re-halts through this exact same quiescence check, not a
+    // new one - `dbg_stepping_r && dbg_step_admitted_r` is only true once
+    // the one admitted instruction is confirmed in flight (see
+    // `dbg_step_admit_now` above), so `dbg_pipeline_quiescent` cannot
+    // read true from stale pre-resume state: at the moment `dbg_halted_r`
+    // clears, if_id/id_ex/ex_mem are all already 0 (that was the halt
+    // condition), and `dbg_step_admitted_r` staying 0 until admission
+    // genuinely happens is what stops this block from re-halting on that
+    // same already-quiescent state before the stepped instruction ever
+    // enters the pipeline.
+    wire dbg_step_done = dbg_stepping_r && dbg_step_admitted_r;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            dbg_halted_r     <= 1'b0;
-            dbg_halt_pending <= 1'b0;
+            dbg_halted_r         <= 1'b0;
+            dbg_halt_pending     <= 1'b0;
+            dbg_stepping_r       <= 1'b0;
+            dbg_step_admitted_r  <= 1'b0;
+            // Unlike dpc_r/dcsr_cause_r/dcsr_prv_r (purely informational,
+            // never read before the first halt writes them), dcsr_step_r
+            // gates admission on every resume - reset explicitly so a
+            // resume before any debug write is ever issued cannot read an
+            // undefined `step` and take the single-step path unasked.
+            dcsr_step_r          <= 1'b0;
         end else if (dbg_halted_r) begin
+            // Register writes over Abstract Command land here: dm.v only
+            // ever pulses `dbg_reg_valid` while `dbg_halted` is high (its
+            // own comment on this contract), so this is the only place
+            // dpc_r/dcsr_step_r can change from a debug write - one more
+            // condition on dpc_r's existing driver, not a second one.
+            if (dbg_dpc_write)  dpc_r <= dbg_reg_wdata;
+            if (dbg_dcsr_write) dcsr_step_r <= dbg_reg_wdata[2];
             if (dbg_resumereq) begin
                 dbg_halted_r     <= 1'b0;
                 dbg_halt_pending <= 1'b0;
+                // dcsr.step is sticky per spec - resuming does not clear
+                // it, a host wanting an ordinary resume again must write
+                // it back to 0 first. Reads the pre-edge value of
+                // dcsr_step_r on purpose: a real host cannot land a dcsr
+                // write and a resume on the same DMI-driven cycle (dm.v
+                // serializes DMI transactions - see its own header), so
+                // this is simplest, not a race.
+                dbg_stepping_r      <= dcsr_step_r;
+                dbg_step_admitted_r <= 1'b0;
             end
         end else begin
             if (dbg_haltreq) dbg_halt_pending <= 1'b1;
-            if (dbg_halt_pending && dbg_pipeline_quiescent) begin
+            if (dbg_step_admit_now && dbg_stepping_r && !dbg_step_admitted_r)
+                dbg_step_admitted_r <= 1'b1;
+            if ((dbg_halt_pending || dbg_step_done) && dbg_pipeline_quiescent) begin
                 dbg_halted_r     <= 1'b1;
                 dbg_halt_pending <= 1'b0;
+                dbg_stepping_r   <= 1'b0;
                 dpc_r            <= pc;            // pc is frozen here: the resume address
-                dcsr_cause_r     <= 3'd3;           // haltreq
+                dcsr_cause_r     <= dbg_step_done ? 3'd4 : 3'd3;  // step : haltreq
                 dcsr_prv_r       <= current_priv;
             end
         end

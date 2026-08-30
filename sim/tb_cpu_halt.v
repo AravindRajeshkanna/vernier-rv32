@@ -1,9 +1,11 @@
 // Hart control (rtl/cpu_core.v's dbg_haltreq/dbg_resumereq/dbg_reg_*),
-// driven directly - no DMI, no JTAG. That layer is sim/tb_jtag.v's job
-// once rtl/debug/dm.v grows Abstract Command support; this one isolates
-// the riskiest new logic first: does halt actually freeze the pipeline,
-// does resume actually un-freeze it, and does the debug register port
-// read/write the real architectural register file.
+// driven directly - no DMI, no JTAG. sim/tb_jtag.v covers the same ground
+// through the real Abstract Command DMI protocol; this one isolates the
+// mechanism itself: does halt actually freeze the pipeline, does resume
+// actually un-freeze it, does the debug register port read/write the real
+// architectural register file, and - the newest piece - does dcsr.step
+// resume for exactly one instruction and land back in halted with
+// dcsr.cause=4, not zero and not two.
 //
 // The DUT is a real 2-instruction increment loop (`addi x5,x5,1` /
 // `jal x0,-4`) at the reset vector, not the illegal-instruction-trap-
@@ -218,6 +220,51 @@ module tb_cpu_halt;
         dbg_read(REGNO_X5, v2);
         check("x5 advanced past the debug-written sentinel after resume",
               v2 > sentinel);
+
+        // ---- single-step: dcsr.step, written through the same debug port ----
+        //
+        // Two steps, not one, and on purpose: dpc could be sitting on
+        // either instruction right now (nothing above pinned that down -
+        // it depends on exactly when the pipeline happened to drain), but
+        // one full iteration of a 2-instruction loop always executes the
+        // addi exactly once and lands dpc back where it started, whichever
+        // instruction that was. "x5 up by 1, dpc unchanged" is true either
+        // way, so the test does not need to know or care which instruction
+        // dpc names at the start.
+        dbg_write(REGNO_DCSR, 32'h0000_0004);   // dcsr.step = 1
+        dbg_read(REGNO_DCSR, v2);
+        check("dcsr.step reads back set", v2[2] == 1'b1);
+
+        dbg_read(REGNO_X5, v0);
+        dbg_read(REGNO_DPC, v1);
+
+        dbg_resume;
+        wait_halted;
+        dbg_read(REGNO_DCSR, v2);
+        check("dcsr.cause == 4 (step) after one single-step", v2[8:6] == 3'd4);
+        dbg_read(REGNO_DPC, v2);
+        // 0 and 4 are the loop's only two instruction addresses, so one
+        // step always lands on "the other one" - addi falls through to the
+        // jal at +4, and the jal jumps back to the addi at 0.
+        check("dpc moved to the loop's other instruction after one step",
+              v2 == (v1 ^ 32'd4));
+
+        dbg_resume;
+        wait_halted;
+        dbg_read(REGNO_DCSR, v2);
+        check("dcsr.cause == 4 (step) after the second single-step", v2[8:6] == 3'd4);
+        dbg_read(REGNO_DPC, v2);
+        check("dpc back where it started after a full stepped loop iteration",
+              v2 == v1);
+        dbg_read(REGNO_X5, v2);
+        check_hex("x5 up by exactly 1 after one full stepped loop iteration",
+                  v2, v0 + 32'd1);
+
+        // dcsr.step is sticky by spec - resuming does not clear it, a host
+        // wanting an ordinary resume back must write it to 0 first.
+        dbg_write(REGNO_DCSR, 32'h0000_0000);
+        dbg_read(REGNO_DCSR, v2);
+        check("dcsr.step clears on an explicit write back to 0", v2[2] == 1'b0);
 
         dbg_resume;
 
