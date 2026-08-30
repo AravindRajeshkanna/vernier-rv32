@@ -99,7 +99,7 @@ regression against.
 | 1a | Parallel core, behaviourally identical, whole suite green | ✅ done |
 | 1b | Decoupled fetch buffer, dual issue for independent ALU ops | ✅ done — and see what it measured |
 | 1c | Scoreboard: out-of-order completion, in-order retire | ✅ done — store buffer and load-completion buffer, +0.34% |
-| 1d | Renaming, reorder buffer, reservation stations, LSQ | **built anyway** — see below. `make verify_ooo` fully green; CoreMark **448,346 cycles**, slower than the cheaper stage 1b+1c core it was meant to replace; Linux still does not boot to userspace |
+| 1d | Renaming, reorder buffer, reservation stations, LSQ | **built anyway** — see below. `make verify_ooo` fully green; CoreMark **448,346 cycles**, slower than the cheaper stage 1b+1c core it was meant to replace; Linux boots to userspace (see Update 15) |
 
 Stage 1a is deliberately empty of microarchitecture: the file starts as a
 byte-for-byte copy of `cpu_core.v` with the module renamed, and the commit
