@@ -1391,20 +1391,20 @@ CORE=ooo` still fails, but not identically - unlike Update 9's fix, this one
 does change the stall. With `+watchpc` bisection through `driver_init()`'s
 call sequence (`devices_init`, `buses_init`, `classes_init`, `firmware_init`,
 `faux_bus_init` all confirmed reached), `of_core_init` is now reached at
-cycle 55,327,794 - it was never reached before this fix (the stall was
+cycle 49,276,583 - it was never reached before this fix (the stall was
 `serial8250:0.3`'s probe, at 94.5-94.8M, well inside `driver_init`'s later
 `platform_bus_init`). Inside `of_core_init`, `kset_create_and_add` is called
-(7 visits, last at cycle 55,328,072), then its `for_each_of_allnodes` loop
+(7 visits, last at cycle 49,276,862), then its `for_each_of_allnodes` loop
 attaching each device-tree node to sysfs runs (`__of_attach_node_sysfs`, 19
-visits, last at cycle 57,583,444), calling `kernfs_add_one` repeatedly (136
-visits total; the last one, at cycle 57,664,442, entered from
+visits, last at cycle 51,532,532), calling `kernfs_add_one` repeatedly (136
+visits total; the last one, at cycle 51,613,530, entered from
 `__kernfs_create_file` - a property file, not a directory). That count does
 not move between a 60M-cycle run and a 90M-cycle run of the same image: no
-further progress at all for 32M+ cycles. `of_core_init`'s own closing
+further progress at all for 30M+ cycles. `of_core_init`'s own closing
 `proc_symlink` call (gated on `if (of_root)`, the last thing the function
 does before `driver_init` moves on to `platform_bus_init`) is never reached
 - the only hit on that address (0xc014d5c0) anywhere in the run is a single,
-earlier, unrelated caller at cycle 44,751,548. `platform_bus_init` itself is
+earlier, unrelated caller at cycle 44,284,495. `platform_bus_init` itself is
 never reached either. The run's tail then shows the hart cycling through
 `default_idle_call`/`arch_cpu_idle` - the scheduler's idle path - repeating
 forever: whichever thread runs `do_initcalls()` (`kernel_init`, PID 1, per
@@ -1414,12 +1414,15 @@ internally (`fs/kernfs/dir.c`); whether the sleep is on that rwsem, on
 something `__kernfs_create_file`'s caller chain waits on next, or something
 else entirely reachable only from inside that 136th call, is not resolved.
 
+(These cycle numbers were corrected after this update first shipped - see
+the note at the end of Update 12.)
+
 Net position: a real, independently-motivated correctness fix - Linux's own
 documented invariant for `cpu_do_idle()` did not hold on this core before
 this change, regardless of what it does or does not do for this specific
 hang - and a real, measured effect on the hang it was chasing: the stall
 moves from `serial8250:0.3`'s probe (94.5-94.8M cycles) to somewhere in or
-immediately after `of_core_init`'s kernfs node/property population (57.6-60M
+immediately after `of_core_init`'s kernfs node/property population (49-52M
 cycles), a genuine behavioral change, not a wash. Whether that is the same
 underlying bug surfacing earlier under different timing, or a different bug
 this fix's changed timing now exposes, is exactly as unresolved as it
@@ -1487,6 +1490,37 @@ contents at a triggered cycle. That gap is the same shape Update 10 hit and
 closed by building `+watchpc` itself in the first place - the concrete next
 step here is the same kind of tool, not more bisection with the tool that
 already answered what it can.
+
+**A correction to Update 11's cycle numbers, found while continuing this
+investigation:** Update 11's bisection was run before its own fix's
+diagnostic `dts/soc.dts` edit (temporary `initcall_debug ignore_loglevel`
+bootargs, used earlier in that same investigation to get a live
+`initcall_debug` trace) had been reverted and `sim/linuximage.hex` rebuilt
+- so `of_core_init` at "cycle 55,327,794," `kset_create_and_add` at
+"55,328,072," `__of_attach_node_sysfs` at "57,583,444," `kernfs_add_one`'s
+136th call at "57,664,442," and the stray `proc_symlink` hit at "44,751,548"
+were all measured against that verbose image, not the plain-bootargs one
+`git diff` actually shows on `main` and that `make verify_ooo` gates. The
+extra `initcall_debug`/`ignore_loglevel` console output shifts absolute
+timing substantially (more UART traffic, more interrupts) without changing
+which code runs - re-measured against the actual committed image, the same
+136 total `kernfs_add_one` calls, the same 34/101 split across call sites,
+and the same "never reached" results for `kernfs_create_empty_dir`,
+`kernfs_create_link`, and `platform_bus_init` all reproduce exactly, just
+5-8M cycles earlier: `of_core_init` at cycle 49,276,583,
+`kset_create_and_add` at 49,276,862, `__of_attach_node_sysfs` at
+51,532,532, `kernfs_add_one`'s 136th (and last) call at 51,613,530
+(reproduced identically at both a 60M- and a 90M-cycle cutoff), and the
+stray `proc_symlink` hit at 44,284,495. Update 11's prose above has been
+corrected in place to these numbers; this update's own return-address
+figures (34, 101, 51,551,316, 51,600,657) were already measured against
+the correct, plain-bootargs image and needed no change - the mistake was
+narrow: reusing one cycle number carried over between two investigations
+without re-verifying it against the image each one actually shipped.
+Caught by a plain reproducibility check (the same `+watchpc` command giving
+a different answer on a supposedly-identical rerun), not by design - worth
+naming so the next investigation checks `dts/soc.dts`'s actual committed
+state before trusting a cycle number pulled from an earlier session.
 
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
@@ -2583,7 +2617,9 @@ Open, unscheduled, and written down so they are not rediscovered.
 boots the same image on both cores and compares the traps; the "Stage 1d was
 built anyway" section above has the current, authoritative account. As of
 "Update 12," the point of no return is a single, specific `kernfs_add_one`
-call (cycle 57,664,442 of 400M) made from `__kernfs_create_file` while
+call (cycle 51,613,530 of 400M, corrected in Update 12 from an earlier
+number measured against a since-reverted diagnostic image) made from
+`__kernfs_create_file` while
 `of_core_init` populates the device tree into sysfs - it is entered but
 never returns; `platform_bus_init`, the very next call in `driver_init`
 after `of_core_init` returns, is never reached. `kernfs_add_one` itself is
