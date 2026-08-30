@@ -195,10 +195,23 @@ module soc_top #(
     wire [NUM_SLAVES*32-1:0] s_dat_r;
     wire [NUM_SLAVES-1:0]    s_ack;
 
-    // Which core. Both have the identical port list; -DCORE_OOO picks the
-    // wide/out-of-order one in rtl/ooo/. See docs/roadmap.md Phase 1 - the
-    // in-order core stays the proven default, and `make verify CORE=ooo`
-    // runs the whole suite against the other one.
+    // ---- hart control (rtl/debug/dm.v <-> CPU), in-order-core only ----
+    //
+    // Only haltreq/resumereq/halted are wired this round - dm.v does not
+    // implement Abstract Command register access yet (that is a later,
+    // separate change), so cpu_core.v's dbg_reg_* ports are tied inert
+    // directly below rather than routed through named cross-module wires
+    // that would have nothing real driving them.
+    wire dbg_haltreq, dbg_resumereq, dbg_halted;
+
+    // Which core. -DCORE_OOO picks the wide/out-of-order one in rtl/ooo/.
+    // See docs/roadmap.md Phase 1 - the in-order core stays the proven
+    // default, and `make verify CORE=ooo` runs the whole suite against the
+    // other one. The two no longer have an identical port list: hart
+    // control (rtl/debug/dm.v's haltreq/resumereq, `dbg_*` below) is
+    // in-order-only this round - see the tie-off right after this
+    // instantiation for why, and rtl/debug/README.md/docs/roadmap.md
+    // Phase 6 for the full reasoning.
 `ifdef CORE_OOO
     core_ooo #(.RESET_PC(RESET_PC)) CPU (
 `else
@@ -218,7 +231,22 @@ module soc_top #(
         .mtip(mtip), .msip_in(msip), .meip(plic_eip[0]), .seip(plic_eip[1]),
         .mtime_in(mtime),
         .fence_i(fence_i), .trap(trap)
+`ifndef CORE_OOO
+        , .dbg_haltreq(dbg_haltreq), .dbg_resumereq(dbg_resumereq), .dbg_halted(dbg_halted),
+        // Register access (GPR/dcsr/dpc via dm.v Abstract Commands) is not
+        // implemented in dm.v yet - tied inert rather than left to float.
+        .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
+        .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
+        .dbg_reg_rdata(), .dbg_reg_err()
+`endif
     );
+`ifdef CORE_OOO
+    // core_ooo.v has no hart-control ports at all (see the comment above) -
+    // report honestly rather than silently claiming a halt that can never
+    // happen, the same rule dm.v's own dmstatus already follows for System
+    // Bus Access (rtl/debug/README.md).
+    assign dbg_halted = 1'b0;
+`endif
 
     cpu_wb BUSADAPT (
         .clk(clk), .rst(rst_soc),
@@ -301,7 +329,8 @@ module soc_top #(
         .wb_cyc(dbg_cyc), .wb_stb(dbg_stb), .wb_we(dbg_we),
         .wb_adr(dbg_adr), .wb_dat_w(dbg_dat_w), .wb_sel(dbg_sel),
         .wb_dat_r(dbg_dat_r), .wb_ack(dbg_ack),
-        .ndmreset(dbg_ndmreset), .dmactive()
+        .ndmreset(dbg_ndmreset), .dmactive(),
+        .haltreq(dbg_haltreq), .resumereq(dbg_resumereq), .halted(dbg_halted)
     );
 
     wb_interconnect #(.NUM_SLAVES(NUM_SLAVES)) BUS (

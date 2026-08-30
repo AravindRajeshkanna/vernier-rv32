@@ -1124,6 +1124,22 @@ sim_jtag: sim/jtagram.hex sim/sim_jtag.out
 	@grep -aq "JTAG TEST PASSED" sim/jtag.log && echo "JTAG PATH OK" || \
 	    { echo "FAILED: the JTAG debug path"; exit 1; }
 
+# ---- hart control (rtl/cpu_core.v's dbg_haltreq/dbg_resumereq/dbg_reg_*) ----
+#
+# Driven directly, no DMI/JTAG layer - see sim/tb_cpu_halt.v's own header for
+# why that split. CORE=inorder only: rtl/ooo/core_ooo.v has no hart-control
+# ports (docs/roadmap.md Phase 6), so this is a plain rtl/cpu_core.v build,
+# independent of $(CORE_RTL)/$(SOC_RTL).
+sim/sim_cpu_halt.out: sim/tb_cpu_halt.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
+                       rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/cpu_core.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_halt.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
+	    rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/cpu_core.v
+
+sim_cpu_halt: sim/sim_cpu_halt.out
+	cd sim && $(VVP) sim_cpu_halt.out $(VVP_DUMP) | tee cpu_halt.log
+	@grep -aq "CPU-HALT-TEST: PASS" sim/cpu_halt.log && echo "CPU HALT/RESUME OK" || \
+	    { echo "FAILED: hart control (halt/resume/register access)"; exit 1; }
+
 # ---- the boot ROM's UART loader ----
 #
 # The only way a program gets into external SDRAM on a board: a bitstream
@@ -1215,6 +1231,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
+        sim_cpu_halt \
         sim_div64test \
         uartload-host check-program isa cosim linux-if-built formal
 

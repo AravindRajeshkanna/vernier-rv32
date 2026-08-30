@@ -149,7 +149,35 @@ module cpu_core #(
     input  wire [63:0]  mtime_in, // CLINT mtime, for the `time` CSR
 
     output wire         fence_i, // FENCE.I retired: any instruction buffer/cache must drop its contents
-    output wire         trap   // pulses for one cycle when a trap/interrupt redirect is taken (EX)
+    output wire         trap,  // pulses for one cycle when a trap/interrupt redirect is taken (EX)
+
+    // ---- hart control (rtl/debug/dm.v), simulation-only this round ----
+    //
+    // No debug ROM, no Program Buffer, no `dret` - halt is "freeze pipeline
+    // admission in place" and resume is "un-freeze". See docs/roadmap.md's
+    // "Phase 6" and rtl/debug/README.md for why the full RISC-V debug-spec
+    // model (which needs a debug mode, dcsr, dpc, dret and a debug ROM the
+    // core vectors into) is deliberately not what this is: that touches the
+    // fetch redirect on a core two of six FPGA placement seeds already fail
+    // to close 25 MHz on. This implementation touches `pc_freeze` and the
+    // regfile's write mux only - nothing on the redirect-target side.
+    input  wire         dbg_haltreq,     // level: dm.v wants the hart halted
+    input  wire         dbg_resumereq,   // one-cycle pulse: dm.v wants it running again
+    output wire         dbg_halted,      // level: genuinely frozen, safe to touch GPRs/dcsr/dpc
+
+    // Debug register access (GPRs via regno 0x1000-0x101f, dcsr at 0x7b0,
+    // dpc at 0x7b1 - the same regno space RISC-V debug-spec Abstract
+    // Commands use for GPRs, reused here for dcsr/dpc too rather than
+    // building a second mechanism). dm.v is responsible for only asserting
+    // `dbg_reg_valid` while `dbg_halted` is high; this module does not
+    // re-check that, so a `dbg_reg_valid` pulse while running would corrupt
+    // regfile state - see rtl/debug/dm.v's own comment on this contract.
+    input  wire         dbg_reg_valid,   // one-cycle strobe: perform this access now
+    input  wire         dbg_reg_we,      // 1 = write, 0 = read
+    input  wire [15:0]  dbg_reg_num,
+    input  wire [31:0]  dbg_reg_wdata,
+    output wire [31:0]  dbg_reg_rdata,   // combinational, valid the same cycle as dbg_reg_valid
+    output wire         dbg_reg_err      // regno not recognized (not a GPR/dcsr/dpc)
 );
 
     // ---- forward declarations ----
@@ -193,6 +221,10 @@ module cpu_core #(
     reg [31:0] ex_mem_wb_data;
     reg        reservation_valid;
     reg [31:0] reservation_addr;
+    reg        dbg_halted_r, dbg_halt_pending;
+    reg [31:0] dpc_r;
+    reg [2:0]  dcsr_cause_r;
+    reg [1:0]  dcsr_prv_r;
 
     localparam OPC_LOAD    = 7'b0000011;
     localparam OPC_MISCMEM = 7'b0001111;
@@ -645,11 +677,75 @@ module cpu_core #(
     wire        mem_wb_reg_we;
     wire [4:0]  mem_wb_rd;
 
+    // ---- hart control: dcsr/dpc, and the debug register-access mux ----
+    //
+    // dcsr/dpc deliberately do NOT live in csr_file.v and are NOT reachable
+    // by an ordinary CSRRW: there is no debug-mode instruction stream under
+    // this halt-in-place model that would ever execute one, so the
+    // simplest way to keep M/S/U-mode software from touching Debug Mode
+    // state is to never put it on that path at all. (A real debug ROM,
+    // added later, would need to - and would then also need an explicit
+    // "illegal outside Debug Mode" gate separate from the ordinary
+    // privilege check: dcsr=0x7b0's bits [9:8] read as 2'b11, identical to
+    // PRIV_M, so the existing `current_priv < d_csr_addr[9:8]` check alone
+    // would wrongly treat it as an ordinary M-mode CSR.)
+    //
+    // Every hardwired-0 dcsr field below is a real spec field with no
+    // meaning under this model, not an oversight - see the comment on each.
+    wire [31:0] dcsr_r = {4'd4,              // [31:28] xdebugver = 4 (0.13/1.0 shape)
+                          12'b0,              // [27:16] reserved
+                          1'b0,               // [15] ebreakm - no-op: no ebreak-in-debug-config exists
+                          1'b0,               // [14] ebreaks - same
+                          1'b0,               // [13] ebreaku - same
+                          1'b0,               // [12] reserved
+                          1'b0,               // [11] stepie - no-op: no debug-mode instruction
+                                              //   stream to have an interrupt-enable policy for
+                          1'b0,               // [10] stopcount - no-op: counters aren't paused here
+                          1'b0,               // [9]  stoptime - same
+                          dcsr_cause_r,       // [8:6]
+                          1'b0,               // [5] reserved
+                          1'b0,               // [4] mprven - no-op: no debug-mode memory access path
+                          1'b0,               // [3] nmip - no NMI source in this core
+                          1'b0,               // [2] step - no single-step yet (reserved for stage 5)
+                          dcsr_prv_r};        // [1:0]
+
+    // 0x1000-0x101f, RISC-V debug spec's Abstract-Command GPR regno range:
+    // regno = 0x1000 + architectural register number. 0x1000 = 11'h080 << 5,
+    // not 11'h001 - checked against sim/tb_cpu_halt.v, not assumed (an
+    // earlier version of this line had exactly that off-by-a-lot bug and a
+    // debug write to x5 silently landed nowhere).
+    wire        is_gpr_regno  = (dbg_reg_num[15:5] == 11'h080);
+    wire [4:0]  dbg_gpr_idx   = dbg_reg_num[4:0];
+    wire        is_dcsr_regno = (dbg_reg_num == 16'h07B0);
+    wire        is_dpc_regno  = (dbg_reg_num == 16'h07B1);
+    wire        dbg_reg_ok    = is_gpr_regno || is_dcsr_regno || is_dpc_regno;
+    assign      dbg_reg_err   = dbg_reg_valid && !dbg_reg_ok;
+    wire        dbg_gpr_write = dbg_reg_valid && dbg_reg_ok && dbg_reg_we && is_gpr_regno;
+    wire [31:0] dbg_gpr_rdata;
+
+    assign dbg_reg_rdata = is_gpr_regno  ? dbg_gpr_rdata :
+                           is_dcsr_regno ? dcsr_r :
+                           is_dpc_regno  ? dpc_r  : 32'b0;
+
+    // Safe as a plain priority mux, never a real two-driver race:
+    // dbg_gpr_write can only be true while dbg_reg_valid is asserted, which
+    // per dm.v's own contract only happens while dbg_halted is high - and
+    // mem_wb_reg_we is guaranteed 0 whenever the hart is genuinely halted,
+    // by construction of dbg_pipeline_quiescent above (nothing is retiring).
+    // Deliberately does not touch mem_wb_reg_we/mem_wb_rd/mem_wb_wb_data
+    // themselves (or the trace_rd_* taps sim/tracer.v and cosim read) - a
+    // debug write must never look like a retiring instruction, and keeping
+    // the mux here, at the RF instantiation boundary, gets that for free.
+    wire        rf_we    = dbg_gpr_write ? 1'b1         : mem_wb_reg_we;
+    wire [4:0]  rf_rd    = dbg_gpr_write ? dbg_gpr_idx   : mem_wb_rd;
+    wire [31:0] rf_wdata = dbg_gpr_write ? dbg_reg_wdata : mem_wb_wb_data;
+
     regfile RF (
-        .clk(clk), .we(mem_wb_reg_we),
-        .rs1(d_rs1), .rs2(d_rs2), .rd(mem_wb_rd),
-        .wdata(mem_wb_wb_data),
-        .rdata1(d_rs1_data), .rdata2(d_rs2_data)
+        .clk(clk), .we(rf_we),
+        .rs1(d_rs1), .rs2(d_rs2), .rd(rf_rd),
+        .wdata(rf_wdata),
+        .rdata1(d_rs1_data), .rdata2(d_rs2_data),
+        .dbg_rs(dbg_gpr_idx), .dbg_rdata(dbg_gpr_rdata)
     );
 
     // =======================================================================
@@ -668,7 +764,13 @@ module cpu_core #(
     // the two together would double-latch an instruction - see the
     // if_id register block below.
     wire if_stall    = itlb_wait_stall || ibus_wait;
-    wire pc_freeze   = id_ex_stall || if_stall;
+    // `dbg_halt_pending` covers a debugger that only pulses `dbg_haltreq`
+    // for one DMI write rather than holding it until `dmstatus.allhalted` -
+    // the spec says to hold it, but nothing here should silently drop a
+    // request that doesn't. `dbg_halted_r` keeps admission blocked for the
+    // whole time the hart reports halted, not just the cycle it got there.
+    wire dbg_halt_admit_block = dbg_haltreq || dbg_halt_pending || dbg_halted_r;
+    wire pc_freeze   = id_ex_stall || if_stall || dbg_halt_admit_block;
 
     // =======================================================================
     // ID/EX pipeline register
@@ -1378,6 +1480,42 @@ module cpu_core #(
         end
     end
 
+    // ---- hart control: halted detection ----
+    //
+    // `dbg_pipeline_quiescent` checks if_id/id_ex/ex_mem, deliberately not
+    // mem_wb: once those three are simultaneously empty, whatever lands in
+    // mem_wb this cycle is the last write that will ever happen with the
+    // pipeline frozen upstream of it - waiting one more cycle for mem_wb's
+    // own valid bit to clear too would only add latency, not correctness.
+    // Genuinely in-flight work (a divide, an MMU walk, an AMO's write
+    // phase, a bus wait) is not disturbed: `dbg_halt_admit_block` only
+    // blocks *admission* into if_id, so id_ex_stall's hold path (line
+    // ~1421) still lets a busy EX finish exactly as it does for every
+    // other stall - halting drains the pipeline instead of killing it.
+    wire dbg_pipeline_quiescent = !if_id_valid && !id_ex_valid && !ex_mem_valid;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            dbg_halted_r     <= 1'b0;
+            dbg_halt_pending <= 1'b0;
+        end else if (dbg_halted_r) begin
+            if (dbg_resumereq) begin
+                dbg_halted_r     <= 1'b0;
+                dbg_halt_pending <= 1'b0;
+            end
+        end else begin
+            if (dbg_haltreq) dbg_halt_pending <= 1'b1;
+            if (dbg_halt_pending && dbg_pipeline_quiescent) begin
+                dbg_halted_r     <= 1'b1;
+                dbg_halt_pending <= 1'b0;
+                dpc_r            <= pc;            // pc is frozen here: the resume address
+                dcsr_cause_r     <= 3'd3;           // haltreq
+                dcsr_prv_r       <= current_priv;
+            end
+        end
+    end
+    assign dbg_halted = dbg_halted_r;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             if_id_valid <= 1'b0;
@@ -1385,8 +1523,11 @@ module cpu_core #(
             if_id_valid <= 1'b0;
         end else if (id_ex_stall) begin
             // hold if_id unchanged (content not yet consumed by id_ex)
-        end else if (if_stall) begin
+        end else if (if_stall || dbg_halt_admit_block) begin
             if_id_valid <= 1'b0; // content WAS consumed into id_ex; IF has nothing new this cycle
+                                  // (dbg_halt_admit_block: or the hart is halting/halted, and
+                                  // must stop admitting new instructions - id_ex_valid drains
+                                  // one cycle behind this for free, on its own default path)
         end else begin
             if_id_valid        <= 1'b1;
             if_id_pc           <= pc;

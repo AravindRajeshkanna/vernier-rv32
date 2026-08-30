@@ -2754,13 +2754,34 @@ seeds and nothing on the two sourced at the D-cache tag. 71% of the path is
 routing, which is what one stall signal fanning out across the die looks
 like. `fpga/README.md` has the full paths and the arithmetic.
 
-**What is left is hart control**: halt, resume, single-step, and reading the
-CPU's registers. That needs debug mode, `dcsr`, `dpc`, `dret` and a debug ROM
-the core vectors into, all of which land on the fetch redirect and the
-register file write port. Two of six placement seeds already fail to close
-25 MHz. **Fix the timing margin first** — this is the clearest case in the
-project of one phase being gated on another, and it is gated on Phase 3's
-unfinished business rather than on anything here.
+**Halt, resume, and register (GPR/`dcsr`/`dpc`) access are now real, in
+simulation, on `CORE=inorder`** — deliberately without the RISC-V debug
+spec's full model. That model needs debug mode, `dcsr`, `dpc`, `dret` and a
+debug ROM the core vectors into, all of which land on the fetch redirect and
+the register file write port, on a design where two of six placement seeds
+already fail to close 25 MHz - exactly the gate this section already named.
+What shipped instead is deliberately smaller: halt is "freeze pipeline
+*admission* in place" (one term added to the existing `pc_freeze`/hold
+machinery, the same class of stall the pipeline already handles for a
+load-use hazard or a busy divide), resume is un-freezing it, and register
+access is a dedicated read/write port into `regfile.v`, active only while
+genuinely halted - no debug ROM, no `dret`, no new address-space
+reservation, nothing added to the fetch-redirect mux at all. `dcsr`/`dpc`
+live as private registers in `rtl/cpu_core.v` rather than in `csr_file.v`,
+specifically so ordinary M/S/U-mode software has no path to them - there is
+no debug-mode instruction stream under this model that would ever need one.
+`CORE=ooo` has no hart-control ports at all: `rtl/soc/soc_top.v` ties its
+`halted` input to 0, so `dmstatus` keeps reporting it as running rather than
+accepting `haltreq` and silently doing nothing. `make sim_cpu_halt` (new)
+drives it directly against `rtl/cpu_core.v`; `sim/tb_jtag.v`'s own
+`dmcontrol`/`dmstatus` DMI round-trip is core-aware and checks the correct
+behavior for each core. **Fix the timing margin first** still applies to
+anything beyond this - single-step (needs the same-edge PC-hold/`if_id`/
+`id_ex`-flush precision a load-use stall already gets, not yet built) and
+any FPGA timing/board claim for this path remain gated on Phase 3's
+unfinished business, same as before; this round's whole design is what
+makes that possible to say cleanly, since nothing here touches the
+timing-critical path at all.
 
 Also missing, and cheaper: no debug adapter has been connected to a board.
 The path is proven in simulation only.

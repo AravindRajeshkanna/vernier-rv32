@@ -1,31 +1,42 @@
-// A RISC-V Debug Module, System Bus Access only.
+// A RISC-V Debug Module: System Bus Access, plus halt/resume.
 //
 // The host reaches this through rtl/debug/jtag_tap.v and rtl/debug/dmi_cdc.v.
 // What it provides is a **memory port that does not go through the CPU**: any
 // address the interconnect decodes can be read or written from a debugger
-// while the core is running, spinning, or wedged.
+// while the core is running, spinning, or wedged - and, on `CORE=inorder`
+// only, real `haltreq`/`resumereq` control over the hart.
 //
-// ---- Why this half and not the other ----
+// ---- Why System Bus Access came first ----
 //
 // The RISC-V External Debug Support specification describes two ways for a
 // debugger to touch memory. Abstract commands and the program buffer make the
-// *hart* do it, which means halting it, which means debug mode, `dcsr`,
-// `dpc`, `dret`, and a debug ROM the core vectors into. System Bus Access
-// does it with a bus master that has nothing to do with the hart at all.
+// *hart* do it, which means halting it. System Bus Access does it with a bus
+// master that has nothing to do with the hart at all.
 //
-// This implements the second. Not as a stepping stone - it is the half that
-// answers the questions this project has actually been stuck on. "OpenSBI
-// hangs before its console comes up" and "the boot ROM prints nothing" are
-// both *the memory is fine and I cannot see it* problems, and none of them
-// needed the hart stopped.
+// System Bus Access shipped alone first because it answers the questions
+// this project had actually been stuck on - "OpenSBI hangs before its
+// console comes up," "the boot ROM prints nothing" - which are both *the
+// memory is fine and I cannot see it* problems, and none of them needed the
+// hart stopped.
 //
-// The other half is deliberately deferred, and the reason is measurable
-// rather than aesthetic: halt/resume lands on the fetch redirect and the
-// register file write port of a design where two of six placement seeds
-// already fail to close 25 MHz (fpga/README.md). Adding to that path before
-// the margin is fixed would turn an intermittent build failure into a
-// permanent one. This module touches the CPU nowhere - it is a fourth
-// Wishbone master and one reset term.
+// ---- Halt/resume, and what is still deliberately deferred ----
+//
+// `haltreq`/`resumereq` are real now (`rtl/cpu_core.v`, `CORE=inorder`
+// only), but as "freeze the pipeline in place," not the spec's full model:
+// no debug mode, no `dcsr`-driven instruction stream, no debug ROM, no
+// `dret`. docs/roadmap.md's "Stage 1d was built anyway" section and
+// rtl/cpu_core.v's own hart-control comment have the reasoning - the short
+// version is the same one that deferred this in the first place: the full
+// model lands on the fetch redirect and the register file write port of a
+// design where two of six placement seeds already fail to close 25 MHz
+// (fpga/README.md), and freezing pipeline *admission* touches neither.
+//
+// Abstract Command register access (reading/writing GPRs, `dcsr`, `dpc`
+// over DMI) is a separate, later change - `abstractcs`, and reads of
+// `dcsr`/`dpc`/GPRs, all still read as unimplemented here. `CORE=ooo` has no
+// hart-control ports at all yet (rtl/soc/soc_top.v ties its `halted` input
+// to 0), so `dmstatus` continues to report it honestly as never-halted,
+// the same rule this module has always followed.
 //
 // ---- What a host can do with it ----
 //
@@ -34,18 +45,14 @@
 //     machine that is not talking
 //   * load a program without the boot ROM's serial loader and its 22 minutes
 //   * assert `ndmreset` to restart the SoC without touching the board
+//   * halt and resume the in-order core's hart (`CORE=inorder` only)
 //
-// ---- What it cannot ----
+// ---- What it still cannot ----
 //
-//   * halt, resume, or single-step the hart
+//   * single-step
 //   * read or write CPU registers or CSRs
 //   * set a breakpoint
-//
-// `dmstatus` reports all of that honestly - `allrunning` is hardwired 1 and
-// `haltreq` is accepted and ignored - so a debugger that tries to halt gets a
-// hart that never halts rather than a lie. OpenOCD will not drive this as a
-// normal RISC-V target for that reason; fpga/openocd/README.md says what it
-// is good for instead.
+//   * halt/resume `CORE=ooo` at all
 module dm (
     input  wire        clk,
     input  wire        rst,
@@ -76,7 +83,12 @@ module dm (
     // Cleared by the host writing dmcontrol.dmactive = 0. Nothing here needs
     // it, but a host uses the read-back to tell a Debug Module that exists
     // from a DMI that acks everything.
-    output wire        dmactive
+    output wire        dmactive,
+
+    // ---- hart control ----
+    output wire        haltreq,     // level, sticky until the host clears it via dmcontrol
+    output reg         resumereq,   // one-cycle pulse
+    input  wire        halted       // CORE=ooo ties this to 0 - see rtl/soc/soc_top.v
 );
     // ---- DMI address map ----
     localparam [6:0] A_DMCONTROL  = 7'h10,
@@ -87,12 +99,14 @@ module dm (
                      A_SBDATA0    = 7'h3C;
 
     // ---- dmcontrol ----
-    reg dmactive_r, ndmreset_r;
+    reg dmactive_r, ndmreset_r, haltreq_r;
     assign dmactive = dmactive_r;
     // Gated by dmactive: the spec says everything in the DM stays reset while
     // dmactive is 0, and a stray ndmreset from a module the host has not
-    // enabled would reset the SoC out from under a running program.
+    // enabled would reset the SoC out from under a running program. haltreq
+    // gets the same treatment, for the same reason.
     assign ndmreset = ndmreset_r && dmactive_r;
+    assign haltreq  = haltreq_r && dmactive_r;
 
     // ---- sbcs ----
     //
@@ -136,8 +150,19 @@ module dm (
 
     // ---- dmstatus ----
     //
-    // Every "halted" bit is 0 and every "running" bit is 1, permanently,
-    // because there is no hart control here. A host reads this and knows.
+    // any*/all* fields are identical pairs throughout: this is a single-hart
+    // system, so "any hart" and "all harts" are the same question and no
+    // `hartsel` handling is needed anywhere in this module.
+    //
+    // [9:8] any/allhalted and [11:10] any/allrunning now come from the real
+    // `halted` input (`CORE=inorder` only - `CORE=ooo` ties it to 0 in
+    // rtl/soc/soc_top.v, so this continues to report honestly for that
+    // core). [17:16] any/allresumeack is simplified to `!halted` rather than
+    // the spec's exact "resumed since the last resume request" edge -
+    // acceptable because no real debugger targets this DM yet (only this
+    // project's own sim/tb_jtag.v does), and worth tightening before one
+    // does.
+    //
     // Written as explicit bit assignments rather than one concatenation,
     // because the first version of this was a 34-bit concatenation whose
     // comments named bit positions that did not match the vector it built.
@@ -153,23 +178,24 @@ module dm (
     //   [14]   anynonexistent       [15] allnonexistent
     //   [16]   anyresumeack         [17] allresumeack
     //   [18]   anyhavereset         [19] allhavereset
-    // Built by named bit position rather than as one concatenation, because
-    // the first version of this *was* a concatenation - 34 bits wide, with
-    // comments naming positions that did not match the vector it built. A
-    // field in the wrong place here is a host reading a plausible wrong
-    // answer about whether the hart is running.
-    localparam [31:0] DMSTATUS =
-          (32'd2      <<  0) |   // [3:0]   version = 2, debug spec 0.13
-          (32'd0      <<  4) |   // [4]     confstrptrvalid - no config string
-          (32'd0      <<  5) |   // [5]     hasresethaltreq - cannot halt at all
-          (32'd1      <<  6) |   // [6]     authenticated - nothing to authenticate
-          (32'd0      <<  7) |   // [7]     authbusy
-          (32'd0      <<  8) |   // [9:8]   any/allhalted - no hart control
-          (32'd3      << 10) |   // [11:10] any/allrunning - always, for the same reason
-          (32'd0      << 12) |   // [13:12] any/allunavail
-          (32'd0      << 14) |   // [15:14] any/allnonexistent - the hart exists
-          (32'd3      << 16) |   // [17:16] any/allresumeack - nothing to resume
-          (32'd0      << 18);    // [19:18] any/allhavereset
+    // Zero-extended to 32 bits before the shift, not `{2{halted}} << N`
+    // directly - Verilator's width rules treat that replicate as a 2-bit
+    // value being shifted in a 32-bit context and (correctly) flag it,
+    // which this project's own build treats as an error, not a warning.
+    wire [31:0] halted_pair  = {30'b0, {2{halted}}};
+    wire [31:0] running_pair = {30'b0, {2{!halted}}};
+    wire [31:0] DMSTATUS =
+          (32'd2          <<  0) |   // [3:0]   version = 2, debug spec 0.13
+          (32'd0          <<  4) |   // [4]     confstrptrvalid - no config string
+          (32'd0          <<  5) |   // [5]     hasresethaltreq - no reset-halt support
+          (32'd1          <<  6) |   // [6]     authenticated - nothing to authenticate
+          (32'd0          <<  7) |   // [7]     authbusy
+          (halted_pair    <<  8) |   // [9:8]   any/allhalted
+          (running_pair   << 10) |   // [11:10] any/allrunning
+          (32'd0          << 12) |   // [13:12] any/allunavail
+          (32'd0          << 14) |   // [15:14] any/allnonexistent - the hart exists
+          (running_pair   << 16) |   // [17:16] any/allresumeack - simplified, see above
+          (32'd0          << 18);    // [19:18] any/allhavereset
 
     // ---- the bus side ----
     //
@@ -286,6 +312,8 @@ module dm (
             dmi_resp        <= 2'b0;
             dmactive_r      <= 1'b0;
             ndmreset_r      <= 1'b0;
+            haltreq_r       <= 1'b0;
+            resumereq       <= 1'b0;
             sberror         <= SBERR_NONE;
             sbbusyerror     <= 1'b0;
             sbreadonaddr    <= 1'b0;
@@ -296,8 +324,9 @@ module dm (
             sb_start_we     <= 1'b0;
             sb_start_data   <= 32'b0;
         end else begin
-            sb_start <= 1'b0;
-            dmi_done <= 1'b0;
+            sb_start  <= 1'b0;
+            dmi_done  <= 1'b0;
+            resumereq <= 1'b0;   // one-shot: cleared every cycle, set below on a write
 
             if (dmi_valid) begin
                 dmi_done  <= 1'b1;
@@ -309,11 +338,24 @@ module dm (
                         A_DMCONTROL: begin
                             dmactive_r <= dmi_wdata[0];
                             ndmreset_r <= dmi_wdata[1];
+                            // Sticky: held until the host explicitly clears
+                            // it with another dmcontrol write, per spec -
+                            // unlike resumereq below, a single pulse would
+                            // let a debugger that (correctly, per spec)
+                            // holds haltreq low after the first write race
+                            // cpu_core.v's own halt-admission logic.
+                            haltreq_r  <= dmi_wdata[31];
+                            // One-shot: dm.v's own always block clears this
+                            // back to 0 unconditionally every cycle (see
+                            // above); this sets it for exactly the cycle
+                            // after the write.
+                            resumereq  <= dmi_wdata[30];
                             // Everything in the DM holds reset while
                             // dmactive is low, which is what lets a host
                             // recover a wedged Debug Module without a power
-                            // cycle.
+                            // cycle. haltreq gets the same treatment.
                             if (!dmi_wdata[0]) begin
+                                haltreq_r       <= 1'b0;
                                 sberror         <= SBERR_NONE;
                                 sbbusyerror     <= 1'b0;
                                 sbreadonaddr    <= 1'b0;
