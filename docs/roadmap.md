@@ -1428,6 +1428,66 @@ and `make verify_ooo`'s every stage before `sim_linux` (`isa`, `cosim` 84/84,
 `riscv-tests` 81/0/3, JTAG, SDRAM, interrupt-driven UART TX, ...) pass
 cleanly with this change in place.
 
+**Update 12: the stall is inside one specific `kernfs_add_one` call that
+never returns - not somewhere in or after it.** Continuing directly from
+Update 11's fix, on the reasoning that "somewhere in or immediately after"
+was still too coarse to act on. Reused Update 10's return-address technique
+(watch the instruction right after a call site, not just the callee's
+entry) rather than guessing from source: `riscv64-unknown-elf-objdump -d`
+against `vmlinux` finds every `jal`/`call` site targeting `kernfs_add_one`
+- four of them, in `kernfs_create_dir_ns`, `kernfs_create_empty_dir`,
+`__kernfs_create_file`, and `kernfs_create_link`. `+watchpc +watchlast` on
+each call site's return address: `kernfs_create_dir_ns`'s returns 34 times,
+last at cycle 51,551,316; `__kernfs_create_file`'s returns 101 times, last
+at cycle 51,600,657; `kernfs_create_empty_dir`'s and `kernfs_create_link`'s
+are never reached at all (0 visits - `of_core_init`'s path doesn't use
+either). 34 + 101 = 135 returns, against `kernfs_add_one`'s own 136 entries
+(Update 11) - exactly one call does not return. Cross-checked against
+Update 11's own register capture at `kernfs_add_one`'s 136th (last) entry:
+`ra=0xc015b934`, which is `__kernfs_create_file`'s call site - so the
+non-returning call is a property-file creation, not a directory creation,
+consistent with `__kernfs_create_file`'s return address having already
+stopped advancing (its 101st and last return, at 51.6M) roughly 6M cycles
+*before* `kernfs_add_one`'s final entry at 57.66M: the loop kept running
+after that 101st return - moved to a later property or node, called
+`__kernfs_create_file` once more - and this next call's own internal
+`kernfs_add_one` is the one that never comes back.
+
+`kernfs_add_one` itself (`fs/kernfs/dir.c:786`) is straight-line code with
+no loops: `down_write(&root->kernfs_rwsem)`, a few checks, one link
+operation, a second `down_write`/`up_write` pair on
+`kernfs_iattr_rwsem` guarding a timestamp update, `up_write` on
+`kernfs_rwsem`, an optional `kernfs_activate()`, return. The only two places
+it can actually block are those two `down_write` calls. Update 11 already
+established that the run's tail sits in the scheduler's idle path
+(`default_idle_call`/`arch_cpu_idle`), repeating - a genuine voluntary
+sleep, not a tight retry loop - which is the signature of a *contended*
+`down_write` parking its caller on a wait queue, not of a corrupted atomic
+compare-and-swap spinning forever. That points at a narrower, sharper
+question than "why does this hang": something believes `kernfs_rwsem` (or
+`kernfs_iattr_rwsem`) is already held, and whatever `up_write` should
+eventually wake this waiter either never runs or its wakeup is lost.
+
+A software bug in `kernfs_add_one` itself is unlikely on its face - this is
+heavily-exercised, decades-mainlined upstream code, and a genuine
+double-lock or missed-unlock surviving to 6.18 would be a well-known issue,
+not something this project would be first to hit. That continues to point
+at the RTL: an ordering or read-modify-write correctness gap in how the
+rwsem's underlying atomic-long operations (RISC-V AMO or LR/SC, there being
+no single-instruction CAS) interact with `core_ooo.v`'s store buffer and ROB
+- the same general class Update 9's load-arbitration bug and this whole
+investigation keep circling - not yet confirmed.
+
+**Where this stopped, and why:** confirming or refuting that hypothesis
+needs either the raw contents of the specific `kernfs_rwsem`/
+`kernfs_iattr_rwsem` word contended at the hang point, or a trace of the
+actual AMO/LR-SC instruction stream around it. `+watchpc` dumps
+architectural registers at retirement; it has no way to read memory
+contents at a triggered cycle. That gap is the same shape Update 10 hit and
+closed by building `+watchpc` itself in the first place - the concrete next
+step here is the same kind of tool, not more bisection with the tool that
+already answered what it can.
+
 A second generic checklist arrived after the one above, structured as four
 build phases: minimum-viable OoO, memory system + full privileged features,
 SoC integration + Linux bring-up, stabilization + polish. Read literally it
@@ -2522,14 +2582,20 @@ Open, unscheduled, and written down so they are not rediscovered.
 **The wide core's Linux boot does not reach userspace.** `make linux_trapdiff`
 boots the same image on both cores and compares the traps; the "Stage 1d was
 built anyway" section above has the current, authoritative account. As of
-"Update 11," the point of no return is cycle 57.6-60M of 400M, inside
-`of_core_init`'s device-tree-to-sysfs population (`kernfs_add_one`, called
-from `__kernfs_create_file`, 136 visits and then no more even 32M+ cycles
-later) - `platform_bus_init`, the very next call in `driver_init` after
-`of_core_init` returns, is never reached. The run's tail shows the hart
-parked in the scheduler's idle path (`default_idle_call`/`arch_cpu_idle`),
-repeating forever: the thread running `do_initcalls()` has gone to sleep and
-is never woken. This location is new as of Update 11's fix (plain `FENCE`
+"Update 12," the point of no return is a single, specific `kernfs_add_one`
+call (cycle 57,664,442 of 400M) made from `__kernfs_create_file` while
+`of_core_init` populates the device tree into sysfs - it is entered but
+never returns; `platform_bus_init`, the very next call in `driver_init`
+after `of_core_init` returns, is never reached. `kernfs_add_one` itself is
+straight-line code whose only two blocking points are `down_write` on
+`kernfs_rwsem` and `kernfs_iattr_rwsem` - Update 12 has the return-address
+accounting that isolates which call this is and why a software bug in this
+heavily-exercised upstream code is unlikely, pointing instead at the same
+class of RTL ordering/read-modify-write gap this investigation keeps
+finding (Update 9, Update 11). The run's tail shows the hart parked in the
+scheduler's idle path (`default_idle_call`/`arch_cpu_idle`), repeating
+forever: the thread running `do_initcalls()` has gone to sleep and is never
+woken. This location is new as of Update 11's fix (plain `FENCE`
 now actually drains the store buffer, matching Linux's own documented
 `cpu_do_idle()` invariant, where before it was silently a no-op inherited
 from `cpu_core.v`) - the stall used to be at cycle 94.5-94.8M, inside
