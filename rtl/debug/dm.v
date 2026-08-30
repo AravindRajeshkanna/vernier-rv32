@@ -32,11 +32,15 @@
 // (fpga/README.md), and freezing pipeline *admission* touches neither.
 //
 // Abstract Command register access (reading/writing GPRs, `dcsr`, `dpc`
-// over DMI) is a separate, later change - `abstractcs`, and reads of
-// `dcsr`/`dpc`/GPRs, all still read as unimplemented here. `CORE=ooo` has no
-// hart-control ports at all yet (rtl/soc/soc_top.v ties its `halted` input
-// to 0), so `dmstatus` continues to report it honestly as never-halted,
-// the same rule this module has always followed.
+// over DMI, `CORE=inorder` only) is real now too: `abstractcs`/`command`/
+// `data0` drive cpu_core.v's dedicated debug register port (rtl/cpu_core.v's
+// own hart-control comment) the same way `haltreq`/`resumereq` do - single-
+// cycle turnaround, no Program Buffer, no `postexec` support (`cmderr` =
+// not-supported for that bit), and only Access-Register/32-bit commands
+// (anything else also gets not-supported). `CORE=ooo` has no hart-control
+// ports at all yet (rtl/soc/soc_top.v ties its `halted` input to 0), so a
+// command there gets `cmderr` = halt/resume required, honestly, rather than
+// silently succeeding.
 //
 // ---- What a host can do with it ----
 //
@@ -46,13 +50,15 @@
 //   * load a program without the boot ROM's serial loader and its 22 minutes
 //   * assert `ndmreset` to restart the SoC without touching the board
 //   * halt and resume the in-order core's hart (`CORE=inorder` only)
+//   * read and write that hart's GPRs, `dcsr`, and `dpc` while halted
+//     (`CORE=inorder` only)
 //
 // ---- What it still cannot ----
 //
 //   * single-step
-//   * read or write CPU registers or CSRs
+//   * execute the Program Buffer (there isn't one)
 //   * set a breakpoint
-//   * halt/resume `CORE=ooo` at all
+//   * halt/resume, or touch a register on, `CORE=ooo` at all
 module dm (
     input  wire        clk,
     input  wire        rst,
@@ -88,12 +94,24 @@ module dm (
     // ---- hart control ----
     output wire        haltreq,     // level, sticky until the host clears it via dmcontrol
     output reg         resumereq,   // one-cycle pulse
-    input  wire        halted       // CORE=ooo ties this to 0 - see rtl/soc/soc_top.v
+    input  wire        halted,      // CORE=ooo ties this to 0 - see rtl/soc/soc_top.v
+
+    // ---- Abstract Command register access (rtl/cpu_core.v, CORE=inorder
+    // only - see the module comment above) ----
+    output reg          dbg_reg_valid,
+    output reg          dbg_reg_we,
+    output reg  [15:0]  dbg_reg_num,
+    output reg  [31:0]  dbg_reg_wdata,
+    input  wire [31:0]  dbg_reg_rdata,
+    input  wire         dbg_reg_err   // cpu_core.v's meaning: regno not recognized
 );
     // ---- DMI address map ----
-    localparam [6:0] A_DMCONTROL  = 7'h10,
+    localparam [6:0] A_DATA0      = 7'h04,
+                     A_DMCONTROL  = 7'h10,
                      A_DMSTATUS   = 7'h11,
                      A_HARTINFO   = 7'h12,
+                     A_ABSTRACTCS = 7'h16,
+                     A_COMMAND    = 7'h17,
                      A_SBCS       = 7'h38,
                      A_SBADDRESS0 = 7'h39,
                      A_SBDATA0    = 7'h3C;
@@ -284,6 +302,121 @@ module dm (
         end
     end
 
+    // ---- Abstract Command (Access Register only) ----
+    //
+    // Unlike System Bus Access, this never touches the Wishbone bus - it
+    // drives cpu_core.v's dedicated debug register port directly, and that
+    // port is combinational on the read side (rtl/regfile.v's dbg_rdata,
+    // cpu_core.v's dcsr_r/dpc_r muxes), so there is nothing to wait on but
+    // one clock edge: the command write latches dbg_reg_* in AC_IDLE, and
+    // cpu_core.v's response is valid to capture one cycle later in
+    // AC_ACCESS. Modeled on the SBA machine's S_IDLE/S_ACCESS naming, not
+    // its multi-cycle bus wait.
+    //
+    // No Program Buffer exists, so `postexec` is always not-supported.
+    // `transfer=0` is a legal no-op per spec (nothing requested to move)
+    // and completes without ever touching cpu_core.v's debug port.
+    localparam [2:0] CMDERR_NONE       = 3'd0,
+                     CMDERR_BUSY       = 3'd1,
+                     CMDERR_NOTSUP     = 3'd2,
+                     CMDERR_HALTRESUME = 3'd4;
+
+    localparam AC_IDLE = 1'b0, AC_ACCESS = 1'b1;
+    reg        ac_state;
+    reg [2:0]  ac_cmderr;
+    reg        ac_busy;
+    reg [31:0] data0_r;
+
+    // command register fields, RISC-V Debug Spec 0.13 SS3.7.1.1 (Access
+    // Register): [31:24] cmdtype, [22:20] aarsize, [18] postexec,
+    // [17] transfer, [16] write, [15:0] regno. Only meaningful while a
+    // write to A_COMMAND is actually happening (gated below).
+    wire [2:0]  cmd_aarsize  = dmi_wdata[22:20];
+    wire        cmd_postexec = dmi_wdata[18];
+    wire        cmd_transfer = dmi_wdata[17];
+    wire        cmd_write    = dmi_wdata[16];
+    wire [15:0] cmd_regno    = dmi_wdata[15:0];
+    wire        cmd_type_ok  = (dmi_wdata[31:24] == 8'd0);
+    wire        cmd_size_ok  = (cmd_aarsize == 3'd2);  // 32-bit only, same rule SBA uses
+
+    wire ac_cmd_write = dmi_valid && (dmi_op == 2'd2) && (dmi_addr == A_COMMAND);
+
+    wire [31:0] abstractcs_value = {
+        3'd0,        // [31:29] reserved
+        5'd0,        // [28:24] progbufsize = 0, no Program Buffer
+        11'd0,       // [23:13] reserved
+        ac_busy,     // [12]    busy
+        1'b0,        // [11]    reserved
+        ac_cmderr,   // [10:8]  cmderr
+        4'd0,        // [7:4]   reserved
+        4'd1         // [3:0]   datacount = 1 (data0 only)
+    };
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            ac_state      <= AC_IDLE;
+            ac_busy       <= 1'b0;
+            ac_cmderr     <= CMDERR_NONE;
+            data0_r       <= 32'b0;
+            dbg_reg_valid <= 1'b0;
+            dbg_reg_we    <= 1'b0;
+            dbg_reg_num   <= 16'b0;
+            dbg_reg_wdata <= 32'b0;
+        end else begin
+            dbg_reg_valid <= 1'b0;   // one-shot: mirrors resumereq/sb_start above
+
+            case (ac_state)
+                AC_IDLE: begin
+                    if (ac_cmd_write) begin
+                        if (ac_cmderr != CMDERR_NONE) begin
+                            // Per spec: the DM executes no further commands
+                            // while cmderr is set, until the host clears it
+                            // with an abstractcs write (below).
+                        end else if (!halted) begin
+                            ac_cmderr <= CMDERR_HALTRESUME;
+                        end else if (!cmd_type_ok || cmd_postexec) begin
+                            ac_cmderr <= CMDERR_NOTSUP;
+                        end else if (!cmd_transfer) begin
+                            // legal no-op, see header comment
+                        end else if (!cmd_size_ok) begin
+                            ac_cmderr <= CMDERR_NOTSUP;
+                        end else begin
+                            dbg_reg_num   <= cmd_regno;
+                            dbg_reg_we    <= cmd_write;
+                            dbg_reg_wdata <= data0_r;
+                            dbg_reg_valid <= 1'b1;
+                            ac_busy       <= 1'b1;
+                            ac_state      <= AC_ACCESS;
+                        end
+                    end
+                end
+                AC_ACCESS: begin
+                    // dbg_reg_rdata/dbg_reg_err are combinational off the
+                    // dbg_reg_* values latched last cycle, so they are
+                    // valid right now - capture and we're done.
+                    if (!dbg_reg_we) data0_r <= dbg_reg_rdata;
+                    ac_cmderr <= dbg_reg_err ? CMDERR_NOTSUP : CMDERR_NONE;
+                    ac_busy   <= 1'b0;
+                    ac_state  <= AC_IDLE;
+                end
+                default: ac_state <= AC_IDLE;
+            endcase
+
+            // data0/abstractcs.cmderr writes, independent of the state
+            // machine above. Guarded on !ac_busy so a (spec-violating) host
+            // write landing on the exact cycle a command completes can't
+            // race the AC_ACCESS capture above for the same register - real
+            // hosts poll busy first, so this only ever matters here.
+            if (dmi_valid && (dmi_op == 2'd2) && !ac_busy) begin
+                if (dmi_addr == A_DATA0)
+                    data0_r <= dmi_wdata;
+            end
+            if (dmi_valid && (dmi_op == 2'd2) && (dmi_addr == A_ABSTRACTCS) &&
+                (dmi_wdata[10:8] != 3'd0))
+                ac_cmderr <= CMDERR_NONE;
+        end
+    end
+
     // ---- DMI register access ----
     //
     // Always answers in one cycle. A DMI transaction never waits for the bus:
@@ -296,6 +429,9 @@ module dm (
             A_DMCONTROL:  rd = {30'b0, ndmreset_r, dmactive_r};
             A_DMSTATUS:   rd = DMSTATUS;
             A_HARTINFO:   rd = 32'b0;
+            A_ABSTRACTCS: rd = abstractcs_value;
+            A_COMMAND:    rd = 32'b0;    // write-only in practice; reads as 0
+            A_DATA0:      rd = data0_r;
             A_SBCS:       rd = sbcs_value;
             A_SBADDRESS0: rd = sbaddress;
             A_SBDATA0:    rd = sbdata;

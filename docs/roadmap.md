@@ -2772,16 +2772,38 @@ specifically so ordinary M/S/U-mode software has no path to them - there is
 no debug-mode instruction stream under this model that would ever need one.
 `CORE=ooo` has no hart-control ports at all: `rtl/soc/soc_top.v` ties its
 `halted` input to 0, so `dmstatus` keeps reporting it as running rather than
-accepting `haltreq` and silently doing nothing. `make sim_cpu_halt` (new)
-drives it directly against `rtl/cpu_core.v`; `sim/tb_jtag.v`'s own
-`dmcontrol`/`dmstatus` DMI round-trip is core-aware and checks the correct
-behavior for each core. **Fix the timing margin first** still applies to
-anything beyond this - single-step (needs the same-edge PC-hold/`if_id`/
-`id_ex`-flush precision a load-use stall already gets, not yet built) and
-any FPGA timing/board claim for this path remain gated on Phase 3's
-unfinished business, same as before; this round's whole design is what
-makes that possible to say cleanly, since nothing here touches the
-timing-critical path at all.
+accepting `haltreq` and silently doing nothing. `make sim_cpu_halt` drives it
+directly against `rtl/cpu_core.v`; `sim/tb_jtag.v`'s own `dmcontrol`/
+`dmstatus` DMI round-trip is core-aware and checks the correct behavior for
+each core.
+
+**Register access now reaches all the way from the real DMI wire, not just
+`rtl/cpu_core.v`'s own port.** `rtl/debug/dm.v` gained an Abstract Command
+state machine (`abstractcs`/`command`/`data0`, RISC-V Debug Spec 0.13
+SS3.6-3.7.1.1) that decodes Access-Register commands - 32-bit only, no
+Program Buffer (`postexec` always reports `cmderr` = not-supported, since
+there is nothing for it to execute) - and drives `rtl/cpu_core.v`'s existing
+debug register port the same way `haltreq`/`resumereq` already do: single-
+cycle turnaround, no Wishbone traffic, `cmderr` = halt/resume-required if the
+hart is not genuinely halted first. `rtl/soc/soc_top.v` wires this
+unconditionally; `CORE=ooo` refuses every command with that same
+halt/resume-required error, honestly, the same rule its `dmstatus` already
+followed. `sim/tb_jtag.v`'s stage 9 exercises it end-to-end over the actual
+bit-banged JTAG protocol - halt, read/write a GPR, read `dcsr`/`dpc`, two
+negative paths (an unsupported access size, an unrecognized `regno`), resume,
+and confirm the debug-written value is what the hart actually picked up and
+advanced past - which needed `sim/jtagram.hex` (the generated block-RAM
+image every JTAG test boots from) to plant a real two-instruction increment
+loop at `RESET_PC` instead of the illegal-instruction-trap-forever pattern
+every earlier stage uses, since that pattern never writes a GPR and would
+have let a no-op Abstract Command pass silently.
+
+**Fix the timing margin first** still applies to anything beyond this -
+single-step (needs the same-edge PC-hold/`if_id`/`id_ex`-flush precision a
+load-use stall already gets, not yet built) and any FPGA timing/board claim
+for this path remain gated on Phase 3's unfinished business, same as before;
+this round's whole design is what makes that possible to say cleanly, since
+nothing here touches the timing-critical path at all.
 
 Also missing, and cheaper: no debug adapter has been connected to a board.
 The path is proven in simulation only.

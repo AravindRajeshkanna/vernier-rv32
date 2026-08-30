@@ -197,12 +197,14 @@ module soc_top #(
 
     // ---- hart control (rtl/debug/dm.v <-> CPU), in-order-core only ----
     //
-    // Only haltreq/resumereq/halted are wired this round - dm.v does not
-    // implement Abstract Command register access yet (that is a later,
-    // separate change), so cpu_core.v's dbg_reg_* ports are tied inert
-    // directly below rather than routed through named cross-module wires
-    // that would have nothing real driving them.
-    wire dbg_haltreq, dbg_resumereq, dbg_halted;
+    // dbg_reg_* carries Abstract Command register access (GPR/dcsr/dpc)
+    // between dm.v and cpu_core.v's dedicated debug port - real on
+    // CORE=inorder, tied inert for CORE_OOO below (core_ooo.v has no such
+    // port at all).
+    wire        dbg_haltreq, dbg_resumereq, dbg_halted;
+    wire        dbg_reg_valid, dbg_reg_we, dbg_reg_err;
+    wire [15:0] dbg_reg_num;
+    wire [31:0] dbg_reg_wdata, dbg_reg_rdata;
 
     // Which core. -DCORE_OOO picks the wide/out-of-order one in rtl/ooo/.
     // See docs/roadmap.md Phase 1 - the in-order core stays the proven
@@ -233,19 +235,22 @@ module soc_top #(
         .fence_i(fence_i), .trap(trap)
 `ifndef CORE_OOO
         , .dbg_haltreq(dbg_haltreq), .dbg_resumereq(dbg_resumereq), .dbg_halted(dbg_halted),
-        // Register access (GPR/dcsr/dpc via dm.v Abstract Commands) is not
-        // implemented in dm.v yet - tied inert rather than left to float.
-        .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
-        .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
-        .dbg_reg_rdata(), .dbg_reg_err()
+        .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
+        .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
+        .dbg_reg_rdata(dbg_reg_rdata), .dbg_reg_err(dbg_reg_err)
 `endif
     );
 `ifdef CORE_OOO
     // core_ooo.v has no hart-control ports at all (see the comment above) -
-    // report honestly rather than silently claiming a halt that can never
-    // happen, the same rule dm.v's own dmstatus already follows for System
-    // Bus Access (rtl/debug/README.md).
-    assign dbg_halted = 1'b0;
+    // report honestly rather than silently claiming a halt or a successful
+    // register access that can never happen, the same rule dm.v's own
+    // dmstatus already follows for System Bus Access (rtl/debug/README.md).
+    // dm.v itself also refuses any command while !halted (cmderr =
+    // halt/resume required), so dbg_reg_err here is a backstop, not the
+    // only thing standing between a host and a fabricated register value.
+    assign dbg_halted    = 1'b0;
+    assign dbg_reg_rdata = 32'b0;
+    assign dbg_reg_err   = 1'b1;
 `endif
 
     cpu_wb BUSADAPT (
@@ -330,7 +335,10 @@ module soc_top #(
         .wb_adr(dbg_adr), .wb_dat_w(dbg_dat_w), .wb_sel(dbg_sel),
         .wb_dat_r(dbg_dat_r), .wb_ack(dbg_ack),
         .ndmreset(dbg_ndmreset), .dmactive(),
-        .haltreq(dbg_haltreq), .resumereq(dbg_resumereq), .halted(dbg_halted)
+        .haltreq(dbg_haltreq), .resumereq(dbg_resumereq), .halted(dbg_halted),
+        .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
+        .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
+        .dbg_reg_rdata(dbg_reg_rdata), .dbg_reg_err(dbg_reg_err)
     );
 
     wb_interconnect #(.NUM_SLAVES(NUM_SLAVES)) BUS (
