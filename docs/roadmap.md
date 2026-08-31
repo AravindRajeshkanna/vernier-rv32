@@ -3013,6 +3013,30 @@ self-reports rather than hanging silently, which is not the same as being
 fixed, and pretending otherwise is exactly the failure mode
 [practices.md](practices.md) §7 is about.
 
+**RESOLVED - not a design defect. Bisected to a toolchain/environment
+difference on the machine that first investigated it, not to any commit in
+this repository.** `make verilator_check` now passes deterministically,
+cycle for cycle (`2109474`/`10759`, both simulators, four consecutive runs)
+on `main` - and, decisively, **also passes at the exact commit this entry
+was written against** (`5a7e610`, checked out directly and re-run rather
+than assumed). Icarus's own number at that commit is `2109474`, not the
+`1845770` originally recorded here; nothing in `sim/sdram_model.v`,
+`sim/tb_sdramboot.v`, `sim/verilator_soc.cpp`, or `rtl/soc/wb_sdram.v` has
+changed since #70, well before this entry, so the RTL and testbenches at
+that commit are byte-for-byte what they were when the mismatch was first
+seen. Same code, same commit, different result: the only thing that can
+explain that is the Icarus Verilog build the original run used, not
+anything this project controls - confirming the "environment-specific to
+this development machine's Icarus/Verilator versions" half of the hedge
+this entry already carried, and ruling out the other half (genuine
+nondeterminism) and the empirical-bisection plan below it, since there is
+no design-level divergence left to bisect toward. Current environment:
+Icarus Verilog 12.0 (stable), Verilator 5.050. `sim/verilator_soc.cpp`'s
+`SdramModel` was not the bug `verilator_compare.py`'s own failure message
+speculates it would be - it never diverged from `sim/sdram_model.v` in the
+first place. Left here, struck rather than deleted, as the record of what
+this entry used to say:
+
 **`make verify_ooo`/`make verify`'s `verilator_check` step fails on
 `sim_sdramboot`: Icarus and Verilator disagree on cycle count and refresh
 count for the same test.** Found while gating #76 (the `CORE=ooo` Linux-boot
