@@ -14,18 +14,31 @@
 // below is belt-and-braces against a renaming bug rather than something the
 // steady state depends on.
 //
-// Same same-cycle-bypass reasoning as regfile_wide.v: a completion and a
-// dispatch reading the register it just produced can land in the same
-// cycle (the CDB broadcasts to the reservation stations and to this file's
-// write ports simultaneously), and a plain synchronous array would return
-// the pre-write value one cycle late. Three write sources can be live at
-// once, so each read port is a three-deep priority mux over the write
-// ports, oldest-issuing-first - there is no meaningful "younger/older"
-// relationship between three independent completion sources the way there
-// is between regfile_wide's two write ports (a dual-issued pair), so the
-// priority order here is arbitrary but fixed, and no two of these ports can
-// legally target the same physical register in the same cycle (each
-// physical register has exactly one producer, assigned at rename time).
+// Same-cycle write-to-read bypass is *not* done here, unlike
+// regfile_wide.v/regfile.v - deliberately, and not an oversight. It used to
+// be: each read port was a three-deep priority mux over the three write
+// ports, wired the same way. But `rdata1_a`/`rdata2_a` have exactly one
+// caller in this codebase - `dispatch_r1_val`/`dispatch_r2_val` in
+// core_ooo.v - and that caller already performs the identical bypass
+// itself, one level up, against the same three CDBs, before ever reading
+// these ports: it only falls through to `rdata1_a`/`rdata2_a` once it has
+// already established that none of cdbS/cdbB/cdbL currently match the
+// register being read. At that point this module re-running the exact same
+// comparison could never produce a different answer - not "usually
+// correct", structurally incapable of differing, since the two checks
+// share their inputs. That redundant copy was also part of a combinational
+// loop `nextpnr` could not analyze (docs/roadmap.md's "CORE=ooo has no
+// Fmax" entry, round 4): `wdata1`/`wdata2` here are `cdbB_val`/`cdbL_val`
+// directly, and removing the arms that read them here is what a real
+// synthesis run confirmed actually changes the netlist's cycle structure.
+//
+// This is a property of *this module having exactly one caller that
+// already does its own bypass*, not a general fact about physical register
+// files. A second caller that reads `rdata1_a`/`rdata2_a` without doing
+// the same same-cycle check itself would see a real hazard - a plain
+// synchronous array returns the pre-write value one cycle late - and the
+// bypass documented above would need to come back, at least for that
+// caller.
 module regfile_phys #(
     parameter PREGS = 64,
     parameter PW    = 6      // clog2(PREGS)
@@ -63,16 +76,8 @@ module regfile_phys #(
     wire w1 = we1 && (rd1 != {PW{1'b0}});
     wire w2 = we2 && (rd2 != {PW{1'b0}});
 
-    assign rdata1_a = (rs1_a == {PW{1'b0}}) ? 32'b0 :
-                      (w0 && (rd0 == rs1_a)) ? wdata0 :
-                      (w1 && (rd1 == rs1_a)) ? wdata1 :
-                      (w2 && (rd2 == rs1_a)) ? wdata2 :
-                      regs[rs1_a];
-    assign rdata2_a = (rs2_a == {PW{1'b0}}) ? 32'b0 :
-                      (w0 && (rd0 == rs2_a)) ? wdata0 :
-                      (w1 && (rd1 == rs2_a)) ? wdata1 :
-                      (w2 && (rd2 == rs2_a)) ? wdata2 :
-                      regs[rs2_a];
+    assign rdata1_a = (rs1_a == {PW{1'b0}}) ? 32'b0 : regs[rs1_a];
+    assign rdata2_a = (rs2_a == {PW{1'b0}}) ? 32'b0 : regs[rs2_a];
 
     always @(posedge clk) begin
         if (w0) regs[rd0] <= wdata0;

@@ -3174,6 +3174,9 @@ step, if picked up again: either finish the `issB_idx`/AMO trace to a
 decisive answer, or - since this project already has bounded model
 checking for exactly this shape of question (`make formal`,
 `formal/fv_regfile.v` et al.) - build a small, scoped formal harness around
+just the free-list/tag-liveness invariant (not the whole core, which is
+far too large a state space to be tractable) and let z3 answer the
+liveness question this investigation could not.
 
 **Investigated a second round: a formal proof would not actually fix
 this, and a much narrower candidate fix was found - blocked on one
@@ -3330,9 +3333,85 @@ have each found the next layer only by getting all the way to a real,
 verified fix and then actually re-running synthesis, further work here
 should keep doing exactly that rather than reasoning further from the RTL
 alone.
-just the free-list/tag-liveness invariant (not the whole core, which is
-far too large a state space to be tractable) and let z3 answer the
-liveness question this investigation could not.
+
+**Round 4: `regfile_phys.v`'s own bypass was structurally dead code, not
+just timing-gated - removed it, re-ran synthesis, still fails, and the
+next candidate looks like a real feature rather than more dead code.**
+This is where the "hunt for one more dead arm" approach this shape of
+investigation has used for three rounds running stops being the right
+tool.
+
+`regfile_phys.v`'s `rdata1_a`/`rdata2_a` (round 3's named lead) turned out
+to be dead by a cleaner argument than `headS_op1`'s arms were - no timing
+analysis needed at all. `rdata1_a`/`rdata2_a` have exactly one reader in
+the whole codebase: `dispatch_r1_val`/`dispatch_r2_val` at
+`core_ooo.v:681-692` (confirmed by `grep -n "rf_rdata1\|rf_rdata2"
+rtl/ooo/core_ooo.v` before touching anything - two hits, both the
+fallthrough arm of those two wires). That caller already performs the
+identical `cdbS`/`cdbB`/`cdbL` tag-match check itself, one level up,
+before ever falling through to `rdata1_a`/`rdata2_a` - so by the time
+`regfile_phys.v`'s own copy of the same three comparisons runs, the
+caller has already established none of them match. The two checks share
+every input; the inner one cannot ever produce an answer the outer one
+did not already rule out. Removed the `w0`/`w1`/`w2` bypass ternary from
+`rdata1_a`/`rdata2_a` (the write-side logic that actually updates `regs[]`
+was untouched - only the redundant read-side copy), re-verified against
+`sim_ooo_csr_hazard`, `make sim CORE=ooo` (unchanged BTB mispredict
+count), cosim (84/84 traces), and both `make verify`/`make verify_ooo`.
+
+**Still fails.** `CORE=ooo BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh`, all
+six seeds, same `ERROR: Timing analysis failed due to combinational
+loops` - now reporting **3083** loops, not fewer. That number moving in
+the wrong direction is not evidence this made things worse; nextpnr's
+loop count is however its SCC-decomposition happens to split (or not
+split) whatever remains connected, not a distance-to-done metric, and
+reading it as one is exactly the kind of number this project's own
+practices warn against trusting without knowing what it measures. The
+trace's tail now runs overwhelmingly through `issL_addr_calc` and a long
+`MMU.va` carry chain, not through `RF.wdata1`/`RF.wdata2` (which no
+longer exist - that specific edge is confirmed gone).
+
+**The next candidate is not obviously more dead code, and that is the
+important finding of this round, not just a name to chase.**
+`issL_scan_addr` (`core_ooo.v:811-877`) is the out-of-order load-issue
+scan: a combinational `for` loop over the whole ROB, computing a
+candidate load's address - including a same-cycle `cdbL` bypass arm
+(`core_ooo.v:833`) - for whichever entry the scan is currently
+considering, and latching it into `issL_addr_calc` the moment it finds
+the oldest ready, address-valid, hazard-clear load. Unlike `headS_op1`
+and `regfile_phys.v`, there is no `headS_ready`-shaped registered gate
+visible here, and no second identical check one level up to make it
+redundant - `issL_addr_calc` feeds the actual memory address a load
+issues with, and if `rtl/soc/cpu_wb.v`'s D-cache answers a hit
+combinationally (which the "Phase 4" section above says it does - "one
+word per line, so there is no fill state machine... arrays are read
+asynchronously"), then a load whose base register is a completing
+Class-L result **this same cycle** and whose data comes back **this same
+cycle** is exactly the same-cycle back-to-back load chaining a real
+out-of-order design is built to have - a feature, not dead code. Whether
+it is *reachable* the way `headS_op1`'s arms were not is a genuinely
+different, harder question than the last two rounds answered, and this
+round did not attempt to answer it: this entry has already had to
+self-correct once for reasoning about which arms a loop closed through
+without fully tracing the netlist first (the "Investigated further"
+section above opens by saying plainly that the original entry "was wrong
+to imply" the loop matched the `.vlt` waiver's self-reference argument) -
+guessing again here under the same pressure is not worth repeating.
+
+**Kept and shipped anyway, same reasoning as round 3.** Removing genuinely
+dead code that has now twice been proven dead by two different, both
+rigorous arguments (a timing-registration argument for `headS_op1`, a
+pure structural-redundancy argument for `regfile_phys.v`) is worth doing
+on its own merits regardless of whether it closes this defect - and
+twice now, on its own, it has not. **What this round changes about the
+recommended next step**: stop looking for a third dead arm to remove
+one at a time. `issL_scan_addr`'s `cdbL` bypass is plausibly load-to-load
+forwarding this design actually wants, which means closing this defect
+for real - if it is closeable without giving up that feature - needs the
+"restructure the completion-bus muxing" scale of work the very first
+version of this entry already named, not another round of this same
+narrow search. The bus-interconnect/D-cache sweep-in question from round
+3 is also still completely open and was not investigated further here.
 
 **`nextpnr-ecp5 --ignore-loops` was tried, as the obvious cheap way around
 the above, and it is not a usable shortcut.** The flag exists precisely to
