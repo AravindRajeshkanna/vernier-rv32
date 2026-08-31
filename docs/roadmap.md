@@ -3174,6 +3174,89 @@ step, if picked up again: either finish the `issB_idx`/AMO trace to a
 decisive answer, or - since this project already has bounded model
 checking for exactly this shape of question (`make formal`,
 `formal/fv_regfile.v` et al.) - build a small, scoped formal harness around
+
+**Investigated a second round: a formal proof would not actually fix
+this, and a much narrower candidate fix was found - blocked on one
+specific, testable, unresolved question.**
+
+First, a correction to the previous round's own proposed next step. A
+formal proof that the `headS_op1`/`cdbB` and `issB_a_reg`/`cdbS` arms can
+never be simultaneously live would **not** make `nextpnr` produce an Fmax
+number, even a perfect one: static timing analysis reasons about the wire
+graph, not about which select conditions are reachable, so the structural
+cycle stays exactly as reported regardless of what a formal tool proves
+about it - same as `--ignore-loops` above being "a different kind of
+wrong, not a smaller one" rather than a fix. A proof only has value here as
+evidence that *removing* an arm is safe, not as a fix in its own right -
+the loop can only actually be broken by removing something from the RTL.
+
+That reframing points at a narrower, more promising target than either the
+`headS_op1`/`cdbB` self-loop question or the `issB_idx` trace: **whether
+`headS_op1`/`headS_op2`'s `cdbB`/`cdbL` arms (`core_ooo.v:1019-1028`) are
+ever actually *consumed* by anything, rather than whether they are ever
+*live*.** Traced every reader of `headS_op1`/`headS_op2` in the file
+(`grep -n "headS_op1\|headS_op2" rtl/ooo/core_ooo.v`) against `headS_ready`
+(`core_ooo.v:1012-1013`), which is gated by `rob_r1_ready[rob_head]` - a
+*registered* flag (`reg`, `core_ooo.v:541`) that can only ever become true
+one cycle *after* a matching CDB broadcast, via the clocked wakeup-snoop
+block at `core_ooo.v:2023-2030`, never on the same cycle as the broadcast
+itself. Every consumer checked ends up gated by `headS_ready` (directly, or
+through `head_exec_done`/`head_redirect_valid`/`amo_active`, all of which
+AND it in): `cdbS_valid` (`core_ooo.v:1768`, via `head_exec_done`),
+`interrupt_taken` (`core_ooo.v:1232`, directly against
+`rob_r1_ready[rob_head]`), `head_redirect_valid` (`core_ooo.v:1298` -
+branch mispredict, traps, `mret`/`sret`, `fence.i`, `sfence.vma`, all of
+it), `btb_train_en` (`core_ooo.v:1311`), and `amo_active`
+(`core_ooo.v:1406`). Since `headS_ready` cannot be true on the exact cycle
+`cdbB`/`cdbL` would first present a same-cycle bypass value, and by the
+*next* cycle `rob_r1_val[rob_head]`/`rob_r2_val[rob_head]` (the mux's own
+fallthrough arm) has already been registered to the identical value via
+that same wakeup snoop - every one of these consumers would see the exact
+same result whether the `cdbB`/`cdbL` arms exist or not. If that holds for
+every consumer, removing them is a genuinely free fix: `headS_op1`/
+`headS_op2` would no longer combinationally depend on `cdbB` at all,
+breaking the loop's first link (`cdbB_val -> headS_op1`) with no latency
+cost anywhere, since the arms never mattered to begin with.
+
+**One consumer breaks that pattern, and it is the reason nothing was
+changed.** `csr_file`'s `.we` port (`core_ooo.v:1269`) is gated by
+`headS_valid && rob_is_csr[rob_head] && rob_csr_we[rob_head] &&
+!interrupt_taken && head_ex_commit` - and `head_ex_commit`
+(`core_ooo.v:1237`) is only `!head_dbus_stall && !head_fence_drain_stall`,
+with no `headS_ready`/`rob_r1_ready[rob_head]` term anywhere in that
+chain. `csr_op_operand` (`core_ooo.v:1140`) reads `headS_op1` for the
+register form of `csrrw`/`csrrs`/`csrrc`, and `csr_file.v`'s own write path
+(`csr_file.v:423`, `else if (we) case (addr) ... <= wdata`) has no
+idempotency guard against being asserted on more than one cycle - if `we`
+genuinely can go high before `rob_r1_ready[rob_head]` is set, on a cycle
+where the CSR instruction's own operand tag does not happen to match a
+live `cdbB`/`cdbL` broadcast, `csr_op_operand` reads whatever garbage or
+stale value currently sits in `rob_r1_val[rob_head]`, and it would land in
+the CSR file.
+
+**This is not a confirmed bug - it is the specific, open, testable question
+the fix above is blocked on**, and it was not chased further this round.
+Two things are worth naming honestly: this would be a pre-existing
+condition, unrelated to and unaffected by whether the `cdbB`/`cdbL` arms
+are removed (removing them cannot make an already-live hazard worse in any
+way that matters, since either a matching bypass covers the gap today and
+would stop doing so, or nothing does and the gap was already there); and
+this project's own extensive verification - 82/82 Spike co-simulation
+traces, the full riscv-tests suite, CoreMark, and a Linux boot that
+exercises CSR writes constantly (`satp`, `mstatus`, `mie`, PLIC context
+registers) - has not caught it, which is itself evidence, though not proof,
+that either it is not reachable or existing coverage has never happened to
+put a slow-latency producer immediately before a register-form CSR write
+with nothing between them. **The concrete next step: a small, directed
+test - a multi-cycle producer (a divide is the obvious choice; `muldiv_div`
+is not single-cycle) immediately followed by a register-form CSR
+read-modify-write of its result, with nothing between them to absorb the
+latency, checked against the expected value - would settle this
+empirically** rather than by further reading. If `csr_file` ends up
+holding the correct value regardless, `headS_op1`/`headS_op2`'s `cdbB`/
+`cdbL` arms can be removed as a free fix for the reported loop. If it does
+not, that is a real bug worth fixing on its own merits, independently of
+Fmax, before anything here is touched.
 just the free-list/tag-liveness invariant (not the whole core, which is
 far too large a state space to be tractable) and let z3 answer the
 liveness question this investigation could not.
