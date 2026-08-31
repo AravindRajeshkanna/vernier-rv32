@@ -1156,6 +1156,30 @@ sim_cpu_halt: sim/sim_cpu_halt.out
 	@grep -aq "CPU-HALT-TEST: PASS" sim/cpu_halt.log && echo "CPU HALT/RESUME OK" || \
 	    { echo "FAILED: hart control (halt/resume/register access)"; exit 1; }
 
+# ---- OOO CSR-write-timing hazard ----
+#
+# CORE_OOO hardcoded, not $(CORE_DEFINES)/$(CORE_RTL): this is specifically
+# about rtl/ooo/core_ooo.v's own retirement timing (docs/roadmap.md's
+# "CORE=ooo has no Fmax" entry), not a general dual-core regression, so it
+# always builds the wide core regardless of what CORE= is set to. Driven
+# through rtl/top.v (the same zero-latency flat harness `make sim CORE=ooo`
+# already uses), not sim/tb_isa.v/tests/, because the check is on an
+# internal timing signal (csr_file's `we` port), not an architectural
+# result - see sim/tb_ooo_csr_hazard.v's own header for why it reaches into
+# the design, unlike most testbenches here.
+sim/sim_ooo_csr_hazard.out: sim/tb_ooo_csr_hazard.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
+                       rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v rtl/uart.v \
+                       rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v \
+                       rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) $(IVFLAGS) -DCORE_OOO -o $@ sim/tb_ooo_csr_hazard.v rtl/regfile.v rtl/imem.v \
+	    rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v rtl/uart.v \
+	    rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_ooo_csr_hazard: sim/sim_ooo_csr_hazard.out
+	cd sim && $(VVP) sim_ooo_csr_hazard.out $(VVP_DUMP) | tee ooo_csr_hazard.log
+	@grep -aq "OOO-CSR-HAZARD-TEST: PASS" sim/ooo_csr_hazard.log && echo "OOO CSR HAZARD OK" || \
+	    { echo "FAILED: OOO CSR-write-timing hazard"; exit 1; }
+
 # ---- the boot ROM's UART loader ----
 #
 # The only way a program gets into external SDRAM on a board: a bitstream
@@ -1248,6 +1272,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
+        sim_ooo_csr_hazard \
         sim_div64test \
         uartload-host check-program isa cosim linux-if-built formal
 

@@ -1016,16 +1016,31 @@ module core_ooo #(
     // This exact function/continuous-assignment interaction is what
     // corrupted a branch's operand with a stale CDB match (found via a
     // Spike co-simulation diff on rv32ui-p-add).
+    //
+    // No same-cycle cdbB/cdbL bypass here, unlike every other bypass read in
+    // this file - deliberately, and not a missed optimization. Every reader
+    // of headS_op1/headS_op2 is itself gated by headS_ready, which is the
+    // *registered* rob_r1_ready[rob_head]/rob_r2_ready[rob_head] (`reg`,
+    // never combinational in a same-cycle broadcast) - so a same-cycle
+    // bypass arm here could only ever matter on a cycle headS_ready is
+    // still false, and nothing that reads headS_op1/headS_op2 does anything
+    // observable on such a cycle. That was proven two ways, not assumed:
+    // docs/roadmap.md's "CORE=ooo has no Fmax" entry traced every reader
+    // (cdbS_valid, interrupt_taken, head_redirect_valid, btb_train_en,
+    // amo_active, and csr_file's `.we`) against headS_ready by hand, and
+    // sim/tb_ooo_csr_hazard.v confirms the one reader (csr_file's `.we`)
+    // whose gating wasn't visible from headS_ready alone empirically never
+    // fires early: retirement is strictly in-order and one entry per cycle,
+    // and the registered wakeup-snoop that sets rob_r1_ready for the *next*
+    // entry lands on the exact same edge a retiring producer's completion
+    // broadcasts - the tightest possible producer/consumer pairing, and
+    // still no window. Removing the arm is what breaks nextpnr's reported
+    // combinational loop (its internal #3941): this was the wire that fed
+    // Class B's own cdbS-sourced operand back into cdbB.
     wire [31:0] headS_op1 =
-        (rob_r1_tag[rob_head] == {PW{1'b0}})                  ? 32'b0 :
-        (cdbB_valid && (cdbB_preg == rob_r1_tag[rob_head]))   ? cdbB_val :
-        (cdbL_valid && (cdbL_preg == rob_r1_tag[rob_head]))   ? cdbL_val :
-                                                                 rob_r1_val[rob_head];
+        (rob_r1_tag[rob_head] == {PW{1'b0}}) ? 32'b0 : rob_r1_val[rob_head];
     wire [31:0] headS_op2 =
-        (rob_r2_tag[rob_head] == {PW{1'b0}})                  ? 32'b0 :
-        (cdbB_valid && (cdbB_preg == rob_r2_tag[rob_head]))   ? cdbB_val :
-        (cdbL_valid && (cdbL_preg == rob_r2_tag[rob_head]))   ? cdbL_val :
-                                                                 rob_r2_val[rob_head];
+        (rob_r2_tag[rob_head] == {PW{1'b0}}) ? 32'b0 : rob_r2_val[rob_head];
 
     wire [31:0] head_mem_addr_virt = headS_op1 + rob_imm[rob_head];
     wire [31:0] head_jalr_target   = (headS_op1 + rob_imm[rob_head]) & ~32'h1;
