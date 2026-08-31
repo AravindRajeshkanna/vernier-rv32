@@ -3113,6 +3113,71 @@ question than "what is the Fmax" — see the "Stage 1d was built anyway"
 section above for the full measurement and reasoning. Fixing it means
 restructuring the completion-bus muxing, not a local patch.
 
+**Investigated further: the loop is not the case the `.vlt` waiver's own
+reasoning covers, and this entry was wrong to imply it was.** That
+reasoning ("a specific tag match is a runtime condition, always false for a
+producer reading its own not-yet-computed result") is airtight for the two
+places `core_ooo.v` actually reads its own bus - Class B's operand read
+(`issB_a_reg`/`issB_op2`, `core_ooo.v:932-944`) excludes `cdbB`; the ROB
+head's operand read (`headS_op1`/`headS_op2`, `core_ooo.v:1019-1028`)
+excludes `cdbS` - both by construction, both with the "must not consult
+that same bus" comment at `core_ooo.v:634-643` naming exactly why. Tracing
+the reported loop (nextpnr's #3941) through the actual netlist finds it
+does **not** close through either self-exclusion. It closes through a
+*different* pair of arms, each individually real and wanted:
+`headS_op1`'s `cdbB` arm (`core_ooo.v:1021` - the ROB head legitimately
+bypassing a completing Class-B ALU result into its own address/MUL
+computation) and `issB_a_reg`'s `cdbS` arm (`core_ooo.v:934` - Class B
+legitimately bypassing the head's completing result into its own operand),
+feeding back into each other: `cdbB_val` (`core_ooo.v:950`) →
+`headS_op1` → (through `head_mul_result`/`head_mmu_wait_stall`, both live
+in `headS_op1` same-cycle) → `cdbS_val`/`cdbS_valid` (`core_ooo.v:1768-
+1770`) → `issB_a_reg` → `classB_result` (`core_ooo.v:946`) → `cdbB_val`,
+closing it. The MMU's `va` and the divider's operands sit in the same
+combinational cone because `headS_op1` feeds both directly (`mmu.v`'s
+`resolved`/`fault` are combinational in `va` on a TLB hit, `mmu.v:221`) -
+which is why nextpnr reports one connected loop through all four
+subsystems named above rather than something smaller.
+
+Whether *this* pair can ever be live simultaneously - the ROB head needing
+a result from whatever Class B is issuing, and that same Class-B entry
+needing the head's result, in the same cycle - reduces to whether Class B
+can ever be issuing the literal instruction the head's own tag points to
+while that instruction's own operand tag points back at the head. Manual
+tracing through the free-list (`core_ooo.v:1907-1998`: a physical register
+is only pushed back to the free list, at `core_ooo.v:1981`/`1995`, as
+`rob_old_preg[rob_head]` - the mapping the retiring head instruction
+itself superseded - on the retiring instruction's own retirement) supports
+that a *stale, reused-tag* version of this collision is impossible: freeing
+a register requires its superseding writer to retire, and in-order
+retirement means any legitimate reader of the freed register was
+necessarily older than that writer and must already have retired itself -
+the same "age truncates the graph" shape the `.vlt` file's argument
+already uses, just applied to a pair of instructions instead of one. What
+this reasoning does **not** settle is whether `issB_idx` (whichever entry
+Class B is issuing) can ever *legitimately coincide* with an instruction
+the ROB head depends on while *that* instruction's own operand,
+simultaneously, depends on the head - which needs tracing `issB_idx`'s
+selection logic and the AMO path (where a single ROB entry's arithmetic
+may route through Class B while its address/completion routes through
+`headS`) further than was done here to close out.
+
+**No RTL was changed.** Restructuring either arm to break the loop is a
+real wakeup-latency cost (the head loses same-cycle forwarding from Class
+B, or Class B loses same-cycle forwarding from the head), not a free
+exclusion like the two self-reads already are - and attempting that
+restructuring without first being certain whether the value-level case is
+truly unreachable risks trading a nextpnr limitation for a real,
+much-worse-to-find data-hazard bug in the out-of-order core's renaming
+logic. That trade is not worth making under uncertainty. The concrete next
+step, if picked up again: either finish the `issB_idx`/AMO trace to a
+decisive answer, or - since this project already has bounded model
+checking for exactly this shape of question (`make formal`,
+`formal/fv_regfile.v` et al.) - build a small, scoped formal harness around
+just the free-list/tag-liveness invariant (not the whole core, which is
+far too large a state space to be tractable) and let z3 answer the
+liveness question this investigation could not.
+
 **`nextpnr-ecp5 --ignore-loops` was tried, as the obvious cheap way around
 the above, and it is not a usable shortcut.** The flag exists precisely to
 let timing analysis proceed past a known-false combinational loop instead of
