@@ -3257,6 +3257,79 @@ holding the correct value regardless, `headS_op1`/`headS_op2`'s `cdbB`/
 `cdbL` arms can be removed as a free fix for the reported loop. If it does
 not, that is a real bug worth fixing on its own merits, independently of
 Fmax, before anything here is touched.
+
+**Round 3: the test was built, the CSR question is settled, the fix is
+real and shipped - and it does not close this defect. The actual scope is
+larger than any round here has understood it to be.**
+
+`sim/tb_ooo_csr_hazard.v` is the directed test round 2 named: `li a1,
+1000000` / `li a2, 7` / `div a5, a1, a2` / `csrrw x0, mscratch, a5` /
+`csrrs a6, mscratch, x0`, watching `csr_file`'s `we` port and
+`headS_ready` every cycle via hierarchical reference. Before trusting a
+clean result, a debug build with cycle-by-cycle tracing confirmed the test
+actually exercises the window rather than missing it: the divide (`rob_
+head`=3) runs `div_busy` for ~33 cycles, and the moment it completes,
+`rob_head` advances to the CSR instruction (entry 4) **on the same clock
+edge** the registered wakeup-snoop sets `rob_r1_ready[4]` - `headS_ready`
+reads as already true the very first cycle the CSR instruction is visible
+as head. That is not a coincidence of this one test: retirement is
+strictly in-order and exactly one entry per cycle, so an immediately-
+adjacent producer/consumer pair is the *tightest possible* timing any
+pair can ever have, and it is already safe - anything less tightly
+coupled has even more slack. `we` was asserted before `headS_ready` zero
+times across the run. The `cdbB`/`cdbL` arms were removed from
+`headS_op1`/`headS_op2` (`core_ooo.v`) on the strength of that result,
+verified clean against cosim (84/84 traces, including both documented
+`XDIVERGE` cases, unaffected), the full riscv-tests suite (81/81), and
+`make sim CORE=ooo`'s own regression (unchanged BTB mispredict count).
+This is a genuine, tested simplification and it is shipped - dead code
+removed, a new permanent regression (`sim_ooo_csr_hazard`, now in `make
+verify`) covering a question nothing tested before.
+
+**It does not fix Fmax.** `CORE=ooo BOARD=ulx3s85 ./fpga/synth/
+synth_ecp5.sh` still fails identically on all six seeds with the fix
+applied: `ERROR: Timing analysis failed due to combinational loops`,
+now reporting **"Found 2780 combinational loops."** Sampling loops across
+that list (1, 2, 5, 10, 50, 500, 1500, 2780) found the overwhelming
+majority are not in the CDB network at all - they run through
+`wb_interconnect.v`'s bus arbitration (`BUS.decoded`/`BUS.hit`/
+`BUS.fin_ack`/`BUS.m1_adr`) and `cpu_wb.v`'s D-cache
+(`BUSADAPT.dc_data`/`dc_line`), modules shared byte-for-byte with
+`CORE=inorder`, which synthesizes to a real, closing Fmax on the same
+toolchain. Those modules cannot be intrinsically cyclic on their own -
+the far more likely explanation is that `core_ooo.v`'s own genuine
+CDB-network cycle seeds a strongly-connected component that nextpnr's
+SCC-based loop detection cannot cleanly separate from otherwise-acyclic
+logic that merely shares fan-in/fan-out with it - once *anything* in the
+netlist is provably cyclic, everything reachable from it in both
+directions can end up reported as part of the same tangle, whether or
+not it is cyclic on its own.
+
+`regfile_phys.v` is the prime remaining suspect for that seed: its own
+dispatch-time read ports (`rdata1_a`/`rdata2_a`, `regfile_phys.v:66-75`,
+consumed one level up as `dispatch_r1_val`/`dispatch_r2_val` at
+`core_ooo.v:681-692`) still mux across all three `cdbS`/`cdbB`/`cdbL`
+write-data inputs, untouched by this round's fix and never traced the
+way `headS_op1`/`issB_a_reg` were.
+
+**This revises the scope stated in every round before this one.**
+"Restructuring the completion-bus muxing, not a local patch" already said
+this would not be small; it did not say the tangle would turn out to
+include the bus interconnect and the data cache, or that fixing one real,
+verified, individually-dead pair of mux arms would leave 2780 reported
+loops essentially unchanged. Closing this for real needs at minimum:
+finding and cutting whatever remaining genuine CDB-network cycle(s) still
+exist (`regfile_phys.v`'s own write-data muxes are the most direct
+remaining lead, per above), each requiring the same standard of proof
+this round set - a full trace, an empirical test where reasoning alone
+could not close the question, and a real synthesis run to confirm the
+fix actually changes nextpnr's verdict rather than assuming it - and then
+re-measuring whether the bus/cache loops disappear once the seed is gone
+or turn out to be a second, genuinely separate defect. Given three rounds
+have each found the next layer only by getting all the way to a real,
+verified fix and then actually re-running synthesis, further work here
+should keep doing exactly that rather than reasoning further from the RTL
+alone.
 just the free-list/tag-liveness invariant (not the whole core, which is
 far too large a state space to be tractable) and let z3 answer the
 liveness question this investigation could not.
