@@ -3127,6 +3127,13 @@ based target looks like them too. The testbenches themselves were not
 touched - the fix is entirely in what the Makefile does with output they
 already produced.
 
+**RESOLVED - `sim_uartirq`, the newlib probe (`sim_probe`), and
+`sim_div64test` are now gated in CI's "SoC, firmware and traps" job, both
+cores** - three named steps added directly to `.github/workflows/ci.yml`,
+each its own `make sim_<target>` plus a `grep -q "RAMBOOT TEST PASSED"`
+check, matching every other step in that job. Left here, struck rather than
+deleted, as the record of what this entry used to say:
+
 **And that fix changes nothing in CI, because CI does not call these
 targets at all.** `.github/workflows/*.yml` never runs plain `make verify`
 or `make verify_ooo` - the "SoC, firmware and traps" job reimplements a

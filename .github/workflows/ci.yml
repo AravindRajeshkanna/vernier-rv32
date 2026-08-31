@@ -144,9 +144,24 @@ jobs:
     # real UART byte (docs/roadmap.md, "Stage 1d was built anyway"): the
     # wide core's UART loader test spent real wall-clock minutes reaching
     # sim/tb_uartload.v's own hang-detection watchdog before it could fail,
-    # a cost a passing run never paid. Back to 45 now that the bug is fixed
-    # and that run passes normally again, in ordinary time.
-    timeout-minutes: 45
+    # a cost a passing run never paid. Back to 45, then, once that bug was
+    # fixed.
+    #
+    # Raised again, 45 to 90, when sim_uartirq/sim_probe/sim_div64test were
+    # added to this job (docs/roadmap.md's "Known defects" - they existed
+    # and passed already, just were never gated in CI). Measured directly on
+    # a real run, not estimated: `CORE=inorder` passed at 44m53s - seven
+    # seconds under the old 45-minute budget - and `CORE=ooo` was still
+    # inside sim_div64test's phase 2 (of 3) when GitHub Actions killed it at
+    # 45m14s. div64test's 400-round phase 2 alone ran for over 20 minutes on
+    # this runner without finishing, against well under 10 minutes for the
+    # same three targets, both cores, on a local machine - this job's actual
+    # bottleneck is GitHub's runner being slow at single-threaded Icarus
+    # simulation on the wider core's design, not anything specific to this
+    # test. 90 follows this file's own "roughly double each job's observed
+    # runtime" rule from the ooo leg's measured (partial, still-climbing)
+    # time rather than guessing at a number.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -197,6 +212,16 @@ jobs:
 
       - name: Flat (non-SoC) software build and run
         run: make sim_software
+
+      # The newlib probe: which rung of libc actually works, preloaded the
+      # same way sim_ramboot is. Existed in `make verify` already but was
+      # never wired into CI - docs/roadmap.md's "Known defects" named this
+      # gap explicitly: a regression here would have shown every check
+      # above green.
+      - name: newlib probe
+        run: make sim_probe | tee probe.log
+      - name: Check probe verdict
+        run: grep -q "RAMBOOT TEST PASSED" probe.log
 
       # docs/roadmap.md Phase 2: the SoC executing a 99 KB program out of
       # external SDRAM, with block RAM present but holding nothing but the
@@ -289,6 +314,24 @@ jobs:
         run: make sim_uart16550 | tee uart16550.log
       - name: Check ns16550 verdict
         run: grep -q "RAMBOOT TEST PASSED" uart16550.log
+
+      # An interrupt-driven UART TX driver, not the polled one everything
+      # above uses - and, like sim_probe below, in `make verify` already but
+      # never wired into CI (docs/roadmap.md's "Known defects").
+      - name: Interrupt-driven UART TX driver
+        run: make sim_uartirq | tee uartirq.log
+      - name: Check UART IRQ verdict
+        run: grep -q "RAMBOOT TEST PASSED" uartirq.log
+
+      # __div64_32, isolated - docs/roadmap.md's "Stage 1d was built anyway"
+      # section has the story: CORE=ooo was once found permanently stuck
+      # inside this exact kernel routine, and this is the fast, deterministic
+      # regression for it, without a 90-million-cycle Linux boot in the way.
+      # Also in `make verify` already but never wired into CI.
+      - name: __div64_32, isolated
+        run: make sim_div64test | tee div64test.log
+      - name: Check div64 verdict
+        run: grep -q "RAMBOOT TEST PASSED" div64test.log
 
       # The boot ROM's UART loader, end to end: a host sends a program over
       # the serial line and the SoC runs it out of external SDRAM. This is the
