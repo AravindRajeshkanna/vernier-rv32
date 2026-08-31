@@ -3008,10 +3008,39 @@ store-misaligned handler failed to decode a load and panicked. Fixing it did
 not move the boot past the `ecall`-storm point; it restored the boot *to*
 it.
 
-**The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed. It
-self-reports rather than hanging silently, which is not the same as being
-fixed, and pretending otherwise is exactly the failure mode
-[practices.md](practices.md) §7 is about.
+**The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
+this update adds evidence, not a cause, and is not claiming otherwise; that
+distinction is the whole reason [practices.md](practices.md) §7 uses this
+exact entry as its running example of a self-reporting workaround that is
+not a fix.
+
+The original investigation (commit `c60699b`, before `CORE=ooo` existed as a
+target at all) ran 4 full passes of the suite - one standalone plus three in
+a loop, 328 test executions - and found the suite fully deterministic:
+byte-identical results every time, no timeout. This round ran the same
+experiment at roughly 100x that scale and on the core that did not exist
+yet when it was first written down: 200 passes each, `CORE=inorder` and
+`CORE=ooo`, 32,400 total test executions, still zero occurrences and still
+byte-identical within each core. `$random`/`$urandom` do not appear
+anywhere in the RTL or in `sim/tb_isa.v`, so a fixed simulator binary
+running a fixed program has no internal source of run-to-run variation to
+begin with - which is consistent with both investigations seeing none.
+
+One genuinely new lead, not a conclusion: `docs/toolchain.md` recorded this
+machine's Homebrew `icarus-verilog` as `14.0 (devel)` and it is now `12.0
+(stable)` - confirmed drifted, not measured wrong, since Verilator's
+recorded version matches the installed one exactly and only Icarus's does
+not (`docs/toolchain.md` §3 and §10 have the correction and the reasoning).
+That is the same class of mechanism the resolved sdramboot
+`verilator_check` discrepancy bisected to just above - "same commit, same
+RTL, different result" is only explicable by something outside the repo,
+and a Homebrew formula moving underneath a long-lived project is exactly
+that. It is offered here as a plausible contributing explanation for why
+two occurrences years apart have never recurred on demand, not as proof:
+unlike the SDRAM case, there is no historical commit to check this
+regression against, so this cannot be bisected the same way. If it recurs,
+`iverilog -V` against `docs/toolchain.md` is worth checking before assuming
+the RTL is at fault.
 
 **RESOLVED - not a design defect. Bisected to a toolchain/environment
 difference on the machine that first investigated it, not to any commit in

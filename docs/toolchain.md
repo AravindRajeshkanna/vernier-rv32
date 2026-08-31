@@ -9,8 +9,8 @@ time when a build behaves differently somewhere else.
 
 | | |
 |---|---|
-| OS | macOS 26.5.2 (build 25F84) |
-| Kernel | Darwin 25.5.0 |
+| OS | macOS |
+| Kernel | Darwin |
 | Architecture | `arm64` (Apple Silicon) |
 | Shell | zsh |
 | Package manager | Homebrew, prefix `/opt/homebrew` |
@@ -116,7 +116,7 @@ routing-dominated shape every measurement of this design has had.
 
 | Tool | Version | Source |
 |---|---|---|
-| **Icarus Verilog** | 14.0 (devel), `s20260301-330-gb8b6e225f-dirty` | Homebrew `icarus-verilog` |
+| **Icarus Verilog** | 12.0 (stable) | Homebrew `icarus-verilog` |
 | **Verilator** | 5.050, `2026-07-01` | Homebrew `verilator` |
 | **Yosys** (formal) | 0.67+post, `b8e7da6f` | Homebrew `yosys` |
 | **Yosys** (synthesis) | 0.68+118, `144c707b7-dirty` | oss-cad-suite |
@@ -371,9 +371,21 @@ comparing numbers against `fpga/README.md`:
    has already recorded a 26.61-vs-28.25 MHz swing that was placement noise
    either side of the same design. Treat a single run's Fmax as approximate,
    and read the critical-path report rather than the headline number.
-2. **Yosys version affects area and timing.** See §3 — the published numbers
+2. **Yosys version affects area and timing.** See §3 - the published numbers
    come from the oss-cad-suite build specifically.
 
 Simulation is deterministic: iverilog, Spike co-simulation and the formal
 checks give identical results run to run, which is why they, and not the
-synthesis numbers, are what the gate is built on.
+synthesis numbers, are what the gate is built on. That determinism is
+per-invocation of one fixed binary - **it does not mean the Homebrew
+`icarus-verilog` formula itself is fixed.** This file's own §3 entry for it
+drifted from `14.0 (devel)` to `12.0 (stable)` on this same machine between
+when that line was written and 2026-08-31, with no project change
+responsible for it - `brew upgrade`/`brew install` moves the formula
+forward or (via a reinstall) back independently of anything in this repo.
+That is a real, evidenced mechanism behind at least one investigation here:
+`docs/roadmap.md`'s resolved sdramboot `verilator_check` discrepancy
+bisected to "same commit, same RTL, different result," which a version
+change in Icarus specifically - not in this project's code - explains
+cleanly. Anyone chasing a simulation result that will not reproduce should
+check `iverilog -V` against this table before assuming the RTL is at fault.
