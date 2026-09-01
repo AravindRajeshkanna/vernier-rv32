@@ -2847,6 +2847,21 @@ appears anywhere in the actual critical path of any of the six seeds.
 avenue, and the D-cache-hit-path pipeline stage now named as the candidate
 that would actually touch the now-dominant shape. No RTL changed.
 
+**That candidate has a measured cost now, and it is not small.** CoreMark on
+`CORE=inorder` hits the D-cache 96.3% of the time (59,457 of 61,759
+accesses); the naive version of a two-cycle D-cache - every load waits for
+an ack, hit or miss alike - costs one extra cycle per hit, **13.1% more
+total cycles**. That is a real throughput cost on the common case, unlike
+every timing fix actually shipped so far, which cost nothing measurable on
+a cold path. `rtl/cpu_core.v`'s existing `load_use_stall` hazard check may
+make a *latency-only* version cheaper - stalling only when the very next
+instruction actually uses the loaded value, rather than on every load - but
+that number is not measured, and building it is a materially bigger and
+riskier change than a wait state. Not attempted; `fpga/README.md`'s "What a
+D-cache hit pipeline stage would actually cost" has the full arithmetic and
+names it as a real tradeoff (throughput vs. FPGA timing margin) rather than
+a technical question with one right answer.
+
 ---
 
 ## Phase 7 — Close the boot path
