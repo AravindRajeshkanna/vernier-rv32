@@ -2829,6 +2829,24 @@ what makes all four of them safe to ship before that margin is fixed.
 Also missing, and cheaper: no debug adapter has been connected to a board.
 The path is proven in simulation only.
 
+**Re-measured 2026-08-31/09-01, all six seeds, same toolchain as
+2026-08-26: 23.01-25.14 MHz, 1 of 6 closes.** This is the first synthesis
+run since PR #79 added `dbg_halt_admit_block` to `pc_freeze`, and it is
+close enough to the 2026-08-26 numbers (23.43-25.96 MHz, 1 of 3 sampled) to
+call no regression, though stated as "indistinguishable from the
+already-documented seed-to-seed noise" rather than "unchanged" - this
+round's floor and ceiling both read a little lower. The critical-path shape
+split inverted: four of six seeds are `dc_tag`-sourced and two are
+`pc`-sourced now, against four-`pc`/two-`dc_tag` on 2026-08-24 - which
+means a fetch pipeline stage would today move a smaller fraction of seeds
+than this section's own arithmetic assumed when it was written. Investigated
+and ruled out: extending #49's peripheral-ack registration to `wb_gpio.v`
+and `wb_spi.v`, the two slaves still acking combinationally - neither
+appears anywhere in the actual critical path of any of the six seeds.
+`fpga/README.md`'s "A sixth attempt" has the full measurement, the ruled-out
+avenue, and the D-cache-hit-path pipeline stage now named as the candidate
+that would actually touch the now-dominant shape. No RTL changed.
+
 ---
 
 ## Phase 7 — Close the boot path

@@ -846,6 +846,121 @@ is the pre-existing D-cache-tag-sourced shape (`BUSADAPT.dc_tag` through
 anything on the instruction-fetch path this change touches. The new gate
 does not appear in it.
 
+### A sixth attempt: no fix found, but the picture got clearer
+
+Re-measured 2026-08-31/09-01 on `BOARD=ulx3s85`, same toolchain as the
+2026-08-26 measurement above (`yosys 0.68+118 (144c707b7-dirty)`,
+`nextpnr-0.11.1-8-g7c0c1c40`, oss-cad-suite `20260821`) — so any difference
+from that measurement is attributable to the RTL, not the tools. Everything
+that landed on `CORE=inorder` since 2026-08-26 is PR #79's hart-control
+halt/resume/register-access work (one new term, `dbg_halt_admit_block`,
+added to `pc_freeze`); PRs #80-#88 either touch only `rtl/debug/dm.v`/
+simulation, or are `CORE=ooo`-only and do not change `CORE=inorder`'s
+netlist at all.
+
+Routed, all six seeds this time (the script stops at the first pass, so
+seeds 1-5 came from one run and seed 6 was run separately with
+`PNR_EXTRA="--seed 6"` to complete the comparison):
+
+| seed | Fmax | pass/fail | critical-path source |
+|---|---|---|---|
+| 1 | 23.01 MHz | FAIL | `BUSADAPT.dc_tag` |
+| 2 | 23.19 MHz | FAIL | `CPU.pc` |
+| 3 | 24.57 MHz | FAIL | `BUSADAPT.dc_tag` |
+| 4 | 23.43 MHz | FAIL | `BUSADAPT.dc_tag` |
+| 5 | 25.14 MHz | **PASS** | `BUSADAPT.dc_tag` |
+| 6 | 24.35 MHz | FAIL | `CPU.pc` |
+
+**No mechanism for a regression, and the numbers are close enough that
+"no regression" is the right read, but stated precisely rather than
+rounded.** The 2026-08-26 measurement above (also an early-stop sample:
+seeds 1-3 only, closing on the third) read 23.43, 24.74, 25.96 MHz. This
+round's 23.01-25.14 MHz sits a little under that on both ends — 0.42 MHz
+lower at the floor, 0.82 MHz lower at the ceiling — and 1 of 6 seeds closes
+here against that run's 1 of 3. Six and three are both small samples of a
+distribution already documented to span multiple MHz between seeds with
+*no* RTL change at all (see "Fmax is a distribution, not a number" below),
+so this is not distinguishable from that same noise. It is also not
+nothing: PR #79's `dbg_halt_admit_block` term is the only `CORE=inorder`
+RTL change since 2026-08-26, it was never synthesized before this round
+despite docs/roadmap.md asserting since PR #79 that it "does not touch the
+timing-critical fetch-redirect path," and this is the first time that
+claim has actually been checked against a build. It holds in the sense that
+matters most: the term only ever gates `pc_freeze`, and four of the six
+critical paths measured here do not go through `pc_freeze`'s fetch-redirect
+role at all — they are `dc_tag`-sourced, a data-side path `dbg_halt_admit_block`
+has no way to reach.
+
+**The shape distribution inverted, and that is worth stating precisely
+rather than as a trend.** Four of six seeds here are `dc_tag`-sourced and
+two are `pc`-sourced — exactly swapped from 2026-08-24's four-`pc`/
+two-`dc_tag` split over six seeds. Per "Fmax is a distribution, not a
+number," a stochastic placer redrawing which shape wins on which seed after
+*any* RTL change is expected, not evidence that either shape got
+structurally worse or better — `dc_tag`'s own numbers make that point on
+their own: seed 5's clk-to-q here is 5.61 ns, against 5.83 ns on
+2026-08-24/26, the same EBR primitive doing the same thing, not a slower
+one. What the shift does mean concretely: a fetch pipeline stage, which
+only ever cuts the `pc`-sourced head, would today move two of six seeds'
+shape rather than four of six — a smaller win than this file has argued for
+it up to this point, through no change in the fetch path itself.
+
+**Investigated: extending #49's peripheral-ack registration to the two
+slaves that still ack combinationally.** `wb_gpio.v` (`assign wb_ack =
+active`, explicitly documented "Zero wait states") and `wb_spi.v`'s read
+path (`wb_ack = data_write ? done_q : active`) are the only slaves left with
+a same-cycle ack — CLINT, PLIC and UART already got #49's registered-bridge
+treatment, and ROM/RAM/SDRAM/the framebuffer already use the same `ack_r <=
+active && !ack_r` shape `wb_ram.v` established before any of this. Ruled
+out: neither GPIO nor SPI's ack, nor any signal derived from either module,
+appears anywhere in the register-to-register critical path of any of the
+six seeds measured here. GPIO's `dir_r` does appear in a critical-path
+report, but it is the *clock-to-async* report for a tristate pin driver
+(`gp[12]$tr_io.T`) — a different check nextpnr runs and prints separately
+from the posedge-to-posedge path that determines the `Max frequency` line,
+and not something the 25 MHz clock constraint gates. Confirmed further,
+reading a full `dc_tag`-sourced path end to end (seed 3, 40.70 ns: `dc_tag`
+clk-to-q, six LUT hops through `ex_mem_mem_we`/`BUS.sel_m1`, into
+`dbus_stall`, then five more LUT hops through `id_ex_is_fence_i`/
+`is_branch`/`is_muldiv`/`is_mret` into `id_ex_rs2_data`'s reset input):
+`CLINT_BR`/`UART_BR` cell names appear in that chain too, exactly as the
+2026-08-26 measurement above already showed (`CLINT.addr`,
+`PLIC.claim_read_now`) — not because either peripheral's *already-registered*
+ack is being waited on, but because nextpnr reuses whichever signal's name
+got packed into a given physical LUT slot, an artifact of placement rather
+than a fact about dataflow. The tail's actual content downstream of
+`dbus_stall` is the stall network's own control-signal fan-in —
+`id_ex_is_fence_i`, `is_branch`, `is_muldiv`, `is_mret` combining to decide
+a pipeline register's reset — not any specific slave. Registering GPIO/SPI's
+ack would be safe on its own terms (the interconnect's lock already handles
+a multi-cycle slave; #49's header documents the general pattern working)
+but there is no evidence here that it would move Fmax at all, so it is not
+done — an extra cycle on every GPIO/SPI access is a real cost, and this
+project's practice is not to spend one against a hypothesis with no
+measurement behind it.
+
+**What would actually touch the now-dominant shape.** `dc_tag`'s ~5.6 ns
+clk-to-q is the D-cache tag block RAM's own output-register timing (EBR/
+DP16KD), fixed by the primitive, not by a refactor — the 2026-08-26 entry
+above already said as much. The only change that would shorten this
+specific head is a second pipeline stage in the D-cache hit path itself:
+register `dc_present`/`load_hit` (`rtl/soc/cpu_wb.v`) one cycle later than
+today, so a hit costs two cycles instead of one. That is a third candidate,
+distinct from the fetch-pipeline-stage and virtual-indexing ideas above, and
+a materially bigger one — unlike an MMIO peripheral's ack, a D-cache hit is
+the common case for a real fraction of load instructions, so the throughput
+cost lands on a hot path rather than a cold one. It needs its own measured
+round (hit-rate-weighted cycle-count impact, not just an Fmax number), not
+to be folded into this one. Not attempted here.
+
+No RTL changed this round. What is recorded is the fresh six-seed
+measurement (including the first synthesis check of PR #79's
+`dbg_halt_admit_block` claim), that the shape distribution has swapped
+which makes the fetch-pipeline-stage idea a smaller win than previously
+argued, and that the one avenue investigated new this round — GPIO/SPI ack
+registration — was checked against the real data and ruled out, so the next
+person does not have to re-walk it.
+
 ## What 256 KB of SDRAM was and was not saying
 
 `SDRAM-CHECK: PASS` over 256 KB has been this project's evidence that external
