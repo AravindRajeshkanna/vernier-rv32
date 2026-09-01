@@ -961,6 +961,65 @@ argued, and that the one avenue investigated new this round — GPIO/SPI ack
 registration — was checked against the real data and ruled out, so the next
 person does not have to re-walk it.
 
+### What a D-cache hit pipeline stage would actually cost
+
+The previous section named this as the one change that would touch the
+now-dominant `dc_tag`-sourced shape: register `dc_present`/`load_hit`
+(`rtl/soc/cpu_wb.v`) one cycle later, so a hit costs two cycles instead of
+one. Before attempting it, this measures what "costs two cycles instead of
+one" means in practice, using the D-cache hit counters `rtl/soc/cpu_wb.v`
+already carries (`dc_load_hits`/`dc_load_misses`, read out by
+`sim/tb_bench.v` after every CoreMark run) — CoreMark, not a synthetic
+loop, because it mixes matrix ops, a linked-list walk, a state machine and
+a CRC rather than exercising one access pattern.
+
+**`CORE=inorder`, `make coremark`:** 454,010 total cycles, 59,457 D-cache
+load hits, 2,302 misses — a 96.3% hit rate. The naive version of the change
+— every load, hit or miss, waits for an ack, the same shape
+`wb_periph_bridge.v` already uses for a peripheral — turns each of those
+59,457 hits into a two-cycle access. That is **59,457 extra cycles, 13.1%
+more than the 454,010 measured today.** For comparison, every timing fix
+this file has actually shipped cost nothing measurable: `itlb_wait_stall`
+moved kernel-boot cycles by one part in ten thousand, and the peripheral
+bridge's registered ack costs a cycle only on CLINT/PLIC/UART accesses,
+which are rare enough that no CoreMark or boot-cycle count in this project
+has ever moved from it. 13.1% is a different kind of number — a real,
+measurable throughput cost on the common case, not a rounding error on a
+cold path, and it is the reason this was measured before being attempted
+rather than after.
+
+**The pipeline may already have the mechanism to make this cheaper than
+the naive number.** `rtl/cpu_core.v`'s `load_use_stall` (around line 775)
+already stalls the pipeline for exactly one cycle, but only when the
+*very next* instruction actually reads the register a load in EX/MEM is
+about to write — not on every load. A two-cycle-latency D-cache is a
+latency change, not necessarily a throughput one: if the extra cycle were
+folded into that same hazard check (stall only when an instruction within
+the new, wider hazard window actually consumes the loaded value) rather
+than implemented as "every load waits for an ack" like the peripheral
+bridge, independent loads back-to-back would pay nothing extra, and the
+real cost would be however often CoreMark's compiled code puts a load's
+use immediately next to it — a smaller and currently unmeasured number,
+not 13.1%. Measuring it needs a counter this project does not have yet
+(something that counts hazard-window stalls under a two-cycle model, not
+just hits and misses), and building that latency-only version is real
+microarchitecture work on a bigger scale than adding a wait state - the
+same jump in kind the fetch-pipeline-stage section above already names for
+the instruction side ("it costs a cycle of fetch latency, and the I-cache,
+the BTB and the redirect logic all have to cope").
+
+**Not attempted here.** The naive version's cost is measured and real
+(13.1% on CoreMark); the latency-only version's cost is unmeasured and the
+implementation is materially riskier, on a path with zero formal coverage
+(`grep -n "ifdef FORMAL" rtl/soc/cpu_wb.v` and `rtl/cpu_core.v` both return
+nothing) and a documented history of a seemingly-small bus-timing change
+here breaking Linux for an unrelated reason (`wb_periph_bridge.v`'s own
+header, and [practices.md §45](../docs/practices.md)). Whether a 13%
+throughput cost (or an unmeasured, smaller, but harder-to-verify one) is
+worth paying to close 25 MHz margin on a board that already survives on
+seed retries is a real tradeoff, not a technical correctness question, and
+is recorded here rather than decided.
+
 ## What 256 KB of SDRAM was and was not saying
 
 `SDRAM-CHECK: PASS` over 256 KB has been this project's evidence that external
