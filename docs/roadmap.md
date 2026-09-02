@@ -2402,21 +2402,51 @@ same code comes out regardless of history) prove stage 1 alone; 0x00 and
 flips the encoding on the second occurrence, which a stateless per-byte
 table could never do; the four fixed control tokens are checked verbatim.
 
+**Stage 2 (the PLL) is also done: `fpga/video_pll.v`, one `EHXPLLL` with two
+taps off the same VCO - 125 MHz (`clk_bit`, the eventual serializer's SCLK)
+and 25 MHz (`clk_pixel`, re-emitted rather than reused from `clk_25mhz`
+directly, so it shares the same fixed phase relationship to `clk_bit` a
+free-running divide-by-5 counter could not guarantee across resets).
+Parameters came from the project's own `ecppll` tool, not hand-picked - VCO
+625 MHz, both taps exact integer divisions, zero rounding, which is the
+same 25 MHz-not-25.175 MHz payoff the entry above already named.
+`sim/tb_video_pll.v` (`make sim_video_pll`, in `verify`) checks the
+simulation-mode fallback's divider gives an exact 5:1 period ratio and that
+`locked` rises rather than starting high - `EHXPLLL` itself has no Icarus
+model, matching `fpga/sdram_clk_out.v`'s `ODDRX1F` before it. **Also run,
+by hand, once: `yosys` (oss-cad-suite `0.68+118`) + `nextpnr-ecp5 --85k
+--package CABGA381` on a throwaway top-level wrapper - 0 errors, places and
+routes, and nextpnr's own frequency derivation from the `EHXPLLL`
+attributes reports exactly 125.0 MHz for `clk_bit`.** That is the one
+thing simulation cannot check (a black-boxed hard primitive elaborates to
+nothing in Icarus) and the one place a wrong parameter would only have
+shown up on a real build.
+
+**A real near-miss, worth naming so it does not recur:** the first attempt
+at the serializer (stage 3 below) was going to use `OSER10`, a dedicated
+10:1 serializer primitive - which turns out to belong to Gowin's cell
+library, not Lattice's. `grep -rl OSER10` against the toolchain's own
+bundled cell definitions found it only under `yosys/gowin/`; ECP5's actual
+output serialization primitives (`yosys/ecp5/cells_bb.v`) top out at
+`ODDR71B` (7:1). Caught before any RTL was written by checking the
+toolchain's own primitive list rather than trusting a half-remembered name
+- the kind of mistake that would otherwise have failed silently at
+synthesis (an unrecognized module) rather than doing something worse.
+
 **Still missing, in the order a future round would need them:**
 
-1. **A 5x-pixel-clock PLL.** This SoC already runs its pixel clock at a
-   plain 25 MHz rather than the exact 25.175 MHz DVI calls for
-   (`rtl/soc/video_timing.v`'s own header - "the difference is deliberate
-   and currently harmless"), which happens to make this easier than it
-   first looks: 25 MHz x5 = 125 MHz is an exact integer ratio, not the
-   awkward fraction the true DVI clock would need. `ecppll` (already used
-   for the SDRAM clock's phase shift, `fpga/sdram_clk_out.v`) generates
-   ECP5 `EHXPLLL` instantiations from a ratio like this.
-2. **A serializer** onto the three data channels plus the clock channel -
-   10:1 per pixel clock, most simply as 5:1 DDR through the PLL's own
-   125 MHz output, the same `ODDRX1F`-family primitive
-   `fpga/sdram_clk_out.v` already uses for a different signal.
-3. **The GPDI pin constraints.** `fpga/constraints/ulx3s.lpf` has no
+1. **A serializer.** ECP5 has no native 10:1 primitive; the standard
+   technique (confirmed against the toolchain's own primitive list, see
+   above) is 5:1 DDR through `ODDRX1F` clocked by `clk_bit` above - 2 bits
+   out per 125 MHz cycle, 5 cycles per pixel clock, 10 bits total, the same
+   `ODDRX1F` `fpga/sdram_clk_out.v` already uses for a different signal.
+   Deliberately not attempted in the same round as the PLL: the
+   serializer's correctness depends on the *exact* `clk_bit`/`clk_pixel`
+   phase relationship the PLL provides (when in the bit clock's cycle is
+   it safe to load a fresh 10-bit word), which is now concretely known
+   rather than assumed, and a future round can design the load timing
+   against the real relationship instead of guessing at one.
+2. **The GPDI pin constraints.** `fpga/constraints/ulx3s.lpf` has no
    `gpdi_*` entries yet. The real sites, cross-checked between the two
    sources this project's own pinout methodology already uses (the
    official `ulx3s_v20.lpf` and litex-boards' `radiona_ulx3s.py`, which
@@ -2427,11 +2457,11 @@ table could never do; the four fixed control tokens are checked verbatim.
    adjacent P/N pads - not true LVDS buffers, but the standard way to drive
    TMDS from an ECP5 without them). Recorded here so a future round does
    not have to re-derive or re-fetch them.
-4. **Which channel gets `hsync`/`vsync`.** By DVI convention, only channel 0
+3. **Which channel gets `hsync`/`vsync`.** By DVI convention, only channel 0
    (Blue) carries `c0`/`c1` during blanking; channels 1 and 2 must see them
    tied to zero - `tmds_encode.v`'s own header says this is top-level wiring
    this module deliberately does not assume.
-5. Hardware validation - "done when" above - which needs all four of the
+4. Hardware validation - "done when" above - which needs all three of the
    above first, plus an actual monitor.
 
 ---

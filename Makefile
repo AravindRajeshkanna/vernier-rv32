@@ -1194,6 +1194,23 @@ sim_tmds_encode: sim/sim_tmds_encode.out
 	@grep -aq "TMDS-ENCODE-TEST: PASS" sim/tmds_encode.log && echo "TMDS ENCODE OK" || \
 	    { echo "FAILED: TMDS encoder"; exit 1; }
 
+# ---- video PLL (Phase 4, stage 2) ----
+#
+# fpga/video_pll.v's EHXPLLL body has no Icarus model (like
+# fpga/sdram_clk_out.v's ODDRX1F) and is not what this checks - that is a
+# nextpnr-ecp5 question, recorded by hand in fpga/README.md, not something
+# `make verify` can gate. This checks the simulation-mode fallback's own
+# divider logic gives the 5:1 clk_bit:clk_pixel ratio the eventual TMDS
+# serializer needs, and that `locked` behaves like a real PLL's rather than
+# being tied high.
+sim/sim_video_pll.out: sim/tb_video_pll.v fpga/video_pll.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_video_pll.v fpga/video_pll.v
+
+sim_video_pll: sim/sim_video_pll.out
+	cd sim && $(VVP) sim_video_pll.out $(VVP_DUMP) | tee video_pll.log
+	@grep -aq "VIDEO-PLL-TEST: PASS" sim/video_pll.log && echo "VIDEO PLL OK" || \
+	    { echo "FAILED: video PLL"; exit 1; }
+
 # ---- the boot ROM's UART loader ----
 #
 # The only way a program gets into external SDRAM on a board: a bitstream
@@ -1288,6 +1305,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         sim_cpu_halt \
         sim_ooo_csr_hazard \
         sim_tmds_encode \
+        sim_video_pll \
         sim_div64test \
         uartload-host check-program isa cosim linux-if-built formal
 
