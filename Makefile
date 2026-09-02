@@ -564,6 +564,19 @@ sim_ulx3s: soc
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v
 	cd sim && $(VVP) sim_ulx3s.out
 
+# `WITH_VIDEO` is opt-in (fpga/ulx3s_top.v, BOARD=ulx3s85-video in
+# fpga/synth/synth_ecp5.sh) - the primary board target above builds and
+# simulates without it, matching what actually ships by default. This
+# target is the only place `-DWITH_VIDEO` is exercised in `make verify`:
+# without it, video_out.v is compiled but never instantiated, so
+# sim_ulx3s above would silently stop testing the integration it added.
+sim_ulx3s_video: soc
+	$(IVERILOG) $(IVFLAGS) -DWITH_VIDEO -o sim/sim_ulx3s_video.out sim/tb_ulx3s.v \
+	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v \
+	    fpga/video_out.v fpga/video_pll.v fpga/tmds_serialize.v \
+	    rtl/soc/tmds_encode.v
+	cd sim && $(VVP) sim_ulx3s_video.out
+
 # =====================================================================
 # Device tree
 # =====================================================================
@@ -1314,7 +1327,7 @@ verify_ooo:
 	$(MAKE) verify CORE=ooo
 	rm -f sim/*.out
 
-verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 \
+verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_ulx3s_video sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
