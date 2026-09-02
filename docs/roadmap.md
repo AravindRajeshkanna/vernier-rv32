@@ -2387,6 +2387,53 @@ isolation.
 **Done when:** a monitor shows the colour ramp the acceptance test leaves in
 the framebuffer.
 
+**Stage 1 (encoding) is done: `rtl/soc/tmds_encode.v`, the DVI 1.0 spec's
+8b/10b transition-minimized, DC-balanced encoding, one channel per
+instance.** Deliberately the first piece attempted, because it is the only
+part of this phase that needs no board, no PLL and no serializer to prove
+correct - `sim/tb_tmds_encode.v` (`make sim_tmds_encode`, in `verify`)
+checks it against hand-derived vectors from the spec's own algorithm, cross-
+checked against an independent reference implementation
+([mithro/tmds_encoding](https://github.com/mithro/tmds_encoding)) rather
+than trusted on inspection: two disparity-independent bytes (0x10, 0xEF,
+where the transition-minimized result is already perfectly balanced, so the
+same code comes out regardless of history) prove stage 1 alone; 0x00 and
+0xFF fed twice each prove stage 2's running-disparity tracking actually
+flips the encoding on the second occurrence, which a stateless per-byte
+table could never do; the four fixed control tokens are checked verbatim.
+
+**Still missing, in the order a future round would need them:**
+
+1. **A 5x-pixel-clock PLL.** This SoC already runs its pixel clock at a
+   plain 25 MHz rather than the exact 25.175 MHz DVI calls for
+   (`rtl/soc/video_timing.v`'s own header - "the difference is deliberate
+   and currently harmless"), which happens to make this easier than it
+   first looks: 25 MHz x5 = 125 MHz is an exact integer ratio, not the
+   awkward fraction the true DVI clock would need. `ecppll` (already used
+   for the SDRAM clock's phase shift, `fpga/sdram_clk_out.v`) generates
+   ECP5 `EHXPLLL` instantiations from a ratio like this.
+2. **A serializer** onto the three data channels plus the clock channel -
+   10:1 per pixel clock, most simply as 5:1 DDR through the PLL's own
+   125 MHz output, the same `ODDRX1F`-family primitive
+   `fpga/sdram_clk_out.v` already uses for a different signal.
+3. **The GPDI pin constraints.** `fpga/constraints/ulx3s.lpf` has no
+   `gpdi_*` entries yet. The real sites, cross-checked between the two
+   sources this project's own pinout methodology already uses (the
+   official `ulx3s_v20.lpf` and litex-boards' `radiona_ulx3s.py`, which
+   agree exactly): blue `gpdi_dp[0]`/`gpdi_dn[0]` = A16/B16, green
+   `gpdi_dp[1]`/`gpdi_dn[1]` = A14/C14, red `gpdi_dp[2]`/`gpdi_dn[2]` =
+   A12/A13, clock `gpdi_dp[3]`/`gpdi_dn[3]` = A17/B18, all
+   `IO_TYPE=LVCMOS33D DRIVE=4` (Lattice's differential-pair I/O mode on
+   adjacent P/N pads - not true LVDS buffers, but the standard way to drive
+   TMDS from an ECP5 without them). Recorded here so a future round does
+   not have to re-derive or re-fetch them.
+4. **Which channel gets `hsync`/`vsync`.** By DVI convention, only channel 0
+   (Blue) carries `c0`/`c1` during blanking; channels 1 and 2 must see them
+   tied to zero - `tmds_encode.v`'s own header says this is top-level wiring
+   this module deliberately does not assume.
+5. Hardware validation - "done when" above - which needs all four of the
+   above first, plus an actual monitor.
+
 ---
 
 ## Phase 5 — Run software this project did not write
