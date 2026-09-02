@@ -1180,6 +1180,20 @@ sim_ooo_csr_hazard: sim/sim_ooo_csr_hazard.out
 	@grep -aq "OOO-CSR-HAZARD-TEST: PASS" sim/ooo_csr_hazard.log && echo "OOO CSR HAZARD OK" || \
 	    { echo "FAILED: OOO CSR-write-timing hazard"; exit 1; }
 
+# ---- TMDS encoder (Phase 4, stage 1) ----
+#
+# Board-independent on purpose: no PLL, no serializer, no LPF entry exists
+# yet (docs/roadmap.md Phase 4) - this checks only rtl/soc/tmds_encode.v's
+# bit-level correctness against hand-derived vectors from the DVI 1.0 spec,
+# so it can be trusted before any of the board-facing pieces exist.
+sim/sim_tmds_encode.out: sim/tb_tmds_encode.v rtl/soc/tmds_encode.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_tmds_encode.v rtl/soc/tmds_encode.v
+
+sim_tmds_encode: sim/sim_tmds_encode.out
+	cd sim && $(VVP) sim_tmds_encode.out $(VVP_DUMP) | tee tmds_encode.log
+	@grep -aq "TMDS-ENCODE-TEST: PASS" sim/tmds_encode.log && echo "TMDS ENCODE OK" || \
+	    { echo "FAILED: TMDS encoder"; exit 1; }
+
 # ---- the boot ROM's UART loader ----
 #
 # The only way a program gets into external SDRAM on a board: a bitstream
@@ -1273,6 +1287,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
         sim_ooo_csr_hazard \
+        sim_tmds_encode \
         sim_div64test \
         uartload-host check-program isa cosim linux-if-built formal
 
