@@ -2486,7 +2486,50 @@ auto-placed one (`--lpf-allow-unconstrained` alone is not enough once a
 DDR primitive is in the design, unlike stage 2's PLL-only check). With
 `tmds_out` constrained to the real `gpdi_dp[0]` site (A16, from the pin
 table below) instead: 0 errors, places and routes, `clk_bit`-domain Fmax
-241–252 MHz against the 125 MHz it actually needs.
+**252.72 MHz routed** (the placement-estimate pass reports a lower,
+non-final 241.43 MHz first, the same placed-vs-routed distinction
+`fpga/README.md`'s Phase 3 investigation already documents) against the
+125 MHz it actually needs.
+
+**A clocking question resolved before any of the "still missing" items
+below could safely be attempted: what clock does `tmds_encode.v`'s
+`clk`/`tmds_serialize.v`'s `clk_pixel` actually connect to?** `rtl/soc/soc_top.v`
+clocks `video_timing`/`wb_framebuffer` off the SoC's own `clk` - the same
+net the CPU, cache and bus all use, confirmed by reading the instantiation
+directly (`video_timing VTIMING (.clk(clk), ...)`), not assumed.
+`video_pll.v` also has a `clk_pixel` output tap, generated alongside
+`clk_bit` from the same VCO - using it for the encoder/serializer looked
+like the obvious choice, and would have been wrong: `clk_pixel` and the
+SoC's `clk` are both nominally 25 MHz but are two *different* nets (one
+straight off the `clk_25mhz` pin, the other regenerated through the PLL),
+related by a fixed but - like every other `EHXPLLL` phase question in this
+file - unverifiable-in-simulation delay. Unlike the 5:1 `clk_bit`:`clk_pixel`
+relationship `tmds_serialize.v`'s two-flop synchronizer already handles
+safely (five bit-clock samples per pixel period is comfortable oversampling
+margin regardless of phase), a 1:1 same-frequency crossing has none - a bad
+enough phase alignment could tear or drop a pixel *deterministically*, every
+single frame, not as an occasional metastability event, and no amount of
+simulation against a fallback clock model built for this file's own
+convenience could have caught it, because the real number is exactly the
+one nothing here can check.
+
+The resolution: `tmds_encode.v`'s `clk` and `tmds_serialize.v`'s
+`clk_pixel` will be wired to the SoC's own `clk` directly - the same net
+`wb_framebuffer.v` already uses, so there is no crossing between the
+framebuffer's pixel stream and the encoder at all, not even a safe one.
+`tmds_serialize.v`'s `clk_bit` still comes from `video_pll.v`, and the 5:1
+relationship that makes its synchronizer safe holds regardless of which
+25 MHz net is on the other side of it, because `clk_bit` and the SoC's
+`clk` are both ultimately derived from the same `clk_25mhz` pin - `clk_bit`
+through the PLL, `clk` directly, matching exactly how `video_pll.v` and
+`soc_fpga` are wired to that same pin today (`fpga/ulx3s_top.v`'s `SOC`
+instantiation: `.clk(clk_25mhz)`). `video_pll.v`'s `clk_pixel` output tap
+is not removed - an unused output costs nothing once nothing is connected
+to it, and touching an already-shipped, tested module for no functional
+reason is not this round's job - but a future round wiring the real
+top-level should not connect it to the video path. No RTL changed this
+round; this is recorded so the wiring round does not rediscover a 1:1 CDC
+hazard by building it first.
 
 **Still missing, in the order a future round would need them:**
 
