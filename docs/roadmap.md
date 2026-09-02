@@ -2433,20 +2433,64 @@ toolchain's own primitive list rather than trusting a half-remembered name
 - the kind of mistake that would otherwise have failed silently at
 synthesis (an unrecognized module) rather than doing something worse.
 
+**Stage 3 (the serializer) is also done: `fpga/tmds_serialize.v`, 5:1 DDR
+through `ODDRX1F` clocked by `clk_bit` - 2 bits out per 125 MHz cycle, 5
+cycles per pixel clock, 10 bits total, the same `ODDRX1F`
+`fpga/sdram_clk_out.v` already uses for a different signal.** Rather than
+assume the PLL's phase relationship (now concretely known from stage 2, but
+still unverifiable in simulation, since `EHXPLLL` has no Icarus model), it
+treats `clk_pixel` as a signal to detect the edge of in the `clk_bit`
+domain with an ordinary two-flop synchronizer - correct regardless of what
+that relationship turns out to be on real silicon, depending only on the
+5:1 frequency ratio the PLL guarantees exactly.
+
+**Two same-edge simulation races, both in the testbench, not the RTL -
+recorded because both are easy to get wrong again the same way.** First,
+the by-now-familiar one (`sim/tb_tmds_encode.v`'s own history repeated
+itself): reading `UUT.px_rise`/`word_r`/`pos` from an `initial` block
+immediately after `@(posedge clk_bit)`, with no settling delay, saw the
+*previous* cycle's value instead of the one just committed by
+non-blocking assignment in the DUT's own `always` block reacting to the
+same edge. Second, a genuinely different one this project had not hit
+before: `tmds_out`'s simulation-mode body is a **continuous assignment**
+keyed directly on `clk_bit` (`clk_bit ? d0_r : d1_r`), and reading it
+right after `@(negedge clk_bit)` raced that assignment's *own*
+re-evaluation, triggered by the same negedge - every "low phase" sample
+read the pre-transition value. Both need a `#1` settling delay; the second
+is not covered by "nothing is sensitive to that edge," which was true for
+every register in the design but not for a continuous assignment driven
+directly off the clock signal itself.
+
+**A structural bug in the first version of the test, independent of both
+races above: a linear "detect the edge, then capture five bit pairs, then
+look for the next edge" loop consumes six `clk_bit` cycles for a period
+that is only five**, because the *next* word's edge is detected on the
+same cycle the *current* word's last bit pair is still being sampled - so
+the loop silently drifts out of phase after the first word, reading real
+bits from the wrong point in the stream. Rather than get every interlocking
+cycle count exactly right by hand, `sim/tb_tmds_serialize.v` now samples
+continuously with no assumption about which cycle anything starts on, and
+checks whether the known word sequence appears, intact and in order, at
+some fixed 10-bit stride anywhere in a long captured stream - a weaker but
+sufficient question that does not depend on predicting the DUT's internal
+phase to ask.
+
+**Also run by hand, once, chained behind the real PLL and encoder: `yosys`
++ `nextpnr-ecp5 --85k --package CABGA381` on a throwaway wrapper. Two real,
+board-relevant constraints found and recorded, neither of which `fpga/tmds_serialize.v`
+violates but both of which the next stage (wiring real GPDI pins) will need
+to respect:** `ODDRX1F`'s `Q` output must connect only to a top-level
+output port, no intermediate logic (nextpnr refuses otherwise); and
+`ODDRX1F`/DDR IOLOGIC only works on a genuinely pin-constrained PIO, not an
+auto-placed one (`--lpf-allow-unconstrained` alone is not enough once a
+DDR primitive is in the design, unlike stage 2's PLL-only check). With
+`tmds_out` constrained to the real `gpdi_dp[0]` site (A16, from the pin
+table below) instead: 0 errors, places and routes, `clk_bit`-domain Fmax
+241–252 MHz against the 125 MHz it actually needs.
+
 **Still missing, in the order a future round would need them:**
 
-1. **A serializer.** ECP5 has no native 10:1 primitive; the standard
-   technique (confirmed against the toolchain's own primitive list, see
-   above) is 5:1 DDR through `ODDRX1F` clocked by `clk_bit` above - 2 bits
-   out per 125 MHz cycle, 5 cycles per pixel clock, 10 bits total, the same
-   `ODDRX1F` `fpga/sdram_clk_out.v` already uses for a different signal.
-   Deliberately not attempted in the same round as the PLL: the
-   serializer's correctness depends on the *exact* `clk_bit`/`clk_pixel`
-   phase relationship the PLL provides (when in the bit clock's cycle is
-   it safe to load a fresh 10-bit word), which is now concretely known
-   rather than assumed, and a future round can design the load timing
-   against the real relationship instead of guessing at one.
-2. **The GPDI pin constraints.** `fpga/constraints/ulx3s.lpf` has no
+1. **The GPDI pin constraints.** `fpga/constraints/ulx3s.lpf` has no
    `gpdi_*` entries yet. The real sites, cross-checked between the two
    sources this project's own pinout methodology already uses (the
    official `ulx3s_v20.lpf` and litex-boards' `radiona_ulx3s.py`, which
@@ -2457,10 +2501,14 @@ synthesis (an unrecognized module) rather than doing something worse.
    adjacent P/N pads - not true LVDS buffers, but the standard way to drive
    TMDS from an ECP5 without them). Recorded here so a future round does
    not have to re-derive or re-fetch them.
-3. **Which channel gets `hsync`/`vsync`.** By DVI convention, only channel 0
+2. **Which channel gets `hsync`/`vsync`.** By DVI convention, only channel 0
    (Blue) carries `c0`/`c1` during blanking; channels 1 and 2 must see them
    tied to zero - `tmds_encode.v`'s own header says this is top-level wiring
    this module deliberately does not assume.
+3. **A fourth `tmds_serialize` instance for the clock channel** - DVI
+   requires a fixed `0000011111` pattern on `gpdi_dp[3]`/`gpdi_dn[3]`
+   rather than an encoded word, which nothing in this codebase generates
+   yet.
 4. Hardware validation - "done when" above - which needs all three of the
    above first, plus an actual monitor.
 

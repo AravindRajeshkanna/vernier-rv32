@@ -1211,6 +1211,22 @@ sim_video_pll: sim/sim_video_pll.out
 	@grep -aq "VIDEO-PLL-TEST: PASS" sim/video_pll.log && echo "VIDEO PLL OK" || \
 	    { echo "FAILED: video PLL"; exit 1; }
 
+# ---- TMDS serializer (Phase 4, stage 3) ----
+#
+# fpga/tmds_serialize.v's ODDRX1F body has no Icarus model, same situation
+# as fpga/video_pll.v's EHXPLLL and fpga/sdram_clk_out.v's own ODDRX1F
+# before it - this exercises the simulation-mode fallback, driven by
+# fpga/video_pll.v's own simulation clocks (the real 5:1 ratio the
+# serializer assumes, not a hand-rolled one), and checks the reconstructed
+# serial bit stream against the words that were actually fed in.
+sim/sim_tmds_serialize.out: sim/tb_tmds_serialize.v fpga/tmds_serialize.v fpga/video_pll.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_tmds_serialize.v fpga/tmds_serialize.v fpga/video_pll.v
+
+sim_tmds_serialize: sim/sim_tmds_serialize.out
+	cd sim && $(VVP) sim_tmds_serialize.out $(VVP_DUMP) | tee tmds_serialize.log
+	@grep -aq "TMDS-SERIALIZE-TEST: PASS" sim/tmds_serialize.log && echo "TMDS SERIALIZE OK" || \
+	    { echo "FAILED: TMDS serializer"; exit 1; }
+
 # ---- the boot ROM's UART loader ----
 #
 # The only way a program gets into external SDRAM on a board: a bitstream
@@ -1306,6 +1322,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         sim_ooo_csr_hazard \
         sim_tmds_encode \
         sim_video_pll \
+        sim_tmds_serialize \
         sim_div64test \
         uartload-host check-program isa cosim linux-if-built formal
 
