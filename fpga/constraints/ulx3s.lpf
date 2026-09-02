@@ -265,3 +265,36 @@ IOBUF  PORT "sdram_d[12]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF  PORT "sdram_d[13]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF  PORT "sdram_d[14]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
 IOBUF  PORT "sdram_d[15]" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+
+## ---- GPDI (video out) ----
+##
+## Same two-source rule as the SDRAM block above: taken from the official
+## ulx3s_v20.lpf, cross-checked against litex-boards' radiona_ulx3s.py
+## (`_io_2_0`, the v2.0/v3.0 block), which agree exactly on all
+## four differential pairs.
+##
+## Only "_p" is a Verilog port anywhere in this design - see
+## fpga/video_out.v. LVCMOS33D is Lattice/Trellis's differential I/O mode:
+## a "_p" signal tagged with it, placed at a site with a declared "_n"
+## partner at its fixed pair site, gets its complementary output generated
+## by the I/O buffer hardware from LPF placement alone. A "_n" port in the
+## Verilog would be a *second*, independently-driven signal - wrong, and
+## unnecessary. `gpdi_dp`/`gpdi_dn` are declared as a matched PxN pair here
+## for exactly that reason: `gpdi_dn[i]` is never assigned in any .v file
+## in this tree, and is not expected to be.
+LOCATE COMP "gpdi_dp[0]" SITE "A16"; # Blue +
+LOCATE COMP "gpdi_dn[0]" SITE "B16"; # Blue -
+LOCATE COMP "gpdi_dp[1]" SITE "A14"; # Green +
+LOCATE COMP "gpdi_dn[1]" SITE "C14"; # Green -
+LOCATE COMP "gpdi_dp[2]" SITE "A12"; # Red +
+LOCATE COMP "gpdi_dn[2]" SITE "A13"; # Red -
+LOCATE COMP "gpdi_dp[3]" SITE "A17"; # Clock +
+LOCATE COMP "gpdi_dn[3]" SITE "B18"; # Clock -
+IOBUF  PORT "gpdi_dp[0]" IO_TYPE=LVCMOS33D DRIVE=4;
+IOBUF  PORT "gpdi_dn[0]" IO_TYPE=LVCMOS33D DRIVE=4;
+IOBUF  PORT "gpdi_dp[1]" IO_TYPE=LVCMOS33D DRIVE=4;
+IOBUF  PORT "gpdi_dn[1]" IO_TYPE=LVCMOS33D DRIVE=4;
+IOBUF  PORT "gpdi_dp[2]" IO_TYPE=LVCMOS33D DRIVE=4;
+IOBUF  PORT "gpdi_dn[2]" IO_TYPE=LVCMOS33D DRIVE=4;
+IOBUF  PORT "gpdi_dp[3]" IO_TYPE=LVCMOS33D DRIVE=4;
+IOBUF  PORT "gpdi_dn[3]" IO_TYPE=LVCMOS33D DRIVE=4;

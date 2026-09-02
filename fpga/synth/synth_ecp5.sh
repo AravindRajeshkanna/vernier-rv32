@@ -54,6 +54,12 @@ BUILD=fpga/build
 #   BOARD=ulx3s   ./fpga/synth/synth_ecp5.sh     ULX3S with an LFE5U-45F
 #   BOARD=ulx3s85 ./fpga/synth/synth_ecp5.sh     ULX3S with an LFE5U-85F
 #
+#   BOARD=ulx3s85-video ./fpga/synth/synth_ecp5.sh   ulx3s85, GPDI wired in.
+#     Opt-in, not the default: measurably costs Fmax margin (0 of 16 seeds
+#     close 25 MHz, against 1 of 6 for plain ulx3s85 - see docs/roadmap.md's
+#     Phase 4 section), so the primary board target does not build it by
+#     default.
+#
 # and three that bake a program into the bitstream instead of booting off SD,
 # differing only in which program (see the cases below):
 #
@@ -283,6 +289,24 @@ case "$BOARD" in
         PNR_EXTRA=${PNR_EXTRA:-}
         BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         ;;
+    ulx3s85-video)
+        # Same board and pins as plain ulx3s85, GPDI wired in - opt-in
+        # rather than the default, because it measurably is not free: 0 of
+        # 16 placement seeds close 25 MHz with this built in, against 1 of 6
+        # without it, and the shift is consistent across every seed tried,
+        # not one unlucky draw. docs/roadmap.md's Phase 4 section has the
+        # full measurement. This project's primary board target
+        # (`ulx3s85`) should not pay that cost by default; this variant
+        # exists so the cost can still be measured and the feature still
+        # built, deliberately, by whoever wants it.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v fpga/video_out.v \
+                   fpga/video_pll.v fpga/tmds_serialize.v rtl/soc/tmds_encode.v"
+        BOARD_DEFINES="-DWITH_VIDEO"
+        ;;
     "")
         # 45k, because 64 KB of on-chip RAM needs 67 block RAMs and a 25F
         # has 56. See fpga/README.md's device table.
@@ -293,8 +317,8 @@ case "$BOARD" in
         BOARD_RTL=""
         ;;
     *)
-        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s85-ram," >&2
-        echo "       ulx3s85-probe, ulx3s85-trapcheck, ulx3s85-sdramcheck," >&2
+        echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s85-video," >&2
+        echo "       ulx3s85-ram, ulx3s85-probe, ulx3s85-trapcheck, ulx3s85-sdramcheck," >&2
         echo "       ulx3s-diag, ulx3s-cmd0, ulx3s-sdram, or unset)" >&2
         exit 1
         ;;
@@ -304,7 +328,7 @@ esac
 # simulation only and which yosys unrolls into one assignment per word - the
 # single thing that used to make this script appear to hang. See
 # rtl/soc/wb_ram.v.
-YOSYS_DEFINES="-DSYNTHESIS $CORE_DEFINES"
+YOSYS_DEFINES="-DSYNTHESIS $CORE_DEFINES ${BOARD_DEFINES:-}"
 
 if [ "$PRELOAD_RAM" = "1" ]; then
     YOSYS_DEFINES="$YOSYS_DEFINES -DPRELOAD_RAM"

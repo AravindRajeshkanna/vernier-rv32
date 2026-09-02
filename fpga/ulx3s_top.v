@@ -88,6 +88,14 @@ module ulx3s_top #(
     output wire [1:0]  sdram_ba,
     output wire [1:0]  sdram_dqm,
     inout  wire [15:0] sdram_d
+
+    // ---- GPDI (video out), opt-in - see the `WITH_VIDEO` note below ----
+    // Only "_p" - see fpga/video_out.v's header and
+    // fpga/constraints/ulx3s.lpf for why "_n" is not a port anywhere in
+    // this design.
+`ifdef WITH_VIDEO
+    , output wire [3:0] gpdi_dp
+`endif
 );
     // ---- ESP32 hold-off ----
     // On a ULX3S the ESP32 shares the board's power control. Leaving this pin
@@ -206,12 +214,50 @@ module ulx3s_top #(
         .sdram_dq_o(sdram_dq_o), .sdram_dq_oe(sdram_dq_oe),
         .sdram_dq_i(sdram_d),
         .led(led[3:0])
+`ifdef WITH_VIDEO
+        ,
+        .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
+        .vid_de(vid_de), .vid_hsync(vid_hsync), .vid_vsync(vid_vsync)
+`endif
     );
 
     // soc_fpga.v drives four LEDs; the ULX3S has eight. The top nibble is
     // parked rather than left floating so an unlit LED means "unused" instead
     // of "undriven".
     assign led[7:4] = 4'b0000;
+
+`ifdef WITH_VIDEO
+    // ---- video out ----
+    //
+    // Opt-in, not built by the plain `ulx3s`/`ulx3s85` targets - see
+    // `BOARD=ulx3s85-video` in fpga/synth/synth_ecp5.sh. Measured cost:
+    // 0 of 16 placement seeds close 25 MHz with this wired in unconditionally
+    // (was 1 of 6 without it, and every one of the 16 seeds routed lower than
+    // every seed in that baseline - not seed-to-seed noise, a real shift).
+    // docs/roadmap.md has the full measurement. video_out.v's own logic is
+    // nowhere on the resulting critical path - it is still the same
+    // dc_tag-sourced chain this file's Phase 3 history already describes -
+    // so this is ordinary added-die-area routing congestion, not a new
+    // logical bottleneck, but the cost is real either way and this project's
+    // primary board target should not pay it by default.
+    //
+    // `~rst_n`: the same raw, button-derived reset soc_fpga.v's own
+    // internal synchronizer starts from, not a synchronized signal shared
+    // with wb_framebuffer.v - that synchronized reset lives inside
+    // soc_fpga.v/soc_top.v and is not exposed as a port. A less-synchronized
+    // reset costs a frame or two of garbage right after power-on at worst,
+    // not the persistent, silent picture defect the clocking choice in
+    // fpga/video_out.v's own header exists to avoid.
+    wire [7:0] vid_r, vid_g, vid_b;
+    wire       vid_de, vid_hsync, vid_vsync;
+
+    video_out VIDEO (
+        .clk(clk_25mhz), .clk_25mhz(clk_25mhz), .rst(~rst_n),
+        .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
+        .vid_de(vid_de), .vid_hsync(vid_hsync), .vid_vsync(vid_vsync),
+        .gpdi_dp(gpdi_dp)
+    );
+`endif
 
     // Card detect is brought out so the pin is claimed and constrained, but
     // the boot ROM does not consult it - it finds out whether a card is there
