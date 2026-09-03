@@ -3069,6 +3069,30 @@ D-cache hit pipeline stage would actually cost" has the full arithmetic and
 names it as a real tradeoff (throughput vs. FPGA timing margin) rather than
 a technical question with one right answer.
 
+**Built, on explicit direction to proceed - functionally correct, costs
+more than estimated, and does not close the margin by itself.**
+`rtl/soc/cpu_wb.v` now takes one decode cycle before either a hit or a
+miss proceeds, uniformly, so `dbus_wait` no longer reads `dc_present` on
+the cycle a request starts. `make verify`/`make verify_ooo` both pass in
+full, both cores, including 84/84 co-simulation traces against Spike each.
+Cost: **16.6%**, not the earlier 13.1% estimate - CoreMark's cycle count
+rose by exactly the total number of D-bus accesses (loads, stores and
+uncached requests together), not just load hits, because the fix removes
+`dc_present` from the critical path for misses and stores too, not only
+hits. What it bought: `dc_tag` is gone from the critical path on every one
+of 22 seeds tried (`CORE=inorder BOARD=ulx3s85`, 6 then 16 more) - the
+mechanism works exactly as reasoned. What it did not buy: **zero of the 22
+close 25 MHz** (best: 24.66 MHz) - the `pc`-sourced shape, previously the
+minority contributor, is now the only one, and on its own it is not enough.
+`fpga/README.md`'s "A seventh attempt" has the full measurement and names
+this as the converse of the "What this means for the prescribed fix"
+arithmetic from years earlier: closing this margin needs both the fetch
+side and the data side, not either alone. Left on a branch, not merged -
+whether a real ~16.6% cost is worth paying for a change that does not
+close the margin *by itself* is a decision this project's own practice
+keeps outside an autopilot round, same as the decision to attempt this fix
+at all was.
+
 ---
 
 ## Phase 7 — Close the boot path

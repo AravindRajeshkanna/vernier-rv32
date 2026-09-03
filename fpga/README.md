@@ -1020,6 +1020,68 @@ worth paying to close 25 MHz margin on a board that already survives on
 seed retries is a real tradeoff, not a technical correctness question, and
 is recorded here rather than decided.
 
+### A seventh attempt: built, and it costs more than predicted - and does not close the margin by itself
+
+The naive version above was implemented: `rtl/soc/cpu_wb.v`'s D-cache now
+takes one decode cycle before either delivering a hit or driving the bus for
+a miss, uniformly, so `dbus_wait` on the cycle a request starts no longer
+reads `dc_present` (and therefore `dc_tag`, the block RAM whose clk-to-q is
+what the sections above trace the critical path to) at all. `make verify`
+and `make verify_ooo` both pass in full on both cores, including 84/84
+co-simulation traces against Spike each - this is a functionally correct
+change, not just a synthesizable one.
+
+**The cost is real and larger than the earlier estimate: ~16.6%, not
+~13%.** CoreMark on `CORE=inorder`: 529,414 cycles against the prior
+454,010 - a 75,404-cycle increase, matching the total count of D-bus
+accesses (loads, stores and uncached requests together, not just the
+59,456 load hits the earlier estimate priced in) each now paying the one
+cycle a hit used to skip. The earlier "~13%" figure undercounted because it
+only considered turning a one-cycle hit into a two-cycle one; shipping a
+version that leaves `dc_present` off the critical path for *misses* too
+means stores and uncached MMIO accesses pay the same new cycle, which the
+naive estimate did not count.
+
+**What it bought: `dc_tag` is completely gone from the critical path, on
+every seed tried.** Re-measured `CORE=inorder BOARD=ulx3s85`, 6 seeds then
+16 more to rule out an unlucky sample (22 total, matching the scale of
+scrutiny #89/#90's own findings got): every single one is now
+`CPU.pc`-sourced (the fetch/ITLB shape this file has described since the
+first six-seed sweep) or, once, a shape not seen before,
+`CPU.mem_wb_rd_r`-sourced. Not one is `dc_tag`-sourced. That is the
+mechanism working exactly as designed - the fix does what its own
+reasoning said it would.
+
+**What it did not buy: closing the margin.** Routed Fmax across all 22
+seeds: 21.72-24.66 MHz. Zero close 25 MHz. The best seed (24.66 MHz) is
+closer than most of the pre-change baseline's failing seeds were, but the
+one seed that *did* close before this change (25.14 MHz, `dc_tag`-sourced,
+#89) is now unreachable along with the shape that produced it - the
+`dc_tag` path is gone, but the `pc`-sourced path, previously the
+*minority* shape (2 of 6 in this round's baseline before the fix, 4 of 6 in
+the account further above), is now the *only* shape, and on its own it is
+not enough to close 25 MHz either.
+
+**This is exactly the arithmetic "What this means for the prescribed fix"
+predicted, from the other direction.** That section, written years before
+this attempt, said a fetch pipeline stage would cut the `pc`-sourced head
+but do nothing for the `dc_tag`-sourced one, and that neither change alone
+would close the margin because each leaves the other shape standing. This
+round is the converse experiment: fixing the `dc_tag` side alone, and
+finding the `pc`-sourced side is exactly as limiting on its own as the
+arithmetic said it would be. Both readings agree, now from measurement in
+both directions rather than argument in one: closing this margin needs
+both fixes, not either one.
+
+**Not merged pending a decision this project's own practice puts outside
+an autopilot round: whether a real ~16.6% throughput cost is worth paying
+for a change that, alone, does not close the timing margin it was built to
+close.** The commit exists on a branch, gated and correct, so that
+decision is the only thing standing between it and being combined with a
+future fetch-pipeline-stage attempt - which is what closing this margin
+now concretely needs, with both changes' actual costs known rather than
+estimated.
+
 ## What 256 KB of SDRAM was and was not saying
 
 `SDRAM-CHECK: PASS` over 256 KB has been this project's evidence that external

@@ -19,8 +19,11 @@
 // reason: a cache is about what the *bus* costs, and putting it here means
 // one copy serves rtl/cpu_core.v and rtl/ooo/core_ooo.v both, with no core
 // change at all. Each is direct-mapped, one word per line, read
-// asynchronously so a hit costs no wait state. See the two sections below
-// for why one word, and why the data side is write-through.
+// asynchronously. The instruction side's hit still costs no wait state; the
+// data side's costs one, on every access, not only a miss - see "one decode
+// cycle before either path proceeds" below for why the two differ and what
+// it buys. See the two sections below for why one word, and why the data
+// side is write-through.
 //
 // Endian/lane note: the core's native convention is that sub-word data sits
 // in the *low* lanes with the exact byte address on the bus (that is what
@@ -256,11 +259,13 @@ module cpu_wb (
     // Data cache
     // =====================================================================
     // Same shape as the instruction cache above - direct-mapped, one word per
-    // line, asynchronously read so a hit costs nothing - and for the same
-    // reason: `docs/roadmap.md` measures 65,069 cycles of *load* bus-wait on
-    // CoreMark against a total of 482,674, and this is what reaches them.
-    // The other 1,233 cycles of data-bus stall are stores, which the wide
-    // core's store buffer already absorbs.
+    // line, asynchronously read - and for the same reason: `docs/roadmap.md`
+    // measures 65,069 cycles of *load* bus-wait on CoreMark against a total
+    // of 482,674, and this is what reaches them. The other 1,233 cycles of
+    // data-bus stall are stores, which the wide core's store buffer already
+    // absorbs. Unlike the instruction side, a hit here costs one cycle
+    // rather than zero - see "one decode cycle before either path proceeds"
+    // below for why.
     //
     // ---- Write policy: write-through, allocate only on a full-word store ----
     //
@@ -326,11 +331,54 @@ module cpu_wb (
     // hit here.
     wire load_hit = dmem_re && dc_present;
 
-    // The request that actually reaches the bus. A hit stops driving `cyc`
-    // entirely, which - exactly as on the fetch side - both avoids a lie
-    // about an outstanding transfer and hands the interconnect to the
-    // instruction master for that cycle.
-    wire req = want && !load_hit;
+    // ---- one decode cycle before either path proceeds ----
+    //
+    // Through PR #90: a hit answered `dbus_wait`/`dmem_rvalid` in the same
+    // cycle the request was presented, which meant both read `dc_present`
+    // combinationally - and `dc_present` reads `dc_tag`, a block RAM whose
+    // own clk-to-q is what fpga/README.md's Phase 3 section names as the
+    // source of the critical path in 4 of 6 measured placement seeds:
+    // `dc_tag`'s clk-to-q, a handful of LUT hops, straight into
+    // `ex_mem_mem_we`/`BUS.sel_m1`/`dbus_stall` and out to every pipeline
+    // register's enable, same cycle. Taking `dc_tag` off that path needs
+    // `dbus_wait` to not depend on it during the cycle a request starts -
+    // which means not resolving hit-vs-miss that same cycle at all.
+    //
+    // `dc_pending` is 1 from the cycle after a fresh access starts until it
+    // completes; `dc_hit_latched` is that access's `load_hit`, captured on
+    // the cycle it started rather than used to gate anything combinationally
+    // that same cycle. The cost, measured on CoreMark before this shipped
+    // (docs/roadmap.md's Phase 3 section): roughly 13% more cycles, since a
+    // hit that used to cost nothing now costs the same one cycle a miss
+    // already did. Stores and AMOs always see `dc_hit_latched` false -
+    // `load_hit` is already false for them (`dmem_re` is low), so they fall
+    // straight into the bus path below on the cycle after they start,
+    // matching the write-through policy's own requirement that every write
+    // reach the bus regardless of `dc_present`.
+    wire access_start = want && !dc_pending;
+    wire hit_deliver   = dc_pending && dc_hit_latched;
+
+    reg dc_pending;
+    reg dc_hit_latched;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            dc_pending     <= 1'b0;
+            dc_hit_latched <= 1'b0;
+        end else if (access_start) begin
+            dc_pending     <= 1'b1;
+            dc_hit_latched <= load_hit;
+        end else if (dc_pending && (hit_deliver || dwb_ack)) begin
+            dc_pending <= 1'b0;
+        end
+    end
+
+    // The request that actually reaches the bus - only once decode has
+    // ruled out a hit, one cycle later than `want` itself. A hit never
+    // drives `cyc` at all, which - exactly as on the fetch side - both
+    // avoids a lie about an outstanding transfer and hands the interconnect
+    // to the instruction master for that cycle.
+    wire req = dc_pending && !dc_hit_latched;
 
     // AMOs are word-only and word-aligned, so their data never needs
     // shifting. The write phase's data comes out of a register in the core,
@@ -392,20 +440,24 @@ module cpu_wb (
         else if (read_ack) rdata_q <= dwb_dat_r;
     end
 
-    wire [31:0] read_word = load_hit ? dc_line
-                          : read_ack ? dwb_dat_r
-                                     : rdata_q;
+    // `dc_line` re-reads the same entry `load_hit` did on the decode cycle -
+    // safe because `dc_idx` is a function of `dmem_addr`, held stable for
+    // the whole access, and nothing else can update this index in between
+    // (a single in-flight data access is this adapter's whole contract).
+    wire [31:0] read_word = hit_deliver ? dc_line
+                          : read_ack    ? dwb_dat_r
+                                        : rdata_q;
     // Shift the addressed lane back down to where the core expects it. AMOs
     // are word accesses so this is a no-op for them.
     assign dmem_rdata  = read_word >> (8 * byte_off);
-    assign dmem_rvalid = load_hit || read_ack;
+    assign dmem_rvalid = hit_deliver || read_ack;
 
-    // A hit completes in the cycle it is asked for, which is the same
-    // contract `rtl/dmem.v` offers the flat top level (`dbus_wait` tied low,
-    // `dmem_rvalid` tied high). A miss is a single Wishbone transfer, and an
-    // AMO's two phases are two separate waits with the core holding itself in
-    // MEM across the gap.
-    assign dbus_wait = req && !dwb_ack;
+    // One decode cycle, every access - see the comment above `access_start`.
+    // A hit finishes on the cycle after it is asked for; a miss is a
+    // decode cycle plus a single Wishbone transfer; an AMO's two phases are
+    // two separate decode-plus-wait sequences with the core holding itself
+    // in MEM across the gap.
+    assign dbus_wait = access_start || (req && !dwb_ack);
 
     // =====================================================================
     // Observability
@@ -427,7 +479,11 @@ module cpu_wb (
             dc_store_updates <= 32'b0;
             dc_uncached_reqs <= 32'b0;
         end else begin
-            if (load_hit)                    dc_load_hits     <= dc_load_hits + 32'd1;
+            // `hit_deliver`, not `load_hit`: the latter is combinational
+            // from `dc_present` and stays true for both cycles of a hit's
+            // now two-cycle span, which would double-count every hit.
+            // `hit_deliver` fires on exactly one of those two cycles.
+            if (hit_deliver)                 dc_load_hits     <= dc_load_hits + 32'd1;
             if (dc_fill)                     dc_load_misses   <= dc_load_misses + 32'd1;
             if (dc_store)                    dc_store_updates <= dc_store_updates + 32'd1;
             if (dwb_ack && !dc_cacheable)    dc_uncached_reqs <= dc_uncached_reqs + 32'd1;
