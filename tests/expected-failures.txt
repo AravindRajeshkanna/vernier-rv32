@@ -21,9 +21,3 @@ rv32ui-p-ma_data  needs hardware misaligned data access; this core traps instead
 # breakpoints. That is part of the same feature family as the JTAG debug
 # transport, which is not implemented either - see tests/README.md.
 rv32mi-p-breakpoint  needs debug-spec triggers (tdata/tselect)
-
-# Needs Physical Memory Protection (pmpcfg0-3, pmpaddr0-15). Not implemented:
-# with no PMP, M-mode already has full access and there is no second M-mode
-# workload to isolate it from. It becomes necessary the moment untrusted code
-# runs at M, or when OpenSBI wants to protect its own firmware region.
-rv32mi-p-pmpaddr  needs PMP (pmpcfg/pmpaddr)

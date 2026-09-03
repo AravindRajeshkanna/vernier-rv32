@@ -1093,9 +1093,9 @@ runs all of them; `tests/README.md` is the detailed writeup.
 | Layer | Question | Result |
 |---|---|---|
 | Directed tests | Does the feature I just wrote work? | `make sim`, `make sim_soc` pass |
-| riscv-tests | Does this implement *RISC-V*, judged by somebody else's suite? | 81 pass, 3 xfail |
+| riscv-tests | Does this implement *RISC-V*, judged by somebody else's suite? | 82 pass, 2 xfail |
 | Spike co-simulation | Did it execute the *same instructions* as the reference model? | 84/84 traces pass on both cores (`CORE=ooo`'s 84 includes one core-specific accepted divergence, see `tests/README.md`) |
-| Formal (yosys + z3) | Does this module hold for *every* input? | 5 proved, bound 12 cycles |
+| Formal (yosys + z3) | Does this module hold for *every* input? | 6 proved, bound 12 cycles |
 
 The layering is not redundancy. A directed test only catches what its author
 thought to assert. An architectural test catches what the ISA requires but
@@ -1177,15 +1177,19 @@ is correctly still a read, which is also how Spike models it.
   (`-march=rv32im`, a strict subset of what this core implements).
 - **No hardware PTE A/D auto-update** — a PTE missing Accessed (or Dirty,
   for a store) faults rather than being set automatically by the walker.
-- **No PMP** (`pmpcfg`/`pmpaddr`) and **no debug-spec triggers**
-  (`tselect`/`tdata`). These are the only two features the RISC-V
-  architectural test suite fails this core on — see
+- **PMP CSRs exist (`pmpcfg0-3`/`pmpaddr0-15`, correct WARL/lock semantics,
+  `rv32mi-p-pmpaddr` passes) but nothing enforces them** — see
+  `docs/roadmap.md`'s PMP entry. **No debug-spec triggers**
+  (`tselect`/`tdata`) at all. The trigger gap is now the only feature the
+  RISC-V architectural test suite fails this core on — see
   `tests/expected-failures.txt`.
 - **The SoC is memory-limited.** 64 KB of
   on-chip RAM in the FPGA configuration (256 KB in simulation), no external
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
-  no JTAG debug module (`docs/debug.md` sets out exactly what one would
-  take), no Ethernet. The design builds to a **bitstream** on an
+  no Ethernet. `docs/debug.md` sets out exactly how far the JTAG debug
+  module goes (System Bus Access always; halt/resume/register access on
+  `CORE=inorder`, simulation-only) and what is still missing. The design
+  builds to a **bitstream** on an
   ULX3S, closes timing at 25 MHz against that board's real pinout —
   30.77 MHz measured post-route on an LFE5U-85F, 28.78 MHz on a 45F — and
   **runs on an 85F**, where it boots and passes its acceptance test. The SD

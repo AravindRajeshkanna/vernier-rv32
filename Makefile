@@ -1193,6 +1193,30 @@ sim_ooo_csr_hazard: sim/sim_ooo_csr_hazard.out
 	@grep -aq "OOO-CSR-HAZARD-TEST: PASS" sim/ooo_csr_hazard.log && echo "OOO CSR HAZARD OK" || \
 	    { echo "FAILED: OOO CSR-write-timing hazard"; exit 1; }
 
+# ---- PMP (Physical Memory Protection): CSR storage + matching, stage 1 ----
+#
+# Storage/WARL/lock semantics (csr_file.v) and the address-matching module
+# (rtl/pmp.v) only - see rtl/pmp.v's header and docs/roadmap.md for why
+# nothing wires enforcement into a real access path yet. Board-independent,
+# like sim_tmds_encode: rtl/pmp.v takes no core, no bus, nothing but its own
+# inputs, so it is checked here before any pipeline integration exists to
+# risk breaking.
+sim/sim_pmp.out: sim/tb_pmp.v rtl/pmp.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_pmp.v rtl/pmp.v
+
+sim_pmp: sim/sim_pmp.out
+	cd sim && $(VVP) sim_pmp.out $(VVP_DUMP) | tee pmp.log
+	@grep -aq "PMP-TEST: PASS" sim/pmp.log && echo "PMP OK" || \
+	    { echo "FAILED: PMP address matching"; exit 1; }
+
+sim/sim_pmp_csr.out: sim/tb_pmp_csr.v rtl/csr_file.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_pmp_csr.v rtl/csr_file.v
+
+sim_pmp_csr: sim/sim_pmp_csr.out
+	cd sim && $(VVP) sim_pmp_csr.out $(VVP_DUMP) | tee pmp_csr.log
+	@grep -aq "PMP-CSR-TEST: PASS" sim/pmp_csr.log && echo "PMP CSR OK" || \
+	    { echo "FAILED: PMP CSR WARL/lock semantics"; exit 1; }
+
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
@@ -1333,6 +1357,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_u
         sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
         sim_ooo_csr_hazard \
+        sim_pmp \
+        sim_pmp_csr \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \

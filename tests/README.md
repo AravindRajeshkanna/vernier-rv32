@@ -28,14 +28,14 @@ the same way - the only difference is what it is aimed at.
 
 ## Architectural tests (riscv-tests)
 
-79 of 82 upstream tests pass, plus the two in `tests/vernier/` — 81 of 84 in
-the run below. The three that do not are listed in
+80 of 82 upstream tests pass, plus the two in `tests/vernier/` — 82 of 84 in
+the run below. The two that do not are listed in
 `expected-failures.txt` with reasons; `run.sh` reports them as XFAIL and
 fails the run if one of them starts *passing*, so that list cannot quietly go
 stale.
 
 ```
-riscv-tests: 81 passed, 0 failed, 3 xfail, 0 xpass, 0 skipped
+riscv-tests: 82 passed, 0 failed, 2 xfail, 0 xpass, 0 skipped
 ```
 
 Suites run: `rv32ui` (base integer), `rv32um` (M), `rv32ua` (A), `rv32mi`
@@ -114,10 +114,13 @@ says "every instruction, in order, wrote what the reference model wrote".
 Spike is configured to match the implementation, which is the point of the
 exercise rather than a way of dodging it:
 
-- `--pmpregions=0` — this core has no PMP. Without it the two part company
-  the moment riscv-tests' setup writes `pmpaddr0`.
 - `--isa=rv32ima_zicsr_zifencei_zicntr` — Spike's default also includes
   `zihpm` (hpmcounter3-31), which this core does not implement.
+
+No `--pmpregions` override: this core now implements the same 16 regions
+Spike defaults to (see docs/roadmap.md's PMP entry) — the pmpcfg/pmpaddr
+storage is real and matches Spike trace for trace, though nothing enforces
+it against an access path yet.
 
 **What the four fields cannot contain.** A store writes no register, so `rd`
 and `value` are empty for one and the comparison reduces to "a store retired
@@ -212,7 +215,7 @@ z3. SymbiYosys (`sby`) is the usual driver and is not packaged for Homebrew,
 so the two steps it would wrap are done directly.
 
 ```
-formal: 5 proved, 0 refuted, 0 errored (bound = 12 cycles)
+formal: 6 proved, 0 refuted, 0 errored (bound = 12 cycles)
 ```
 
 | Module | Properties |
@@ -222,6 +225,7 @@ formal: 5 proved, 0 refuted, 0 errored (bound = 12 cycles)
 | `regfile` | x0 always reads zero, including when a write to x0 is in flight; the write-to-read bypass is correct on both ports; the write path never touches x0's storage |
 | `regfile_wide` | x0 reads zero on all four ports; the bypass returns the written value from either write port; two ports reading one register agree; and port 1 (the younger instruction) wins when a dual-issue pair writes the same register |
 | `wb_interconnect` | At most one slave strobed; the strobed slave matches the decode; exactly one master granted, data over fetch; acks go only to the requesting master; an unmapped access still acks; a fetch never writes |
+| `pmp` | Fully unconfigured: M allowed, S/U denied; a maximal open NAPOT region allows every access regardless of what else is configured; the same region locked with zero permissions denies every access, M included |
 
 The PLIC is the best target here and the reason this layer exists. Its job is
 priority arbitration over 8 priorities, 8 enables, 8 pending bits and a

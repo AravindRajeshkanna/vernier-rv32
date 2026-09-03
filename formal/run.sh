@@ -43,6 +43,7 @@ TARGETS=(
     "fv_regfile      $ROOT/rtl/regfile.v $HERE/fv_regfile.v"
     "fv_interconnect $ROOT/rtl/soc/wb_interconnect.v $HERE/fv_interconnect.v"
     "fv_regfile_wide $ROOT/rtl/ooo/regfile_wide.v $HERE/fv_regfile_wide.v"
+    "fv_pmp          $ROOT/rtl/pmp.v $HERE/fv_pmp.v"
 )
 
 # Returns 0 if the solver proved the properties, 1 if it found a

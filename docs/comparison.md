@@ -148,17 +148,21 @@ declaring a winner.
 
 ## 6. Where it's behind
 
-- **No halt/resume/register-access debugging.** The JTAG TAP and Debug
-  Module are real (System Bus Access: read/write memory without stopping
-  the hart, gated in `make verify`) - but `openocd`+`gdb` needs debug mode
-  built into the core itself (halt, resume, single-step, `dcsr`/`dpc`,
-  register access), which roadmap Phase 6 explicitly left for later and
-  `docs/debug.md` names as the reason: it reaches into `cpu_core.v`'s
-  pipeline-control logic on a design with little timing margin to spare.
-  NEORV32, Ibex and VexRiscv's debug plugin all have that working today.
-- **No PMP.** `SECURITY.md` lists this as a known gap, not an oversight -
-  every peer with M/S/U privilege and any security posture (Ibex/OpenTitan
-  especially) treats physical memory protection as load-bearing.
+- **Halt/resume/register-access debugging exists, but not real
+  `openocd`+`gdb` compatibility.** The JTAG TAP and Debug Module do System
+  Bus Access (read/write memory without stopping the hart, gated in
+  `make verify`) and, separately, halt/resume/single-step/register access
+  (`CORE=inorder`, simulation-only - `docs/debug.md`) - but the latter skips
+  the RISC-V debug spec's debug ROM/Program Buffer model deliberately, to
+  avoid reaching into `cpu_core.v`'s pipeline-control logic on a design with
+  little timing margin to spare, which is also why a real `openocd`+`gdb`
+  cannot attach to it. NEORV32, Ibex and VexRiscv's debug plugin all have
+  that working today.
+- **PMP CSRs exist, nothing enforces them yet.** `pmpcfg0-3`/`pmpaddr0-15`
+  are real, WARL-correct storage (`docs/roadmap.md`'s PMP entry) - the gap
+  `SECURITY.md` names is enforcement, not the registers. Every peer with
+  M/S/U privilege and any security posture (Ibex/OpenTitan especially)
+  treats physical memory protection as load-bearing.
 - **One proven FPGA target.** The ULX3S/ECP5-85F is the only board this
   project has actually run on; VexRiscv (via LiteX) and Rocket/CVA6 (via
   their respective ecosystems) both span many more boards and, for the
