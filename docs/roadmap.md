@@ -3191,6 +3191,66 @@ not "it linked and didn't hang" - and something running from it, the way
 **PMP**, which [SECURITY.md](../SECURITY.md) lists as a known gap rather than
 an oversight.
 
+**Stage 1: CSR storage and the address-matching module, both verified in
+isolation - not wired to any access path.** `pmpcfg0-3`/`pmpaddr0-15`
+(`rtl/csr_file.v`) with correct WARL/lock semantics, including the
+TOR-couples-previous-pmpaddr quirk (locking entry `i` as TOR also freezes
+`pmpaddr[i-1]`, since that register is entry `i`'s own range's bottom
+boundary) - nothing else in this project's test suite reaches that corner,
+so it has its own directed test (`make sim_pmp_csr`) alongside the address
+matcher's (`make sim_pmp`, `formal/fv_pmp.v`).
+
+Real evidence, not just "it elaborates": riscv-tests' own
+`rv32mi-p-pmpaddr` - previously in `tests/expected-failures.txt`, needing
+exactly this - now passes outright, on both cores. `tests/cosim.py` no
+longer pins Spike to `--pmpregions=0`; both sides now default to 16 regions
+and 4-byte granularity, and match trace for trace, including this test's
+own CSRRS/CSRRC read-modify-write sequences.
+
+**Deliberately not wired to any fetch/load/store path yet, and this is the
+real reason the whole feature stops here for now.** Per spec, once any PMP
+hardware exists, an access from S or U mode that matches no entry is
+*denied* by default - a rule that only bites once enforcement exists, but
+then bites every existing S/U-mode test simultaneously, including the
+Linux boot, since nothing in this project's boot flow itself configures a
+PMP region.
+
+That risk is why this round built spec-faithful, real WARL storage rather
+than a shortcut - real firmware's own generic PMP init should open a
+permissive region on its own, without this project's boot ROM or OpenSBI
+port needing a single new line. Checked, not assumed: re-ran
+`make sim_opensbi` after this round's CSR work landed. OpenSBI's own probe
+(`csrw pmpcfg0,zero; csrw pmpaddr0,-1; csrr t0,pmpaddr0` - the identical
+technique riscv-tests' own `pmpaddr.S` uses) now reports `Boot HART PMP
+Count: 16`, up from 0 before this round, and its domain configuration adds
+one region beyond what it already printed with no PMP present: `Domain0
+Region05 : 0x00000000-0xffffffff M: () S/U: (R,W,X)` - a single, maximal
+NAPOT-style region granting S/U full read/write/execute across the entire
+32-bit space, sitting below the higher-priority regions that already
+protect the firmware's own scratch/text and the PLIC's window from S/U
+(`software/opensbi/README.md` has the full capture). That is exactly the
+shape a future enforcement round needs already in place: OpenSBI writes
+it unconditionally as part of its normal generic-platform boot path, no
+project-specific change required to get it.
+
+What this does *not* yet establish: this configuration currently has zero
+effect, because nothing reads `pmpcfg`/`pmpaddr` outside `csr_file.v` -
+`Region05` sitting in OpenSBI's own printed domain table is not the same
+claim as "an actual load from S-mode against that region would be let
+through once a real `pmp` check exists on the data path." Confirming that
+needs the same scrutiny this project's practice applies everywhere else
+(`docs/practices.md` §44's "every peripheral test passed, only the Linux
+boot caught it" is exactly the risk here) - a real enforcement round, with
+`rtl/pmp.v` actually wired to a real access path and the full Linux boot
+re-run under it, not another read of a boot banner. Wiring enforcement in
+is therefore its own round: instantiate `rtl/pmp.v` on the data path first
+(off the timing-critical fetch path Phase 3 spent so long on), gate the
+trap causes it needs (1/5/7 - instruction/load/store access fault - are
+not yet in `medeleg`'s mask), and re-run the full Linux boot before
+claiming anything works. Instruction-fetch enforcement, which does sit on
+that critical path, is further out still and needs its own Fmax
+measurement the way the D-cache pipeline stage got one.
+
 ---
 
 ## Known defects

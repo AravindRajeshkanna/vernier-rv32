@@ -17,7 +17,7 @@ domain and hands off to a Linux kernel that reaches userspace.
 | Finds the console | ✅ `uart8250` — `rtl/uart.v` |
 | Finds the timer and IPI | ✅ `aclint-mtimer @ 25000000Hz`, `aclint-mswi` |
 | Finds the interrupt controller | ✅ the PLIC's 4 MB window appears as a domain region |
-| Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 0 |
+| Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 16 - real CSRs, not yet enforced (`docs/roadmap.md`'s PMP entry) |
 | **Prints its banner** | ✅ |
 | Hands off to an S-mode payload | ✅ `Next Address 0x9040_0000`, `Next Mode S-mode` |
 | A kernel to hand off *to* | ✅ Linux 6.18.45 rv32ima, to userspace — `software/linux/README.md` |
@@ -27,6 +27,7 @@ OpenSBI v1.9-11-gc0f87f10
 Platform Name               : From-scratch RV32IMA Wishbone SoC
 Platform Features           : medeleg
 Platform HART Count         : 1
+Platform HART Protection    : pmp
 Platform IPI Device         : aclint-mswi
 Platform Timer Device       : aclint-mtimer @ 25000000Hz
 Platform Console Device     : uart8250
@@ -36,10 +37,21 @@ Standard SBI Extensions     : rfnc,ipi,base,hsm,pmu,dbcn,fwft,legacy,sse,time
 Domain0 Next Address        : 0x90400000
 Domain0 Next Mode           : S-mode
 Boot HART Base ISA          : rv32ima
-Boot HART PMP Count         : 0
+Boot HART PMP Count         : 16
+Boot HART PMP Granularity   : 2 bits
+Boot HART PMP Address Bits  : 32
 Boot HART MIDELEG           : 0x00000222
 Boot HART MEDELEG           : 0x0000b109
 ```
+
+Re-captured under `make sim_opensbi` after `rtl/csr_file.v` gained real
+`pmpcfg`/`pmpaddr` storage - OpenSBI's own generic PMP-detection probe now
+sees 16 regions instead of 0, purely from the CSRs existing and behaving
+WARL-correctly under its own write/readback test, with no enforcement
+wired in yet. Every other line is unchanged from before that CSR work,
+confirming it didn't perturb anything else this boot depends on. Not
+re-verified on real hardware - `docs/roadmap.md`'s PMP entry has the reason
+enforcement is a separate, more hazardous round than storage was.
 
 ## The five defects between "builds" and "boots"
 

@@ -9,7 +9,8 @@ which matters more than the total count.
 | UART console | ✅ working, used by every software flow here |
 | Instruction tracer | ✅ working, and load-bearing (drives the Spike co-simulation) |
 | JTAG TAP / Debug Module (System Bus Access) | ✅ working, gated in `make verify` |
-| Halt/resume, register access, breakpoints, OpenOCD/gdb | ❌ not implemented |
+| Halt/resume, register access, single-step | ✅ working, `CORE=inorder`, simulation-only (no FPGA timing claim) - `core_ooo.v` untouched |
+| Breakpoints, OpenOCD/gdb | ❌ not implemented (no debug ROM/Program Buffer - see below) |
 
 ## UART console
 

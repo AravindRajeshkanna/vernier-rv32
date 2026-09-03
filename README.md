@@ -185,12 +185,12 @@ priorities).
 ## Verification
 
 ```
-riscv-tests:             81 passed, 0 failed, 3 xfail   (make isa)
+riscv-tests:             82 passed, 0 failed, 2 xfail   (make isa)
 co-simulation vs Spike:  84/84 traces pass              (make cosim)
   (make cosim CORE=ooo:  84/84 too, but one of the 84 is an accepted
                           divergence unique to the wide core - see
                           tests/README.md)
-formal:                  5 proved, 0 refuted            (make formal)
+formal:                  6 proved, 0 refuted            (make formal)
 CoreMark:                validates its own CRCs         (make coremark)
 SDRAM controller:        against a model that says no    (make sim_sdram)
 SoC out of SDRAM:        99 KB program, 64 KB block RAM  (make sim_sdramboot)

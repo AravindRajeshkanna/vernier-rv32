@@ -431,7 +431,12 @@ Step 4 is the one that bites — five places, none of which check each other.
 - **The walkers do not go through either cache.** A PTE read is a plain bus
   transaction, which is what makes `SFENCE.VMA` sufficient — there is no
   cached copy of a PTE for it to have to invalidate.
-- **No PMP**, no debug module, no JTAG. See `docs/debug.md`.
+- **No PMP enforcement.** `pmpcfg0-3`/`pmpaddr0-15` exist and are correctly
+  readable/writable (`docs/roadmap.md`'s PMP entry), but nothing on any
+  access path consults them yet — a real gap, not a stale claim held over
+  from before the CSRs existed.
+- **JTAG/Debug Module exists; halt/resume and register access are
+  simulation-only.** See `docs/debug.md`.
 - **The UART interrupt is wired to the PLIC but unused** — the driver polls.
 
 `architecture.md` section 13 covers what these mean for running larger

@@ -364,6 +364,12 @@ module core_ooo #(
                 12'h310,
                 12'h320,
                 12'h340, 12'h341, 12'h342, 12'h343, 12'h344,
+                // PMP: pmpcfg0-3, pmpaddr0-15 - see cpu_core.v's identical
+                // addition for the reasoning (csr_file.v stores and serves
+                // these; nothing enforces them yet on either core).
+                12'h3A0, 12'h3A1, 12'h3A2, 12'h3A3,
+                12'h3B0, 12'h3B1, 12'h3B2, 12'h3B3, 12'h3B4, 12'h3B5, 12'h3B6, 12'h3B7,
+                12'h3B8, 12'h3B9, 12'h3BA, 12'h3BB, 12'h3BC, 12'h3BD, 12'h3BE, 12'h3BF,
                 12'hB00, 12'hB02, 12'hB80, 12'hB82,
                 12'hC00, 12'hC01, 12'hC02, 12'hC80, 12'hC81, 12'hC82,
                 12'hF11, 12'hF12, 12'hF13,

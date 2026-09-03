@@ -5,6 +5,10 @@
 // data and instruction MMUs), and `current_priv` (the hart's current
 // privilege level) - see docs/architecture.md.
 //
+// Also stores pmpcfg0-3/pmpaddr0-15 (Physical Memory Protection), WARL/lock
+// semantics only - see the "PMP" section below for why nothing outside this
+// module consults them yet.
+//
 // Legality of a CSR address (implemented vs. not, read-only vs. RW,
 // minimum privilege) is checked outside this module, in cpu_core.v's
 // decode - this module just stores and serves whatever address it's
@@ -142,6 +146,7 @@ module csr_file (
     localparam MHARTID = 32'h0000_0000;
 
     reg [1:0]  current_priv;
+    integer    i; // pmpaddr_r reset loop only
 
     reg        mstatus_mie,  mstatus_mpie;
     reg        mstatus_sie,  mstatus_spie, mstatus_spp;
@@ -154,6 +159,79 @@ module csr_file (
     reg [31:0] stvec_r, sscratch_r, sepc_r, scause_r, stval_r;
     reg [31:0] medeleg_r, mideleg_r;
     reg        ssip_r, stip_r;
+
+    // ---- PMP (Physical Memory Protection): pmpcfg0-3, pmpaddr0-15 ----
+    // Storage and WARL/lock semantics only - nothing here is consulted by any
+    // access path yet. See docs/roadmap.md's PMP entry for why: wiring
+    // enforcement in changes the *default* rule for every S/U-mode memory
+    // access (an unmatched address denies at S/U the moment any PMP entry
+    // is real), and that is a hazard to every existing S/U-mode test
+    // (including the Linux boot) that has never had to think about it -
+    // exactly the kind of change this project's practice keeps to a
+    // separately-verified round rather than folding into the CSR work here.
+    //
+    // RV32 uses all four pmpcfg registers (pmpcfg0-3), each four 8-bit
+    // pmpNcfg fields - unlike RV64, which only uses the even ones. 16
+    // entries total, matching pmpaddr0-15.
+    reg [31:0] pmpcfg0_r, pmpcfg1_r, pmpcfg2_r, pmpcfg3_r;
+    reg [31:0] pmpaddr_r [0:15];
+
+    // Deliberately no forced-zero low bits on pmpaddr (no artificial PMP
+    // "grain"): the finest region this design's matching logic will ever
+    // need is NA4 (4 bytes), which needs every stored bit significant. This
+    // is what makes riscv-tests' rv32mi-p-pmpaddr pass outright - it writes
+    // all-ones to pmpaddr0 and computes the grain G from the lowest set bit
+    // of the readback; reading back all-ones (G=0) is the "trivially
+    // passes" case the test itself names, and skips the elaborate
+    // G-1-bit-reads-as-zero-in-OFF-mode behavior entirely.
+    function [7:0] pmp_cfg_byte;
+        input [3:0] idx;
+        reg [31:0] word;
+        begin
+            case (idx[3:2])
+                2'd0: word = pmpcfg0_r;
+                2'd1: word = pmpcfg1_r;
+                2'd2: word = pmpcfg2_r;
+                default: word = pmpcfg3_r;
+            endcase
+            pmp_cfg_byte = word[8*idx[1:0] +: 8];
+        end
+    endfunction
+
+    // A locked pmpNcfg byte (L=1) is entirely immutable until reset - not
+    // just its L bit, the whole byte (A/X/W/R too), per spec: "any further
+    // writes... are ignored". Bits [6:5] of every byte are WPRI and always
+    // forced to zero, whether or not the byte is locked.
+    function [31:0] pmpcfg_write;
+        input [31:0] old_val, new_val;
+        reg [7:0] b0, b1, b2, b3;
+        begin
+            b0 = old_val[7]  ? old_val[7:0]   : {new_val[7],  2'b00, new_val[4:0]};
+            b1 = old_val[15] ? old_val[15:8]  : {new_val[15], 2'b00, new_val[12:8]};
+            b2 = old_val[23] ? old_val[23:16] : {new_val[23], 2'b00, new_val[20:16]};
+            b3 = old_val[31] ? old_val[31:24] : {new_val[31], 2'b00, new_val[28:24]};
+            pmpcfg_write = {b3, b2, b1, b0};
+        end
+    endfunction
+
+    // A pmpaddr write is also ignored if the entry it belongs to is locked
+    // directly, *or* if it is entry i and entry i+1 is a locked TOR region
+    // (A=01, L=1) - entry i+1's TOR range uses pmpaddr[i] as its own bottom
+    // boundary, so leaving pmpaddr[i] writable would let software silently
+    // move the bottom of a range it just locked the top of.
+    function pmpaddr_locked;
+        input [3:0] idx;
+        reg [7:0] this_cfg, next_cfg;
+        begin
+            this_cfg = pmp_cfg_byte(idx);
+            next_cfg = (idx == 4'd15) ? 8'b0 : pmp_cfg_byte(idx + 4'd1);
+            pmpaddr_locked = this_cfg[7] ||
+                             ((idx != 4'd15) && next_cfg[7] && (next_cfg[4:3] == 2'b01));
+        end
+    endfunction
+
+    wire        is_pmpaddr_addr = (addr[11:4] == 8'h3B);
+    wire [3:0]  pmpaddr_idx     = addr[3:0];
     // The software-writable half of mip.SEIP. Separate from the PLIC's pin so
     // a read can return the OR without the write having clobbered hardware
     // state, which is exactly the distinction the spec draws.
@@ -334,9 +412,18 @@ module csr_file (
             12'h342: rdata = mcause_r;
             12'h343: rdata = mtval_r;
             12'h344: rdata = mip_live;
+            12'h3A0: rdata = pmpcfg0_r;
+            12'h3A1: rdata = pmpcfg1_r;
+            12'h3A2: rdata = pmpcfg2_r;
+            12'h3A3: rdata = pmpcfg3_r;
             12'hF14: rdata = MHARTID;
             default: rdata = 32'b0;
         endcase
+        // pmpaddr0-15: 16 consecutive addresses, one array - see is_pmpaddr_addr
+        // above. Overriding after the case (rather than 16 more arms) keeps
+        // this the same shape as cpu_core.v's own range-decoded CSRs (e.g.
+        // is_ucounter).
+        if (is_pmpaddr_addr) rdata = pmpaddr_r[pmpaddr_idx];
     end
 
     // "Only the software-writable SEIP bit participates in the
@@ -391,6 +478,11 @@ module csr_file (
             mcounteren_r <= 32'b0;
             mcountinhibit_r <= 32'b0;
             scounteren_r <= 32'b0;
+            pmpcfg0_r    <= 32'b0;
+            pmpcfg1_r    <= 32'b0;
+            pmpcfg2_r    <= 32'b0;
+            pmpcfg3_r    <= 32'b0;
+            for (i = 0; i < 16; i = i + 1) pmpaddr_r[i] <= 32'b0;
         end else if (trap_en) begin
             if (trap_to_s) begin
                 sepc_r       <= trap_pc;
@@ -420,6 +512,11 @@ module csr_file (
             mstatus_sie  <= mstatus_spie;
             mstatus_spie <= 1'b1;
             mstatus_spp  <= 1'b0;
+        end else if (we && is_pmpaddr_addr) begin
+            // pmpaddr0-15, one array write - see is_pmpaddr_addr above and
+            // pmpaddr_locked's header for the two ways a write can be a
+            // no-op here.
+            if (!pmpaddr_locked(pmpaddr_idx)) pmpaddr_r[pmpaddr_idx] <= wdata;
         end else if (we) begin
             case (addr)
                 12'h100: begin
@@ -470,6 +567,10 @@ module csr_file (
                 end
                 12'h302: medeleg_r <= wdata & MEDELEG_MASK;
                 12'h303: mideleg_r <= wdata & MIDELEG_MASK;
+                12'h3A0: pmpcfg0_r <= pmpcfg_write(pmpcfg0_r, wdata);
+                12'h3A1: pmpcfg1_r <= pmpcfg_write(pmpcfg1_r, wdata);
+                12'h3A2: pmpcfg2_r <= pmpcfg_write(pmpcfg2_r, wdata);
+                12'h3A3: pmpcfg3_r <= pmpcfg_write(pmpcfg3_r, wdata);
                 12'h304: mie_r      <= wdata;
                 12'h305: mtvec_r    <= {wdata[31:2], 1'b0, wdata[0]}; // see stvec above
                 12'h340: mscratch_r <= wdata;

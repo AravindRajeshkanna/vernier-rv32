@@ -77,11 +77,13 @@ IDENTITY_CSRS = {0xF11, 0xF12, 0xF13}
 
 # Traces that are expected to part company, with the reason. Kept separate
 # from tests/expected-failures.txt on purpose: the two lists are genuinely
-# different. rv32ui-p-ma_data and rv32mi-p-pmpaddr *fail* their ISA test but
-# *match* Spike instruction for instruction, because Spike is configured the
-# same way this core is built (no --misaligned, --pmpregions=0) and so takes
-# exactly the same traps. That agreement is worth more than the test result:
-# it says the behavior is a deliberate configuration choice, not a defect.
+# different. rv32ui-p-ma_data *fails* its ISA test but *matches* Spike
+# instruction for instruction, because Spike is configured the same way this
+# core is built (no --misaligned) and so takes exactly the same traps. That
+# agreement is worth more than the test result: it says the behavior is a
+# deliberate configuration choice, not a defect. (rv32mi-p-pmpaddr used to be
+# the same shape - configured to match on pmpregions - until this core
+# actually implemented PMP storage and started passing that test outright.)
 EXPECTED_DIVERGENCE = {
     "rv32mi-p-breakpoint":
         "Spike implements debug-spec triggers (tselect/tdata); this core does "
@@ -156,14 +158,16 @@ def value_exempt(insn):
 
 def spike_trace(elf, limit):
     """Retired instructions from Spike, starting at the test's entry point."""
-    # --pmpregions=0: Spike defaults to 16 PMP regions and this core implements
-    # none, so without it the two part company the moment riscv-tests' setup
-    # writes pmpaddr0 - Spike executes the write, the RTL takes an
-    # illegal-instruction trap, and every instruction after that is offset.
-    # Configuring the reference model to the implementation's actual feature
-    # set is the point; silently tolerating the divergence would not be.
+    # No --pmpregions override: this core now implements the same 16 regions
+    # Spike defaults to, with the same 4-byte (G=0) granularity Spike also
+    # defaults to (`spike --help`) - matching defaults rather than pinning a
+    # number on either side, so a future change to either one's default is
+    # what would need a second look here, not a silent mismatch. Enforcement
+    # is not wired in on the RTL side yet (docs/roadmap.md's PMP entry), so
+    # this is only pmpcfg/pmpaddr CSR read/write/WARL agreement for now, not
+    # fault-taking agreement - the two will only fully overlap once it is.
     out = subprocess.run(
-        ["spike", f"--isa={ISA}", "--pmpregions=0",
+        ["spike", f"--isa={ISA}",
          "-l", "--log-commits", elf],
         capture_output=True, text=True, timeout=300).stderr
 

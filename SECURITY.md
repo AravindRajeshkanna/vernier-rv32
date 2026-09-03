@@ -5,11 +5,12 @@
 Vernier-RV32 is a RISC-V RV32IMA core and SoC built as an engineering project.
 It is **not** a hardened or audited design, it has never been through a
 security review, and it should not be treated as a trust boundary in anything
-that matters. It has no PMP, no debug authentication, and no side-channel
-countermeasures of any kind — no constant-time guarantees, no cache (so no
-cache side channels, but also no mitigation for anything else), and no attempt
-at speculation control beyond the fact that it does not speculate past a
-branch resolution.
+that matters. Its `pmpcfg`/`pmpaddr` CSRs exist and store correctly, but
+**nothing enforces them** — treat this exactly as if PMP did not exist. It has
+no debug authentication, and no side-channel countermeasures of any kind — no
+constant-time guarantees, no cache (so no cache side channels, but also no
+mitigation for anything else), and no attempt at speculation control beyond
+the fact that it does not speculate past a branch resolution.
 
 Please report issues anyway. The privilege boundary is a real interface with
 real invariants, and it has already had a real failure — see below.
@@ -63,14 +64,20 @@ week. There is no bounty.
 **Out of scope**, because they are known and documented rather than
 undiscovered:
 
-- No PMP. `docs/soc.md` §7 lists it under "what is not here".
-- No debug module, no JTAG, so no debug authentication to bypass.
+- **No PMP enforcement.** `pmpcfg0-3`/`pmpaddr0-15` are real, correctly
+  read/written CSRs (`docs/roadmap.md`'s PMP entry) — but no fetch, load, or
+  store path consults them. "A configured PMP region does not actually deny
+  access" is this exact known gap, not a new finding — `docs/soc.md` §7 has
+  the current state.
+- The JTAG TAP / Debug Module has no authentication of any kind — anyone who
+  can reach the JTAG pins has full System Bus Access and (`CORE=inorder`,
+  simulation builds only) halt/resume/register access. `docs/debug.md` has
+  the current state.
 - Timing side channels. The core has a variable-latency divider and a
   multi-cycle bus; nothing is constant-time and nothing claims to be.
 - Physical attacks — glitching, probing, bitstream extraction. The ECP5's
   bitstream security is Lattice's business, not this project's.
-- The three known-failing architectural tests in
-  `tests/expected-failures.txt`.
+- The known-failing architectural tests in `tests/expected-failures.txt`.
 - Anything in a fetched third-party suite (riscv-tests, CoreMark) — report
   those upstream.
 
