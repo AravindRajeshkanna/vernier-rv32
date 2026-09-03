@@ -257,6 +257,7 @@ make sim
 ```
 
 Expected output ends with:
+
 ```
 mem[0..3] (expect 15,0,0,0): 15 0 0 0
 fail word (expect 0 = PASS): 0x00000000
@@ -515,12 +516,14 @@ The rest is genuinely board-dependent:
    input, not just a simulation one. Both scripts refuse to start without
    it, because otherwise you get a board that comes up and does nothing.
 5. **Synthesize, place & route, and flash:**
+
    ```bash
    make soc
    DEVICE=85k PACKAGE=CABGA381 ./fpga/synth/synth_ecp5.sh   # open-source flow
    # or:
    vivado -mode batch -source fpga/synth/vivado.tcl -tclargs xc7a35ticsg324-1L
    ```
+
    Pick a device that actually fits: at the default 64 KB of RAM plus the
    framebuffer the design needs **105 block RAMs**, which rules out the ECP5
    25F and 12F. `fpga/README.md` has the measured table.

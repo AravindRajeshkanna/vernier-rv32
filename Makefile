@@ -178,7 +178,8 @@ SD_BLOCKS = 128
         mmuimage plicimage uart16550image \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
-        linux_trapdiff linux-if-built
+        linux_trapdiff linux-if-built \
+        lint lint-markdown lint-vale
 
 all: sim
 
@@ -632,6 +633,32 @@ cosim: sim/sim_isa.out isa-build
 # ---- formal (yosys + yosys-smtbmc + z3) ----
 formal:
 	./formal/run.sh
+
+# ---- documentation lint (markdownlint + Vale) ----
+#
+# `git ls-files` rather than a glob: this repo's own markdown sits next to
+# fetched-not-vendored third-party trees that carry their own docs
+# (tests/riscv-tests/, software/bench/coremark/, both .gitignore'd) - a
+# glob would happily lint those too on a machine that has run
+# isa-fetch/coremark-fetch, and nowhere else in this project's tooling
+# reaches into a fetched tree's own files. `git ls-files` is exactly this
+# project's own tracked markdown, identically in CI (nothing fetched, so a
+# glob would have matched the same set) and on a contributor's machine
+# (something fetched, where it would not have).
+#
+# Versions pinned in both targets (matching docs/toolchain.md's own
+# practice for the RTL toolchain): 0.23.2 for markdownlint-cli2, whatever
+# `vale` resolves to on PATH (installed at a pinned version by CI's own
+# setup step - see .github/workflows/ci.yml). An unpinned `npx ...@latest`
+# means a future upstream release can add a new rule and turn this red
+# with no change in this repo at all.
+lint-markdown:
+	npx --yes markdownlint-cli2@0.23.2 $$(git ls-files '*.md')
+
+lint-vale:
+	vale $$(git ls-files '*.md')
+
+lint: lint-markdown lint-vale
 
 # ---- CoreMark ----
 COREMARK_DIR   = software/bench/coremark

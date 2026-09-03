@@ -57,6 +57,14 @@ touch a CSR, a privilege check or the MMU, run:
 make sim_opensbi CORE=ooo
 ```
 
+**`verify` also does not cover `docs/`, `README.md`, or any other
+markdown.** `make lint` (markdownlint + Vale, CI's own separate job) does -
+run it if your change touches documentation. Both tools are configured
+narrowly against this project's own prose (see the comments in
+`.markdownlint-cli2.yaml` and `.vale.ini` for what's disabled and why)
+rather than a generic style guide, so a clean run is meaningful, not just
+quiet.
+
 A green `verify` is the baseline, not the bar. The bar is:
 
 1. **A new test that fails without your change.** If you fixed something, show

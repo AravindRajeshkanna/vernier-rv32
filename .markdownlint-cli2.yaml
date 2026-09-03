@@ -1,0 +1,98 @@
+# markdownlint-cli2 configuration.
+#
+# Every rule disabled below was checked against the real corpus first, not
+# assumed - see the PR that added this file for the actual counts. Each one
+# is a genuine collision with this project's existing, deliberate prose
+# style (long-form paragraphs that are not hard-wrapped, and that use a bare
+# "-" or "+" as a clause connector rather than always starting a new
+# sentence), not a blanket "turn off anything that complains." Rules that
+# caught a real problem (a broken internal link, a skipped heading level,
+# code fences missing a blank line) were fixed in the RTL^H^H^Hdocs instead
+# of silenced - see git log for this file's own introduction.
+config:
+  default: true
+
+  # This project's paragraphs run long and are not hard-wrapped at any fixed
+  # column - reflowing ~13,000 lines of prose to satisfy an 80-column limit
+  # would be pure churn with no reader benefit, and would fight every future
+  # edit. Table rows and code fences are also not is this doc's word-wrap
+  # style, so column-count is not a meaningful signal here at all.
+  MD013: false
+
+  # This project's own tables were written before this rule existed and use
+  # inconsistent pipe padding across ~150 tables - genuine reformatting
+  # work, not a defect, and not worth a mechanical mass-edit disconnected
+  # from any real problem. Revisit if a future contributor wants to adopt
+  # one style going forward.
+  MD060: false
+
+  # Most fenced blocks in this repo are terminal transcripts, raw log
+  # excerpts, or tool output (nextpnr reports, OpenSBI boot banners) - there
+  # is no real "language" to declare for those, and forcing one (`text`,
+  # `console`) on ~80 blocks is busywork with no rendering benefit over
+  # what GitHub already does with an unlabeled fence.
+  MD040: false
+
+  # This project's prose uses a bare " - " as a clause connector inside a
+  # sentence, the same way an em dash would - and when a paragraph like that
+  # isn't hard-wrapped (MD013, above) and happens to break a line right
+  # before one, CommonMark's block parser cannot tell that from the start
+  # of a new list item. Same root cause as MD004/MD036 below - one style
+  # choice, three rules that each independently misread it.
+  MD032: false
+
+  # A bare "+" is sometimes used as "and" inside a sentence ("yosys +
+  # nextpnr-ecp5"), which reads as a list-marker-style violation to the
+  # parser the moment a line wraps right after it. Same root cause as
+  # MD032/MD036.
+  MD004: false
+
+  # A bold lead-in phrase ("**Foo happened.** Bar baz...") is this project's
+  # normal way of visually breaking up a long section without adding a full
+  # heading - and when the continuation happens to start with a wrapped
+  # "- clause" (MD032's pattern) right after the bold text closes, the
+  # parser reads the bold run alone as a heading-like block. Same root
+  # cause as MD032/MD004.
+  MD036: false
+
+  # This project deliberately continues a numbered list's numbering across
+  # an interjecting paragraph (see fpga/README.md's board-specific-steps-
+  # then-"Regardless of board:"-then-continued-numbering pattern) - a
+  # legitimate structure this rule has no way to distinguish from a
+  # mis-numbered list.
+  MD029: false
+
+  # fpga/README.md deliberately stacks two separately-dated annotations as
+  # adjacent blockquotes with a blank line between them (an update appended
+  # below the text it updates, both kept as the historical record) -
+  # CommonMark treats that as one blockquote with an internal blank rather
+  # than two, which is a rendering quirk, not a defect worth restructuring
+  # around.
+  MD028: false
+
+  # False positive, not a style choice: a line that starts with a PR number
+  # reference like "#89) is now unreachable..." (prose, not a heading) is
+  # indistinguishable from a hashless ATX heading attempt once it starts a
+  # line. Genuine ATX headings elsewhere in the corpus all have the required
+  # space and are unaffected by disabling this.
+  MD018: false
+
+  # This project uses a deliberate double blank line before a `---` section
+  # break in a few long documents (docs/roadmap.md) as extra visual
+  # separation in an already very long file - a formatting preference, not
+  # a mistake.
+  MD012: false
+
+  # docs/practices.md quotes real kernel source verbatim inside fenced code
+  # blocks, tabs and all, because that is what the actual upstream file
+  # looks like - rewriting quoted third-party source to satisfy a local
+  # style rule would make the quote inaccurate.
+  MD010:
+    code_blocks: false
+
+  # tests/README.md reuses "### What this found" under two different
+  # top-level sections on purpose (each layer of verification gets its own
+  # "what this found" account) - a real duplicate heading would be two
+  # *sibling* headings with the same text, which this still catches.
+  MD024:
+    siblings_only: true

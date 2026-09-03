@@ -3251,6 +3251,73 @@ claiming anything works. Instruction-fetch enforcement, which does sit on
 that critical path, is further out still and needs its own Fmax
 measurement the way the D-cache pipeline stage got one.
 
+**Documentation had no gate at all.** Every other layer of this project -
+RTL, firmware, the ISA suite, formal proofs - runs through `make verify` or
+a CI job. `docs/`, `README.md`, `SECURITY.md` and the rest had none: a
+broken internal `#anchor` link, a skipped heading level, or a real typo
+could sit in the tree indefinitely, found only if someone happened to click
+the link. One already had: `docs/practices.md` linked
+`[§1](#1-a-test-that-cannot-fail-is-testing-the-testbench)`, a heading that
+had been renamed to "1. A test must be able to fail" at some point without
+updating the cross-reference. `markdownlint-cli2` found it in the same
+first pass that found everything else - not a special case, just the first
+thing a link-fragment checker was ever pointed at this repo.
+
+Two tools, `make lint-markdown` and `make lint-vale` (`make lint` runs
+both), gated in CI as their own job. Both deliberately narrower than their
+defaults, calibrated against the real ~13,000-line corpus rather than
+assumed to fit:
+
+**markdownlint**, default ruleset, then measured: a first pass against
+every tracked `*.md` file returned just over a thousand findings, 96% of
+them three rules (line-length, fenced-code-language, table-column-style)
+that don't describe a defect here at all - this project's prose is
+deliberately long-form and not hard-wrapped, most unlabeled fences are
+terminal transcripts rather than code in some language, and the existing
+tables predate a very new pipe-style rule. Those three, and six more that
+turned out to share one root cause (a bare `-` or `+` used as a mid-
+sentence clause connector, which CommonMark's parser cannot distinguish
+from a list marker once an unwrapped paragraph happens to break a line
+right after one), are disabled with the reasoning next to each one in
+`.markdownlint-cli2.yaml`. What was left, checked individually rather than
+bulk-disabled: one broken link (fixed, above), one heading level skipped
+from h2 straight to h4 (fixed), two fenced blocks missing a blank line
+before them (fixed), and a handful of genuinely intentional structures
+(a numbered list resuming at 3 after an interjecting paragraph, two
+stacked blockquotes, a duplicate section heading reused under two
+different parents) configured as such rather than silenced.
+
+**Vale**, deliberately *not* built on a third-party style pack. `write-
+good`, `proselint`, and the Google/Microsoft house styles are written
+against corporate documentation and flag exactly what this project's
+causally-reasoned, first-person-adjacent prose does on purpose - passive
+voice, long sentences, informal asides. Pointing one at this repo would
+either bury real findings under hundreds of stylistic ones on day one, or
+need every rule muted individually until nothing was left checked. Instead
+this uses only Vale's own bundled base style, for the two checks that are
+useful regardless of voice: real misspellings and repeated words. The
+spelling check's own dictionary does not know this project's technical
+vocabulary (`testbench`, `bitstream`, `netlist`, `nextpnr`, `mux`, and
+~285 more) - `.vale/styles/config/vocabularies/Vernier/accept.txt` is that
+vocabulary, built by running the checker against the real corpus and
+checking every flagged word by hand rather than accepting the list on
+faith. Two were traced to their actual meaning first: `netlink` is the
+Linux kernel mechanism quoted in the Linux-boot investigation, not a typo
+for `netlist`, and `Intergalaktik` is the ULX3S board's manufacturer.
+`Vale.Terms` - a separate check the same vocabulary file also drives,
+enforcing one canonical casing per entry - is explicitly off: checked
+directly, turning it on produced false positives on every pair this
+project's vocabulary genuinely needs both casings of (`OR` the boolean
+operator vs. `or` the conjunction, `PID` the process ID vs. `pid` the
+struct field, `XFAIL` the literal string this project's own tooling prints
+vs. "xfail" the word for it in prose).
+
+Both tools verified to actually catch something, not just to run clean: a
+deliberately broken link fragment and a deliberately misspelled/repeated-
+word sentence were each confirmed to fail their respective check before
+being reverted, the same "make the test fail first" discipline this
+project applies everywhere else.
+
 ---
 
 ## Known defects

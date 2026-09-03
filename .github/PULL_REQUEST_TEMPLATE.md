@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD041 -->
 <!--
 Thanks for contributing. The checklist below is the same standard the project
 applies to its own commits - see docs/practices.md, which explains why each
