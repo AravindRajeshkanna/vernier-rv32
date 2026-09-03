@@ -3282,6 +3282,41 @@ regression against, so this cannot be bisected the same way. If it recurs,
 `iverilog -V` against `docs/toolchain.md` is worth checking before assuming
 the RTL is at fault.
 
+**Update: another ~5x on the historically relevant core, still zero -
+and one new hypothesis investigated and its simplest form ruled out.**
+The two actual historical occurrences both predate `CORE=ooo` as a target,
+so `CORE=inorder` is where a reproduction would matter most. This round ran
+2,000 full passes of the suite on it alone - roughly 168,000 individual
+test executions, about 5x the 32,400 total across both cores the previous
+round managed - on the current toolchain (`Icarus Verilog 12.0 (stable)`,
+re-checked with `iverilog -V` against `docs/toolchain.md` before starting,
+matching exactly - no further drift since the correction above). Zero
+timeouts, over roughly 8.5 hours of wall time.
+
+The new hypothesis: Icarus's own documented simulation semantics allow the
+relative execution order of multiple processes activated by the same event
+to be implementation-defined where the language does not otherwise order
+them - the general "Verilog race condition" every textbook on the subject
+covers, not an Icarus-specific bug. If `cpu_core.v` had so much as one
+place mixing blocking assignment into a clocked `always @(posedge clk)`
+block - the classic, mechanically-detectable shape that turns this from a
+theoretical hazard into a live one - a scheduler change between Icarus
+versions could plausibly resolve the ambiguity differently and explain
+"reproduced under an old version, never again under a newer one" without
+needing `$random` anywhere, consistent with everything found so far.
+Checked, not assumed: `verilator --lint-only -Wall` against `cpu_core.v`
+and everything it includes reports nothing in Verilator's `BLKSEQ`
+category (blocking assignment in a sequential block) at all. That rules
+out the simplest, most mechanical version of this hypothesis for the one
+core the historical reports actually concern - it does not rule out a
+subtler variant (say, across the `posedge`-triggered blocks of
+`cpu_core.v` and a testbench/harness file, rather than within one file),
+which this round did not have time to chase further.
+
+Net position unchanged from the entry above: still not reproduced, on
+either the toolchain-drift explanation or this new one, and still not
+claimed as resolved.
+
 **RESOLVED - not a design defect. Bisected to a toolchain/environment
 difference on the machine that first investigated it, not to any commit in
 this repository.** `make verilator_check` now passes deterministically,
