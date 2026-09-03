@@ -409,7 +409,7 @@ Reading a single seed's critical path as "the" critical path is the same
 mistake §38 warns about for Fmax, and it was made once here before the other
 five seeds were looked at.
 
-#### Both shapes share a tail, and the tail is the bigger half
+### Both shapes share a tail, and the tail is the bigger half
 
 Printed in full rather than truncated, the two paths converge:
 

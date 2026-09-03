@@ -535,7 +535,7 @@ here, in the same afternoon, by the same author. That is a specific and
 dangerous shape: **the natural failure mode is a model that agrees with the
 controller, and a green test that means nothing.**
 
-It is the same trap as [§1](#1-a-test-that-cannot-fail-is-testing-the-testbench)
+It is the same trap as [§1](#1-a-test-must-be-able-to-fail)
 and it is worse, because a model looks like an independent authority. A test
 that cannot fail at least looks suspicious when you read it. A model that
 happens to implement exactly what the controller does looks like a second

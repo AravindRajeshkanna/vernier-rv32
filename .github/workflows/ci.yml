@@ -472,3 +472,49 @@ jobs:
       - name: Check the proofs held
         run: |
           grep -qE "formal: [0-9]+ proved, 0 refuted" formal.log
+
+  # ---------------------------------------------------------------------
+  # Documentation lint: markdownlint (structure) + Vale (prose). No RISC-V
+  # toolchain, no RTL - this job exists to catch what the other jobs
+  # can't: a broken internal `#anchor` link, a skipped heading level, a
+  # real typo. See .markdownlint-cli2.yaml and .vale.ini for exactly what
+  # each tool checks here and why - both are deliberately narrower than
+  # their defaults, calibrated against this repo's own long-form prose
+  # rather than a generic style guide.
+  # ---------------------------------------------------------------------
+  lint:
+    name: Lint (markdownlint + Vale)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: markdownlint
+        run: make lint-markdown
+
+      # Vale ships as a single static binary with no package manager
+      # dependency - installed directly rather than through a third-party
+      # action, the same reasoning .github/actions/oss-cad-suite gives for
+      # owning its own toolchain setup. Pinned and verified against a real
+      # release asset (`gh api repos/errata-ai/vale/releases/tags/vX.Y.Z`),
+      # not assumed from the naming convention.
+      - name: Install Vale
+        env:
+          VALE_VERSION: 3.20.0
+        run: |
+          set -euo pipefail
+          URL="https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          echo "Fetching $URL"
+          if ! curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/vale.tar.gz; then
+            echo "::error::Could not download Vale ${VALE_VERSION}."
+            echo "::error::Check the release still carries that asset:"
+            echo "::error::  https://github.com/errata-ai/vale/releases/tag/v${VALE_VERSION}"
+            exit 1
+          fi
+          mkdir -p /tmp/vale-bin
+          tar xzf /tmp/vale.tar.gz -C /tmp/vale-bin vale
+          rm -f /tmp/vale.tar.gz
+          echo "/tmp/vale-bin" >> "$GITHUB_PATH"
+
+      - name: Vale
+        run: make lint-vale
