@@ -141,6 +141,26 @@ module tb_top;
         repeat (2) @(posedge clk);
         rst = 0;
 
+        // program.hex is hand-assembled hex with no source predating PMP
+        // entirely - see the Part 13 note above on why regenerating it to
+        // add its own CSR writes is not a safe option (its S-mode and
+        // U-mode code, and the page tables that map them, are hand-tuned
+        // to this exact byte layout). Deposited directly instead, the same
+        // hierarchical-reference technique this file already uses to read
+        // `DUT.CPU.mispredict_count`: entry 0, NAPOT, the whole 32-bit
+        // space, R+W+X, unlocked - the same "permit all" shape real
+        // firmware (OpenSBI's generic init) and this project's own
+        // crt0_ram.S now both open before running anything, standing in
+        // for the M-mode boot code program.hex never had a reason to
+        // include. Without it, Part 8's translated S/U-mode load/store
+        // and Part 10's privilege round trip both take a real, unarmed
+        // PMP access fault the moment `rtl/pmp.v` is wired to a real
+        // access path - found by running this exact test after that
+        // wiring landed and reading `fail word` come back nonzero, not
+        // reasoned out in advance.
+        DUT.CPU.CSR.pmpaddr_r[0] = 32'hFFFF_FFFF;
+        DUT.CPU.CSR.pmpcfg0_r    = 32'h0000_001F; // A=NAPOT(11), R=W=X=1
+
         // Sources 1,2,3 (bits 0,1,2) held asserted throughout - harmless
         // until Part 12 enables them, since PLIC pending-and-eligible
         // requires software-set `enable` regardless of the raw level.

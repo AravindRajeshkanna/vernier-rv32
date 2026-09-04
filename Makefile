@@ -117,20 +117,36 @@ RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 RISCV_NM      ?= riscv64-unknown-elf-nm
 
 RTL = rtl/regfile.v rtl/imem.v rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v \
-      rtl/clint.v rtl/plic.v rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v $(CORE_RTL)
+      rtl/clint.v rtl/plic.v rtl/uart.v rtl/btb.v rtl/mmu.v rtl/pmp.v rtl/cpu_core.v rtl/top.v $(CORE_RTL)
 TB  = sim/tb_top.v
 
 # The SoC build shares the core and peripherals but swaps rtl/top.v (flat,
 # Harvard, zero-latency) for the Wishbone system in rtl/soc/.
-SOC_RTL = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
-          rtl/uart.v rtl/btb.v rtl/mmu.v rtl/cpu_core.v \
+#
+# rtl/pmp.v is listed unconditionally, not inside $(CORE_RTL): cpu_core.v's
+# own body instantiates it directly (not through an `ifdef CORE_OOO` arm),
+# and iverilog has to resolve every module cpu_core.v references to
+# elaborate the file at all - true in a CORE=ooo build too, since
+# soc_top.v's own `ifdef` only selects *which* core gets instantiated as
+# the active one, not which core source files get compiled.
+# SOC_RTL_BASE is the same list with $(CORE_RTL) deliberately left off -
+# i.e. always exactly what CORE=inorder would build, regardless of the
+# ambient $(CORE). sim_pmptest below needs that: PMP enforcement this round
+# is CORE=inorder only (see rtl/cpu_core.v's PMP section and
+# docs/roadmap.md), so its own test has to keep testing cpu_core.v even
+# when `make verify_ooo` runs the rest of this target list against
+# core_ooo.v - the same reason sim_cpu_halt's recipe below hardcodes
+# rtl/cpu_core.v directly instead of going through this variable at all.
+SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
+          rtl/uart.v rtl/btb.v rtl/mmu.v rtl/pmp.v rtl/cpu_core.v \
           rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ptw.v \
           rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
           rtl/soc/wb_sdram.v \
           rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
-          rtl/soc/soc_top.v $(CORE_RTL)
+          rtl/soc/soc_top.v
+SOC_RTL = $(SOC_RTL_BASE) $(CORE_RTL)
 SOC_TB  = sim/tb_soc.v sim/sd_card_model.v
 
 SOFTWARE_SRCS = software/crt0.S software/syscalls.c software/uart.c software/main.c
@@ -172,7 +188,7 @@ SD_BLOCKS = 128
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         sim_jtag \
-        sim_mmusdram sim_plic sim_uart16550 sim_uartirq \
+        sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
         linuximage linuxpayload sim_linux \
         mmuimage plicimage uart16550image \
@@ -1030,6 +1046,42 @@ sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
 	@grep -q "RAMBOOT TEST PASSED" sim/plic.log || \
 	    { echo "sim_plic FAILED"; exit 1; }
 
+# ---- PMP: real S-mode enforcement, wired to the data access path ----
+#
+# rtl/pmp.v's own matching logic and rv32mi-p-pmpaddr's CSR-storage check
+# both predate this - neither one drives a real load or store through the
+# module. software/soc/pmptest.c's header explains what's configured and why.
+#
+# CORE=inorder only, always - $(SOC_RTL_BASE) not $(SOC_RTL), plain -g2012
+# not $(IVFLAGS) (which would carry $(CORE_DEFINES)'s -DCORE_OOO under an
+# ambient CORE=ooo). rtl/ooo/core_ooo.v has no PMP enforcement wired in this
+# round (see rtl/cpu_core.v's PMP section for why, and
+# docs/roadmap.md/SECURITY.md for the honest current-state accounting) -
+# every S/U access on that core is unconditionally allowed, so this exact
+# test would fail every trap-count/mcause check under CORE=ooo, not because
+# anything regressed but because nothing was ever enforcing there. Testing
+# cpu_core.v unconditionally is what makes this check mean the same thing
+# whether it runs under `make verify` or `make verify_ooo`.
+PMPTEST_SRCS = $(SOCRT_SRCS) software/soc/pmptest.c
+
+software/soc/pmptest.elf: $(PMPTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	    -o $@ $(PMPTEST_SRCS)
+
+sim/pmptestimage.hex: software/soc/pmptest.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/pmptest.elf software/soc/pmptest.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/pmptest.bin > $@
+
+sim/sim_pmptest.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL_BASE)
+	$(IVERILOG) -g2012 -DRAM_IMAGE='"pmptestimage.hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL_BASE)
+
+sim_pmptest: sim/bootrom.hex sim/pmptestimage.hex sim/sim_pmptest.out
+	@cd sim && $(VVP) sim_pmptest.out $(VVP_DUMP) 2>&1 | tee pmptest.log
+	@grep -q "RAMBOOT TEST PASSED" sim/pmptest.log || \
+	    { echo "sim_pmptest FAILED"; exit 1; }
+
 # ---- interrupt-driven UART TX: using the interrupt, not just proving it ----
 #
 # plictest.c proves the PLIC delivers the UART's interrupt to S-mode, and
@@ -1187,9 +1239,9 @@ sim_jtag: sim/jtagram.hex sim/sim_jtag.out
 # ports (docs/roadmap.md Phase 6), so this is a plain rtl/cpu_core.v build,
 # independent of $(CORE_RTL)/$(SOC_RTL).
 sim/sim_cpu_halt.out: sim/tb_cpu_halt.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
-                       rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/cpu_core.v
+                       rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/cpu_core.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_halt.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
-	    rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/cpu_core.v
+	    rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/cpu_core.v
 
 sim_cpu_halt: sim/sim_cpu_halt.out
 	cd sim && $(VVP) sim_cpu_halt.out $(VVP_DUMP) | tee cpu_halt.log
@@ -1209,11 +1261,11 @@ sim_cpu_halt: sim/sim_cpu_halt.out
 # the design, unlike most testbenches here.
 sim/sim_ooo_csr_hazard.out: sim/tb_ooo_csr_hazard.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
                        rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v rtl/uart.v \
-                       rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v \
+                       rtl/btb.v rtl/mmu.v rtl/pmp.v rtl/cpu_core.v rtl/top.v \
                        rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
 	$(IVERILOG) $(IVFLAGS) -DCORE_OOO -o $@ sim/tb_ooo_csr_hazard.v rtl/regfile.v rtl/imem.v \
 	    rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v rtl/uart.v \
-	    rtl/btb.v rtl/mmu.v rtl/cpu_core.v rtl/top.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	    rtl/btb.v rtl/mmu.v rtl/pmp.v rtl/cpu_core.v rtl/top.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
 
 sim_ooo_csr_hazard: sim/sim_ooo_csr_hazard.out
 	cd sim && $(VVP) sim_ooo_csr_hazard.out $(VVP_DUMP) | tee ooo_csr_hazard.log
@@ -1381,7 +1433,7 @@ verify_ooo:
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_ulx3s_video sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
-        sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
+        sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
         sim_ooo_csr_hazard \
         sim_pmp \

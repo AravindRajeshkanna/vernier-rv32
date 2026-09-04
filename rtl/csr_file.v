@@ -126,7 +126,13 @@ module csr_file (
     // illegal-instruction trap.
     output wire         mstatus_tvm_out,
     output wire         mstatus_tw_out,
-    output wire         mstatus_tsr_out
+    output wire         mstatus_tsr_out,
+
+    // PMP: pmpcfg0-3/pmpaddr0-15, flattened for rtl/pmp.v's port shape
+    // (16 x 8-bit configs, 16 x 32-bit addresses) - see rtl/pmp.v's header
+    // for the matching/permission logic these feed.
+    output wire [127:0] pmpcfg_out,
+    output wire [511:0] pmpaddr_out
 );
     localparam [1:0] PRIV_U = 2'b00, PRIV_S = 2'b01, PRIV_M = 2'b11;
 
@@ -302,7 +308,13 @@ module csr_file (
     // cause that is raiseable but not delegatable always lands in M-mode, so
     // an S-mode kernel that had asked for its own misaligned-access handler
     // silently never got one.
-    localparam [31:0] MEDELEG_MASK = 32'h0000_B35D;
+    //
+    // Causes 1/5/7 (instruction/load/store access fault, PMP's fault
+    // causes - rtl/pmp.v, wired in cpu_core.v) added the same way, for the
+    // same reason: real firmware (OpenSBI's generic platform init)
+    // delegates almost everything to S-mode and expects an S-mode kernel's
+    // own fault handler to see these, not M-mode's.
+    localparam [31:0] MEDELEG_MASK = 32'h0000_B3FF;
     // Interrupts {1,5,9} = SSI/STI/SEI - the only causes with a real
     // S-level target in this design.
     localparam [31:0] MIDELEG_MASK = 32'h0000_0222;
@@ -326,6 +338,19 @@ module csr_file (
     assign mstatus_tw_out   = mstatus_tw;
     assign mstatus_tsr_out  = mstatus_tsr;
     assign mstatus_mpp_out  = mstatus_mpp;
+
+    assign pmpcfg_out  = {pmpcfg3_r, pmpcfg2_r, pmpcfg1_r, pmpcfg0_r};
+    // pmpaddr_r is an array (regfile-shaped), not four packed 32-bit regs
+    // like the pmpcfg registers - flattened here with a generate loop
+    // rather than an unrolled concatenation, since indexing it directly in
+    // a continuous assignment isn't legal Verilog for an array of this
+    // shape.
+    genvar gi;
+    generate
+        for (gi = 0; gi < 16; gi = gi + 1) begin : PMPADDR_FLATTEN
+            assign pmpaddr_out[32*gi +: 32] = pmpaddr_r[gi];
+        end
+    endgenerate
 
     wire [31:0] mstatus_full = {
         9'b0,            // [31:23] reserved

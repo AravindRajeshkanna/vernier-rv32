@@ -52,6 +52,7 @@ OR
 PCIe
 PLIC
 PLL
+PMP's
 PRF
 PTE
 PTEs
@@ -273,6 +274,7 @@ unstalls
 unwindowed
 userspace
 vendored
+verify_ooo
 virt
 virtualenv
 vmalloc

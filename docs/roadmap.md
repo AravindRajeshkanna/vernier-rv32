@@ -3251,6 +3251,212 @@ claiming anything works. Instruction-fetch enforcement, which does sit on
 that critical path, is further out still and needs its own Fmax
 measurement the way the D-cache pipeline stage got one.
 
+**Stage 2: enforcement, on `CORE=inorder`'s data path, verified against a
+full Linux boot - not wired into instruction fetch, and not wired into
+`CORE=ooo` at all.** `rtl/pmp.v` is now instantiated in `cpu_core.v`,
+checked against `mem_phys_addr` (the same resolved physical address the
+existing MMU page-fault check already uses) once it is genuinely
+meaningful - either no translation was needed, or a walk just resolved
+without a page fault. A denied access raises cause 5 (load) or 7
+(store/AMO access fault), gated into the same `commit_ok`/`synchronous_trap`
+priority chain the misalignment and page-fault checks already use, at
+lower priority than both: misalignment is checked before translation even
+starts, and a page fault is checked as part of translation, before PMP has
+a real physical address to check at all. `MEDELEG_MASK` gained causes
+1/5/7 alongside the existing set, for the same reason 0/4/6 were added
+when *their* traps were implemented - a cause that can be raised but not
+delegated always lands in M-mode, and real firmware (OpenSBI's generic
+init) delegates almost everything to S-mode.
+
+**A real, if narrow, gap found and fixed while wiring this in, that
+applied to the existing page-fault path too, not just PMP.**
+`ex_mem_is_load`'s own latch was `id_ex_valid && id_ex_is_load`, with no
+`commit_ok` gate - unlike `ex_mem_mem_we`/`ex_mem_is_amo`, which already
+had one. A faulting *load* (misaligned, page fault, or now a PMP access
+fault) still latched `ex_mem_is_load` true, which one cycle later still
+asserts a real `dmem_re` to the bus - the register write-back was already
+blocked by `ex_mem_reg_we`'s own gate, but the bus read (and any side
+effect a real device's read has, like a UART RX FIFO pop) would still
+happen. Harmless for the page-fault path in every test this project runs
+today, since nothing has ever page-faulted a load against a device with a
+real read side effect - but PMP's whole point is preventing a physical
+access, not just an architectural one, so shipping it with the identical
+gap the MMU path already had felt like inheriting a defect rather than
+being consistent with precedent. Fixed by adding the same `commit_ok` gate
+`ex_mem_mem_we`/`ex_mem_is_amo` already carry.
+
+**A real bug in `rtl/pmp.v` itself, caught by Verilator where Icarus said
+nothing.** `make sim_opensbi`'s Verilator build failed on a `WIDTHEXPAND`
+warning in the NAPOT region-size computation - a folded expression
+(`base + (({1'b0, napot_mask} + 33'd1) << 2)`) that Icarus accepted without
+comment. Fixed by computing the 33-bit region size as its own named wire
+before any arithmetic touches it, rather than relying on Verilog's
+self-determined-width inference to get a folded expression right - the
+same class of "one simulator's silence is not the same claim as the
+other's" lesson `docs/toolchain.md` and this file's own SDRAM
+`verilator_check` saga have already made once each, now made a third time
+by a different tool pair (Icarus vs. Verilator, not Icarus-version vs.
+Icarus-version).
+
+**Deliberately scoped to `CORE=inorder`, matching Phase 6's own precedent
+for exactly this kind of decision.** `rtl/ooo/core_ooo.v`'s load/store
+path is ROB-based and speculative - `load_via_head`, `issL_can_start`,
+early completion through the CDB - architecturally nothing like
+`cpu_core.v`'s single in-flight access, and this project's own history
+with that core (the Class-B/head-arbitration UART-IRQ race, the AMO
+completion-ordering bugs `docs/practices.md` and this file's "Stage 1d"
+section both catalog at length) is exactly the record that argues against
+extending a security-boundary change onto it under the same time budget as
+the in-order round. Hart control (halt/resume/register access,
+`docs/debug.md`) already set this precedent: `CORE=inorder` only,
+`core_ooo.v` explicitly left for "a separate, harder problem for a future
+round." PMP enforcement follows the same call, for the same reason.
+Concretely: `core_ooo.v`'s own independent `csr_addr_ok` already serves
+`pmpcfg`/`pmpaddr` reads and writes (stage 1 added it there too), but
+nothing on that core's data path ever computes a PMP fault, so every
+access there is unconditionally allowed regardless of what is configured -
+not "less enforced," genuinely unenforced. `SECURITY.md` states this
+precisely rather than letting "verify_ooo passes" be read as "PMP works on
+both cores."
+
+**`software/soc/pmptest.c`: a directed test that a denied access actually
+takes a fault, which nothing before this round checked.** `rv32mi-p-
+pmpaddr` only exercises CSR read/write/WARL correctness; nothing in the
+ISA suite or cosim ever configures a PMP region that denies something and
+checks the denial. This test does, using `trap_arm`/`TRAP_MCAUSE` the same
+way `trapcheck.c` already proves the loud M-mode trap handler works: three
+PMP regions (a store-denied-but-readable word, a fully-closed word, and a
+maximal open-everything NAPOT region), an `mret` into S-mode, a denied
+load (checked: exactly one trap, cause 5, correct `mtval`), a denied store
+(checked: exactly one trap, cause 7, and - the actual point of it - the
+memory word genuinely unchanged), and two ordinary accesses to the open
+region proving enforcement didn't also break what should still work.
+Confirmed to fail without the enforcement wiring, not just asserted:
+temporarily excluding `pmp_fault_now` from `synchronous_trap` and
+rebuilding reproduces exactly the five failures the trap-detection checks
+would predict, restored immediately after. Two real bugs in the test
+itself, not the RTL, found the same way: an early version wrote a sentinel
+value to the fully-closed word from S-mode *before* arming a trap for it,
+which is itself a denied, unarmed store and halted the run on a trap the
+test had no explanation for; a second version tried to verify a denied
+store hadn't reached memory by reading the same fully-closed word, which
+is a denied *read* under a fully-closed region and hit the identical
+failure mode. Splitting store-denial (kept readable) from load-denial
+(fully closed) into two separate regions is what actually fixed it, found
+by hitting each failure rather than reasoned out in advance. Wired into
+`verify`'s dependency list, and deliberately built against `cpu_core.v`
+directly (`$(SOC_RTL_BASE)`, not the CORE-switching `$(SOC_RTL)`) so it
+keeps testing the in-order core's real enforcement even when
+`make verify_ooo` runs the rest of that target list against `core_ooo.v` -
+otherwise this exact test would fail under `verify_ooo` for a true but
+misleading reason (nothing there enforces anything, so every trap-count
+check would come back wrong), which is not the same claim as a regression.
+
+**A second Verilator-only build failure, caught by the same discipline as
+the first - trust the full sequential gate, not a standalone check.**
+`rtl/ooo/core_ooo.v` carries its own, independent `csr_file` instantiation
+(the same duplication stage 1 already found once for `csr_addr_ok`), and
+it didn't connect the two new `pmpcfg_out`/`pmpaddr_out` ports at all.
+Icarus tolerates an unconnected output silently; Verilator's `PINMISSING`
+check does not, and turned it into a fatal error the moment
+`make verify_ooo` tried to build `CORE=ooo`'s Verilator target - a failure
+mode invisible to every Icarus-only check this round had already run,
+including `sim_pmp`/`sim_pmp_csr`/`sim_pmptest` and the full riscv-tests
+suite on both cores. Fixed by connecting both ports the same way
+`mmu.v`'s own `.pa_va()` already does for a port nothing consumes -
+`core_ooo.v` has no PMP enforcement wired in, so nothing there needs
+these values yet, but the port has to be accounted for regardless.
+
+**A third finding, and the most consequential one: every one of this
+project's own S-mode test programs - not riscv-tests, this project's own
+`software/soc/*.c` - broke the instant enforcement went live, because
+none of them had ever had a reason to configure PMP.** `rv32*-p-*` and
+`vernier-p-*` all inherit riscv-tests' own `INIT_PMP` boilerplate (stage
+1's entry above), so they were never at risk. `software/soc/mmutest.c`,
+`plictest.c`, `uartirq.c`, and `div64test.c` are this project's own
+programs, predate PMP entirely, and share one thing riscv-tests-derived
+code does not: `crt0_ram.S`, a startup routine this project wrote, with
+no reason to touch PMP until this round. The first full trusted
+`make verify_ooo` → `make verify` sequence run after fixing the two builds
+above caught it precisely where that gap actually lived:
+`sim_mmusdram FAILED` - `mmutest.c`'s very first S-mode store took a real,
+unarmed `mcause 7` (store access fault), because nothing had ever opened
+a region for it to write into. Not a bug in PMP - `rtl/pmp.v` did exactly
+what it was configured to do, which was nothing, for an S-mode access
+matching no entry. The fix is centralized, not per-test: `crt0_ram.S`
+itself now opens the same maximal, unlocked "permit all" NAPOT region
+real firmware (OpenSBI's generic init) opens on its own, right before
+`call main` - every program linked against this file gets it
+automatically, the same way every program that boots through OpenSBI
+already did without this project's own boot ROM needing a line for it.
+Unlocked, so `pmptest.c`'s own `configure_pmp()` is still free to
+overwrite it with a narrower configuration for its own test - and does,
+without needing to know this default exists. Re-verified individually
+(`sim_mmusdram`, `sim_pmptest`, `sim_plic`, `sim_uartirq` all pass again)
+before trusting the fix and re-running the full sequence.
+
+**A fourth finding, from that re-run: `sim/tb_top.v`'s own legacy
+regression - the fastest thing that can fail, run first by `make verify`
+- has exactly the same gap, in code with no maintained source to patch.**
+`sim/program.hex` is hand-assembled and predates PMP by the project's
+entire history; its Part 8 (translated S/U-mode load/store) and Part 10
+(the S/U privilege round trip) both took real, unarmed PMP access faults
+the instant `rtl/pmp.v` reached a real access path, corrupting the
+expected-cause comparisons the testbench's own trap handler checks
+against - `fail word` came back `0x000001c4` instead of `0`, several
+distinct check bits at once, not an incidental one-instruction shift like
+the earlier, already-documented U-bit-enforcement change above. The
+program itself cannot safely take the `crt0_ram.S` fix: it is "440
+instructions of recovered source" (this file's own "Known defects"
+entry) with U-mode and S-mode code and hand-tuned page tables interleaved
+at exact byte offsets - the Part 13 note further up this file already
+documents that even *reading* which permission bit a fault checks is
+"impossible here without regenerating the program." Fixed the same way
+`sim/tb_top.v` already reaches `DUT.CPU.mispredict_count` for its own BTB
+check: a direct hierarchical deposit into `DUT.CPU.CSR.pmpaddr_r[0]`/
+`pmpcfg0_r` right after reset releases, before the program's first
+instruction - the same maximal open NAPOT region `crt0_ram.S` and
+`pmptest.c` both use, standing in for the M-mode boot code this
+hand-assembled program never had a reason to include. Confirmed to
+restore the *exact* pre-PMP behavior, not just "a passing result with a
+new expected value": `fail word` back to `0`, `BTB mispredict_count` back
+to the already-documented 53 (`CORE=inorder`) / 54 (`CORE=ooo`) baseline
+unchanged - the right outcome, since with PMP genuinely open the program
+runs exactly the control-flow path it always did.
+
+Checked for the same gap everywhere else before trusting the round
+finished, not assumed clear because two fixes had already been found:
+every other testbench's own driven program was traced to its actual
+source. `jtagram.hex` (`sim_jtag`) is a two-instruction increment loop,
+M-mode only. `software/main.c`/`crt0.S` (`sim_software`), CoreMark
+(`sim`/`coremark`), `uartprog.c` (`sim_uartload`), and `sdramtest.c`
+(`sim_sdramboot`) are all M-mode only by direct inspection (zero
+occurrences of `mret`/`MPP` in any of them) - PMP is a no-op for a
+program that never leaves M-mode, regardless of what runtime it links
+against. `sim_ooo_csr_hazard` drives a synthetic instruction stream
+directly from the testbench, not a linked program at all. Nothing else
+in the tree enters S or U mode outside `crt0_ram.S`-linked programs and
+`sim/program.hex`.
+
+**The decisive check: the full trusted `make verify_ooo` then
+`make verify` sequence, not a standalone run of either.** This project's
+own hard-learned rule for exactly this kind of claim (`tests/cosim.py`'s
+`rv32si-p-dirty` saga, most recently) is that only a clean,
+dependency-graph-driven sequential run is trustworthy evidence - a
+standalone `make sim_linux`, or any individual target run by hand, can
+silently reuse a stale build the real gate would have caught. Run in
+full, after every fix above: riscv-tests 82/82 (2 xfail) and cosim 84/84
+on both cores, `VERNIER-RV32-LINUX-BOOT-OK` on both
+(`CORE=ooo` at cycle 136,256,193, `CORE=inorder` at 136,661,281 - both
+within noise of the no-enforcement baseline stage 1 measured), formal
+6/6 on both, and every `sim_*` target including the newly-fixed `sim` and
+`sim_mmusdram` - `EXIT=0` for the whole sequence, the first time this
+round reached that. `CORE=ooo`'s own riscv-tests/cosim/Linux boot all
+pass *unchanged* by any of this, which is the expected, honest result of
+"nothing there checks PMP at all" (this file's "Deliberately scoped to
+`CORE=inorder`" entry above) rather than evidence enforcement also works
+on the wide core.
+
 **Documentation had no gate at all.** Every other layer of this project -
 RTL, firmware, the ISA suite, formal proofs - runs through `make verify` or
 a CI job. `docs/`, `README.md`, `SECURITY.md` and the rest had none: a
