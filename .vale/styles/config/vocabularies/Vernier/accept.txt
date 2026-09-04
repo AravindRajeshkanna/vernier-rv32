@@ -7,6 +7,7 @@ Anthropic
 Ariane
 Basys
 Bitstream
+Bresenham
 Buildroot
 CI
 CLINT
@@ -131,6 +132,7 @@ delegatable
 dequeued
 diffable
 dtc
+dy
 earlycon
 ecall
 ecppack
@@ -223,6 +225,7 @@ printf
 pty
 pulldown
 raiseable
+rasterization
 rasterizer
 reframed
 reframing
@@ -281,6 +284,7 @@ unwindowed
 userspace
 vendored
 verify_ooo
+viewport
 virt
 virtualenv
 vmalloc

@@ -1,6 +1,6 @@
 // Wishbone B4 classic framebuffer: a block-RAM pixel buffer the CPU writes
-// into, scanned out by video_timing.v - plus a small fill/copy engine,
-// Phase 10 stages 1-2 (docs/roadmap.md).
+// into, scanned out by video_timing.v - plus a small fill/copy/line engine,
+// Phase 10 stages 1-3 (docs/roadmap.md).
 //
 // This was a *display controller*, not a GPU in the compute sense: no
 // drawing engine, no blitter, no second core - the CPU wrote every pixel
@@ -34,23 +34,28 @@
 //   bit 17 = 0   pixel data, exactly as before - FB_BASE + y*FB_WIDTH + x
 //   bit 17 = 1   the engine's control block, at FB_BASE + 0x20000:
 //
-//     0x00  BLIT_X       RW  destination rectangle: left edge
-//     0x04  BLIT_Y       RW  destination rectangle: top edge
-//     0x08  BLIT_W       RW  width
-//     0x0C  BLIT_H       RW  height
-//     0x10  BLIT_COLOR   RW  fill colour, RRRGGGBB in bits [7:0] (fill only)
-//     0x14  BLIT_CTRL    WO  bit 0 = start, bit 1 = op (0=fill, 1=copy);
-//                             ignored if already busy
+//     0x00  BLIT_X       RW  point 0: left edge (fill/copy dest) or X0 (line)
+//     0x04  BLIT_Y       RW  point 0: top edge (fill/copy dest) or Y0 (line)
+//     0x08  BLIT_W       RW  width (fill/copy only)
+//     0x0C  BLIT_H       RW  height (fill/copy only)
+//     0x10  BLIT_COLOR   RW  colour, RRRGGGBB in bits [7:0] (fill/line only)
+//     0x14  BLIT_CTRL    WO  bit 0 = start, bits [2:1] = op
+//                             (0=fill, 1=copy, 2=line); ignored if already busy
 //     0x18  BLIT_STATUS  RO  bit 0 = busy
-//     0x1C  BLIT_SRC_X   RW  source rectangle: left edge (copy only)
-//     0x20  BLIT_SRC_Y   RW  source rectangle: top edge (copy only)
+//     0x1C  BLIT_SRC_X   RW  point 1: source left edge (copy) or X1 (line)
+//     0x20  BLIT_SRC_Y   RW  point 1: source top edge (copy) or Y1 (line)
 //
 // Matches `wb_spi.v`'s own CTRL/STATUS naming (`docs/soc.md`) rather than
 // inventing a new convention - STATUS.busy is exactly SPI's own pattern,
-// reused because it already says the right thing. Copy reuses BLIT_X/Y as
-// the *destination* rather than adding a separate pair of registers for
-// it, since a fill's rectangle and a copy's destination rectangle are the
-// same concept.
+// reused because it already says the right thing. Every operation shares
+// the same eight registers rather than each getting its own: BLIT_X/Y is
+// "point 0" (a fill's rectangle origin, a copy's destination, a line's
+// first endpoint) and BLIT_SRC_X/Y is "point 1" (a copy's source, a
+// line's second endpoint) - reusing the same two-point shape rather than
+// adding a dedicated register pair per operation. BLIT_W/H mean nothing
+// to a line, and BLIT_COLOR means nothing to a copy; each op simply
+// ignores the registers it has no use for, the same way BLIT_COLOR
+// already went unused by copy.
 //
 // ---- Why an engine op blocks the CPU out of pixel data, but not STATUS ----
 // The engine and the CPU's own Port A share one write port into `mem[]` -
@@ -103,6 +108,28 @@
 // pixel that will still be read from it has already been read.
 // `sim/tb_blit.v` proves this against a directional overlap in each of
 // the four quadrants, not just the non-overlapping case.
+//
+// ---- Line: Bresenham, one write per cycle, unclipped ----
+// Standard integer Bresenham (the "dy stored negative" formulation), which
+// is what makes it hardware-friendly in the first place: no floating
+// point, no division, one comparison and one or two additions per pixel.
+// It naturally covers all eight octants and the degenerate single-point
+// case (X0=X1, Y0=Y1 - dx=dy=0, the first and only plotted pixel is
+// immediately also the endpoint) with no special-casing.
+//
+// A line is not clamped to a rectangle the way a fill or copy is -
+// clipping a line segment to a viewport is a genuinely different, more
+// involved problem (Cohen-Sutherland and its relatives) than clamping an
+// axis-aligned rectangle, and not one this stage takes on. Instead, every
+// step checks whether the pixel it is about to plot actually falls inside
+// the buffer and skips the write if not, while still stepping the
+// algorithm forward - so a line that starts, ends, or passes outside the
+// buffer draws only the portion that is actually visible, and completes
+// in a bounded number of cycles either way (at most
+// max(|X1-X0|,|Y1-Y0|)+1, the same order of magnitude a fill or copy
+// already costs for a comparable span). A line's endpoints are otherwise
+// unclamped and unchecked - unlike a fill or copy, there is no rectangle
+// whose origin can be "off the buffer" to begin with.
 //
 // ---- Scan-out ----
 // Port B reads a word every pixel clock; the byte lane is selected from the
@@ -169,17 +196,26 @@ module wb_framebuffer #(
     end
 
     // =====================================================================
-    // Fill/copy engine
+    // Fill/copy/line engine
     // =====================================================================
+    localparam [1:0] OP_FILL = 2'd0, OP_COPY = 2'd1, OP_LINE = 2'd2;
+
     reg [11:0] blit_x_r, blit_y_r, blit_w_r, blit_h_r;
     reg [7:0]  blit_color_r;
-    reg [11:0] blit_src_x_r, blit_src_y_r;   // copy source origin, raw (unclamped)
+    reg [11:0] blit_src_x_r, blit_src_y_r;   // copy source origin, or line's (X1,Y1) - raw
     reg        blit_busy_r;
-    reg        blit_op_r;                    // 0 = fill, 1 = copy; latched at kickoff
+    reg [1:0]  blit_op_r;                    // OP_*; latched at kickoff
     reg        blit_xdir_r, blit_ydir_r;     // 0 = increasing, 1 = decreasing
     reg        copy_phase_r;                 // copy only: 0 = read issued, 1 = write+advance
-    reg [11:0] blit_cur_x, blit_cur_y;        // current DESTINATION coordinate
-    reg [11:0] blit_x_end, blit_y_end;        // exclusive, already clamped to the buffer
+    reg [11:0] blit_cur_x, blit_cur_y;        // current DESTINATION (or line) coordinate
+    reg [11:0] blit_x_end, blit_y_end;        // fill/copy only: exclusive, clamped to the buffer
+
+    // Line-only state: Bresenham's decision variable and the fixed end
+    // point, stored the "dy negative" way so both step conditions below
+    // are plain comparisons against err<<1. 13 bits signed covers a delta
+    // up to +-4095 with headroom for err's own range.
+    reg signed [12:0] line_dx_r, line_dy_r, line_err_r;
+    reg [11:0] line_x1_r, line_y1_r;
 
     // Constant-parameter multiply, like Port B's pixel_index below - yosys
     // reduces this to shifts and an add, not a real multiplier. Sized like
@@ -248,6 +284,28 @@ module wb_framebuffer #(
                                (copy_src_byte_lane == 2'd2) ? a_q[23:16] :
                                                                a_q[31:24];
 
+    // Line kickoff: magnitude and direction per axis, computed from the
+    // stable (already-written) endpoint registers so line_dx_r/line_dy_r
+    // can be latched directly from these without a same-cycle
+    // read-after-write hazard. blit_xdir_r/blit_ydir_r double as the
+    // line's step sign (sx/sy), the same "0 = increasing" meaning they
+    // already have for fill/copy.
+    wire line_x_fwd = blit_src_x_r >= blit_x_r;
+    wire line_y_fwd = blit_src_y_r >= blit_y_r;
+    wire [11:0] line_adx = line_x_fwd ? (blit_src_x_r - blit_x_r) : (blit_x_r - blit_src_x_r);
+    wire [11:0] line_ady = line_y_fwd ? (blit_src_y_r - blit_y_r) : (blit_y_r - blit_src_y_r);
+    wire signed [12:0] line_dx_init =  $signed({1'b0, line_adx});
+    wire signed [12:0] line_dy_init = -$signed({1'b0, line_ady});
+
+    // Bresenham step, evaluated every busy cycle while OP_LINE: e2 = 2*err;
+    // step x when e2 >= dy (dy stored negative), step y when e2 <= dx. Both
+    // can fire the same cycle (a diagonal step) - see the header comment.
+    wire signed [12:0] line_e2     = line_err_r <<< 1;
+    wire               line_cond_x = line_e2 >= line_dy_r;
+    wire               line_cond_y = line_e2 <= line_dx_r;
+    wire               line_plot_ok = (blit_cur_x < FB_WIDTH[11:0]) &&
+                                       (blit_cur_y < FB_HEIGHT[11:0]);
+
     // =====================================================================
     // Port A: the bus
     // =====================================================================
@@ -261,7 +319,7 @@ module wb_framebuffer #(
     // during this phase irrelevant) CPU address - see the header comment
     // on why copying costs two cycles per pixel.
     wire [AW-1:0] effective_read_addr =
-        (blit_busy_r && blit_op_r && !copy_phase_r) ? copy_src_word_addr : a_addr;
+        (blit_busy_r && blit_op_r == OP_COPY && !copy_phase_r) ? copy_src_word_addr : a_addr;
 
     // A fill in progress withholds ack from everything except a STATUS
     // read - see the header for why. Address and byte-enables are still
@@ -286,7 +344,7 @@ module wb_framebuffer #(
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             blit_busy_r  <= 1'b0;
-            blit_op_r    <= 1'b0;
+            blit_op_r    <= OP_FILL;
             blit_xdir_r  <= 1'b0;
             blit_ydir_r  <= 1'b0;
             copy_phase_r <= 1'b0;
@@ -300,42 +358,64 @@ module wb_framebuffer #(
                         4'd3: blit_h_r     <= wb_dat_w[11:0];
                         4'd4: blit_color_r <= wb_dat_w[7:0];
                         4'd5: if (wb_dat_w[0]) begin
-                            blit_op_r <= wb_dat_w[1];
-                            if (wb_dat_w[1]) begin
-                                // ---- copy: clamp both rectangles (header
-                                // comment explains why a clamp, not a
-                                // fault), only start if both origins are on
-                                // the buffer and the effective size is
-                                // non-empty, and pick each axis's direction
-                                // so an overlapping copy reads every source
-                                // pixel before anything can overwrite it.
-                                if (dst_x_ok && dst_y_ok && src_x_ok && src_y_ok &&
-                                    copy_w_eff != 12'd0 && copy_h_eff != 12'd0) begin
-                                    blit_x_end  <= blit_x_r + copy_w_eff;
-                                    blit_y_end  <= blit_y_r + copy_h_eff;
-                                    blit_xdir_r <= (blit_x_r > blit_src_x_r);
-                                    blit_ydir_r <= (blit_y_r > blit_src_y_r);
-                                    blit_cur_x  <= (blit_x_r > blit_src_x_r)
-                                                   ? (blit_x_r + copy_w_eff - 12'd1) : blit_x_r;
-                                    blit_cur_y  <= (blit_y_r > blit_src_y_r)
-                                                   ? (blit_y_r + copy_h_eff - 12'd1) : blit_y_r;
-                                    copy_phase_r <= 1'b0;
-                                    blit_busy_r  <= 1'b1;
+                            blit_op_r <= wb_dat_w[2:1];
+                            case (wb_dat_w[2:1])
+                                OP_COPY: begin
+                                    // ---- copy: clamp both rectangles
+                                    // (header comment explains why a
+                                    // clamp, not a fault), only start if
+                                    // both origins are on the buffer and
+                                    // the effective size is non-empty,
+                                    // and pick each axis's direction so
+                                    // an overlapping copy reads every
+                                    // source pixel before anything can
+                                    // overwrite it.
+                                    if (dst_x_ok && dst_y_ok && src_x_ok && src_y_ok &&
+                                        copy_w_eff != 12'd0 && copy_h_eff != 12'd0) begin
+                                        blit_x_end  <= blit_x_r + copy_w_eff;
+                                        blit_y_end  <= blit_y_r + copy_h_eff;
+                                        blit_xdir_r <= (blit_x_r > blit_src_x_r);
+                                        blit_ydir_r <= (blit_y_r > blit_src_y_r);
+                                        blit_cur_x  <= (blit_x_r > blit_src_x_r)
+                                                       ? (blit_x_r + copy_w_eff - 12'd1) : blit_x_r;
+                                        blit_cur_y  <= (blit_y_r > blit_src_y_r)
+                                                       ? (blit_y_r + copy_h_eff - 12'd1) : blit_y_r;
+                                        copy_phase_r <= 1'b0;
+                                        blit_busy_r  <= 1'b1;
+                                    end
                                 end
-                            end else begin
-                                // ---- fill: as stage 1, always forward ----
-                                blit_x_end <= (blit_x_sum > {1'b0, FB_WIDTH[11:0]})
-                                              ? FB_WIDTH[11:0] : blit_x_sum[11:0];
-                                blit_y_end <= (blit_y_sum > {1'b0, FB_HEIGHT[11:0]})
-                                              ? FB_HEIGHT[11:0] : blit_y_sum[11:0];
-                                blit_xdir_r <= 1'b0;
-                                blit_ydir_r <= 1'b0;
-                                blit_cur_x  <= blit_x_r;
-                                blit_cur_y  <= blit_y_r;
-                                if (blit_w_r != 12'd0 && blit_h_r != 12'd0 &&
-                                    blit_x_r < FB_WIDTH[11:0] && blit_y_r < FB_HEIGHT[11:0])
+                                OP_LINE: begin
+                                    // ---- line: no start-gating - even a
+                                    // fully off-buffer or single-point
+                                    // line is well-defined (see header
+                                    // comment) and always completes in a
+                                    // bounded number of cycles.
+                                    line_dx_r   <= line_dx_init;
+                                    line_dy_r   <= line_dy_init;
+                                    line_err_r  <= line_dx_init + line_dy_init;
+                                    blit_xdir_r <= !line_x_fwd;
+                                    blit_ydir_r <= !line_y_fwd;
+                                    line_x1_r   <= blit_src_x_r;
+                                    line_y1_r   <= blit_src_y_r;
+                                    blit_cur_x  <= blit_x_r;
+                                    blit_cur_y  <= blit_y_r;
                                     blit_busy_r <= 1'b1;
-                            end
+                                end
+                                default: begin
+                                    // ---- fill: as stage 1, always forward ----
+                                    blit_x_end <= (blit_x_sum > {1'b0, FB_WIDTH[11:0]})
+                                                  ? FB_WIDTH[11:0] : blit_x_sum[11:0];
+                                    blit_y_end <= (blit_y_sum > {1'b0, FB_HEIGHT[11:0]})
+                                                  ? FB_HEIGHT[11:0] : blit_y_sum[11:0];
+                                    blit_xdir_r <= 1'b0;
+                                    blit_ydir_r <= 1'b0;
+                                    blit_cur_x  <= blit_x_r;
+                                    blit_cur_y  <= blit_y_r;
+                                    if (blit_w_r != 12'd0 && blit_h_r != 12'd0 &&
+                                        blit_x_r < FB_WIDTH[11:0] && blit_y_r < FB_HEIGHT[11:0])
+                                        blit_busy_r <= 1'b1;
+                                end
+                            endcase
                         end
                         4'd7: blit_src_x_r <= wb_dat_w[11:0];
                         4'd8: blit_src_y_r <= wb_dat_w[11:0];
@@ -350,19 +430,41 @@ module wb_framebuffer #(
             end
 
             if (blit_busy_r) begin
-                if (blit_op_r && !copy_phase_r) begin
+                if (blit_op_r == OP_COPY && !copy_phase_r) begin
                     // Copy's read phase: the source word is being fetched
                     // into a_q via effective_read_addr this cycle, valid
                     // next cycle. Nothing to write yet.
                     copy_phase_r <= 1'b1;
+                end else if (blit_op_r == OP_LINE) begin
+                    // Line: one write attempt per cycle (skipped, not
+                    // stalled, when the current pixel is off the buffer -
+                    // see the header comment), then a Bresenham step.
+                    if (line_plot_ok) begin
+                        case (blit_byte_lane)
+                            2'd0: mem[blit_word_addr][7:0]   <= blit_color_r;
+                            2'd1: mem[blit_word_addr][15:8]  <= blit_color_r;
+                            2'd2: mem[blit_word_addr][23:16] <= blit_color_r;
+                            default: mem[blit_word_addr][31:24] <= blit_color_r;
+                        endcase
+                    end
+                    if (blit_cur_x == line_x1_r && blit_cur_y == line_y1_r) begin
+                        blit_busy_r <= 1'b0;
+                    end else begin
+                        line_err_r <= line_err_r + (line_cond_x ? line_dy_r : 13'sd0)
+                                                  + (line_cond_y ? line_dx_r : 13'sd0);
+                        if (line_cond_x)
+                            blit_cur_x <= blit_xdir_r ? (blit_cur_x - 12'd1) : (blit_cur_x + 12'd1);
+                        if (line_cond_y)
+                            blit_cur_y <= blit_ydir_r ? (blit_cur_y - 12'd1) : (blit_cur_y + 12'd1);
+                    end
                 end else begin
                     case (blit_byte_lane)
-                        2'd0: mem[blit_word_addr][7:0]   <= blit_op_r ? copy_src_byte : blit_color_r;
-                        2'd1: mem[blit_word_addr][15:8]  <= blit_op_r ? copy_src_byte : blit_color_r;
-                        2'd2: mem[blit_word_addr][23:16] <= blit_op_r ? copy_src_byte : blit_color_r;
-                        default: mem[blit_word_addr][31:24] <= blit_op_r ? copy_src_byte : blit_color_r;
+                        2'd0: mem[blit_word_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        2'd1: mem[blit_word_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        2'd2: mem[blit_word_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        default: mem[blit_word_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
                     endcase
-                    if (blit_op_r) copy_phase_r <= 1'b0;
+                    if (blit_op_r == OP_COPY) copy_phase_r <= 1'b0;
                     if (x_last_in_row) begin
                         blit_cur_x <= x_row_start;
                         if (y_last) blit_busy_r <= 1'b0;
