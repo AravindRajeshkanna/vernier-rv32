@@ -1,17 +1,31 @@
-// Fill-engine test: drives wb_framebuffer.v's blit-control block directly
-// through the Wishbone port (no CPU, no interconnect - the same style
-// tb_video.v already uses for the plain pixel path) and checks every pixel
-// in the buffer against an independently-tracked expected image, not
+// Fill/copy-engine test: drives wb_framebuffer.v's blit-control block
+// directly through the Wishbone port (no CPU, no interconnect - the same
+// style tb_video.v already uses for the plain pixel path) and checks every
+// pixel in the buffer against an independently-tracked expected image, not
 // against a second readback of the engine itself.
 //
-// Covers, in order: an exact-fit fill establishing the whole buffer as a
-// known background (also the first real test of the FSM's address math
-// across every row); an overlapping fill that must leave everything outside
-// its rectangle untouched; a fill clamped at the buffer's bottom-right edge;
-// a fill whose origin is entirely off the buffer; two degenerate
-// zero-width/height fills; a busy-bit timing check; and a check that a CPU
-// write to pixel data is genuinely stalled (not dropped, not acked early)
-// while a fill is in progress.
+// Fill coverage, in order: an exact-fit fill establishing the whole buffer
+// as a known background (also the first real test of the FSM's address
+// math across every row); an overlapping fill that must leave everything
+// outside its rectangle untouched; a fill clamped at the buffer's
+// bottom-right edge; a fill whose origin is entirely off the buffer; two
+// degenerate zero-width/height fills; a busy-bit timing check; and a check
+// that a CPU write to pixel data is genuinely stalled (not dropped, not
+// acked early) while a fill is in progress.
+//
+// Copy coverage: a per-pixel pattern (not a solid fill) is drawn first, so
+// a coordinate or byte-lane bug in the copy path has something to disturb
+// that a solid colour couldn't reveal. Then a non-overlapping copy, one
+// overlapping copy in each of the four directions a translation can shift
+// (+x, -x, +y, -y) plus two diagonal ones, a copy clamped by running the
+// source off the buffer edge, and two degenerate copies (an off-buffer
+// source origin, a zero width). `expect_copy` models each one by
+// snapshotting the source region before writing it to the destination -
+// exactly the "read everything, then write" illusion the RTL's
+// direction-aware iteration exists to provide - so the expected image is
+// never itself vulnerable to the very overlap bug the RTL is being checked
+// for. A separate cycle-count check confirms copy runs at roughly half a
+// fill's throughput, matching the RTL's single shared read+write port.
 `timescale 1ns/1ps
 module tb_blit;
     localparam FB_W = 320;
@@ -139,10 +153,30 @@ module tb_blit;
         end
     endtask
 
+    // Copies [sx,sx+w) x [sy,sy+h) to [dx,dx+w) x [dy,dy+h), clamped and
+    // blocked until BLIT_STATUS reports done - the same wait a real driver
+    // would use, and the same one fill_wait already uses.
+    task copy_wait(input integer dx, input integer dy, input integer sx,
+                   input integer sy, input integer w, input integer h);
+        reg [31:0] status;
+        begin
+            blit_write(32'h00, dx[31:0]);
+            blit_write(32'h04, dy[31:0]);
+            blit_write(32'h08, w[31:0]);
+            blit_write(32'h0C, h[31:0]);
+            blit_write(32'h1C, sx[31:0]);
+            blit_write(32'h20, sy[31:0]);
+            blit_write(32'h14, 32'h3);   // bit0 = start, bit1 = copy
+            status = 32'h1;
+            while (status[0]) blit_read(32'h18, status);
+        end
+    endtask
+
     // =====================================================================
     // Expected image, tracked independently of any readback.
     // =====================================================================
     reg [7:0] expected [0:FB_W*FB_H-1];
+    reg [7:0] copy_snapshot [0:FB_W*FB_H-1];
     integer x, y, idx;
     reg [7:0] got;
 
@@ -154,6 +188,37 @@ module tb_blit;
                 for (ex = rx; ex < rx + rw; ex = ex + 1)
                     if (ex >= 0 && ex < FB_W && ey >= 0 && ey < FB_H)
                         expected[ey*FB_W + ex] = colour;
+        end
+    endtask
+
+    // Mirrors the RTL's own clamp (smallest of the requested size and the
+    // room left on either side of the translation) and models the copy as
+    // "snapshot the whole source, then write the whole destination" -
+    // exactly the atomic-looking result the RTL's direction-aware
+    // iteration is built to produce for an overlapping copy, computed here
+    // without needing that same direction trick, so this model can't share
+    // a bug with the thing it's checking.
+    task expect_copy(input integer dx, input integer dy, input integer sx,
+                      input integer sy, input integer w, input integer h);
+        integer ex, ey, cw, ch;
+        integer dst_room_w, dst_room_h, src_room_w, src_room_h;
+        begin
+            if (dx >= FB_W || dy >= FB_H || sx >= FB_W || sy >= FB_H) begin
+                cw = 0; ch = 0;
+            end else begin
+                dst_room_w = FB_W - dx; dst_room_h = FB_H - dy;
+                src_room_w = FB_W - sx; src_room_h = FB_H - sy;
+                cw = w; if (dst_room_w < cw) cw = dst_room_w;
+                        if (src_room_w < cw) cw = src_room_w;
+                ch = h; if (dst_room_h < ch) ch = dst_room_h;
+                        if (src_room_h < ch) ch = src_room_h;
+            end
+            for (ey = 0; ey < ch; ey = ey + 1)
+                for (ex = 0; ex < cw; ex = ex + 1)
+                    copy_snapshot[ey*FB_W + ex] = expected[(sy+ey)*FB_W + (sx+ex)];
+            for (ey = 0; ey < ch; ey = ey + 1)
+                for (ex = 0; ex < cw; ex = ex + 1)
+                    expected[(dy+ey)*FB_W + (dx+ex)] = copy_snapshot[ey*FB_W + ex];
         end
     endtask
 
@@ -182,7 +247,7 @@ module tb_blit;
     endtask
 
     reg [31:0] status;
-    integer cyc;
+    integer cyc, copy_cyc;
 
     initial begin
         errors = 0;
@@ -277,6 +342,90 @@ module tb_blit;
         end
 
         check_all("busy/stall");
+
+        // =================================================================
+        $display("=== copy engine ===");
+
+        // A per-pixel pattern, not a solid colour - a copy that scrambled
+        // coordinates or byte lanes would be invisible against a fill.
+        // Same formula tb_video.v uses, for the same reason: structure in
+        // both axes so a swapped coordinate shows up.
+        $display("  drawing a per-pixel pattern...");
+        for (y = 0; y < FB_H; y = y + 1) begin
+            for (x = 0; x < FB_W; x = x + 1) begin
+                got = (x[7:5] << 5) | (y[7:5] << 2) | x[1:0];
+                put_pixel(x, y, got);
+                expected[y*FB_W + x] = got;
+            end
+        end
+
+        $display("  non-overlapping copy...");
+        copy_wait(200, 10, 10, 10, 40, 30);
+        expect_copy(200, 10, 10, 10, 40, 30);
+
+        $display("  overlapping copy, +x shift...");
+        copy_wait(30, 60, 10, 60, 60, 40);
+        expect_copy(30, 60, 10, 60, 60, 40);
+
+        $display("  overlapping copy, -x shift...");
+        copy_wait(130, 60, 150, 60, 60, 40);
+        expect_copy(130, 60, 150, 60, 60, 40);
+
+        $display("  overlapping copy, +y shift...");
+        copy_wait(10, 130, 10, 110, 50, 30);
+        expect_copy(10, 130, 10, 110, 50, 30);
+
+        $display("  overlapping copy, -y shift...");
+        copy_wait(10, 160, 10, 180, 50, 30);
+        expect_copy(10, 160, 10, 180, 50, 30);
+
+        $display("  overlapping copy, diagonal +x+y shift...");
+        copy_wait(220, 80, 200, 60, 50, 30);
+        expect_copy(220, 80, 200, 60, 50, 30);
+
+        $display("  overlapping copy, diagonal +x-y shift...");
+        copy_wait(220, 120, 200, 140, 50, 30);
+        expect_copy(220, 120, 200, 140, 50, 30);
+
+        $display("  copy clamped by the source running off the edge...");
+        copy_wait(0, 0, 300, 200, 40, 60);
+        expect_copy(0, 0, 300, 200, 40, 60);
+
+        $display("  copy whose source origin is off the buffer...");
+        copy_wait(0, 200, 400, 0, 10, 10);
+        expect_copy(0, 200, 400, 0, 10, 10);
+
+        $display("  copy with zero width...");
+        copy_wait(0, 210, 5, 5, 0, 10);
+        expect_copy(0, 210, 5, 5, 0, 10);
+
+        check_all("copies");
+
+        // ---- copy is honestly half a fill's throughput, not asserted ----
+        $display("  measuring copy vs. fill cycles for the same area...");
+        blit_write(32'h00, 32'd0); blit_write(32'h04, 32'd0);
+        blit_write(32'h08, 32'd100); blit_write(32'h0C, 32'd80);
+        blit_write(32'h10, {24'b0, 8'hAA});
+        blit_write(32'h14, 32'h1);
+        cyc = 0; status = 32'h1;
+        while (status[0]) begin blit_read(32'h18, status); cyc = cyc + 1; end
+        $display("  100x80 fill: %0d status polls", cyc);
+        expect_rect(0, 0, 100, 80, 8'hAA);
+
+        blit_write(32'h1C, 32'd120); blit_write(32'h20, 32'd0);
+        blit_write(32'h14, 32'h3);
+        copy_cyc = 0; status = 32'h1;
+        while (status[0]) begin blit_read(32'h18, status); copy_cyc = copy_cyc + 1; end
+        $display("  100x80 copy: %0d status polls", copy_cyc);
+        expect_copy(0, 0, 120, 0, 100, 80);
+
+        if (copy_cyc < cyc + (cyc / 2)) begin
+            $display("  FAIL: copy (%0d polls) was not meaningfully slower than fill (%0d polls)",
+                     copy_cyc, cyc);
+            errors = errors + 1;
+        end
+
+        check_all("throughput");
 
         $display("");
         $display("---------------------------------------------");

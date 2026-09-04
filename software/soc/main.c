@@ -416,6 +416,31 @@ static int test_blit(void) {
     return 1;
 }
 
+/* Copy engine: exercised through the CPU-facing wrapper, overlapping the
+ * source with the destination - the case that needs the RTL's
+ * direction-aware iteration to get right. sim/tb_blit.v covers overlap
+ * safety exhaustively (all four shift directions plus two diagonals); this
+ * proves the real CPU path drives it correctly too. A solid copy can't
+ * reveal a scrambled boundary, so this uses two colours side by side. */
+static int test_copy(void) {
+    unsigned x, y;
+
+    fb_fill_rect(20, 20, 20, 30, FB_RGB(255, 0, 0));   /* x in [20,40): red   */
+    fb_fill_rect(40, 20, 20, 30, FB_RGB(0, 255, 0));   /* x in [40,60): green */
+
+    /* Shift the whole 40x30 block right by 15 - overlaps its own source. */
+    fb_copy_rect(35, 20, 20, 20, 40, 30);
+
+    for (y = 20; y < 50; y++) {
+        for (x = 35; x < 55; x++)
+            if (FB_PIXEL(x, y) != FB_RGB(255, 0, 0)) return 0;
+        for (x = 55; x < 75; x++)
+            if (FB_PIXEL(x, y) != FB_RGB(0, 255, 0)) return 0;
+    }
+
+    return 1;
+}
+
 static int test_fence_i(void) {
     /* Build a two-instruction function in RAM: `li a0, 0x5A; ret`. */
     volatile uint32_t *code = (volatile uint32_t *)(uintptr_t)(TEST_REGION_BASE + 0x200);
@@ -454,6 +479,7 @@ int main(void) {
     check("GPIO pin readback",     test_gpio());
     check("framebuffer read/write", test_framebuffer());
     check("blit fill engine",      test_blit());
+    check("blit copy engine",      test_copy());
     check("CLINT mtime advances",  test_timer());
     check("misa reports I+M+A",    test_misa());
     check("cycle/time/instret",    test_counters());
