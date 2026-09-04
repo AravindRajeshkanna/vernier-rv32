@@ -185,7 +185,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
-        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_ulx3s sim_cmd0 dtb \
+        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
@@ -558,6 +558,14 @@ sim_video:
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_video.out sim/tb_video.v \
 	    rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v
 	cd sim && $(VVP) sim_video.out
+
+# wb_framebuffer.v's fill engine (Phase 10 stage 1): drives the blit-control
+# block directly, no CPU or video_timing.v needed - this is a bus-and-FSM
+# test, not a scan-out test, which sim_video already covers.
+sim_blit:
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_blit.out sim/tb_blit.v \
+	    rtl/soc/wb_framebuffer.v
+	cd sim && $(VVP) sim_blit.out
 
 # ---- hardware CMD0 probe ----
 # fpga/ulx3s_cmd0.v goes on a board to answer "does the card reply to CMD0",
@@ -1430,7 +1438,7 @@ verify_ooo:
 	$(MAKE) verify CORE=ooo
 	rm -f sim/*.out
 
-verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_ulx3s sim_ulx3s_video sim_cmd0 \
+verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \

@@ -302,6 +302,37 @@ stream unconnected, exactly as before Phase 4.
 
 See `soc.h` for `FB_PIXEL(x,y)` and `FB_RGB(r,g,b)`.
 
+**Fill engine (Phase 10 stage 1).** A second register block inside this same
+slave, selected by address bit 17 of the offset — the pixel array is well
+under half that, so `FB_BASE + 0x20000` never collides with pixel data.
+Fills a solid rectangle without the CPU writing every pixel itself.
+
+| Offset | Register | Access | Notes |
+|---|---|---|---|
+| `0x00` | BLIT_X | RW | left edge of the fill rectangle |
+| `0x04` | BLIT_Y | RW | top edge |
+| `0x08` | BLIT_W | RW | width |
+| `0x0C` | BLIT_H | RW | height |
+| `0x10` | BLIT_COLOR | RW | fill colour, RRRGGGBB in bits [7:0] |
+| `0x14` | BLIT_CTRL | WO | bit 0 = start; ignored while already busy |
+| `0x18` | BLIT_STATUS | RO | bit 0 = busy |
+
+Unlike `wb_spi`'s DATA register, **starting a fill is non-blocking**: the
+write to BLIT_CTRL acks immediately and the engine runs in the background,
+one pixel per cycle. A CPU access to pixel data — or to any other blit
+register — is not acked until the fill completes, exactly like SPI's own
+"withhold ack until the transfer finishes." A BLIT_STATUS read is the one
+exception, acked immediately regardless of busy, since polling it is the
+whole point of a non-blocking engine. `soc.h`'s `fb_fill_rect()` wraps the
+five-register setup and the poll loop.
+
+A rectangle that runs past `FB_WIDTH`/`FB_HEIGHT` is clamped to the
+buffer's own edge rather than rejected or written out of bounds — the same
+"ack instead of wedging the bus" choice this section's address-map section
+already makes for a stray pointer. One whose origin is already off the
+buffer, or with a zero width or height, draws nothing and still completes
+normally.
+
 ### `wb_periph_bridge`
 
 Adapts CLINT, PLIC and UART — which predate the bus and use a flat

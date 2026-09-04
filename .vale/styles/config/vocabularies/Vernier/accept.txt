@@ -99,6 +99,7 @@ bitfield
 bitmanip
 bitstream
 bitstreams
+blit
 blitter
 blockquotes
 boolean

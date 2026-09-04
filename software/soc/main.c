@@ -387,6 +387,35 @@ static int test_framebuffer(void) {
     return 1;
 }
 
+/* Fill engine: exercised through the CPU-facing wrapper in soc.h, the same
+ * way real drawing code would call it - not by poking BLIT_* directly.
+ * Proves BLIT_CTRL/BLIT_STATUS actually drive the RTL fill (registers that
+ * merely stored what was written would fail the readback below), and that
+ * it leaves everything outside its rectangle alone. */
+static int test_blit(void) {
+    unsigned x, y;
+
+    /* Paint over part of the colour ramp test_framebuffer just left, well
+     * clear of the corners that test already checked. */
+    fb_fill_rect(20, 20, 40, 30, FB_RGB(255, 255, 255));
+
+    for (y = 20; y < 50; y++)
+        for (x = 20; x < 60; x++)
+            if (FB_PIXEL(x, y) != FB_RGB(255, 255, 255)) return 0;
+
+    /* Just outside the rectangle on each side: still the ramp, untouched. */
+    if (FB_PIXEL(19, 20) != FB_RGB(19 * 255u / FB_WIDTH, 20 * 255u / FB_HEIGHT, 128u))
+        return 0;
+    if (FB_PIXEL(60, 20) != FB_RGB(60 * 255u / FB_WIDTH, 20 * 255u / FB_HEIGHT, 128u))
+        return 0;
+    if (FB_PIXEL(20, 19) != FB_RGB(20 * 255u / FB_WIDTH, 19 * 255u / FB_HEIGHT, 128u))
+        return 0;
+    if (FB_PIXEL(20, 50) != FB_RGB(20 * 255u / FB_WIDTH, 50 * 255u / FB_HEIGHT, 128u))
+        return 0;
+
+    return 1;
+}
+
 static int test_fence_i(void) {
     /* Build a two-instruction function in RAM: `li a0, 0x5A; ret`. */
     volatile uint32_t *code = (volatile uint32_t *)(uintptr_t)(TEST_REGION_BASE + 0x200);
@@ -424,6 +453,7 @@ int main(void) {
     check("LR/SC broken by store", test_lr_sc_failure());
     check("GPIO pin readback",     test_gpio());
     check("framebuffer read/write", test_framebuffer());
+    check("blit fill engine",      test_blit());
     check("CLINT mtime advances",  test_timer());
     check("misa reports I+M+A",    test_misa());
     check("cycle/time/instret",    test_counters());

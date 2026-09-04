@@ -3222,10 +3222,9 @@ pixels; it does not need to build one.
 what "renders" is actually asking for. In roughly increasing order of how
 much of this codebase it touches:
 
-- **2D acceleration** - a blit/fill/line-draw engine as a new Wishbone
-  slave alongside `wb_framebuffer.v`, commanded by MMIO registers or a
-  small command queue the CPU writes and the engine drains. Closest in
-  shape to every peripheral this project already has.
+- **2D acceleration** - a blit/fill/line-draw engine, commanded by MMIO
+  registers or a small command queue the CPU writes and the engine
+  drains. Closest in shape to every peripheral this project already has.
 - **A display compositor** - fixed-size sprites or layers blended by
   hardware during scan-out, extending `video_timing.v`'s read path rather
   than the CPU-write path. Different problem from 2D acceleration:
@@ -3240,6 +3239,56 @@ much of this codebase it touches:
 the pipeline itself - simulated first, then a real, measured result on
 the ULX3S over the GPDI output Phase 4 already proved works, not a
 claim from simulation alone.
+
+**Stage 1 (shipped): solid rectangle fill.** 2D acceleration was the
+target picked; the first increment is a fill engine only - no blit/copy,
+no line-draw, both deferred to later stages.
+
+**Extends `wb_framebuffer.v`'s own Wishbone slave rather than adding a
+new one** - a deliberate departure from the bullet above's original "as
+a new Wishbone slave" framing, made once the module's own header comment
+turned out to already anticipate exactly this ("no drawing engine, no
+blitter... deliberate for a first version... adds no bus master").
+Extending in place instead of adding a fourth slave costs zero
+interconnect wiring: no `NUM_SLAVES` bump, no new `s_base`/`s_mask`
+entry, no new `soc_top.v` instantiation, none of the five-places-to-edit
+risk `docs/soc.md`'s own peripheral checklist warns about for a genuinely
+new slave. The new register block lives at a previously-unused address
+bit (bit 17 of the offset, `FB_BASE + 0x20000`) well clear of the
+76,800-byte pixel array, so pixel addressing is untouched.
+
+Register map (`docs/soc.md` has the full table): `BLIT_X`/`Y`/`W`/`H`/
+`COLOR` set the rectangle, `BLIT_CTRL` starts it, `BLIT_STATUS` reports
+busy - the same CTRL/STATUS naming `wb_spi.v` already established,
+reused rather than inventing a new shape. Unlike SPI's blocking DATA
+register, starting a fill is **non-blocking**: the whole value of a fill
+engine is that software can go do something else while it runs, so the
+CTRL write acks immediately and a separate STATUS poll (mirroring
+`SPI_STATUS`'s busy bit) is how a caller learns it's done. A CPU access
+to pixel data, or to any other blit register, stalls - not acked - for
+the duration of a fill, reusing the same "withhold ack" mechanism SPI's
+own multi-cycle transfers already exercise, rather than adding a new
+kind of wait state to the interconnect.
+
+**Out-of-range rectangles are clamped, not rejected**, matching this
+project's "ack with zeros rather than wedge the bus" treatment of a
+stray pointer elsewhere in the address map: a width/height that would
+run past the buffer edge is silently truncated; an origin already off
+the buffer, or a zero width/height, draws nothing and still completes
+normally. Verified directly - `sim/tb_blit.v` drives the register block
+with no CPU involved and checks every pixel in the buffer against an
+independently-tracked expected image after each case (exact fit, an
+interior overlay, a rectangle clamped at the edge, an off-buffer origin,
+zero width, zero height), plus that `BLIT_STATUS.busy` genuinely reads 1
+partway through a large fill rather than clearing immediately, plus that
+a pixel write issued mid-fill really stalls (measured in cycles, not
+just "eventually returns") and lands correctly once the fill completes.
+Made the test fail first: temporarily disabling the clamp produced 570
+real pixel mismatches at the buffer's bottom-right edge before the fix
+was restored, rather than trusting a test that had never been observed
+to catch anything. `software/soc/main.c`'s acceptance test gained a
+`test_blit()` case exercising the same path a real caller would, through
+`soc.h`'s `fb_fill_rect()` wrapper rather than the raw registers.
 
 ---
 

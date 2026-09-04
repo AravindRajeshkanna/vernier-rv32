@@ -1,12 +1,18 @@
 // Wishbone B4 classic framebuffer: a block-RAM pixel buffer the CPU writes
-// into, scanned out by video_timing.v.
+// into, scanned out by video_timing.v - plus a small solid-fill engine,
+// Phase 10 stage 1 (docs/roadmap.md).
 //
-// This is a *display controller*, not a GPU in the compute sense - there is
-// no drawing engine, no blitter and no second core. The CPU writes pixels;
-// this reads them out in raster order. That split is deliberate for a first
-// version: it is the piece everything else would need underneath it anyway,
-// and it adds no bus master, so the interconnect's two-master arbitration is
-// untouched.
+// This was a *display controller*, not a GPU in the compute sense: no
+// drawing engine, no blitter, no second core - the CPU wrote every pixel
+// itself, in a software loop. That split was deliberate for a first
+// version, and this module's own header used to say so explicitly: "it
+// adds no bus master, so the interconnect's two-master arbitration is
+// untouched." The fill engine below keeps that promise - it is entirely
+// internal to this module's existing Wishbone slave port, reusing the
+// same address window rather than adding a new slave or a new master.
+// docs/roadmap.md's Phase 10 entry has the reasoning for why *this* is
+// the first increment (peripheral-sized, not core-sized) and what a
+// blit/copy engine or a real 3D pipeline would each cost beyond it.
 //
 // ---- Organization ----
 // 8 bits per pixel in **RRRGGGBB** direct colour - no palette, so a pixel
@@ -20,6 +26,50 @@
 // minimum for the same reason wb_ram.v does - a 32-bit memory with byte
 // enables cannot use a DP16KD's full 18 Kbit in one instance - and that cost
 // is why FB_WIDTH/FB_HEIGHT are parameters rather than fixed.
+//
+// ---- Address map within this slave's own 16 MB window ----
+// Bit 17 of the offset (well above anything pixel data ever needs - the
+// buffer is 76,800 bytes, under 2^17) splits the window in two:
+//
+//   bit 17 = 0   pixel data, exactly as before - FB_BASE + y*FB_WIDTH + x
+//   bit 17 = 1   the fill engine's control block, at FB_BASE + 0x20000:
+//
+//     0x00  BLIT_X       RW  left edge of the fill rectangle
+//     0x04  BLIT_Y       RW  top edge
+//     0x08  BLIT_W       RW  width
+//     0x0C  BLIT_H       RW  height
+//     0x10  BLIT_COLOR   RW  fill colour, RRRGGGBB in bits [7:0]
+//     0x14  BLIT_CTRL    WO  bit 0 = start; ignored if already busy
+//     0x18  BLIT_STATUS  RO  bit 0 = busy
+//
+// Matches `wb_spi.v`'s own CTRL/STATUS naming (`docs/soc.md`) rather than
+// inventing a new convention - STATUS.busy is exactly SPI's own pattern,
+// reused because it already says the right thing.
+//
+// ---- Why a fill blocks the CPU out of pixel data, but not STATUS ----
+// The fill engine and the CPU's own Port A share one write port into
+// `mem[]` - the same one the CPU has always written pixels through. While
+// a fill is running, a CPU access to pixel data (or to any *other* blit
+// register) simply is not acked, exactly like `wb_spi.v`'s own "the slave
+// withholds ack until the transfer finishes" - the CPU sits in MEM until
+// the fill completes, matching the one other slave in this SoC that
+// already has real multi-cycle wait states. A BLIT_STATUS *read* is the
+// one exception, acked immediately regardless of busy, because polling it
+// is the entire point of a non-blocking engine: a program is expected to
+// go do other work and come back to ask "done yet?", not to block on the
+// fill the way it already blocks on an SPI transfer.
+//
+// ---- Why the rectangle is clamped, not rejected ----
+// A width/height that would run past FB_WIDTH/FB_HEIGHT is silently
+// clamped to the buffer's own edge rather than either faulting or writing
+// out of bounds - the same "acks with zeros rather than wedging the bus"
+// philosophy `docs/soc.md`'s address map section already states for a
+// stray pointer: turning a programming mistake into a merely-wrong
+// picture, not a hang or a corrupted neighbouring word. A rectangle whose
+// *origin* is already off the buffer (X >= FB_WIDTH or Y >= FB_HEIGHT, or
+// a zero width/height) draws nothing and completes as if it had - `busy`
+// still pulses, so software that always waits for it to clear behaves
+// identically whether the rectangle was real or degenerate.
 //
 // ---- Scan-out ----
 // Port B reads a word every pixel clock; the byte lane is selected from the
@@ -86,13 +136,47 @@ module wb_framebuffer #(
     end
 
     // =====================================================================
+    // Fill engine
+    // =====================================================================
+    reg [11:0] blit_x_r, blit_y_r, blit_w_r, blit_h_r;
+    reg [7:0]  blit_color_r;
+    reg        blit_busy_r;
+    reg [11:0] blit_cur_x, blit_cur_y;
+    reg [11:0] blit_x_end, blit_y_end;   // exclusive, already clamped to the buffer
+
+    // Constant-parameter multiply, like Port B's pixel_index below - yosys
+    // reduces this to shifts and an add, not a real multiplier. Sized like
+    // pixel_index (32 bits) rather than to just what 320x240 needs, so it
+    // matches that known-clean width rather than inviting a new mismatch.
+    wire [31:0] blit_pixel_index = (blit_cur_y * FB_WIDTH) + {20'd0, blit_cur_x};
+    wire [AW-1:0] blit_word_addr = blit_pixel_index[AW+1:2];
+    wire [1:0]    blit_byte_lane = blit_pixel_index[1:0];
+
+    // X+W and Y+H, each up to 4095+4095, computed a bit wider than either
+    // operand so an oversized W/H clamps correctly instead of wrapping
+    // around 12 bits and reading as "already in range."
+    wire [12:0] blit_x_sum = {1'b0, blit_x_r} + {1'b0, blit_w_r};
+    wire [12:0] blit_y_sum = {1'b0, blit_y_r} + {1'b0, blit_h_r};
+
+    // =====================================================================
     // Port A: the bus
     // =====================================================================
     wire [AW-1:0] a_addr = wb_adr[AW+1:2];
-    wire          a_en   = wb_cyc && wb_stb;
+    wire          is_blit_region = wb_adr[17];
+    wire [2:0]    blit_reg_sel   = wb_adr[4:2];
+    wire          is_status_read = is_blit_region && !wb_we && (blit_reg_sel == 3'd6);
+
+    // A fill in progress withholds ack from everything except a STATUS
+    // read - see the header for why. Address and byte-enables are still
+    // sampled combinationally below; they simply do not commit until
+    // `a_en` is true, the same "master holds until ack" contract every
+    // other slave here already relies on.
+    wire a_en = wb_cyc && wb_stb && (!blit_busy_r || is_status_read);
 
     reg        ack_r;
     reg [31:0] a_q;
+    reg        blit_region_q;
+    reg [2:0]  blit_reg_sel_q;
 
     // One wait state, matching wb_ram.v: address in the first cycle, data and
     // ack in the second. `!ack_r` keeps the ack a single cycle and stops the
@@ -102,17 +186,80 @@ module wb_framebuffer #(
         else     ack_r <= a_en && !ack_r;
     end
 
-    always @(posedge clk) begin
-        if (a_en && wb_we && !ack_r) begin
-            if (wb_sel[0]) mem[a_addr][7:0]   <= wb_dat_w[7:0];
-            if (wb_sel[1]) mem[a_addr][15:8]  <= wb_dat_w[15:8];
-            if (wb_sel[2]) mem[a_addr][23:16] <= wb_dat_w[23:16];
-            if (wb_sel[3]) mem[a_addr][31:24] <= wb_dat_w[31:24];
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            blit_busy_r <= 1'b0;
+        end else begin
+            if (a_en && wb_we && !ack_r && !blit_busy_r) begin
+                if (is_blit_region) begin
+                    case (blit_reg_sel)
+                        3'd0: blit_x_r     <= wb_dat_w[11:0];
+                        3'd1: blit_y_r     <= wb_dat_w[11:0];
+                        3'd2: blit_w_r     <= wb_dat_w[11:0];
+                        3'd3: blit_h_r     <= wb_dat_w[11:0];
+                        3'd4: blit_color_r <= wb_dat_w[7:0];
+                        3'd5: if (wb_dat_w[0]) begin
+                            // Clamp to the buffer's own edge (header
+                            // comment above explains why this is a clamp,
+                            // not a fault) and only actually start if the
+                            // origin itself is on the buffer and the
+                            // rectangle is non-empty.
+                            blit_x_end <= (blit_x_sum > {1'b0, FB_WIDTH[11:0]})
+                                          ? FB_WIDTH[11:0] : blit_x_sum[11:0];
+                            blit_y_end <= (blit_y_sum > {1'b0, FB_HEIGHT[11:0]})
+                                          ? FB_HEIGHT[11:0] : blit_y_sum[11:0];
+                            blit_cur_x <= blit_x_r;
+                            blit_cur_y <= blit_y_r;
+                            if (blit_w_r != 12'd0 && blit_h_r != 12'd0 &&
+                                blit_x_r < FB_WIDTH[11:0] && blit_y_r < FB_HEIGHT[11:0])
+                                blit_busy_r <= 1'b1;
+                        end
+                        default: ; // BLIT_STATUS is read-only
+                    endcase
+                end else begin
+                    if (wb_sel[0]) mem[a_addr][7:0]   <= wb_dat_w[7:0];
+                    if (wb_sel[1]) mem[a_addr][15:8]  <= wb_dat_w[15:8];
+                    if (wb_sel[2]) mem[a_addr][23:16] <= wb_dat_w[23:16];
+                    if (wb_sel[3]) mem[a_addr][31:24] <= wb_dat_w[31:24];
+                end
+            end
+
+            if (blit_busy_r) begin
+                case (blit_byte_lane)
+                    2'd0: mem[blit_word_addr][7:0]   <= blit_color_r;
+                    2'd1: mem[blit_word_addr][15:8]  <= blit_color_r;
+                    2'd2: mem[blit_word_addr][23:16] <= blit_color_r;
+                    default: mem[blit_word_addr][31:24] <= blit_color_r;
+                endcase
+                if (blit_cur_x + 12'd1 >= blit_x_end) begin
+                    blit_cur_x <= blit_x_r;
+                    if (blit_cur_y + 12'd1 >= blit_y_end) blit_busy_r <= 1'b0;
+                    else blit_cur_y <= blit_cur_y + 12'd1;
+                end else begin
+                    blit_cur_x <= blit_cur_x + 12'd1;
+                end
+            end
         end
-        a_q <= mem[a_addr];
+
+        a_q            <= mem[a_addr];
+        blit_region_q  <= is_blit_region;
+        blit_reg_sel_q <= blit_reg_sel;
     end
 
-    assign wb_dat_r = a_q;
+    reg [31:0] blit_reg_rdata;
+    always @(*) begin
+        case (blit_reg_sel_q)
+            3'd0: blit_reg_rdata = {20'b0, blit_x_r};
+            3'd1: blit_reg_rdata = {20'b0, blit_y_r};
+            3'd2: blit_reg_rdata = {20'b0, blit_w_r};
+            3'd3: blit_reg_rdata = {20'b0, blit_h_r};
+            3'd4: blit_reg_rdata = {24'b0, blit_color_r};
+            3'd6: blit_reg_rdata = {31'b0, blit_busy_r};
+            default: blit_reg_rdata = 32'b0; // BLIT_CTRL and unused offsets: WARL zero
+        endcase
+    end
+
+    assign wb_dat_r = blit_region_q ? blit_reg_rdata : a_q;
     assign wb_ack   = ack_r;
 
     // =====================================================================
@@ -194,6 +341,6 @@ module wb_framebuffer #(
 
     // `wb_adr`'s high bits were consumed by the interconnect's decode, and
     // the raster counters are wider than any buffer that fits here.
-    wire _unused_ok = &{1'b0, wb_adr[31:AW+2], wb_adr[1:0],
+    wire _unused_ok = &{1'b0, wb_adr[31:18], wb_adr[1:0],
                         pixel_index[31:AW+2], 1'b0};
 endmodule
