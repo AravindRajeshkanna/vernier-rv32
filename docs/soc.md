@@ -288,10 +288,17 @@ state.
 Scanned out at 640×480@60 with pixel doubling. Scan-out uses the block RAM's
 second port, so this adds **no bus master**.
 
-**Nothing drives a display yet.** Scan-out runs in the CPU's clock domain —
-there is no clock-domain crossing in the video path — and the pixel stream
-leaves `fpga/soc_fpga.v` unconnected, where synthesis strips it. A real monitor
-needs a 25.175 MHz pixel clock from a PLL and a TMDS serializer.
+**Wired to real GPDI pins, but opt-in, not the default board build.**
+`fpga/video_pll.v` (an `EHXPLLL`-based PLL) and `fpga/tmds_serialize.v` (a
+5:1 `ODDRX1F`-based DDR serializer) turn the pixel stream into TMDS and
+drive it out `fpga/ulx3s_top.v`'s `gpdi_dp[3:0]` pins — see
+`docs/roadmap.md`'s Phase 4. Unconditionally wiring it into
+`fpga/soc_fpga.v`/`fpga/ulx3s_top.v` regressed the default
+`BOARD=ulx3s85` target's timing closure (routing congestion, not video
+logic on the critical path), so the whole path is gated behind
+`` `ifdef WITH_VIDEO `` and only built by the separate `BOARD=ulx3s85-video`
+target — the plain `BOARD=ulx3s85`/`ulx3s` builds still leave the pixel
+stream unconnected, exactly as before Phase 4.
 
 See `soc.h` for `FB_PIXEL(x,y)` and `FB_RGB(r,g,b)`.
 
