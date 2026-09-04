@@ -178,20 +178,31 @@
 #define FB_RGB(r, g, b) \
     ((uint8_t)((((r) & 0xE0u)) | (((g) & 0xE0u) >> 3) | (((b) & 0xC0u) >> 6)))
 
-/* ---- Framebuffer fill/copy engine (rtl/soc/wb_framebuffer.v, Phase 10) ----
+/* ---- Framebuffer fill/copy/line engine (rtl/soc/wb_framebuffer.v, Phase 10) ----
  * A second register block inside the SAME framebuffer slave, selected by
  * address bit 17 - the pixel array is well under half that, so it never
- * collides. Fills a solid rectangle (BLIT_X/Y/W/H, BLIT_COLOR) or copies one
- * rectangle to another (BLIT_X/Y as destination, BLIT_SRC_X/SRC_Y as source,
- * shared W/H) without the CPU touching every pixel itself.
+ * collides. Fills a solid rectangle, copies one rectangle to another, or
+ * draws a line, without the CPU touching every pixel itself.
+ *
+ * Every operation shares the same registers rather than each getting its
+ * own: BLIT_X/Y is "point 0" (a fill's rectangle origin, a copy's
+ * destination, a line's first endpoint) and BLIT_SRC_X/Y is "point 1" (a
+ * copy's source, a line's second endpoint). BLIT_W/H mean nothing to a
+ * line; BLIT_COLOR means nothing to a copy - each operation simply ignores
+ * the registers it has no use for.
  *
  * Non-blocking: writing BLIT_CTRL_START returns immediately (unlike
  * SPI_DATA, which withholds ack until its transfer finishes) and the engine
  * runs in the background. Software polls BLIT_STATUS_BUSY - the same
  * busy-bit shape SPI_STATUS already uses - to learn when the operation is
- * done. A rectangle that runs past the buffer edge is clamped, not
- * rejected; one whose origin starts off the buffer, or that is zero
- * width/height, draws or copies nothing and still completes normally.
+ * done. A fill/copy rectangle that runs past the buffer edge is clamped,
+ * not rejected; one whose origin starts off the buffer, or that is zero
+ * width/height, draws or copies nothing and still completes normally. A
+ * line is not clamped the same way - clipping a line segment to a
+ * rectangle is a different, harder problem than clamping one - but every
+ * step it takes that would land outside the buffer is simply skipped, so a
+ * line is safe to draw with any endpoints and always completes in a
+ * bounded number of cycles.
  *
  * A copy's source and destination may overlap - the engine picks each
  * axis's direction so every source pixel is read before anything can
@@ -212,6 +223,7 @@
 #define BLIT_SRC_Y     REG32(BLIT_BASE + 0x20)
 #define BLIT_CTRL_START (1u << 0)
 #define BLIT_CTRL_COPY  (1u << 1)
+#define BLIT_CTRL_LINE  (1u << 2)
 #define BLIT_STATUS_BUSY (1u << 0)
 
 /* Fills [x, x+w) x [y, y+h) with color and returns once the engine reports
@@ -243,6 +255,22 @@ static inline void fb_copy_rect(unsigned dx, unsigned dy, unsigned sx,
     BLIT_SRC_X = sx;
     BLIT_SRC_Y = sy;
     BLIT_CTRL = BLIT_CTRL_START | BLIT_CTRL_COPY;
+    while (BLIT_STATUS & BLIT_STATUS_BUSY)
+        ;
+}
+
+/* Draws a line from (x0,y0) to (x1,y1) inclusive and returns once the
+ * engine reports done. Any endpoints are safe to pass, including ones
+ * outside the buffer - see the register block comment above. */
+static inline void fb_line(unsigned x0, unsigned y0, unsigned x1, unsigned y1,
+                            uint8_t color)
+{
+    BLIT_X = x0;
+    BLIT_Y = y0;
+    BLIT_SRC_X = x1;
+    BLIT_SRC_Y = y1;
+    BLIT_COLOR = color;
+    BLIT_CTRL = BLIT_CTRL_START | BLIT_CTRL_LINE;
     while (BLIT_STATUS & BLIT_STATUS_BUSY)
         ;
 }

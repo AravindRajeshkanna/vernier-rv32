@@ -26,6 +26,19 @@
 // never itself vulnerable to the very overlap bug the RTL is being checked
 // for. A separate cycle-count check confirms copy runs at roughly half a
 // fill's throughput, matching the RTL's single shared read+write port.
+//
+// Line coverage: horizontal, vertical, an exact 45-degree diagonal, a
+// shallow slope, a steep slope, a line drawn backward (both endpoints
+// decreasing), a degenerate single point, a line clipped at the buffer
+// edge, and a line entirely off the buffer. Verified by structural
+// invariant rather than by re-deriving Bresenham's own pixel sequence in
+// the testbench - a second implementation could share a bug (or a
+// different, still-valid tie-breaking convention) with the RTL it
+// checks. `check_line_full` instead confirms exactly max(|dx|,|dy|)+1
+// pixels are drawn, both endpoints are among them, every pixel is inside
+// the line's own bounding box, and - the strongest of the four - exactly
+// one pixel per column (shallow) or per row (steep), which rules out
+// both gaps and double-backs regardless of tie-breaking.
 `timescale 1ns/1ps
 module tb_blit;
     localparam FB_W = 320;
@@ -166,7 +179,25 @@ module tb_blit;
             blit_write(32'h0C, h[31:0]);
             blit_write(32'h1C, sx[31:0]);
             blit_write(32'h20, sy[31:0]);
-            blit_write(32'h14, 32'h3);   // bit0 = start, bit1 = copy
+            blit_write(32'h14, 32'h3);   // bit0 = start, bits[2:1] = 1 (copy)
+            status = 32'h1;
+            while (status[0]) blit_read(32'h18, status);
+        end
+    endtask
+
+    // Draws a line from (x0,y0) to (x1,y1) and blocks until BLIT_STATUS
+    // reports done. BLIT_SRC_X/Y double as the second endpoint for a line,
+    // the same registers copy_wait uses as its source origin.
+    task line_wait(input integer x0, input integer y0, input integer x1,
+                   input integer y1, input [7:0] colour);
+        reg [31:0] status;
+        begin
+            blit_write(32'h00, x0[31:0]);
+            blit_write(32'h04, y0[31:0]);
+            blit_write(32'h1C, x1[31:0]);
+            blit_write(32'h20, y1[31:0]);
+            blit_write(32'h10, {24'b0, colour});
+            blit_write(32'h14, 32'h5);   // bit0 = start, bits[2:1] = 2 (line)
             status = 32'h1;
             while (status[0]) blit_read(32'h18, status);
         end
@@ -219,6 +250,148 @@ module tb_blit;
             for (ey = 0; ey < ch; ey = ey + 1)
                 for (ex = 0; ex < cw; ex = ex + 1)
                     expected[(dy+ey)*FB_W + (dx+ex)] = copy_snapshot[ey*FB_W + ex];
+        end
+    endtask
+
+    // Verifies a line by structural invariants rather than by re-deriving
+    // Bresenham's own pixel sequence in the testbench - a second
+    // implementation of the same algorithm could share the same bug (or a
+    // subtly different, still-valid tie-breaking convention) with the RTL
+    // it's checking. These properties hold for *any* correct rasterization
+    // of a fully-visible line, independent of tie-breaking: exactly
+    // max(|dx|,|dy|)+1 pixels; both endpoints present; every pixel inside
+    // the line's own bounding box; and - the strongest check - exactly one
+    // pixel per column for a shallow line (|dx|>=|dy|) or one per row for
+    // a steep one, which rules out both gaps and double-backs.
+    integer line_col_count [0:FB_W-1];
+    integer line_row_count [0:FB_H-1];
+
+    task check_line_full(input integer x0, input integer y0, input integer x1,
+                          input integer y1, input [7:0] fg, input [127:0] label);
+        integer minx, maxx, miny, maxy, adx, ady, expect_count, count;
+        integer cx, cy;
+        reg found_p0, found_p1, out_of_box, gap_or_overlap;
+        begin
+            minx = (x0 < x1) ? x0 : x1;  maxx = (x0 > x1) ? x0 : x1;
+            miny = (y0 < y1) ? y0 : y1;  maxy = (y0 > y1) ? y0 : y1;
+            adx = maxx - minx; ady = maxy - miny;
+            expect_count = (adx > ady ? adx : ady) + 1;
+
+            count = 0; found_p0 = 0; found_p1 = 0; out_of_box = 0;
+            for (cx = minx; cx <= maxx; cx = cx + 1) line_col_count[cx] = 0;
+            for (cy = miny; cy <= maxy; cy = cy + 1) line_row_count[cy] = 0;
+
+            for (cy = 0; cy < FB_H; cy = cy + 1) begin
+                for (cx = 0; cx < FB_W; cx = cx + 1) begin
+                    get_pixel(cx, cy, got);
+                    if (got === fg) begin
+                        count = count + 1;
+                        if (cx == x0 && cy == y0) found_p0 = 1;
+                        if (cx == x1 && cy == y1) found_p1 = 1;
+                        if (cx < minx || cx > maxx || cy < miny || cy > maxy)
+                            out_of_box = 1;
+                        else begin
+                            line_col_count[cx] = line_col_count[cx] + 1;
+                            line_row_count[cy] = line_row_count[cy] + 1;
+                        end
+                    end
+                end
+            end
+
+            gap_or_overlap = 0;
+            if (adx >= ady) begin
+                for (cx = minx; cx <= maxx; cx = cx + 1)
+                    if (line_col_count[cx] != 1) gap_or_overlap = 1;
+            end else begin
+                for (cy = miny; cy <= maxy; cy = cy + 1)
+                    if (line_row_count[cy] != 1) gap_or_overlap = 1;
+            end
+
+            if (count != expect_count) begin
+                $display("  FAIL [%0s]: %0d pixels drawn, expected %0d",
+                         label, count, expect_count);
+                errors = errors + 1;
+            end
+            if (!found_p0 || !found_p1) begin
+                $display("  FAIL [%0s]: an endpoint is missing from the drawn line", label);
+                errors = errors + 1;
+            end
+            if (out_of_box) begin
+                $display("  FAIL [%0s]: a drawn pixel fell outside the line's own bounding box",
+                         label);
+                errors = errors + 1;
+            end
+            if (gap_or_overlap) begin
+                $display("  FAIL [%0s]: not exactly one pixel per %0s - a gap or a double-back",
+                         label, (adx >= ady) ? "column" : "row");
+                errors = errors + 1;
+            end
+            if (count == expect_count && found_p0 && found_p1 && !out_of_box && !gap_or_overlap)
+                $display("  %0s: %0d pixels, endpoints present, one per %0s - ok",
+                         label, count, (adx >= ady) ? "column" : "row");
+        end
+    endtask
+
+    // For a line that runs partly off the buffer: clipping means fewer
+    // pixels are drawn than the full unclipped count, so this checks the
+    // weaker but still meaningful property that matters here - something
+    // was drawn, and every drawn pixel is both inside the visible buffer
+    // (implicit in the scan range) and inside the *line's own* bounding
+    // box, so a skipped off-buffer step never aliases into a stray write
+    // somewhere else on screen.
+    task check_line_clipped(input integer x0, input integer y0, input integer x1,
+                             input integer y1, input [7:0] fg, input [127:0] label);
+        integer minx, maxx, miny, maxy, count, cx, cy;
+        reg out_of_box;
+        begin
+            minx = (x0 < x1) ? x0 : x1;  maxx = (x0 > x1) ? x0 : x1;
+            miny = (y0 < y1) ? y0 : y1;  maxy = (y0 > y1) ? y0 : y1;
+            count = 0; out_of_box = 0;
+            for (cy = 0; cy < FB_H; cy = cy + 1) begin
+                for (cx = 0; cx < FB_W; cx = cx + 1) begin
+                    get_pixel(cx, cy, got);
+                    if (got === fg) begin
+                        count = count + 1;
+                        if (cx < minx || cx > maxx || cy < miny || cy > maxy)
+                            out_of_box = 1;
+                    end
+                end
+            end
+            if (count == 0) begin
+                $display("  FAIL [%0s]: the visible portion of the line drew nothing", label);
+                errors = errors + 1;
+            end
+            if (out_of_box) begin
+                $display("  FAIL [%0s]: a drawn pixel fell outside the line's own bounding box",
+                         label);
+                errors = errors + 1;
+            end
+            if (count != 0 && !out_of_box)
+                $display("  %0s: %0d pixels visible, all within bounds - ok", label, count);
+        end
+    endtask
+
+    // For a line whose endpoints are entirely off the buffer: nothing
+    // should be visible anywhere, so this just counts matches for the
+    // line's own colour across the whole buffer and expects zero - a
+    // stray hit would mean an out-of-bounds write aliased back onto a
+    // real address instead of being skipped.
+    task check_line_invisible(input [7:0] fg, input [127:0] label);
+        integer cx, cy, count;
+        begin
+            count = 0;
+            for (cy = 0; cy < FB_H; cy = cy + 1)
+                for (cx = 0; cx < FB_W; cx = cx + 1) begin
+                    get_pixel(cx, cy, got);
+                    if (got === fg) count = count + 1;
+                end
+            if (count != 0) begin
+                $display("  FAIL [%0s]: %0d pixels visible from a line that should draw nothing",
+                         label, count);
+                errors = errors + 1;
+            end else begin
+                $display("  %0s: nothing visible, as expected", label);
+            end
         end
     endtask
 
@@ -426,6 +599,50 @@ module tb_blit;
         end
 
         check_all("throughput");
+
+        // =================================================================
+        $display("=== line engine ===");
+
+        // A clean, uniform background - each line below is checked purely
+        // by scanning for its own distinct colour, so nothing here needs
+        // to be folded into expected[]/check_all.
+        fill_wait(0, 0, FB_W, FB_H, 8'h00);
+
+        $display("  horizontal line...");
+        line_wait(20, 20, 80, 20, 8'h11);
+        check_line_full(20, 20, 80, 20, 8'h11, "horizontal");
+
+        $display("  vertical line...");
+        line_wait(20, 40, 20, 100, 8'h22);
+        check_line_full(20, 40, 20, 100, 8'h22, "vertical");
+
+        $display("  45-degree diagonal...");
+        line_wait(20, 120, 70, 170, 8'h33);
+        check_line_full(20, 120, 70, 170, 8'h33, "45-degree");
+
+        $display("  shallow line (dx > dy)...");
+        line_wait(20, 190, 140, 220, 8'h44);
+        check_line_full(20, 190, 140, 220, 8'h44, "shallow");
+
+        $display("  steep line (dy > dx)...");
+        line_wait(150, 10, 180, 190, 8'h55);
+        check_line_full(150, 10, 180, 190, 8'h55, "steep");
+
+        $display("  line drawn backward (x1<x0, y1<y0)...");
+        line_wait(250, 50, 200, 20, 8'h66);
+        check_line_full(250, 50, 200, 20, 8'h66, "backward");
+
+        $display("  single-point line...");
+        line_wait(300, 200, 300, 200, 8'h77);
+        check_line_full(300, 200, 300, 200, 8'h77, "single-point");
+
+        $display("  line clipped at the buffer edge...");
+        line_wait(300, 230, 340, 270, 8'h88);
+        check_line_clipped(300, 230, 340, 270, 8'h88, "clipped");
+
+        $display("  line entirely off the buffer...");
+        line_wait(400, 400, 450, 450, 8'h99);
+        check_line_invisible(8'h99, "off-buffer");
 
         $display("");
         $display("---------------------------------------------");

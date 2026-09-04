@@ -3203,15 +3203,16 @@ exists to catch - a number quoted, not measured. Nothing below is a spec;
 it names what already exists to build from and what the real open
 question is once a target is picked.
 
-**What exists today, precisely:** `rtl/soc/wb_framebuffer.v` -
+**What existed when this phase began, precisely:** `rtl/soc/wb_framebuffer.v` -
 320×240, 8bpp RRRGGGBB, one Wishbone slave, one wait state - and
 `rtl/soc/video_timing.v`, scanning it out at 640×480@60 over the
 block RAM's own second port (no bus master added for scan-out). Every
-pixel in it today is written by the CPU executing an ordinary `sb`, in a
-software loop - there is no acceleration hardware of any kind, and
-`make sim_video` proves only that the timing generator and scan-out
+pixel in it was written by the CPU executing an ordinary `sb`, in a
+software loop - there was no acceleration hardware of any kind, and
+`make sim_video` proved only that the timing generator and scan-out
 path are correct, not that anything draws faster than a store
-instruction can. Phase 4 built the path from framebuffer to a real
+instruction can. (The stages below changed this - see the running
+account.) Phase 4 built the path from framebuffer to a real
 monitor - `fpga/video_pll.v`, `fpga/tmds_serialize.v`, real GPDI pins on
 `fpga/ulx3s_top.v`, gated behind `` `ifdef WITH_VIDEO `` after it cost the
 default board target its timing margin (`docs/soc.md` has the current
@@ -3337,6 +3338,60 @@ new `fb_copy_rect()` wrapper: two colours placed side by side, shifted
 right by an offset smaller than their combined width so the copy must
 overlap its own source, then checked that the boundary between them
 landed exactly where a correct shift puts it.
+
+**Stage 3 (shipped): line drawing.** `BLIT_CTRL` gained a third op
+value; `BLIT_X`/`Y` and `BLIT_SRC_X`/`Y` are reused as the line's two
+endpoints, the same "point 0, point 1" shape a copy's destination and
+source already are. The rasterization is standard integer Bresenham -
+the "dy stored negative" formulation, chosen because it's what makes
+this hardware-friendly in the first place: no floating point, no
+division, one comparison and one or two additions per pixel, and every
+octant plus the degenerate single-point case falls out with no
+special-casing.
+
+**Deliberately not clamped the way a fill or copy rectangle is.**
+Clipping a line segment to a viewport is a genuinely different, more
+involved problem (Cohen-Sutherland and its relatives) than clamping an
+axis-aligned rectangle, and this stage doesn't take it on. Instead,
+every step checks whether the pixel it's about to plot actually lands
+inside the buffer and skips the write if not, while still advancing the
+algorithm - so a line is safe to draw with any endpoints, including ones
+entirely off the buffer, and always completes in a bounded number of
+cycles (at most `max(|X1-X0|,|Y1-Y0|)+1`, the same order of magnitude a
+fill or copy already costs for a comparable span). This was a deliberate
+scope cut, not an oversight - real line-clipping is its own problem and
+a plausible future stage on its own.
+
+**Verified by structural invariant, not by re-deriving Bresenham a
+second time in the testbench.** A second implementation of the same
+algorithm risks sharing a bug (or landing on a different, still-valid
+tie-breaking convention) with the RTL it's meant to check, so
+`sim/tb_blit.v` instead confirms properties that hold for *any* correct
+rasterization of a fully-visible line: exactly `max(|dx|,|dy|)+1` pixels
+drawn, both endpoints present, every pixel inside the line's own
+bounding box, and - the strongest of the four - exactly one pixel per
+column for a shallow line or one per row for a steep one, which rules
+out both gaps and double-backs regardless of tie-breaking. Covers
+horizontal, vertical, an exact 45-degree diagonal, a shallow slope, a
+steep slope, a line drawn backward (both endpoints decreasing), a
+degenerate single point, a line clipped at the buffer edge, and a line
+entirely off the buffer.
+
+Made the test fail first twice over, for two different properties.
+Bypassing the per-pixel in-buffer check entirely made the "line
+entirely off the buffer" case show 42 stray visible pixels - a real
+out-of-bounds write aliasing back onto the visible screen instead of
+being skipped. Separately, swapping which register held the x and y
+step magnitudes at kickoff - a classic transposition bug - didn't
+produce a wrong picture; it hung. The very first line test never
+completed, exceeding the testbench's own 2-second simulated-time
+watchdog, because the swap broke the invariant the whole design leans
+on: a line always reaches its own endpoint in a bounded number of
+steps. Both faults were restored and the suite re-verified clean before
+shipping. `software/soc/main.c` gained `test_line()`, through `soc.h`'s
+new `fb_line()` wrapper, checking a horizontal and a 45-degree line by
+exact pixel set - unlike the general case, both have an unambiguous
+rasterization, so this doesn't need `tb_blit.v`'s structural checks.
 
 ---
 

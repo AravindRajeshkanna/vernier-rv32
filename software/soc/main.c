@@ -441,6 +441,25 @@ static int test_copy(void) {
     return 1;
 }
 
+/* Line engine: exercised through the CPU-facing wrapper. A horizontal and
+ * a 45-degree diagonal segment, both of which have an unambiguous pixel
+ * set - so this checks exact coordinates rather than needing
+ * sim/tb_blit.v's structural invariants, which exist there because a
+ * general slope's precise pixels depend on Bresenham's own tie-breaking. */
+static int test_line(void) {
+    unsigned x;
+
+    fb_line(80, 80, 120, 80, FB_RGB(0, 0, 255));    /* horizontal */
+    for (x = 80; x <= 120; x++)
+        if (FB_PIXEL(x, 80) != FB_RGB(0, 0, 255)) return 0;
+
+    fb_line(80, 90, 100, 110, FB_RGB(255, 255, 0)); /* 45-degree diagonal */
+    for (x = 0; x <= 20; x++)
+        if (FB_PIXEL(80 + x, 90 + x) != FB_RGB(255, 255, 0)) return 0;
+
+    return 1;
+}
+
 static int test_fence_i(void) {
     /* Build a two-instruction function in RAM: `li a0, 0x5A; ret`. */
     volatile uint32_t *code = (volatile uint32_t *)(uintptr_t)(TEST_REGION_BASE + 0x200);
@@ -480,6 +499,7 @@ int main(void) {
     check("framebuffer read/write", test_framebuffer());
     check("blit fill engine",      test_blit());
     check("blit copy engine",      test_copy());
+    check("blit line engine",      test_line());
     check("CLINT mtime advances",  test_timer());
     check("misa reports I+M+A",    test_misa());
     check("cycle/time/instret",    test_counters());
