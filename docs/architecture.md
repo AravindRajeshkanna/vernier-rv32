@@ -1177,12 +1177,11 @@ is correctly still a read, which is also how Spike models it.
   (`-march=rv32im`, a strict subset of what this core implements).
 - **No hardware PTE A/D auto-update** — a PTE missing Accessed (or Dirty,
   for a store) faults rather than being set automatically by the walker.
-- **PMP is enforced on `CORE=inorder`'s data path only** (`pmpcfg0-3`/
+- **PMP is enforced on both cores' data paths** (`pmpcfg0-3`/
   `pmpaddr0-15`, correct WARL/lock semantics, `rv32mi-p-pmpaddr` passes,
-  a real access fault on a denied load/store/AMO — `software/soc/pmptest.c`)
-  — not on instruction fetch on either core, and not at all on `CORE=ooo`,
-  which reads/writes the same CSRs but never consults them. See
-  `docs/roadmap.md`'s PMP entry. **No debug-spec triggers**
+  a real access fault on a denied load/store/AMO — `software/soc/pmptest.c`,
+  run against whichever core is active) — not on instruction fetch on
+  either core. See `docs/roadmap.md`'s PMP entry. **No debug-spec triggers**
   (`tselect`/`tdata`) at all. The trigger gap is now the only feature the
   RISC-V architectural test suite fails this core on — see
   `tests/expected-failures.txt`.

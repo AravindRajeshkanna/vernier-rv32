@@ -17,7 +17,7 @@ domain and hands off to a Linux kernel that reaches userspace.
 | Finds the console | ✅ `uart8250` — `rtl/uart.v` |
 | Finds the timer and IPI | ✅ `aclint-mtimer @ 25000000Hz`, `aclint-mswi` |
 | Finds the interrupt controller | ✅ the PLIC's 4 MB window appears as a domain region |
-| Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 16, enforced on `CORE=inorder`'s data path (`docs/roadmap.md`'s PMP entry) |
+| Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 16, enforced on this core's data path (`docs/roadmap.md`'s PMP entry) |
 | **Prints its banner** | ✅ |
 | Hands off to an S-mode payload | ✅ `Next Address 0x9040_0000`, `Next Mode S-mode` |
 | A kernel to hand off *to* | ✅ Linux 6.18.45 rv32ima, to userspace — `software/linux/README.md` |

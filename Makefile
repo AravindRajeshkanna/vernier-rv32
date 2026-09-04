@@ -131,12 +131,10 @@ TB  = sim/tb_top.v
 # the active one, not which core source files get compiled.
 # SOC_RTL_BASE is the same list with $(CORE_RTL) deliberately left off -
 # i.e. always exactly what CORE=inorder would build, regardless of the
-# ambient $(CORE). sim_pmptest below needs that: PMP enforcement this round
-# is CORE=inorder only (see rtl/cpu_core.v's PMP section and
-# docs/roadmap.md), so its own test has to keep testing cpu_core.v even
-# when `make verify_ooo` runs the rest of this target list against
-# core_ooo.v - the same reason sim_cpu_halt's recipe below hardcodes
-# rtl/cpu_core.v directly instead of going through this variable at all.
+# ambient $(CORE) - kept as SOC_RTL's own building block below.
+# sim_cpu_halt's recipe hardcodes rtl/cpu_core.v directly instead of going
+# through either variable, for the same core-scoping reason: it is
+# CORE=inorder only and always will be (docs/debug.md has the reasoning).
 SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
           rtl/uart.v rtl/btb.v rtl/mmu.v rtl/pmp.v rtl/cpu_core.v \
           rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ptw.v \
@@ -1060,16 +1058,15 @@ sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
 # both predate this - neither one drives a real load or store through the
 # module. software/soc/pmptest.c's header explains what's configured and why.
 #
-# CORE=inorder only, always - $(SOC_RTL_BASE) not $(SOC_RTL), plain -g2012
-# not $(IVFLAGS) (which would carry $(CORE_DEFINES)'s -DCORE_OOO under an
-# ambient CORE=ooo). rtl/ooo/core_ooo.v has no PMP enforcement wired in this
-# round (see rtl/cpu_core.v's PMP section for why, and
-# docs/roadmap.md/SECURITY.md for the honest current-state accounting) -
-# every S/U access on that core is unconditionally allowed, so this exact
-# test would fail every trap-count/mcause check under CORE=ooo, not because
-# anything regressed but because nothing was ever enforcing there. Testing
-# cpu_core.v unconditionally is what makes this check mean the same thing
-# whether it runs under `make verify` or `make verify_ooo`.
+# $(SOC_RTL) and $(IVFLAGS), like every other core-sensitive test (sim_plic,
+# sim_mmusdram) - NOT $(SOC_RTL_BASE), which this recipe hardcoded to
+# cpu_core.v when PMP enforcement was CORE=inorder only. Now that
+# rtl/ooo/core_ooo.v enforces PMP on its own data path too (see
+# docs/roadmap.md's PMP entry), this test should exercise whichever core is
+# active, the same way every other directed test does - a `make verify_ooo`
+# run that never touched core_ooo.v's own enforcement logic would leave
+# exactly the same "verify_ooo passes" false confidence docs/roadmap.md
+# warned against, just for a different core.
 PMPTEST_SRCS = $(SOCRT_SRCS) software/soc/pmptest.c
 
 software/soc/pmptest.elf: $(PMPTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
@@ -1081,9 +1078,9 @@ sim/pmptestimage.hex: software/soc/pmptest.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/pmptest.bin > $@
 
-sim/sim_pmptest.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL_BASE)
-	$(IVERILOG) -g2012 -DRAM_IMAGE='"pmptestimage.hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL_BASE)
+sim/sim_pmptest.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"pmptestimage.hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
 sim_pmptest: sim/bootrom.hex sim/pmptestimage.hex sim/sim_pmptest.out
 	@cd sim && $(VVP) sim_pmptest.out $(VVP_DUMP) 2>&1 | tee pmptest.log

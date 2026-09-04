@@ -3720,6 +3720,100 @@ pass *unchanged* by any of this, which is the expected, honest result of
 `CORE=inorder`" entry above) rather than evidence enforcement also works
 on the wide core.
 
+**Stage 3: enforcement on `CORE=ooo`'s data path too - the "separate,
+harder problem for a future round" stage 2 and `docs/debug.md`'s hart
+control both named, picked up once it was the next unblocked, explicitly
+named item.** `rtl/ooo/core_ooo.v` gets its own `pmp` instances - two of
+them, not one, because this core's data path is not one access at a
+time the way `cpu_core.v`'s is.
+
+**Why two PMP checks, not one.** `core_ooo.v`'s header explains the
+split this has to respect: a load may issue out of order, ahead of
+older instructions, once its address is known and no older pending
+store might alias it - but only when it needs no MMU translation (a
+load needing one already takes `load_via_head` instead, deferring to
+the ROB head, per the existing comment above `issL_misaligned`).
+Everything else - stores, AMO/LR/SC, and any load that took
+`load_via_head` for its own reasons - executes only at the ROB head.
+These are two structurally different places or a PMP-denied access can
+first become known, so each needs its own instance: `PMP_ISSL`, checked
+against `issL_addr_calc` (already guaranteed physical - see above) at
+issue time, folded into the same `rob_is_trap_event`/`rob_trap_cause`
+mechanism `issL_misaligned` already uses (cause 4 outranks cause 5,
+mirroring `issL_pmp_fault`'s own gating on `!issL_misaligned`); and
+`PMP_HEAD`, checked against `head_mem_phys_addr` once it is genuinely a
+physical address (`head_pmp_pa_valid`, the exact same "not mid-walk,
+not a faulted walk's garbage result" gate `cpu_core.v`'s own
+`pmp_pa_valid` uses), folded into `head_synchronous_trap`/
+`head_cause_for_csr`/`head_val_for_csr` at the identical priority
+`cpu_core.v` already established: misalignment, then a page fault, then
+PMP. Both a PMP-denied store and a PMP-denied AMO needed their own
+bus-access gate added - `head_plain_store_now` and `amo_active` each
+already excluded `head_mem_misaligned`/`head_mmu_fault_now` for exactly
+this reason (a misaligned or page-faulted access must not touch the bus
+before its trap is taken), so `!head_pmp_fault_now` joins the same list
+rather than becoming a new kind of check. `head_load_owns_port` and
+`loadL_can_start` needed the identical treatment on the load side.
+
+**The one real design question this needed answering, not just
+implementing: is a privilege value read at issue time - before an
+out-of-order load's true position in program order is settled - safe to
+check PMP against?** Privilege only ever changes via ECALL/EBREAK/
+MRET/SRET/an interrupt, and every one of those is head-only and
+triggers `recovery_fire` on retirement - the identical ROB-walk squash
+mechanism a resolved branch misprediction uses. So a load issued out of
+order, ahead of an older not-yet-retired privilege change, reads
+whatever `effective_priv_for_data` was live at that moment; if that
+privilege *was* about to change, the load itself is younger than the
+instruction causing the change and gets squashed by that same
+mechanism before its trap fields are ever acted on. A wrong PMP verdict
+computed under a since-stale privilege can only ever belong to an
+entry that never retires - the existing recovery path, unmodified,
+already makes this safe, the same way it already makes a
+speculatively-wrong branch prediction safe. Verified rather than only
+argued: the full trusted gate below includes both cores' complete
+Linux boots, the one workload in this project's own history
+(`kernel/locking/rwsem.c`'s AMO race, this file's Class-S notes above)
+that has actually found a real ordering bug in this exact core.
+
+**`sim_pmptest` itself had to stop hardcoding `cpu_core.v`.** Stage 2's
+own account above records the deliberate choice: `sim_pmptest` was
+built against `$(SOC_RTL_BASE)` (always `cpu_core.v`, plain `-g2012`),
+not the CORE-switching `$(SOC_RTL)`/`$(IVFLAGS)`, specifically so it
+kept meaning the same thing whether invoked under `make verify` or
+`make verify_ooo` - back when `core_ooo.v` enforced nothing, the exact
+same test running against it would have failed every trap-count check
+for a true but misleading reason. That reason is gone now, and leaving
+the hardcoding in place would have meant `make verify_ooo` never once
+touched `core_ooo.v`'s own new enforcement logic, silently. Switched to
+`$(SOC_RTL)`/`$(IVFLAGS)`, matching every other core-sensitive test
+(`sim_plic`, `sim_mmusdram`).
+
+**Confirmed to fail without the enforcement wiring - the same discipline
+stage 2 used, applied to this core specifically.** `git stash`ed just
+`rtl/ooo/core_ooo.v`'s changes, rebuilt, and ran `sim_pmptest` directly
+under `CORE=ooo` against the now-`$(SOC_RTL)`-based recipe:
+
+```
+denied load: exactly one trap           FAILED
+denied load: cause 5 (load access fault)FAILED
+denied load: mtval is the faulting addressFAILED
+denied store: exactly one trap          FAILED
+denied store: cause 7 (store access fault)FAILED
+denied store: memory unchanged          FAILED
+open region: load reads the real value  ok
+open region: store took effect          ok
+PMP-TEST: FAIL (6)
+```
+
+- exactly the six denial checks failing, the two open-region checks
+still passing, precisely what "PMP CSRs are real but nothing consults
+them" predicts. Restored, rebuilt, re-ran: all eight checks pass.
+`crt0_ram.S`'s existing "permit all" open region (added in stage 2,
+already running inertly on every `CORE=ooo` build since nothing
+consulted it) needed no change at all - it was already correct, just
+waiting for something to check it.
+
 **Documentation had no gate at all.** Every other layer of this project -
 RTL, firmware, the ISA suite, formal proofs - runs through `make verify` or
 a CI job. `docs/`, `README.md`, `SECURITY.md` and the rest had none: a
