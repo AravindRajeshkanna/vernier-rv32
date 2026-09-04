@@ -178,6 +178,47 @@
 #define FB_RGB(r, g, b) \
     ((uint8_t)((((r) & 0xE0u)) | (((g) & 0xE0u) >> 3) | (((b) & 0xC0u) >> 6)))
 
+/* ---- Framebuffer fill engine (rtl/soc/wb_framebuffer.v, Phase 10 stage 1) ----
+ * A second register block inside the SAME framebuffer slave, selected by
+ * address bit 17 - the pixel array is well under half that, so it never
+ * collides. Fills a solid rectangle (BLIT_X/Y/W/H, BLIT_COLOR) without the
+ * CPU writing every pixel itself.
+ *
+ * Non-blocking: writing BLIT_CTRL_START returns immediately (unlike
+ * SPI_DATA, which withholds ack until its transfer finishes) and the engine
+ * runs in the background. Software polls BLIT_STATUS_BUSY - the same
+ * busy-bit shape SPI_STATUS already uses - to learn when the fill is done.
+ * A rectangle that runs past the buffer edge is clamped, not rejected; one
+ * that starts off the buffer, or that is zero width/height, draws nothing
+ * and still completes normally.
+ */
+#define BLIT_BASE      (FB_BASE + 0x20000u)
+#define BLIT_X         REG32(BLIT_BASE + 0x00)
+#define BLIT_Y         REG32(BLIT_BASE + 0x04)
+#define BLIT_W         REG32(BLIT_BASE + 0x08)
+#define BLIT_H         REG32(BLIT_BASE + 0x0C)
+#define BLIT_COLOR     REG32(BLIT_BASE + 0x10)
+#define BLIT_CTRL      REG32(BLIT_BASE + 0x14)
+#define BLIT_STATUS    REG32(BLIT_BASE + 0x18)
+#define BLIT_CTRL_START (1u << 0)
+#define BLIT_STATUS_BUSY (1u << 0)
+
+/* Fills [x, x+w) x [y, y+h) with color and returns once the engine reports
+ * done. A synchronous wrapper for the common case; a caller that wants to
+ * do other work during the fill can poll BLIT_STATUS directly instead. */
+static inline void fb_fill_rect(unsigned x, unsigned y, unsigned w, unsigned h,
+                                 uint8_t color)
+{
+    BLIT_X = x;
+    BLIT_Y = y;
+    BLIT_W = w;
+    BLIT_H = h;
+    BLIT_COLOR = color;
+    BLIT_CTRL = BLIT_CTRL_START;
+    while (BLIT_STATUS & BLIT_STATUS_BUSY)
+        ;
+}
+
 /* ---- UART image loader ----
  *
  * How a program gets into SDRAM on a board. It is the only way, and that is
