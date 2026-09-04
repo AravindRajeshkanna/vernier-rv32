@@ -3161,7 +3161,10 @@ silicon in Phase 2 - every address, bank and byte lane, 4,031 ms measured
 retention, `fpga/README.md`) is single-data-rate. DDR is not that memory
 running faster; it is different memory, on a part that supports it, and the
 ULX3S/85F does not. This phase starts when that board is chosen, same as
-Phase 8, and for the same reason it is last rather than absent.
+Phase 8, and for the same reason it sits alongside it rather than being
+absent - not last overall; Phases 10 and 11 are a different kind of
+blocked (a decision, not a board) and are listed after it for that reason,
+not because this one has to finish first.
 
 **A DDR controller is a bigger design than `rtl/soc/wb_sdram.v`, not a
 version of it.** SDR SDRAM's controller is what Phase 2 measured against
@@ -3183,6 +3186,114 @@ burst mode is built for exactly that access pattern.
 every address, bank and lane checked, a measured retention or timing margin,
 not "it linked and didn't hang" - and something running from it, the way
 `SDRAM-TEST: PASS` runs 99 KB of code out of the current memory today.
+
+---
+
+## Phase 10 — GPU
+
+**Not blocked on a board, blocked on a decision, and that decision is the
+whole phase.** "Renders images, video, and user interfaces" spans a range
+too wide to plan against as one item - a solid-fill/blit engine that
+offloads `wb_framebuffer.v`'s current software rasterizer is a peripheral
+roughly PCIe's size; a programmable 3D pipeline with vertex/fragment
+shaders is closer in scope to Phase 1's out-of-order core, and shares
+none of its design. Naming this "the GPU phase" without picking a point
+on that range would be exactly the kind of estimate `docs/practices.md`
+exists to catch - a number quoted, not measured. Nothing below is a spec;
+it names what already exists to build from and what the real open
+question is once a target is picked.
+
+**What exists today, precisely:** `rtl/soc/wb_framebuffer.v` -
+320×240, 8bpp RRRGGGBB, one Wishbone slave, one wait state - and
+`rtl/soc/video_timing.v`, scanning it out at 640×480@60 over the
+block RAM's own second port (no bus master added for scan-out). Every
+pixel in it today is written by the CPU executing an ordinary `sb`, in a
+software loop - there is no acceleration hardware of any kind, and
+`make sim_video` proves only that the timing generator and scan-out
+path are correct, not that anything draws faster than a store
+instruction can. Phase 4 built the path from framebuffer to a real
+monitor - `fpga/video_pll.v`, `fpga/tmds_serialize.v`, real GPDI pins on
+`fpga/ulx3s_top.v`, gated behind `` `ifdef WITH_VIDEO `` after it cost the
+default board target its timing margin (`docs/soc.md` has the current
+state) - so a GPU phase inherits a real, silicon-verified place to send
+pixels; it does not need to build one.
+
+**The first open item, matching how Phase 8 treats board selection:**
+what "renders" is actually asking for. In roughly increasing order of how
+much of this codebase it touches:
+
+- **2D acceleration** - a blit/fill/line-draw engine as a new Wishbone
+  slave alongside `wb_framebuffer.v`, commanded by MMIO registers or a
+  small command queue the CPU writes and the engine drains. Closest in
+  shape to every peripheral this project already has.
+- **A display compositor** - fixed-size sprites or layers blended by
+  hardware during scan-out, extending `video_timing.v`'s read path rather
+  than the CPU-write path. Different problem from 2D acceleration:
+  faster *drawing* than faster *composing what's already drawn*.
+- **A programmable pipeline** - vertex/fragment shader cores, texture
+  sampling, a framebuffer far larger than 320×240×8bpp allows. This is
+  not "add a peripheral"; it is a second, parallel processor with its own
+  instruction set and memory model, and belongs in the same conversation
+  as Phase 1's superscalar/OoO work, not Phase 8's PCIe one.
+
+**Done when:** whichever target is chosen, the same bar Phase 0 set for
+the pipeline itself - simulated first, then a real, measured result on
+the ULX3S over the GPDI output Phase 4 already proved works, not a
+claim from simulation alone.
+
+---
+
+## Phase 11 — DSP
+
+**Also a decision before it is a design, and unlike every phase above it,
+not peripheral-shaped at all.** "Heavy mathematical calculations for
+audio, video, and sensors" is what a floating-point or SIMD extension is
+for, and adding one means new decode, a new register file, and a new
+execution unit inside `rtl/cpu_core.v` itself - the same category of
+change as Phase 1's out-of-order rewrite, not a Wishbone slave `rtl/soc/`
+gains a new instance of. Naming a specific extension here without having
+picked one would be exactly the estimate `docs/practices.md` warns
+against holding on to.
+
+**What exists today, precisely:** `misa` reports A/I/M/S/U (`rtl/
+csr_file.v`'s `MISA` localparam, Spike co-simulation checked it bit for
+bit - see that file's own header) - no `F`, no `D`, no `V`, no `P`. RV32M
+already gives integer multiply/divide (`rtl/muldiv_div.v`, a multi-cycle
+restoring shift-subtract divider), which is the only hardware math
+acceleration this core has. Anything past integer arithmetic - a `float`
+multiply, an FFT butterfly, an audio filter's coefficients - runs today
+as compiler-emitted soft-float or fixed-point routines on the integer
+pipeline, at whatever cost that costs; no measurement of that cost exists
+in this repo yet, and one is the natural first step, the same way Phase
+1 opened by measuring where cycles actually went before proposing
+anything to fix it.
+
+**The first open item:** which extension. Roughly, in order of how much
+of the existing pipeline it reaches into:
+
+- **Hardware floating point (`F`, possibly `D`)** - the standard answer
+  for "audio and sensor math," and the most standardized path (real
+  toolchain support, real `-march=` strings, no invented ISA). Needs its
+  own 32-entry register file alongside `rtl/regfile.v`'s integer one,
+  and FADD/FMUL/FDIV/FCVT datapaths with their own multi-cycle timing
+  story, the same kind of question `rtl/muldiv_div.v` already answered
+  once for integer divide.
+- **Packed-SIMD / a DSP-style extension** - denser for audio/video
+  kernels that are naturally short-vector, but a much less settled part
+  of the RISC-V ecosystem to build against than `F` is.
+- **A dedicated coprocessor** - closer to how Phase 4's video path is a
+  separate block the CPU drives via MMIO rather than an ISA extension at
+  all. Trades "every program gets faster math for free" for "the CPU
+  hands off a specific, well-defined workload," the same tradeoff Phase
+  10's blit-engine option makes for graphics.
+
+**Done when:** a real DSP-shaped workload - the obvious candidate is an
+audio FIR filter or a small FFT, something with an existing reference
+implementation to check correctness against, the same role Spike plays
+for the integer ISA - runs, is verified correct, and is *measured*
+against the current soft-math baseline this phase's own first step
+establishes. "Faster" asserted without that baseline would be exactly
+the estimate this project's own practices exist to rule out.
 
 ---
 

@@ -122,6 +122,7 @@ cosimulation
 cs_n
 csrc
 dataflow
+datapaths
 datasheet
 deasserted
 defconfig
@@ -165,6 +166,7 @@ libfdt
 linker
 livelock
 liveness
+localparam
 loopback
 lowRISC
 maintainer
@@ -220,6 +222,7 @@ printf
 pty
 pulldown
 raiseable
+rasterizer
 reframed
 reframing
 reimplements
@@ -237,6 +240,8 @@ sck
 sdramboot
 sed
 serializer
+shader
+shaders
 snapshotting
 sret
 stdout
