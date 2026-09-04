@@ -102,6 +102,18 @@ module pmp (
             // ends ...1111 (4 = t+1 bits set), region size 2^(3+3)=64 bytes.
             wire [29:0] napot_mask = a_this[29:0] ^ (a_this[29:0] + 30'd1);
             wire [29:0] napot_base_hi = a_this[29:0] & ~napot_mask;
+            // Region size in bytes, as an explicit 33-bit value before any
+            // arithmetic touches it - up to 2^32 exactly (the "whole 32-bit
+            // space" maximal encoding), which is why this needs the extra
+            // bit rather than fitting in 32. Written out this way, rather
+            // than folded into the `top` expression below, because folding
+            // it left Verilator's width inference genuinely ambiguous about
+            // which sub-expression was supposed to carry 33 bits
+            // (WIDTHEXPAND, caught by `make sim_opensbi`'s Verilator build,
+            // not by Icarus - iverilog accepted the folded form without
+            // complaint, another reminder that "no warnings" from one
+            // simulator is not the same claim as "no warnings").
+            wire [32:0] napot_size = ({3'b000, napot_mask} + 33'd1) << 2;
 
             always @(*) begin
                 case (a_mode)
@@ -115,7 +127,7 @@ module pmp (
                     end
                     2'b11: begin // NAPOT
                         base = {1'b0, napot_base_hi, 2'b00};
-                        top  = base + (({1'b0, napot_mask} + 33'd1) << 2);
+                        top  = base + napot_size;
                     end
                     default: begin // OFF
                         base = 33'b0;

@@ -357,7 +357,7 @@ if [ "$DIAG_ONLY" = "1" ]; then
   RTL="$BOARD_RTL"
 else
 RTL="rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
-     rtl/uart.v rtl/btb.v rtl/mmu.v $CORE_RTL \
+     rtl/uart.v rtl/btb.v rtl/mmu.v rtl/pmp.v $CORE_RTL \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ptw.v \
      rtl/soc/wb_ram.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \

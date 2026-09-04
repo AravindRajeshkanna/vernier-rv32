@@ -1303,7 +1303,13 @@ module core_ooo #(
         .mstatus_mprv_out(csr_mstatus_mprv), .mstatus_mpp_out(csr_mstatus_mpp),
         .mstatus_sum_out(csr_mstatus_sum), .mstatus_mxr_out(csr_mstatus_mxr),
         .mstatus_tvm_out(csr_mstatus_tvm), .mstatus_tw_out(csr_mstatus_tw),
-        .mstatus_tsr_out(csr_mstatus_tsr)
+        .mstatus_tsr_out(csr_mstatus_tsr),
+        // Named rather than left off, so the port is accounted for - same
+        // reasoning as mmu.v's own `.pa_va()`. This core has no PMP
+        // enforcement wired in (rtl/cpu_core.v's PMP section and
+        // docs/roadmap.md's PMP entry have the reasoning), so nothing here
+        // needs these values yet.
+        .pmpcfg_out(), .pmpaddr_out()
     );
 
     wire [31:0] head_tvec         = csr_trap_to_s ? csr_stvec : csr_mtvec;

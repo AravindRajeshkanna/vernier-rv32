@@ -221,6 +221,8 @@ module cpu_core #(
     wire [1:0]  csr_mstatus_mpp;
     wire        csr_mstatus_sum, csr_mstatus_mxr;
     wire        csr_mstatus_tvm, csr_mstatus_tw, csr_mstatus_tsr;
+    wire [127:0] csr_pmpcfg;
+    wire [511:0] csr_pmpaddr;
     wire interrupt_taken;
     reg        ex_mem_valid;
     reg [4:0]  ex_mem_rd;
@@ -1064,6 +1066,37 @@ module cpu_core #(
     wire [31:0] mmu_cause = mmu_access_is_write ? 32'd15 : 32'd13; // store/AMO or load page fault
     wire [31:0] mem_phys_addr = need_translate ? mmu_pa : mem_addr_ex;
 
+    // ---- PMP: data-path enforcement only ----
+    // rtl/pmp.v is pure combinational, checked against `mem_phys_addr` once
+    // it is genuinely meaningful - either no translation was needed (M-mode
+    // or paging off, valid the same cycle as every other data-path signal)
+    // or a walk just resolved *without* a page fault. A walk that itself
+    // faulted leaves `mem_phys_addr` holding whatever `mmu.v` computed for
+    // it regardless (see mmu.v's `pa` assignment - it is not gated by
+    // `fault`), which is not a real, permitted physical address to be
+    // checking PMP against; `mmu_fault_now` already traps that access for
+    // an unrelated reason, so PMP has nothing useful to add there.
+    //
+    // Explicitly out of scope for this round, named here so the gap is
+    // documented rather than silent: page-table-walker reads (a PTE fetch
+    // goes through mmu.v's own dedicated ptw_req/ptw_addr port, never
+    // through this one) and instruction fetch (the timing-critical path
+    // Phase 3 spent so long on - see docs/roadmap.md's PMP entry for why
+    // that is its own, separately-measured round).
+    wire pmp_pa_valid = !need_translate || (mmu_resolved && !mmu_fault);
+    wire pmp_fault_raw;
+    pmp PMP (
+        .pmpcfg(csr_pmpcfg), .pmpaddr(csr_pmpaddr),
+        .addr(mem_phys_addr), .size(id_ex_mem_size),
+        .is_write(mmu_access_is_write), .is_fetch(1'b0),
+        .priv(effective_priv_for_data),
+        .fault(pmp_fault_raw)
+    );
+    wire pmp_fault_now = is_mem_op_now && !mem_misaligned && pmp_pa_valid && pmp_fault_raw;
+    // Cause 7 = store/AMO access fault, 5 = load access fault - distinct
+    // from the page-fault causes (15/13) mmu_cause above uses.
+    wire [31:0] pmp_cause = mmu_access_is_write ? 32'd7 : 32'd5;
+
     // A MEM-stage bus access that hasn't been acknowledged freezes EX too
     // (folded in here so PC/IF-ID/ID-EX hold and interrupts stop being
     // sampled, all of which this signal already does) - but EX/MEM must
@@ -1195,11 +1228,14 @@ module cpu_core #(
 
     assign interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall;
 
-    wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now ||
+    wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now || pmp_fault_now ||
                             mem_misaligned || fetch_misaligned;
     wire take_trap = id_ex_valid && (interrupt_taken || synchronous_trap) && ex_commit;
-    // Misalignment outranks a page fault: it is detected on the virtual
-    // address before translation is even attempted (see above).
+    // Misalignment outranks a page fault, which outranks a PMP access
+    // fault: misalignment is detected on the virtual address before
+    // translation is even attempted (see above), and a page fault is
+    // detected as part of translation, before PMP has a real physical
+    // address to check at all - see `pmp_pa_valid` above.
     //
     // `fetch_misaligned` sits last because it is mutually exclusive with the
     // others by construction - a control transfer is not a memory access and
@@ -1210,12 +1246,14 @@ module cpu_core #(
                                  (id_ex_is_trap_event ? id_ex_trap_cause :
                                  (mem_misaligned  ? misaligned_cause :
                                  (mmu_fault_now   ? mmu_cause :
-                                 (fetch_misaligned ? 32'd0 : id_ex_trap_cause))));
+                                 (pmp_fault_now   ? pmp_cause :
+                                 (fetch_misaligned ? 32'd0 : id_ex_trap_cause)))));
     wire [31:0] val_for_csr   = interrupt_taken ? 32'b0 :
                                  (id_ex_is_trap_event ? id_ex_trap_val :
                                  (mem_misaligned  ? mem_addr_ex :
                                  (mmu_fault_now   ? mem_addr_ex :
-                                 (fetch_misaligned ? actual_target : id_ex_trap_val))));
+                                 (pmp_fault_now   ? mem_addr_ex :
+                                 (fetch_misaligned ? actual_target : id_ex_trap_val)))));
 
     // MRET/SRET's own privilege-restore side effect must be suppressed
     // the same way reg/mem/CSR writes already are: an interrupt-preempted
@@ -1261,7 +1299,8 @@ module cpu_core #(
         .mstatus_mprv_out(csr_mstatus_mprv), .mstatus_mpp_out(csr_mstatus_mpp),
         .mstatus_sum_out(csr_mstatus_sum), .mstatus_mxr_out(csr_mstatus_mxr),
         .mstatus_tvm_out(csr_mstatus_tvm), .mstatus_tw_out(csr_mstatus_tw),
-        .mstatus_tsr_out(csr_mstatus_tsr)
+        .mstatus_tsr_out(csr_mstatus_tsr),
+        .pmpcfg_out(csr_pmpcfg), .pmpaddr_out(csr_pmpaddr)
     );
 
     // Trap vector, honoring mtvec/stvec MODE.
@@ -1318,18 +1357,19 @@ module cpu_core #(
         endcase
     end
 
-    // A page-faulting (or interrupt-preempted) load/store/AMO must not
-    // commit its register or memory write - `mmu_fault_now` is
-    // discovered only once the walk resolves, well after id_ex_reg_we/
-    // id_ex_mem_we were already latched true for what was, at decode
-    // time, a legitimately-decoded access.
+    // A page-faulting, PMP-denied, or interrupt-preempted load/store/AMO
+    // must not commit its register or memory write - `mmu_fault_now`/
+    // `pmp_fault_now` are discovered only once the walk resolves (or, for
+    // PMP on an untranslated access, the same cycle - either way, after
+    // id_ex_reg_we/id_ex_mem_we were already latched true for what was, at
+    // decode time, a legitimately-decoded access.
     // `!fetch_misaligned` is what keeps JAL/JALR from writing its link
     // register on a misaligned target. riscv-tests checks exactly this
     // ("verify that return address was not written"), and it matters: a
     // handler that emulated the jump would otherwise see a return address
     // for a jump that never happened.
-    wire commit_ok = !interrupt_taken && !mmu_fault_now && !mem_misaligned &&
-                     !fetch_misaligned;
+    wire commit_ok = !interrupt_taken && !mmu_fault_now && !pmp_fault_now &&
+                     !mem_misaligned && !fetch_misaligned;
 
     // =======================================================================
     // EX/MEM pipeline register
@@ -1698,7 +1738,17 @@ module cpu_core #(
             ex_mem_rd        <= id_ex_rd;
             ex_mem_reg_we    <= id_ex_valid && id_ex_reg_we && commit_ok;
             ex_mem_wb_data   <= ex_result;
-            ex_mem_is_load   <= id_ex_valid && id_ex_is_load;
+            // `commit_ok`-gated like `ex_mem_mem_we`/`ex_mem_is_amo` just
+            // below - a load that faults (misaligned, page fault, or now a
+            // PMP access fault) must not reach `dmem_re` next cycle, or
+            // enforcement is architectural only: the register write-back
+            // was already blocked by `ex_mem_reg_we`'s own `commit_ok`
+            // gate, but the bus read (and any side effect a real device's
+            // read has - a UART RX FIFO pop, for one) would still happen.
+            // `mem_result`'s own use of `ex_mem_is_load` below is unaffected
+            // by this either way, since nothing downstream of it can be
+            // written back without `ex_mem_reg_we`.
+            ex_mem_is_load   <= id_ex_valid && id_ex_is_load && commit_ok;
             ex_mem_funct3    <= id_ex_funct3;
             ex_mem_mem_we    <= id_ex_valid && id_ex_mem_we && commit_ok;
             ex_mem_mem_addr  <= mem_phys_addr;

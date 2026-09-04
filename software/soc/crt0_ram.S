@@ -56,6 +56,31 @@ _start:
     addi a0, a0, 4
     j 3b
 4:
+    /* Open PMP before running anything, the same "permit all" shape real
+     * firmware (OpenSBI's generic platform init) already does on its own -
+     * entry 0, NAPOT, the entire 32-bit space, R+W+X, unlocked.
+     *
+     * Every program linked against this file now runs under real PMP
+     * enforcement the moment it drops to S-mode (rtl/cpu_core.v's PMP
+     * section, docs/roadmap.md's PMP entry): once any PMP hardware exists,
+     * an S/U-mode access matching no entry is *denied* by default, and
+     * none of software/soc/'s own test programs - mmutest.c, plictest.c,
+     * uartirq.c, div64test.c - ever had a reason to configure PMP, since
+     * it did not exist when they were written. Skipping this line is
+     * exactly the failure `software/soc/mmutest.c` hit first: its very
+     * first S-mode store took a real, unarmed access fault, because
+     * nothing had opened anything for it. This is unlocked, so any
+     * program that wants narrower behavior (`software/soc/pmptest.c`) is
+     * free to reconfigure PMP from scratch before its own `mret` - nothing
+     * here locks it out.
+     *
+     * Harmless for a program that never leaves M-mode: M-mode bypasses an
+     * unlocked PMP entry regardless of what it says. */
+    li   t0, -1
+    csrw pmpaddr0, t0
+    li   t0, (3 << 3) | 7    /* A=NAPOT(11), R=1 W=1 X=1 */
+    csrw pmpcfg0, t0
+
     call main
 
 halt:
