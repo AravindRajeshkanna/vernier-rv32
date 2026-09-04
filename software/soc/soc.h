@@ -178,19 +178,27 @@
 #define FB_RGB(r, g, b) \
     ((uint8_t)((((r) & 0xE0u)) | (((g) & 0xE0u) >> 3) | (((b) & 0xC0u) >> 6)))
 
-/* ---- Framebuffer fill engine (rtl/soc/wb_framebuffer.v, Phase 10 stage 1) ----
+/* ---- Framebuffer fill/copy engine (rtl/soc/wb_framebuffer.v, Phase 10) ----
  * A second register block inside the SAME framebuffer slave, selected by
  * address bit 17 - the pixel array is well under half that, so it never
- * collides. Fills a solid rectangle (BLIT_X/Y/W/H, BLIT_COLOR) without the
- * CPU writing every pixel itself.
+ * collides. Fills a solid rectangle (BLIT_X/Y/W/H, BLIT_COLOR) or copies one
+ * rectangle to another (BLIT_X/Y as destination, BLIT_SRC_X/SRC_Y as source,
+ * shared W/H) without the CPU touching every pixel itself.
  *
  * Non-blocking: writing BLIT_CTRL_START returns immediately (unlike
  * SPI_DATA, which withholds ack until its transfer finishes) and the engine
  * runs in the background. Software polls BLIT_STATUS_BUSY - the same
- * busy-bit shape SPI_STATUS already uses - to learn when the fill is done.
- * A rectangle that runs past the buffer edge is clamped, not rejected; one
- * that starts off the buffer, or that is zero width/height, draws nothing
- * and still completes normally.
+ * busy-bit shape SPI_STATUS already uses - to learn when the operation is
+ * done. A rectangle that runs past the buffer edge is clamped, not
+ * rejected; one whose origin starts off the buffer, or that is zero
+ * width/height, draws or copies nothing and still completes normally.
+ *
+ * A copy's source and destination may overlap - the engine picks each
+ * axis's direction so every source pixel is read before anything can
+ * overwrite it, the same technique memmove uses for overlapping regions.
+ * It costs roughly twice a fill's time for the same area: reading a source
+ * pixel and writing a destination pixel share the one read+write port the
+ * CPU itself uses, so each copied pixel is a read cycle and a write cycle.
  */
 #define BLIT_BASE      (FB_BASE + 0x20000u)
 #define BLIT_X         REG32(BLIT_BASE + 0x00)
@@ -200,7 +208,10 @@
 #define BLIT_COLOR     REG32(BLIT_BASE + 0x10)
 #define BLIT_CTRL      REG32(BLIT_BASE + 0x14)
 #define BLIT_STATUS    REG32(BLIT_BASE + 0x18)
+#define BLIT_SRC_X     REG32(BLIT_BASE + 0x1C)
+#define BLIT_SRC_Y     REG32(BLIT_BASE + 0x20)
 #define BLIT_CTRL_START (1u << 0)
+#define BLIT_CTRL_COPY  (1u << 1)
 #define BLIT_STATUS_BUSY (1u << 0)
 
 /* Fills [x, x+w) x [y, y+h) with color and returns once the engine reports
@@ -215,6 +226,23 @@ static inline void fb_fill_rect(unsigned x, unsigned y, unsigned w, unsigned h,
     BLIT_H = h;
     BLIT_COLOR = color;
     BLIT_CTRL = BLIT_CTRL_START;
+    while (BLIT_STATUS & BLIT_STATUS_BUSY)
+        ;
+}
+
+/* Copies [sx, sx+w) x [sy, sy+h) to [dx, dx+w) x [dy, dy+h) and returns once
+ * the engine reports done. Source and destination may overlap in any
+ * direction - see the register block comment above. */
+static inline void fb_copy_rect(unsigned dx, unsigned dy, unsigned sx,
+                                 unsigned sy, unsigned w, unsigned h)
+{
+    BLIT_X = dx;
+    BLIT_Y = dy;
+    BLIT_W = w;
+    BLIT_H = h;
+    BLIT_SRC_X = sx;
+    BLIT_SRC_Y = sy;
+    BLIT_CTRL = BLIT_CTRL_START | BLIT_CTRL_COPY;
     while (BLIT_STATUS & BLIT_STATUS_BUSY)
         ;
 }

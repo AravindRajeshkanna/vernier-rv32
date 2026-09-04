@@ -3241,8 +3241,8 @@ the ULX3S over the GPDI output Phase 4 already proved works, not a
 claim from simulation alone.
 
 **Stage 1 (shipped): solid rectangle fill.** 2D acceleration was the
-target picked; the first increment is a fill engine only - no blit/copy,
-no line-draw, both deferred to later stages.
+target picked; the first increment is a fill engine only - no copy, no
+line-draw, both deferred to later stages.
 
 **Extends `wb_framebuffer.v`'s own Wishbone slave rather than adding a
 new one** - a deliberate departure from the bullet above's original "as
@@ -3289,6 +3289,54 @@ was restored, rather than trusting a test that had never been observed
 to catch anything. `software/soc/main.c`'s acceptance test gained a
 `test_blit()` case exercising the same path a real caller would, through
 `soc.h`'s `fb_fill_rect()` wrapper rather than the raw registers.
+
+**Stage 2 (shipped): rectangle copy, with overlap.** The engine gained a
+second operation - `BLIT_CTRL` bit 1 selects it - that copies one
+rectangle to another rather than filling with a constant. `BLIT_X`/`Y`
+are reused as the destination (the same concept a fill's rectangle
+already is); two new registers, `BLIT_SRC_X`/`SRC_Y`, name the source.
+
+**Copying is honestly two cycles per pixel, not one - measured, not
+assumed.** A fill writes a constant into `mem[]` every cycle, needing
+only the one write reference the destination address already uses. A
+copy needs a *read* of the source pixel and a *write* of the destination
+pixel, and `mem[]` has exactly two ports: the one this engine shares
+with the CPU, and the scan-out port, which is permanently committed to
+the live raster and cannot be borrowed even for a single cycle without
+corrupting the picture on screen. With only one read+write port
+available, and one port unable to read one address and write a
+different one in the same cycle, a copy is a read cycle followed by a
+write cycle - `sim/tb_blit.v` confirms this directly: a 100x80 fill took
+2,000 status polls, the identical-area copy took 4,000.
+
+**The real design problem was overlap**, not the two-phase pipeline. A
+copy's source and destination are allowed to overlap - the ordinary
+case is scrolling part of the screen - and a naive forward copy
+corrupts itself the moment the destination writes over a source pixel
+that a later step still needs to read. The fix is the standard
+technique behind `memmove` and every BitBLT-style engine that allows
+overlap: choose each axis's iteration direction independently, backward
+whenever the destination sits on the higher-address side of the source
+on that axis. That is provably correct for *any* relative offset, not
+just a pure horizontal or vertical shift, because a row or column is
+only ever written after everything still needed from it has already
+been read. `sim/tb_blit.v` draws a per-pixel pattern (a solid fill can't
+reveal a scrambled copy - every pixel looks the same either way) and
+checks all four shift directions plus two diagonals, a copy clamped by
+running the source off the buffer edge, and the degenerate off-buffer
+and zero-width cases - all against an independently-tracked expected
+image that models the copy as its own atomic snapshot-then-write, so
+the test's own model can't share a bug with the RTL it's checking.
+
+Made the test fail first here too: forcing both axes to always iterate
+forward - the version without the overlap fix - produced 6,892 pixel
+mismatches concentrated exactly where the overlapping-copy cases
+predicted, before the real direction logic was restored.
+`software/soc/main.c` gained `test_copy()`, exercised through `soc.h`'s
+new `fb_copy_rect()` wrapper: two colours placed side by side, shifted
+right by an offset smaller than their combined width so the copy must
+overlap its own source, then checked that the boundary between them
+landed exactly where a correct shift puts it.
 
 ---
 

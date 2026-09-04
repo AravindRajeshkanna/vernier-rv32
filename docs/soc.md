@@ -302,36 +302,49 @@ stream unconnected, exactly as before Phase 4.
 
 See `soc.h` for `FB_PIXEL(x,y)` and `FB_RGB(r,g,b)`.
 
-**Fill engine (Phase 10 stage 1).** A second register block inside this same
-slave, selected by address bit 17 of the offset — the pixel array is well
-under half that, so `FB_BASE + 0x20000` never collides with pixel data.
-Fills a solid rectangle without the CPU writing every pixel itself.
+**Fill/copy engine (Phase 10 stages 1-2).** A second register block inside
+this same slave, selected by address bit 17 of the offset — the pixel array
+is well under half that, so `FB_BASE + 0x20000` never collides with pixel
+data. Fills a solid rectangle, or copies one rectangle to another, without
+the CPU touching every pixel itself.
 
 | Offset | Register | Access | Notes |
 |---|---|---|---|
-| `0x00` | BLIT_X | RW | left edge of the fill rectangle |
-| `0x04` | BLIT_Y | RW | top edge |
+| `0x00` | BLIT_X | RW | destination rectangle: left edge |
+| `0x04` | BLIT_Y | RW | destination rectangle: top edge |
 | `0x08` | BLIT_W | RW | width |
 | `0x0C` | BLIT_H | RW | height |
-| `0x10` | BLIT_COLOR | RW | fill colour, RRRGGGBB in bits [7:0] |
-| `0x14` | BLIT_CTRL | WO | bit 0 = start; ignored while already busy |
+| `0x10` | BLIT_COLOR | RW | fill colour, RRRGGGBB in bits [7:0] (fill only) |
+| `0x14` | BLIT_CTRL | WO | bit 0 = start, bit 1 = op (0=fill, 1=copy); ignored while already busy |
 | `0x18` | BLIT_STATUS | RO | bit 0 = busy |
+| `0x1C` | BLIT_SRC_X | RW | source rectangle: left edge (copy only) |
+| `0x20` | BLIT_SRC_Y | RW | source rectangle: top edge (copy only) |
 
-Unlike `wb_spi`'s DATA register, **starting a fill is non-blocking**: the
-write to BLIT_CTRL acks immediately and the engine runs in the background,
-one pixel per cycle. A CPU access to pixel data — or to any other blit
-register — is not acked until the fill completes, exactly like SPI's own
+Unlike `wb_spi`'s DATA register, **starting an operation is non-blocking**:
+the write to BLIT_CTRL acks immediately and the engine runs in the
+background. A CPU access to pixel data — or to any other blit register —
+is not acked until the operation completes, exactly like SPI's own
 "withhold ack until the transfer finishes." A BLIT_STATUS read is the one
 exception, acked immediately regardless of busy, since polling it is the
-whole point of a non-blocking engine. `soc.h`'s `fb_fill_rect()` wraps the
-five-register setup and the poll loop.
+whole point of a non-blocking engine. `soc.h`'s `fb_fill_rect()` and
+`fb_copy_rect()` wrap the register setup and the poll loop.
 
-A rectangle that runs past `FB_WIDTH`/`FB_HEIGHT` is clamped to the
-buffer's own edge rather than rejected or written out of bounds — the same
-"ack instead of wedging the bus" choice this section's address-map section
-already makes for a stray pointer. One whose origin is already off the
-buffer, or with a zero width or height, draws nothing and still completes
-normally.
+A rectangle that runs past `FB_WIDTH`/`FB_HEIGHT` — on either side, for a
+copy — is clamped to the buffer's own edge rather than rejected or written
+out of bounds — the same "ack instead of wedging the bus" choice this
+section's address-map section already makes for a stray pointer. One whose
+origin is already off the buffer, or with a zero width or height, draws or
+copies nothing and still completes normally.
+
+**Copy speed and overlap.** A fill writes one pixel per cycle; a copy reads
+a source pixel and writes a destination pixel, and both share the one
+read+write port the CPU itself uses — the scan-out port is permanently
+committed to the live raster and cannot be borrowed even briefly — so a
+copy takes two cycles per pixel, measured directly in `sim/tb_blit.v`
+rather than assumed. Source and destination may overlap in any direction;
+the engine picks each axis's iteration order (forward or backward)
+independently so every source pixel is read before anything could
+overwrite it, the same technique `memmove` uses.
 
 ### `wb_periph_bridge`
 
