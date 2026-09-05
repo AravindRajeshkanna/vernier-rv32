@@ -475,7 +475,25 @@ module wb_framebuffer #(
                 end
             end
         end
+    end
 
+    // Deliberately its own block, `posedge clk` only, no reset - exactly
+    // how the original Port A read (`a_q <= mem[a_addr]`) was structured
+    // before this engine existed. Folding this into the write-handling
+    // block above (which does need `posedge rst`, for `blit_busy_r` and
+    // the rest of the engine's state) gives yosys's `synth_ecp5` flow one
+    // register whose reset behavior is genuinely ambiguous - reachable
+    // from an async-reset-sensitive process, yet never assigned under
+    // `if (rst)` - which it reports as "Multiple edge sensitive events
+    // found for this signal" rather than inferring anything. Found via
+    // real FPGA synthesis (`./fpga/synth/synth_ecp5.sh`), not simulation:
+    // neither Icarus nor Verilator's own lint objects to this pattern, so
+    // it shipped silently across three PRs before anything actually tried
+    // to place and route the result. `blit_region_q`/`blit_reg_sel_q` ride
+    // along in the same block for the same reason - they are read-mux
+    // bookkeeping with no reset dependency of their own, exactly like
+    // `a_q`.
+    always @(posedge clk) begin
         a_q            <= mem[effective_read_addr];
         blit_region_q  <= is_blit_region;
         blit_reg_sel_q <= blit_reg_sel;
