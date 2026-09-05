@@ -1067,10 +1067,17 @@ sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
 # run that never touched core_ooo.v's own enforcement logic would leave
 # exactly the same "verify_ooo passes" false confidence docs/roadmap.md
 # warned against, just for a different core.
+#
+# $(CORE_DEFINES) also reaches the *firmware* compile here, unlike every
+# other software/soc/*.c program - the fetch-side PMP checks this test
+# added are genuinely asymmetric between cores (cpu_core.v only, for now;
+# see docs/roadmap.md), so pmptest.c itself needs to know which core it is
+# about to run against, the same reason Verilator's own C++ harness already
+# receives this define alongside the Verilog side.
 PMPTEST_SRCS = $(SOCRT_SRCS) software/soc/pmptest.c
 
 software/soc/pmptest.elf: $(PMPTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
-	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) $(CORE_DEFINES) -T software/soc/link_ram.ld \
 	    -o $@ $(PMPTEST_SRCS)
 
 sim/pmptestimage.hex: software/soc/pmptest.elf software/bin2hex.py Makefile
@@ -1430,10 +1437,20 @@ sim_sdramboot: sim/sdramimage.hex sim/sim_sdramboot.out
 # Rebuilds from scratch on purpose: the simulation binaries do not encode
 # which core they were built with, and running a stale one would report the
 # in-order core's result under the other core's name.
+#
+# software/soc/pmptest.elf (and its derived .bin/.hex) get the same
+# treatment, and for a new reason as of this core's fetch-side PMP work:
+# it is the first firmware program whose *C source* now genuinely differs
+# by core ($(CORE_DEFINES) reaches its compile - see that recipe's own
+# comment) rather than only the Verilog side. make's dependency tracking
+# has no way to know the recipe's command line changed, only that its
+# listed prerequisite files did not - so without this, a pmptest.elf built
+# under the default core would be silently reused here instead of
+# recompiled with -DCORE_OOO.
 verify_ooo:
-	rm -f sim/*.out
+	rm -f sim/*.out software/soc/pmptest.elf software/soc/pmptest.bin sim/pmptestimage.hex
 	$(MAKE) verify CORE=ooo
-	rm -f sim/*.out
+	rm -f sim/*.out software/soc/pmptest.elf software/soc/pmptest.bin sim/pmptestimage.hex
 
 verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \

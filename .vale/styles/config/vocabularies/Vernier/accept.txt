@@ -24,6 +24,7 @@ DVI
 EBRs
 ECALL
 EEMBC
+EEPROMs
 Endianness
 FFs
 FIFOs
@@ -63,6 +64,7 @@ QEMU
 Quartus
 ROB
 RXDATA
+Repurposing
 SDRAM
 SERV
 SPI
@@ -90,6 +92,7 @@ acked
 acking
 acks
 another
+asm
 async
 atomic
 autoincrement
@@ -124,6 +127,7 @@ cosimulation
 cs_n
 csrc
 dataflow
+datapath
 datapaths
 datasheet
 deasserted
@@ -280,6 +284,7 @@ unforgeable
 unfound
 uninstantiated
 unstalls
+unticked
 unwindowed
 userspace
 vendored
