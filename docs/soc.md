@@ -501,12 +501,12 @@ Step 4 is the one that bites — five places, none of which check each other.
 - **The walkers do not go through either cache.** A PTE read is a plain bus
   transaction, which is what makes `SFENCE.VMA` sufficient — there is no
   cached copy of a PTE for it to have to invalidate.
-- **PMP enforcement is `CORE=inorder`'s data path only.** `pmpcfg0-3`/
-  `pmpaddr0-15` exist and are correctly readable/writable on both cores,
-  and `rtl/pmp.v` is wired into `cpu_core.v`'s load/store/AMO path — but
-  not into instruction fetch on either core, and not into `core_ooo.v` at
-  all (`docs/roadmap.md`'s PMP entry has the reasoning and the Linux-boot
-  verification).
+- **PMP enforcement covers both cores' data paths, not instruction
+  fetch.** `pmpcfg0-3`/`pmpaddr0-15` exist and are correctly
+  readable/writable on both cores, and `rtl/pmp.v` is wired into both
+  `cpu_core.v`'s and `core_ooo.v`'s load/store/AMO paths — but not into
+  instruction fetch on either core (`docs/roadmap.md`'s PMP entry has the
+  reasoning and the Linux-boot verification for both).
 - **JTAG/Debug Module exists; halt/resume and register access are
   simulation-only.** See `docs/debug.md`.
 - **The UART interrupt is wired to the PLIC but unused** — the driver polls.

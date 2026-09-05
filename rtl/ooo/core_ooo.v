@@ -909,7 +909,30 @@ module core_ooo #(
             default: issL_misaligned = 1'b0;
         endcase
     end
-    wire issL_trap_now = issL_found && issL_misaligned;
+
+    // PMP for the out-of-order load-issue path. `issL_scan_addr`'s own
+    // 0x80/0x00 top-byte check above already guarantees this address is
+    // physical, never mid-translation - an OOO-issued load never needs the
+    // MMU (a load needing translation takes `load_via_head` instead, per
+    // the header comment), so there is no `pmp_pa_valid`-style gate to add
+    // here the way `cpu_core.v`'s has. `effective_priv_for_data` (defined
+    // below) is read here even though this load may still be squashed: any
+    // instruction old enough to change privilege before this load's true
+    // position in program order is itself a trap/mret/sret/interrupt, and
+    // `core_ooo.v` already treats every one of those as a redirect that
+    // walks the ROB and discards every younger entry (`recovery_fire`) - so
+    // a stale privilege read here can only ever belong to an entry that
+    // gets squashed before its trap fields are ever acted on.
+    wire issL_pmp_fault_raw;
+    pmp PMP_ISSL (
+        .pmpcfg(csr_pmpcfg), .pmpaddr(csr_pmpaddr),
+        .addr(issL_addr_calc), .size(rob_mem_size[issL_idx]),
+        .is_write(1'b0), .is_fetch(1'b0),
+        .priv(effective_priv_for_data),
+        .fault(issL_pmp_fault_raw)
+    );
+    wire issL_pmp_fault = issL_found && !issL_misaligned && issL_pmp_fault_raw;
+    wire issL_trap_now = issL_found && (issL_misaligned || issL_pmp_fault);
 
     // =======================================================================
     // Execute: Class B (ALU)
@@ -1123,6 +1146,28 @@ module core_ooo #(
     wire [31:0] head_mmu_cause = head_mmu_access_is_write ? 32'd15 : 32'd13;
     wire [31:0] head_mem_phys_addr = head_need_translate ? head_mmu_pa : head_mem_addr_virt;
 
+    // ---- PMP: head-executed path (stores, AMO/LR/SC, and a load that
+    // took `load_via_head` for its own reasons - translation or a
+    // side-effecting address) ----
+    // Mirrors `cpu_core.v`'s own PMP section exactly, including
+    // `head_pmp_pa_valid`: a walk that itself faulted leaves
+    // `head_mem_phys_addr` holding whatever `mmu.v` computed regardless
+    // (its `pa` assignment is not gated by `fault`), not a real physical
+    // address to check PMP against - `head_mmu_fault_now` already traps
+    // that access for an unrelated reason.
+    wire head_pmp_pa_valid = !head_need_translate || (head_mmu_resolved && !head_mmu_fault);
+    wire head_pmp_fault_raw;
+    pmp PMP_HEAD (
+        .pmpcfg(csr_pmpcfg), .pmpaddr(csr_pmpaddr),
+        .addr(head_mem_phys_addr), .size(rob_mem_size[rob_head]),
+        .is_write(head_mmu_access_is_write), .is_fetch(1'b0),
+        .priv(effective_priv_for_data),
+        .fault(head_pmp_fault_raw)
+    );
+    wire head_pmp_fault_now = head_is_mem_op && !head_mem_misaligned &&
+                              head_pmp_pa_valid && head_pmp_fault_raw;
+    wire [31:0] head_pmp_cause = head_mmu_access_is_write ? 32'd7 : 32'd5;
+
     wire head_is_muldiv_now = headS_valid && rob_is_muldiv[rob_head];
     wire head_is_div_now    = head_is_muldiv_now && rob_funct3[rob_head][2];
     wire div_busy, div_done;
@@ -1157,6 +1202,8 @@ module core_ooo #(
     wire [31:0] csr_mtvec, csr_stvec, csr_mepc, csr_sepc;
     wire        csr_trap_to_s;
     wire [31:0] csr_mie, csr_mip, csr_mideleg;
+    wire [127:0] csr_pmpcfg;
+    wire [511:0] csr_pmpaddr;
     wire        csr_mstatus_mie, csr_sstatus_sie;
     wire [31:0] csr_op_operand = rob_csr_imm_form[rob_head] ? rob_zimm[rob_head] : headS_op1;
     reg  [31:0] csr_new_value;
@@ -1254,20 +1301,29 @@ module core_ooo #(
                              any_interrupt_pending && !head_busy_now;
 
     wire head_synchronous_trap = (headS_valid && rob_is_trap_event[rob_head]) || head_mmu_fault_now ||
+                                 head_pmp_fault_now ||
                                  head_mem_misaligned || head_fetch_misaligned;
     assign head_ex_commit = !head_dbus_stall && !head_fence_drain_stall;
     wire head_take_trap = headS_valid && (interrupt_taken || head_synchronous_trap) && head_ex_commit;
 
+    // Misalignment outranks a page fault, which outranks a PMP access
+    // fault - mirrors `cpu_core.v`'s own priority exactly, for the same
+    // reason: misalignment is judged on the virtual address before
+    // translation is attempted, and a page fault is detected as part of
+    // translation, before PMP has a real physical address to check at all
+    // (`head_pmp_pa_valid` above).
     wire [31:0] head_cause_for_csr = interrupt_taken ? interrupt_cause :
                                  (rob_is_trap_event[rob_head] ? rob_trap_cause[rob_head] :
                                  (head_mem_misaligned  ? head_misaligned_cause :
                                  (head_mmu_fault_now   ? head_mmu_cause :
-                                 (head_fetch_misaligned ? 32'd0 : rob_trap_cause[rob_head]))));
+                                 (head_pmp_fault_now   ? head_pmp_cause :
+                                 (head_fetch_misaligned ? 32'd0 : rob_trap_cause[rob_head])))));
     wire [31:0] head_val_for_csr   = interrupt_taken ? 32'b0 :
                                  (rob_is_trap_event[rob_head] ? rob_trap_val[rob_head] :
                                  (head_mem_misaligned  ? head_mem_addr_virt :
                                  (head_mmu_fault_now   ? head_mem_addr_virt :
-                                 (head_fetch_misaligned ? head_actual_target : rob_trap_val[rob_head]))));
+                                 (head_pmp_fault_now   ? head_mem_addr_virt :
+                                 (head_fetch_misaligned ? head_actual_target : rob_trap_val[rob_head])))));
 
     wire head_mret_en = headS_valid && rob_is_mret[rob_head] && !interrupt_taken && head_ex_commit;
     wire head_sret_en = headS_valid && rob_is_sret[rob_head] && !interrupt_taken && head_ex_commit;
@@ -1304,12 +1360,7 @@ module core_ooo #(
         .mstatus_sum_out(csr_mstatus_sum), .mstatus_mxr_out(csr_mstatus_mxr),
         .mstatus_tvm_out(csr_mstatus_tvm), .mstatus_tw_out(csr_mstatus_tw),
         .mstatus_tsr_out(csr_mstatus_tsr),
-        // Named rather than left off, so the port is accounted for - same
-        // reasoning as mmu.v's own `.pa_va()`. This core has no PMP
-        // enforcement wired in (rtl/cpu_core.v's PMP section and
-        // docs/roadmap.md's PMP entry have the reasoning), so nothing here
-        // needs these values yet.
-        .pmpcfg_out(), .pmpaddr_out()
+        .pmpcfg_out(csr_pmpcfg), .pmpaddr_out(csr_pmpaddr)
     );
 
     wire [31:0] head_tvec         = csr_trap_to_s ? csr_stvec : csr_mtvec;
@@ -1418,7 +1469,7 @@ module core_ooo #(
     wire head_plain_store_now = headS_valid && rob_is_store[rob_head] &&
                                 rob_issued[rob_head] && headS_ready &&
                                 !head_mmu_wait_stall && !head_mmu_fault_now &&
-                                !head_mem_misaligned;
+                                !head_mem_misaligned && !head_pmp_fault_now;
     wire head_store_absorbed  = head_plain_store_now && !port_taken_by_load && !sb_valid && dbus_wait;
 
     reg        amo_wr_phase;
@@ -1432,7 +1483,7 @@ module core_ooo #(
     // buffer already owns it - same reasoning as `head_store_absorbed`.
     wire amo_active = headS_valid && rob_is_amo[rob_head] && headS_ready &&
                       !head_mmu_wait_stall && !head_mmu_fault_now &&
-                      !head_mem_misaligned &&
+                      !head_mem_misaligned && !head_pmp_fault_now &&
                       !port_taken_by_load && !port_taken_by_store;
     reg [31:0] amo_new_value;
     wire amo_writes = (rob_is_amo[rob_head] && !head_is_lr_ex && !head_is_sc_ex) || sc_success;
@@ -1501,7 +1552,7 @@ module core_ooo #(
     // leaving it `in_service` forever and the interrupt permanently unable
     // to re-arm - `docs/roadmap.md`'s Known Defects entry for
     // `sim_uartirq CORE=ooo`.
-    wire loadL_can_start = issL_found && !issL_misaligned && !port_owned_by_store &&
+    wire loadL_can_start = issL_found && !issL_misaligned && !issL_pmp_fault && !port_owned_by_store &&
                            !loadL_active && !dmem_mmu_active && !head_load_owns_port;
     // `loadL_active && !loadL_early_done`: the extra cycle after an
     // early-done load (see the note above loadL_early_done) must not
@@ -1556,7 +1607,7 @@ module core_ooo #(
     // true before that - this only asserts once it can actually go.
     wire head_load_owns_port = load_via_head && headS_ready &&
                                !head_mmu_wait_stall && !head_mmu_fault_now &&
-                               !head_mem_misaligned &&
+                               !head_mem_misaligned && !head_pmp_fault_now &&
                                !port_taken_by_load && !sb_valid;
 
     assign dmem_addr  = port_taken_by_load ? loadL_addr_phys :
@@ -2105,17 +2156,22 @@ module core_ooo #(
                 rob_result[loadL_rob_idx] <= loadL_rdata_sized;
                 if (rob_has_rd[loadL_rob_idx]) preg_busy[rob_new_preg[loadL_rob_idx]] <= 1'b0;
             end
-            // A misaligned load never touches the bus at all - mark it done
-            // with a pending trap event right here instead, cause 4 (load
-            // address misaligned per the RISC-V privileged spec; distinct
-            // from the store/AMO side's cause 6). `headS_valid` and
-            // `head_class_b_or_load_can_retire` above route this to the
-            // existing Class S trap-taking path once it reaches the head.
+            // A misaligned or PMP-denied load never touches the bus at all -
+            // mark it done with a pending trap event right here instead.
+            // Cause 4 (load address misaligned) outranks cause 5 (load
+            // access fault) exactly like `cpu_core.v`'s own priority: a
+            // misaligned address is judged before any real access is even
+            // attempted, and `issL_pmp_fault` above is itself already
+            // gated on `!issL_misaligned`, so this ordering is just making
+            // that same priority visible in the reported cause too.
+            // `headS_valid` and `head_class_b_or_load_can_retire` above
+            // route this to the existing Class S trap-taking path once it
+            // reaches the head.
             if (issL_trap_now) begin
                 rob_issued[issL_idx]        <= 1'b1;
                 rob_done[issL_idx]          <= 1'b1;
                 rob_is_trap_event[issL_idx] <= 1'b1;
-                rob_trap_cause[issL_idx]    <= 32'd4;
+                rob_trap_cause[issL_idx]    <= issL_misaligned ? 32'd4 : 32'd5;
                 rob_trap_val[issL_idx]      <= issL_addr_calc;
             end
 
