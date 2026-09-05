@@ -158,16 +158,18 @@ declaring a winner.
   little timing margin to spare, which is also why a real `openocd`+`gdb`
   cannot attach to it. NEORV32, Ibex and VexRiscv's debug plugin all have
   that working today.
-- **PMP is enforced on both cores' data paths, but not on instruction
-  fetch on either.** `pmpcfg0-3`/`pmpaddr0-15` are real, WARL-correct
-  storage on both cores (`docs/roadmap.md`'s PMP entry), and a denied
-  load/store/AMO on either core takes a real access fault - verified
-  against a full Linux boot on both, not just the ISA suite. Fetch-side
-  enforcement is still open - it sits on each core's own timing-critical
-  path and needs its own measurement before it can be added the way the
-  data path was - `SECURITY.md` has the precise boundary. Every peer with
-  M/S/U privilege and any security posture (Ibex/OpenTitan especially)
-  treats physical memory protection, including on fetch, as load-bearing.
+- **PMP is enforced on both cores' data paths and on `CORE=inorder`'s
+  instruction fetch, but not `CORE=ooo`'s fetch.** `pmpcfg0-3`/
+  `pmpaddr0-15` are real, WARL-correct storage on both cores
+  (`docs/roadmap.md`'s PMP entry), and a denied load/store/AMO on either
+  core - or a denied fetch on `CORE=inorder` - takes a real access fault,
+  verified against a full Linux boot, not just the ISA suite.
+  `CORE=ooo`'s fetch enforcement is still open, blocked on the same
+  ROB-based speculative fetch path that made its data-path enforcement
+  the harder of the two rounds - `SECURITY.md` has the precise boundary.
+  Every peer with M/S/U privilege and any security posture (Ibex/OpenTitan
+  especially) treats physical memory protection, including on fetch, as
+  load-bearing.
 - **One proven FPGA target.** The ULX3S/ECP5-85F is the only board this
   project has actually run on; VexRiscv (via LiteX) and Rocket/CVA6 (via
   their respective ecosystems) both span many more boards and, for the

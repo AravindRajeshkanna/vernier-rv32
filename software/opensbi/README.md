@@ -65,8 +65,8 @@ assumed: a full `make sim_linux` under this exact enforcement reaches
 enforcement existed (same first trap, `mcause=2` at the same `pc`, an
 unrelated firmware feature-probe) and zero access faults anywhere in the
 run. `docs/roadmap.md`'s PMP entry has the full account, including why
-`CORE=ooo` and instruction fetch on either core are still explicitly
-unenforced.
+`CORE=ooo`'s instruction fetch is still explicitly unenforced (its data
+path and `CORE=inorder`'s instruction fetch are not).
 
 ## The five defects between "builds" and "boots"
 

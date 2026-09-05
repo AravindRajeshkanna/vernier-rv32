@@ -396,6 +396,28 @@ module cpu_core #(
 
     assign imem_addr = fetch_phys_addr;
 
+    // ---- PMP: instruction fetch ----
+    // Same module, same CSRs, same "not mid-walk, not a faulted walk's
+    // garbage result" gate the data-path instance below uses -
+    // `fetch_pmp_pa_valid` mirrors `pmp_pa_valid` exactly, so a page fault
+    // (already checked above, `itlb_fault_now`) always outranks a PMP
+    // access fault the same way it does on the data path. Privilege is
+    // `current_priv` directly, never `effective_priv_for_data` - MPRV
+    // relocates loads/stores only, never fetch (see the ITLB instantiation
+    // above). Every fetch is word-sized: this ISA has no compressed
+    // extension, so there is no misalignment case to gate on either, the
+    // one respect in which this is simpler than the data-path instance.
+    wire fetch_pmp_pa_valid = !itlb_req || (itlb_ok && !itlb_fault);
+    wire fetch_pmp_fault_raw;
+    pmp PMP_FETCH (
+        .pmpcfg(csr_pmpcfg), .pmpaddr(csr_pmpaddr),
+        .addr(fetch_phys_addr), .size(2'b10),
+        .is_write(1'b0), .is_fetch(1'b1),
+        .priv(current_priv),
+        .fault(fetch_pmp_fault_raw)
+    );
+    wire fetch_pmp_fault_now = fetch_pmp_pa_valid && fetch_pmp_fault_raw;
+
     // ---- branch target buffer: consulted every fetch, trained at EX ----
     wire btb_pred_taken;
     wire [31:0] btb_pred_target;
@@ -415,6 +437,7 @@ module cpu_core #(
     reg [31:0] if_id_pc;
     reg [31:0] if_id_instr;
     reg        if_id_ifetch_fault;
+    reg        if_id_pmp_fetch_fault;
     reg        if_id_pred_taken;
     reg [31:0] if_id_pred_target;
 
@@ -637,19 +660,29 @@ module cpu_core #(
     // of the above (in IF, not ID) - it must unconditionally override
     // whatever `illegal`/ECALL/EBREAK the garbage `if_id_instr` bits of a
     // faulting fetch would otherwise combinationally decode to, and
-    // suppress every side effect the same way `illegal` already does.
-    wire d_fetch_fault    = if_id_ifetch_fault;
-    wire is_trap_event    = illegal || is_ecall || is_ebreak || d_fetch_fault;
-    wire suppress_effects = illegal || d_fetch_fault;
+    // suppress every side effect the same way `illegal` already does. A
+    // PMP-denied fetch is discovered the same way, one stage earlier than
+    // decode - `fetch_pmp_fault_now` is already gated on `!itlb_fault` (see
+    // its own definition), so it and `d_fetch_fault` can never both be true
+    // for the same instruction; the explicit priority below just makes that
+    // the same "page fault outranks PMP" ordering the data path uses
+    // visible here too, rather than relying on the two being mutually
+    // exclusive by construction alone.
+    wire d_fetch_fault     = if_id_ifetch_fault;
+    wire d_pmp_fetch_fault = if_id_pmp_fetch_fault;
+    wire is_trap_event    = illegal || is_ecall || is_ebreak || d_fetch_fault || d_pmp_fetch_fault;
+    wire suppress_effects = illegal || d_fetch_fault || d_pmp_fetch_fault;
 
     wire [31:0] ecall_cause = (current_priv == PRIV_M) ? 32'd11 :
                               (current_priv == PRIV_S) ? 32'd9  : 32'd8;
-    wire [31:0] d_trap_cause = d_fetch_fault ? 32'd12 :
-                                illegal      ? 32'd2  :
-                                is_ecall     ? ecall_cause :
-                                is_ebreak    ? 32'd3  : 32'd0;
-    wire [31:0] d_trap_val   = d_fetch_fault ? if_id_pc :
-                                illegal      ? if_id_instr : 32'd0;
+    wire [31:0] d_trap_cause = d_fetch_fault     ? 32'd12 :
+                                d_pmp_fetch_fault ? 32'd1  :
+                                illegal          ? 32'd2  :
+                                is_ecall         ? ecall_cause :
+                                is_ebreak        ? 32'd3  : 32'd0;
+    wire [31:0] d_trap_val   = d_fetch_fault     ? if_id_pc :
+                                d_pmp_fetch_fault ? if_id_pc :
+                                illegal          ? if_id_instr : 32'd0;
 
     wire use_funct7b5 = is_op || (is_opimm && d_funct3 == 3'b101);
     wire [3:0] d_alu_ctrl = {(use_funct7b5 & d_funct7[5]), d_funct3};
@@ -1655,12 +1688,13 @@ module cpu_core #(
                                   // must stop admitting new instructions - id_ex_valid drains
                                   // one cycle behind this for free, on its own default path)
         end else begin
-            if_id_valid        <= 1'b1;
-            if_id_pc           <= pc;
-            if_id_instr        <= imem_rdata;
-            if_id_ifetch_fault <= itlb_fault_now;
-            if_id_pred_taken   <= btb_pred_taken;
-            if_id_pred_target  <= btb_pred_target;
+            if_id_valid           <= 1'b1;
+            if_id_pc              <= pc;
+            if_id_instr           <= imem_rdata;
+            if_id_ifetch_fault    <= itlb_fault_now;
+            if_id_pmp_fetch_fault <= fetch_pmp_fault_now;
+            if_id_pred_taken      <= btb_pred_taken;
+            if_id_pred_target     <= btb_pred_target;
         end
     end
 
