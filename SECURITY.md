@@ -6,8 +6,9 @@ Vernier-RV32 is a RISC-V RV32IMA core and SoC built as an engineering project.
 It is **not** a hardened or audited design, it has never been through a
 security review, and it should not be treated as a trust boundary in anything
 that matters. PMP is enforced on both cores' data paths (loads, stores,
-AMOs) — but not on instruction fetch on either core; treat that exactly as
-if PMP did not exist there. It has
+AMOs), and on instruction fetch for `CORE=inorder` — but not on fetch for
+`CORE=ooo`; treat fetch on that core exactly as if PMP did not exist
+there. It has
 no debug authentication, and no side-channel countermeasures of any kind — no
 constant-time guarantees, no cache (so no cache side channels, but also no
 mitigation for anything else), and no attempt at speculation control beyond
@@ -51,12 +52,13 @@ week. There is no bounty.
 - **MMU faults** — page permission bits not enforced (`U`, `R`/`W`/`X`,
   `SUM`, `MXR`), a walk reading the wrong PTE, missing `A`/`D` handling, or
   `SFENCE.VMA` failing to invalidate.
-- **PMP faults, either core's data path** — a configured, matching
-  PMP region failing to deny a load, store, or AMO it should (or denying
-  one it should not), the lock bit not applying to M-mode, or a region's
-  address match itself being wrong (`rtl/pmp.v`). Instruction fetch is out
-  of scope — see below, not because it doesn't matter but because nothing
-  there claims to be enforcing anything yet.
+- **PMP faults, either core's data path, or `CORE=inorder`'s
+  instruction fetch** — a configured, matching PMP region failing to
+  deny a load, store, AMO, or fetch it should (or denying one it should
+  not), the lock bit not applying to M-mode, or a region's address match
+  itself being wrong (`rtl/pmp.v`). `CORE=ooo`'s instruction fetch is out
+  of scope — see below, not because it doesn't matter but because
+  nothing there claims to be enforcing anything yet.
 - **Trap delegation** — `medeleg`/`mideleg` letting a trap reach a mode that
   should not handle it, or `mstatus.TVM`/`TW`/`TSR` failing to trap.
 - **CSR access control** — a CSR readable or writable from a mode that should
@@ -71,13 +73,14 @@ week. There is no bounty.
 **Out of scope**, because they are known and documented rather than
 undiscovered:
 
-- **PMP is not enforced on instruction fetch, on either core.**
+- **PMP is not enforced on instruction fetch on `CORE=ooo`.**
   `pmpcfg0-3`/`pmpaddr0-15` are real, correctly read/written CSRs on both
-  cores, and both cores' data paths (loads, stores, AMOs) really do
-  enforce them — but a fetch on either core ignores PMP entirely. "A
-  configured PMP region does not deny an instruction fetch" is this exact
-  known gap, not a new finding — `docs/soc.md` §7 and `docs/roadmap.md`'s
-  PMP entry have the current state.
+  cores, both cores' data paths (loads, stores, AMOs) really do enforce
+  them, and `CORE=inorder`'s instruction fetch does too — but a fetch on
+  `CORE=ooo` ignores PMP entirely. "A configured PMP region does not deny
+  an instruction fetch on the wide core" is this exact known gap, not a
+  new finding — `docs/soc.md` §7 and `docs/roadmap.md`'s PMP entry have
+  the current state.
 - The JTAG TAP / Debug Module has no authentication of any kind — anyone who
   can reach the JTAG pins has full System Bus Access and (`CORE=inorder`,
   simulation builds only) halt/resume/register access. `docs/debug.md` has

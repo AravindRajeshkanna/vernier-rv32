@@ -3449,6 +3449,68 @@ the estimate this project's own practices exist to rule out.
 
 ---
 
+## Phase 12 — Peripheral interfaces (I2C, general-purpose timers, PWM)
+
+**Half of this phase already shipped, quietly, as part of getting the
+SoC to boot at all - naming it now is catching up the roadmap to the
+tree, not starting from zero.** GPIO (`rtl/soc/wb_gpio.v`, 16
+bidirectional pins with edge-triggered interrupts, `0x0500_0000`), SPI
+(`rtl/soc/wb_spi.v`, a real hardware master - not bit-banged - fast
+enough to boot Linux off an SD card, `0x0600_0000`), and a UART
+(`rtl/uart.v`, ns16550-compatible, `0x0400_0000`) are all real, wired
+peripherals with their own Wishbone slaves, documented in
+`docs/soc.md`'s peripheral section and exercised by more of this
+project's own tests than almost anything else in the tree. What this
+phase actually adds is the three interfaces still missing: I2C, a
+general-purpose timer distinct from `rtl/clint.v`'s fixed-purpose
+`mtime`, and PWM.
+
+**Why CLINT's timer doesn't already cover this.** `rtl/clint.v` gives a
+single 64-bit free-running counter (`mtime`) and one compare register
+(`mtimecmp`) per the RISC-V privileged spec, entirely dedicated to the
+timer interrupt real firmware (OpenSBI, Linux) already depends on.
+Repurposing it for anything else - a second, independent countdown, a
+PWM duty cycle, a microsecond-resolution measurement - means fighting
+the one hart's own scheduling clock for a resource it doesn't share.
+Software-visible timing peripherals are a genuinely separate need from
+"the kernel's tick," the same way this project's own boot ROM already
+needed its own polling loops rather than borrowing `mtime` for
+UART/SD timeouts.
+
+**PWM is not really a fourth peripheral - it's the same hardware as the
+timer, with an output pin.** A PWM channel is a free-running counter
+compared against a duty-cycle register, toggling an output on
+compare-match and on wraparound - exactly a general-purpose timer's own
+compare-match logic, with the comparison result driving a pin instead
+of (or in addition to) an interrupt. Scoping these as two separate
+peripherals would double-count the actual design work; the real
+open question is how many independent counter/compare channels one
+timer peripheral needs, not whether PWM needs its own datapath.
+
+**The first open item: I2C's own shape, since - unlike SPI - a real
+hardware master versus a bit-banged GPIO driver is a genuine choice
+here, not a foregone one.** SPI became a real hardware peripheral
+because nothing bit-banged could hit the throughput an SD card boot
+needs; I2C's typical targets (EEPROMs, sensors - an IMU or a
+temperature/humidity part are the usual ULX3S-adjacent examples) run
+at 100-400 kHz, slow enough that a software-clocked GPIO driver is a
+realistic option this project hasn't needed to rule out yet. A real
+`wb_i2c.v` master, matching `wb_spi.v`'s own shape (a CTRL/DATA/STATUS
+register set, `docs/soc.md`'s established convention), is the more
+consistent answer if this project keeps treating "a bus protocol" as
+"a peripheral," but the case for it needs a real target device driving
+the decision, not an assumption that hardware is automatically better
+than software here the way it demonstrably was for SPI.
+
+**Done when:** for whichever piece ships first, the same bar every
+peripheral in this SoC already clears - `docs/soc.md`'s own "Adding a
+peripheral" checklist, a directed test proving the CPU's real path to
+it (not just that it elaborates), and for I2C specifically, a real
+transaction against an actual device on a board, not just a simulated
+protocol timing check standing in for one.
+
+---
+
 ## Beyond the phases
 
 **PMP**, which [SECURITY.md](../SECURITY.md) lists as a known gap rather than
@@ -3813,6 +3875,101 @@ them" predicts. Restored, rebuilt, re-ran: all eight checks pass.
 already running inertly on every `CORE=ooo` build since nothing
 consulted it) needed no change at all - it was already correct, just
 waiting for something to check it.
+
+**Stage 4: instruction-fetch enforcement, `CORE=inorder` only - the item
+stage 1 itself named as "further out still," picked up once it was the
+next unblocked, explicitly named PMP work.** `rtl/cpu_core.v` gets a
+third `pmp` instance, checked against `fetch_phys_addr` - the same
+address `imem_addr` already uses - with `.is_fetch(1'b1)` and `.priv`
+always `current_priv` directly, never `effective_priv_for_data`: MPRV
+relocates loads and stores, never fetch, a distinction the ITLB
+instantiation right above it already states explicitly. The fault is
+discovered in IF (`fetch_pmp_fault_now`, mirroring `itlb_fault_now`
+exactly) and registered one stage later into a new IF/ID pipeline field
+(`if_id_pmp_fetch_fault`, alongside the existing `if_id_ifetch_fault`),
+because a PMP-denied fetch still has to decode into *something* in ID
+before `suppress_effects` can act on it - the same reason an ITLB page
+fault already works this way. Cause 1 (instruction access fault) is
+folded into the same `is_trap_event`/`d_trap_cause` computation the
+page-fault case (cause 12) already uses, at the priority stage 2
+established for the data path: a page fault outranks a PMP fault,
+enforced here by construction (`fetch_pmp_fault_now` is already gated on
+`!itlb_fault`) rather than only by the ternary's own ordering.
+
+**No misalignment case to gate on, unlike the data path.** This ISA has
+no compressed extension, so every fetch is word-aligned by construction
+- one less thing stage 4 needs, not an oversight.
+
+**`software/soc/pmptest.c` gained a fourth checked region and a fourth
+directed check**, execute-denied rather than read/write-denied: a
+hand-encoded two-instruction sequence (`addi a0, zero, 1` then `ret`,
+the same technique `main.c`'s `test_fence_i()` already uses, chosen for
+exact address control rather than trusting where a compiled function's
+first instruction lands) with only its first word inside a fourth NA4
+region. Landing exactly on the second word (`ret`) when the trap's
+shared `mepc+4` resume fires matters specifically here, unlike a denied
+load or store: `mepc` is the *callee's own first instruction*, not the
+call site, so resuming into the middle of a real compiled function
+(with whatever registers its own prologue expected) would be unsafe,
+where landing on a clean, unconditional return is not. A sentinel
+(`0xDEADBEEF`) seeded into `a0` via a register-pinned variable proves
+the denied instruction never ran - if it had, `addi a0, zero, 1` would
+have overwritten it before the same `ret`.
+
+**A test bug of exactly the kind `docs/practices.md` names, caught by
+the same discipline it prescribes.** The first version of this check
+compared the sentinel against `a0` again several `report()` calls
+later - but `a0` is caller-saved, and each `report()` call is itself a
+function call that is free to clobber it for its own string-pointer
+argument. GCC's own documentation states plainly that a variable pinned
+to a specific hard register is not guaranteed to survive an intervening
+call unless that register is callee-saved; a0 is not. Fixed by capturing
+the result into an ordinary local immediately after the asm block,
+before any `report()` call could touch it - the fix took longer to find
+than to make, and was found by reading the actual disassembly rather
+than reasoning about the C in the abstract.
+
+**Asymmetric between cores, on purpose, and `sim_pmptest` had to learn
+to say so rather than silently mean different things by "pass" on
+each.** `CORE=ooo` enforces PMP on its data path (stage 3) but not on
+fetch - a real, currently-permanent gap this stage does not close,
+named here rather than left to be discovered by a failing CI job.
+`pmptest.c` compiles the fetch-denial checks out entirely under
+`-DCORE_OOO` (now reaching the firmware compile for the first time -
+see the Makefile's own comment on why) and prints an explicit "skipped"
+line instead, so a `CORE=ooo` run's shorter check list reads as a
+documented asymmetry rather than four checks that quietly stopped
+existing. This needed its own Makefile fix, found by hitting it: with
+`pmptest.elf`'s C content now genuinely core-dependent for the first
+time, `make`'s dependency tracking had no way to know a rebuild was
+needed on a bare core switch, since none of the recipe's *listed*
+prerequisites changed - only its command line did. `verify_ooo`'s own
+`rm -f` line, already there for exactly this reason on the Verilog side,
+gained the same treatment for `pmptest.elf` and its derived `.bin`/
+`.hex`.
+
+**Verified against the full trusted gate on both cores**, including
+both complete Linux boots, unchanged from every prior PMP stage's own
+standard of evidence - simulation only, per the scope confirmed at the
+start of this stage.
+
+**The Fmax measurement this stage named as its own precondition could
+not be completed this round - stated here rather than left silent.**
+Real FPGA synthesis (`./fpga/synth/synth_ecp5.sh`, board-targeted, no
+board attached) reaches yosys's own `CHECK` pass and then crashes
+(`std::out_of_range: vector`, inside yosys itself) while processing
+`rtl/soc/wb_framebuffer.v` - the same, previously-hidden crash this
+file's own PMP entry two stages up in "Beyond the phases" already
+disclosed as unresolved when fixing that file's async-reset synthesis
+break. Confirmed unrelated to this stage's own change: the identical
+crash reproduces on a synthesis of `wb_framebuffer.v` in isolation, with
+none of this stage's `cpu_core.v` changes anywhere in the build. This is
+therefore a pre-existing, tree-wide blocker on real synthesis for
+*anything*, not a cost this stage's own fetch-side PMP logic introduces
+- but it does mean the specific Fmax number stage 1 asked for is not yet
+measurable, and this stage ships with that checklist item honestly
+unticked rather than guessed at. Resolving the deeper crash is its own,
+separate round.
 
 **Documentation had no gate at all.** Every other layer of this project -
 RTL, firmware, the ISA suite, formal proofs - runs through `make verify` or
