@@ -4652,3 +4652,63 @@ provides no protection in CI at all: a future change that broke it would
 still show every check above green. Documented rather than fixed here, on
 the same reasoning as the entry above it - this is a Makefile PR, and
 `.github/workflows/*.yml` is deliberately not touched by it.
+
+**`rtl/soc/wb_framebuffer.v` crashes yosys itself during real FPGA
+synthesis - a real gap in the tree's own coverage, since nothing in
+`make verify`/`make verify_ooo` attempts real place-and-route at all.**
+`./fpga/synth/synth_ecp5.sh` (or a direct `synth_ecp5` invocation on the
+file in isolation) reaches yosys's own `CHECK` pass and terminates with
+`libc++abi: terminating due to uncaught exception of type
+std::out_of_range: vector` - a raw C++ exception from inside yosys, not
+a diagnostic yosys prints and continues from. First found while
+measuring Fmax for PMP stage 4 (`docs/roadmap.md`'s PMP entry); a
+separate, already-fixed synthesis break in the same file (an
+async-reset ambiguity on `a_q`, "Multiple edge sensitive events found
+for this signal") was the *first* thing found there and does not
+explain this one - the fix for that landed and this crash still
+reproduces on top of it.
+
+Three things ruled out, each with real evidence rather than assumed:
+
+- **Not a toolchain mismatch.** `docs/toolchain.md` pins two different
+  Yosys builds for two different purposes - Homebrew's (`0.67+post`)
+  for `make formal`, oss-cad-suite's (`0.68+118`) for real synthesis -
+  and the first investigation used the wrong one (Homebrew's, picked up
+  via `autopilot_config`'s general-purpose "append, don't prepend" PATH
+  rule, which is correct for the simulation gates but not for this
+  script). Re-run explicitly against oss-cad-suite's own `yosys` binary,
+  matching `docs/toolchain.md`'s documented pairing exactly: identical
+  crash, same pass, same exception type.
+- **Not the memory array's sheer size on its own.** A from-scratch
+  minimal module - the same 19,200-word array, the same byte-lane-qualified
+  write pattern this module actually uses, none of its fill/copy/line
+  engine logic - synthesizes past the point this module crashes at
+  (`CHECK`) and runs deep into ABC9 logic optimization before being
+  killed by the OS (`EXIT=137`, consistent with memory exhaustion, not a
+  yosys-internal exception) far later in the flow. A large block-RAM
+  array alone is not sufficient to reproduce this specific crash.
+- **Not the specific async-reset bug already fixed.** That fix (splitting
+  `a_q` into its own `posedge clk`-only block) is confirmed necessary and
+  landed - without it, synthesis fails *earlier*, with a clean, named
+  error rather than a crash. This is a second, different problem
+  encountered only after the first is already fixed.
+
+What is not yet known: which part of the fill/copy/line engine's own
+logic - beyond plain byte-lane-qualified writes to a large array, which
+the minimal reproduction above shows is not enough on its own - produces
+the netlist shape that trips this. The next step is the same bisection
+technique that found the async-reset bug (stage 1 fill-only, then
+stage 2 with copy, then stage 3 with line, each synthesized in
+isolation), not yet completed for this specific crash because each
+attempt against the real 19,200-word file costs 30-60+ minutes before
+reaching the point of failure - a real cost, not a reason to guess
+instead of measuring. Left here rather than chased further this round:
+nothing in `make verify`/`make verify_ooo` is affected (this is real
+synthesis only, which those targets never run), and no board is
+attached to this session to make a working bitstream the actual
+end goal being blocked. A `std::out_of_range` inside yosys's own `CHECK`
+pass, on a design pattern yosys otherwise handles at both smaller scale
+and at this same scale with different logic, is also a real candidate
+for a yosys bug report upstream, not necessarily something this
+project's own RTL is doing wrong - that possibility has not been
+ruled out either, and would change what "fixing" this even means.
