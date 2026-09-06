@@ -115,6 +115,15 @@ formal/
   fv_interconnect.v   one-hot slave select, arbitration, ack routing
   fv_selftest.v       a property that MUST fail (proves the flow can go red)
   (plic.v and btb.v carry their own properties under `ifdef FORMAL)
+bom/
+  gen_sbom.py    software bill of materials (CycloneDX 1.5 JSON) - every
+                 pinned toolchain/fetched-source version, extracted from
+                 the file that actually pins it, not duplicated by hand
+  gen_hbom.py    hardware bill of materials - RTL-instantiated silicon IP
+                 (found by scanning, not listed by hand) plus the target
+                 board's own physical components
+  test_bom.py    what actually gates both: cross-checks every generated
+                 fact against the source it came from
 software/
   crt0.S         startup code (stack/gp setup, zero .bss, call main)
   link.ld        two-region Harvard linker script (imem "ROM" + dmem "RAM")
@@ -148,9 +157,13 @@ docs/
   practices.md   the working rules, each attached to the incident that
                  produced it - start here before changing anything
   roadmap.md     what is next, in phases, with the state of each stated
-  debug.md       UART, tracer, and an honest account of the missing JTAG
+  debug.md       UART, tracer, JTAG/Debug Module, and hart control - what
+                 works, what's simulation-only, and what a real openocd
+                 attach would still need
   toolchain.md   every tool and version this was built with, and which
                  flow uses which
+  bom.md         what bom/ generates, in CI, and why it's generated rather
+                 than hand-maintained
   comparison.md  how this sits next to SERV, PicoRV32, Ibex, VexRiscv,
                  NEORV32, SweRV, Rocket Chip and CVA6 - and where it's behind
 dts/

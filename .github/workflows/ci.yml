@@ -474,6 +474,46 @@ jobs:
           grep -qE "formal: [0-9]+ proved, 0 refuted" formal.log
 
   # ---------------------------------------------------------------------
+  # Bill of materials: SBOM (software) and HBOM (hardware), CycloneDX 1.5
+  # JSON. No RISC-V toolchain - bom/gen_sbom.py and bom/gen_hbom.py are
+  # plain Python 3, reading this project's own pinned-version files and
+  # RTL directly rather than a hand-maintained list (see their own header
+  # comments for why). Icarus Verilog and Verilator are installed anyway,
+  # the same way the `rtl` job's own name means "no RISC-V toolchain," not
+  # "no simulators" - the SBOM records their live versions, since neither
+  # is pinned anywhere in this repo (docs/toolchain.md), and bom/test_bom.py
+  # asserts both are actually present rather than silently omitted.
+  # ---------------------------------------------------------------------
+  bom:
+    name: Bill of materials (SBOM + HBOM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/iverilog
+
+      - uses: ./.github/actions/verilator
+
+      # make bom's own recipe is the check: bom/test_bom.py exits nonzero
+      # on any mismatch between what got generated and what the source
+      # files it was generated from actually say.
+      - name: Generate and check SBOM + HBOM
+        run: make bom
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: bom/sbom.json
+
+      - name: Upload HBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: hbom
+          path: bom/hbom.json
+
+  # ---------------------------------------------------------------------
   # Documentation lint: markdownlint (structure) + Vale (prose). No RISC-V
   # toolchain, no RTL - this job exists to catch what the other jobs
   # can't: a broken internal `#anchor` link, a skipped heading level, a

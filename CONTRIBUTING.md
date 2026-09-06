@@ -65,6 +65,16 @@ narrowly against this project's own prose (see the comments in
 rather than a generic style guide, so a clean run is meaningful, not just
 quiet.
 
+**Neither `verify` nor `lint` covers `bom/`.** `make bom` (CI's own
+`Bill of materials` job) regenerates the software and hardware bills of
+materials and checks every fact in them against the file it came from -
+run it if your change adds a new RTL-instantiated hard primitive (it is
+found by scanning, so this should be automatic) or changes a pinned
+toolchain/fetched-source version, a board part number, or anything else
+`docs/bom.md` names as a source. It has nothing to do with RTL
+correctness and everything to do with the BOM not quietly drifting from
+what it describes.
+
 A green `verify` is the baseline, not the bar. The bar is:
 
 1. **A new test that fails without your change.** If you fixed something, show

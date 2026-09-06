@@ -56,3 +56,7 @@ formal/build/
 fpga/build/
 __pycache__/
 sim/trap_*.txt
+
+# Generated bill of materials (CI uploads these as artifacts; see bom/)
+bom/sbom.json
+bom/hbom.json

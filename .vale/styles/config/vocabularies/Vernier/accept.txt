@@ -192,6 +192,7 @@ microarchitectures
 microcontroller
 mip
 mischaracterized
+misdetected
 mispredict
 mispredicted
 misprediction
@@ -303,6 +304,7 @@ watchpoint
 workqueue
 write
 writeback
+xPack's
 xfail
 yosys
 zsh
