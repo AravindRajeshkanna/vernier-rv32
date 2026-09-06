@@ -193,7 +193,7 @@ SD_BLOCKS = 128
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
-        lint lint-markdown lint-vale
+        lint lint-markdown lint-vale bom sbom hbom
 
 all: sim
 
@@ -681,6 +681,31 @@ lint-vale:
 	vale $$(git ls-files '*.md')
 
 lint: lint-markdown lint-vale
+
+# ---- Bill of materials (SBOM + HBOM), CycloneDX 1.5 JSON ----
+#
+# No RTL toolchain needed - bom/gen_sbom.py and bom/gen_hbom.py are plain
+# Python 3, reading this project's own pinned-version files and RTL
+# directly. See bom/gen_sbom.py's and bom/gen_hbom.py's own header
+# comments for why each is generated rather than hand-maintained, and
+# bom/test_bom.py for what actually gates them - unlike lint above, the
+# generators themselves cannot "fail" in a way `make` would notice (bad
+# JSON would still be JSON), so the check is a separate step, matching
+# this project's own "run" then "check the verdict" pattern elsewhere.
+bom/sbom.json: bom/gen_sbom.py .github/actions/riscv-toolchain/action.yml \
+               .github/actions/oss-cad-suite/action.yml \
+               .github/workflows/ci.yml Makefile tests/fetch.sh \
+               software/bench/fetch-coremark.sh \
+               software/opensbi/build-opensbi.sh software/linux/build-linux.sh
+	python3 bom/gen_sbom.py -o $@
+
+bom/hbom.json: bom/gen_hbom.py $(shell find rtl fpga -name '*.v') fpga/README.md
+	python3 bom/gen_hbom.py -o $@
+
+sbom: bom/sbom.json
+hbom: bom/hbom.json
+bom: sbom hbom
+	python3 bom/test_bom.py
 
 # ---- CoreMark ----
 COREMARK_DIR   = software/bench/coremark
