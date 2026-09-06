@@ -4149,11 +4149,36 @@ clean non-execution rather than trusting a decode accident), which is
 what finally exercised the gap. Fixed the same way the `illegal` case
 was: `d_is_alu_class` now excludes `d_fetch_fault`/`d_pmp_fetch_fault`
 too. This also means the pre-existing ITLB instruction-fetch page-fault
-path (`mmutest.c`) had the identical latent gap for any implementation
-that ever pointed a faulting fetch at a non-illegal-shaped instruction
-word - not reachable by anything in this project's test suite until
-now, but real, and worth stating plainly rather than scoping the fix
-narrowly to only the new PMP case.
+path had the identical latent gap for any implementation that ever
+pointed a faulting fetch at a non-illegal-shaped instruction word - and,
+caught only after this stage looked like it was ready to ship, it turns
+out something already did.
+
+**Correction, found by CI rather than by this stage's own gate: it was
+already reachable, and already silently wrong, on `CORE=ooo` before this
+stage touched anything.** `sim/tb_top.v`'s own Part 13 - `mret`-into-U-mode
+landing on a supervisor-only page, an existing, unrelated test predating
+this PR entirely - is exactly this shape: the faulting instruction there
+also decodes non-illegal, confirmed by instrumenting `d_fetch_fault`
+directly rather than assumed. CI's flat "RTL (no toolchain)" job flagged
+it first, as a hard-coded `BTB mispredict_count` mismatch (`expect 54:
+53`) this branch had not touched; a clean `main` checkout reproduced 54
+(matching), isolating the shift to this stage's own `d_is_alu_class`
+change by bisection, not guesswork. With the trap now genuinely firing
+for Part 13 too, the CPU redirects to the handler immediately instead of
+incorrectly falling through the fault first (measured, not derived: 660
+-> 657 out-of-order ALU issues, 19580 -> 19581 retired) - fewer dynamic
+control-flow decisions, one fewer mispredict. `sim/tb_top.v`'s own
+`EXPECT_MISPREDICTS` has exactly this precedent already, from an earlier,
+narrower version of the same bug (excluding `illegal` alone): "a real
+control-flow change anywhere in program.hex will legitimately move this
+number, at which point it should be recomputed, not bumped blindly."
+Recomputed here the same way, with the mechanism behind the new number
+stated in the same comment, not just the number itself. `CORE_OOO` and
+the in-order baseline now happen to land on the same count (53) - kept as
+two separate `ifdef` arms rather than collapsed into one, since nothing
+about *why* they agree guarantees they still will after the next
+legitimate change to either core.
 
 **Verified against the full trusted gate on both cores**, matching
 every prior PMP stage's own standard of evidence - simulation only, the
