@@ -25,6 +25,7 @@ module tb_soc;
     wire uart_tx;
     wire spi_sck, spi_mosi, spi_miso, spi_cs_n;
     wire [15:0] gpio_out, gpio_dir;
+    wire        pwm_out;
     wire        trap;
 
     // ---- GPIO pads ----
@@ -57,6 +58,7 @@ module tb_soc;
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
+        .pwm_out(pwm_out),
         // No SDRAM in this simulation: the controller inside soc_top still
         // initialises and refreshes an imaginary part, which costs nothing and
         // keeps one SoC rather than two. Nothing here decodes to 0x90.

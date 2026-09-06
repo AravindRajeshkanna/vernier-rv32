@@ -60,6 +60,7 @@ PTE
 PTEs
 Pipelining
 Preload
+PWM's
 QEMU
 Quartus
 ROB
@@ -192,6 +193,7 @@ microarchitectures
 microcontroller
 mip
 mischaracterized
+misconfigure
 misdetected
 mispredict
 mispredicted
@@ -302,6 +304,7 @@ vvp
 wakeup
 watchpoint
 workqueue
+worktree
 write
 writeback
 xPack's

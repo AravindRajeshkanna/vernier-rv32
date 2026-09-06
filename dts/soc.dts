@@ -286,9 +286,14 @@
          * than claiming one that would be wrong. A driver reading this
          * should consult wb_framebuffer.v for the pixel encoding.
          *
-         * `status` is "disabled" because nothing drives a display yet: the
-         * pixel stream leaves soc_fpga.v unconnected pending a PLL and a
-         * TMDS serializer. The buffer itself is readable and writable now.
+         * `status` is "disabled" because this device tree describes the
+         * SoC generically and cannot know, at authoring time, whether a
+         * given build actually routed the pixel stream to real pins - that
+         * is opt-in (`WITH_VIDEO`, `fpga/ulx3s_top.v`) since it costs this
+         * board's own timing margin (docs/roadmap.md's Phase 4 entry), not
+         * the default. The encoder, PLL and TMDS serializer all exist and
+         * are gated in `make verify`; only a real monitor hasn't confirmed
+         * it yet. The buffer itself is readable and writable regardless.
          */
         framebuffer0: framebuffer@7000000 {
             compatible = "simple-framebuffer";
@@ -297,6 +302,20 @@
             height = <240>;
             stride = <320>;
             status = "disabled";
+        };
+
+        /* General-purpose timer / PWM (rtl/soc/wb_timer.v). One channel -
+         * docs/roadmap.md's Phase 12 entry has the reasoning. No real
+         * kernel driver binds "riscv-fpga-cpu,timer0", matching gpio0/
+         * spi0's own custom compatible strings above - these nodes are
+         * informational, not yet a live Linux capability.
+         */
+        timer0: timer@8000000 {
+            compatible = "riscv-fpga-cpu,timer0";
+            reg = <0x08000000 0x00010000>;
+            interrupt-parent = <&plic0>;
+            interrupts = <3>;
+            status = "okay";
         };
     };
 };

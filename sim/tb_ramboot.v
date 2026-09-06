@@ -119,6 +119,7 @@ module tb_ramboot;
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
+        .pwm_out(),
         .sdram_cke(sd_cke), .sdram_cs_n(sd_cs_n),
         .sdram_ras_n(sd_ras_n), .sdram_cas_n(sd_cas_n), .sdram_we_n(sd_we_n),
         .sdram_a(sd_a), .sdram_ba(sd_ba), .sdram_dqm(sd_dqm),

@@ -82,13 +82,18 @@ module soc_fpga #(
 
     inout  wire [GPIO_WIDTH-1:0] gpio,
 
+    // general-purpose timer / PWM, rtl/soc/wb_timer.v
+    output wire pwm_out,
+
     // ---- video scan-out ----
-    // Brought out so a board wrapper can route it, but nothing does yet: a
-    // real display needs a 25.175 MHz pixel clock from a PLL and a TMDS
-    // serializer, neither of which exists. Left unconnected, synthesis
-    // strips the scan-out path and the framebuffer costs only its block RAM
-    // - which is the intent for a first bring-up bitstream. See
-    // fpga/README.md.
+    // A plain pixel stream - this module itself does no PLL/TMDS work, that
+    // is one level up in a board wrapper. fpga/ulx3s_top.v routes it for
+    // real (encoder, PLL, serializer, real GPDI pins) behind the opt-in
+    // `WITH_VIDEO` (docs/roadmap.md's Phase 4 entry has the full account,
+    // including the real timing cost that makes it opt-in rather than the
+    // default). Left unconnected on a plain build, synthesis strips the
+    // scan-out path and the framebuffer costs only its block RAM - which is
+    // the intent for a first bring-up bitstream. See fpga/README.md.
     output wire [7:0] vid_r,
     output wire [7:0] vid_g,
     output wire [7:0] vid_b,
@@ -184,6 +189,7 @@ module soc_fpga #(
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
+        .pwm_out(pwm_out),
         .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
         .vid_de(vid_de), .vid_hsync(vid_hsync), .vid_vsync(vid_vsync),
         .sdram_cke(sdram_cke), .sdram_cs_n(sdram_cs_n),

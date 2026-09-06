@@ -93,6 +93,7 @@ module tb_jtag;
         .gpio_in(16'b0), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(1'b1), .spi_cs_n(spi_cs_n),
+        .pwm_out(),
         .vid_r(), .vid_g(), .vid_b(),
         .vid_de(), .vid_hsync(), .vid_vsync(),
         .sdram_cke(), .sdram_cs_n(), .sdram_ras_n(), .sdram_cas_n(),

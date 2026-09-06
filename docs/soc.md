@@ -74,6 +74,7 @@ the size of the part on the board.
 | `0x0500_0000` | GPIO | 20 B | 0 |
 | `0x0600_0000` | SPI | 12 B | 0 → many |
 | `0x0700_0000` | Framebuffer | 75 KB | 1 |
+| `0x0800_0000` | Timer/PWM | 24 B | 0 |
 | `0x8000_0000` | Main RAM (block) | 64 KB (FPGA) / 256 KB (sim) | 1 |
 | `0x9000_0000` | External SDRAM | 32 MB (mask `0xFE`) | ~6 on a row hit |
 
@@ -186,7 +187,8 @@ Source assignment in `soc_top.v`:
 |---|---|
 | 1 | UART — the ns16550's `irq`, from IER/IIR |
 | 2 | GPIO rising edge |
-| 3–8 | spare, tied low |
+| 3 | Timer/PWM wraparound (`rtl/soc/wb_timer.v`) |
+| 4–8 | spare, tied low |
 
 Reading `claim` has a **side effect** — it claims the interrupt and marks it
 in service. The bridge below gates the read strobe on the data master, so a
@@ -364,6 +366,33 @@ standard integer Bresenham, which is what makes it hardware-friendly: no
 floating point, no division, one comparison and one or two additions per
 pixel, covering all eight octants and the single-point case with no
 special-casing.
+
+### `wb_timer` — general-purpose timer / PWM, `0x0800_0000`
+
+One channel: a free-running counter, a period register it wraps against,
+and a compare register that drives both a PWM output and a wraparound
+interrupt (PLIC source 3) - the same datapath serves both duties, not two
+separate peripherals. Distinct from `clint`'s own `mtime`, which OpenSBI
+and Linux already treat as spoken for; see `docs/roadmap.md`'s Phase 12
+entry for why repurposing it was never a real option. Zero wait states.
+
+| Offset | Register | Access | Notes |
+|---|---|---|---|
+| `0x00` | CTRL | RW | bit 0 = counter enable, bit 1 = PWM output enable |
+| `0x04` | COUNT | RW | free-running, `0..PERIOD-1`; a write loads it directly |
+| `0x08` | PERIOD | RW | counter wraps to 0 the cycle after reaching `PERIOD-1`; `0` disables wraparound entirely (a plain elapsed-cycle counter) |
+| `0x0C` | COMPARE | RW | PWM output is high while `COUNT < COMPARE` |
+| `0x10` | IE | RW | wraparound interrupt enable |
+| `0x14` | IP | RW | wraparound interrupt pending; write 1 to clear |
+
+One channel deliberately - `rtl/soc/wb_timer.v`'s own header comment has
+the reasoning. The PWM output (`pwm_out` at the SoC level) is not yet
+routed to a real pin: every site on the ULX3S's own header is already
+spoken for (16 for GPIO, 4 for JTAG), and wiring one needs the same real
+board-specific work `docs/roadmap.md`'s Phase 4 (video out) sequenced as
+its own later stage rather than bundling it with proving the datapath
+correct. The counter/compare/interrupt logic underneath is fully proven
+in simulation (`make sim_soc`'s acceptance test) regardless.
 
 ### `wb_periph_bridge`
 

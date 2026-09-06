@@ -85,6 +85,7 @@ module tb_sdramboot;
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(spi_miso),
         .spi_cs_n(spi_cs_n),
+        .pwm_out(),
         .vid_r(), .vid_g(), .vid_b(),
         .vid_de(), .vid_hsync(), .vid_vsync(),
         .sdram_cke(sd_cke), .sdram_cs_n(sd_cs_n),

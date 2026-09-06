@@ -254,6 +254,56 @@ static int test_gpio(void) {
     return ok;
 }
 
+/* General-purpose timer / PWM (rtl/soc/wb_timer.v). PERIOD=100, COMPARE=40
+ * (40% duty, an arbitrary but easy-to-verify value) - small enough that a
+ * busy-wait loop sees more than one full period without costing real
+ * simulation time, large enough that "COUNT advanced" is not indistinguishable
+ * from a single lucky sample.
+ *
+ * Checks, in order: the bus decode itself (registers read back what was
+ * written); COUNT actually advances, the same "read twice, require the
+ * second reading larger" standard test_timer below uses for CLINT's own
+ * mtime; a wraparound genuinely happens (COUNT read *some* cycle after
+ * enough time has passed is smaller than PERIOD, which could only be true
+ * if it wrapped at least once - a stuck-high counter fails this the same
+ * way a stuck-low GPIO_IN fails test_gpio's own two-pattern check); and the
+ * interrupt-pending bit sets on that same wraparound and clears on a
+ * write-1, matching wb_gpio.v's IP register precedent. */
+static int test_gpt(void) {
+    int ok = 1;
+    uint32_t c0, c1;
+
+    TIMER_CTRL    = 0;
+    TIMER_PERIOD  = 100u;
+    TIMER_COMPARE = 40u;
+    TIMER_COUNT   = 0u;
+    TIMER_IE      = 1u;
+    TIMER_CTRL    = TIMER_CTRL_EN | TIMER_CTRL_PWM_EN;
+
+    if (TIMER_PERIOD != 100u)  ok = 0;
+    if (TIMER_COMPARE != 40u)  ok = 0;
+    if (TIMER_CTRL != (TIMER_CTRL_EN | TIMER_CTRL_PWM_EN)) ok = 0;
+
+    c0 = TIMER_COUNT;
+    for (volatile int i = 0; i < 40; i++) { }
+    c1 = TIMER_COUNT;
+    if (c1 <= c0) ok = 0;
+
+    /* Run well past one full period (100 cycles) so a wraparound has
+     * certainly happened, then confirm both that COUNT itself wrapped and
+     * that the interrupt-pending bit the wraparound should have set is
+     * actually set. */
+    for (volatile int i = 0; i < 150; i++) { }
+    if (TIMER_COUNT >= 100u) ok = 0;
+    if (!(TIMER_IP & 1u))    ok = 0;
+
+    TIMER_IP = 1u;                 /* write-1-to-clear */
+    if (TIMER_IP & 1u) ok = 0;
+
+    TIMER_CTRL = 0;                /* leave it stopped */
+    return ok;
+}
+
 /* ---------------------------------------------------------------------
  * CLINT timer
  * ------------------------------------------------------------------- */
@@ -496,6 +546,7 @@ int main(void) {
     check("LR/SC success",         test_lr_sc_success());
     check("LR/SC broken by store", test_lr_sc_failure());
     check("GPIO pin readback",     test_gpio());
+    check("general-purpose timer/PWM", test_gpt());
     check("framebuffer read/write", test_framebuffer());
     check("blit fill engine",      test_blit());
     check("blit copy engine",      test_copy());
