@@ -328,8 +328,11 @@ Opcode `0101111`, `funct3=010` (word-only, all this core implements).
 `LR`(00010)/`SC`(00011)/`AMOSWAP`(00001)/`AMOADD`(00000)/`AMOXOR`(00100)/
 `AMOAND`(01100)/`AMOOR`(01000)/`AMOMIN`(10000)/`AMOMAX`(10100)/
 `AMOMINU`(11000)/`AMOMAXU`(11100); `aq`/`rl` are decoded but functionally
-ignored (this core is single-hart and in-order, so there is nothing for
-them to fence against). The read-modify-write mechanics live in MEM
+ignored (this core is single-hart, so there is nothing for
+them to fence against) - a real single-hart assumption, not just an
+in-order one: `docs/roadmap.md`'s Phase 13 entry names this same gap on
+the multi-hart side, alongside the cache/LR-SC coherence this core also
+has no protocol for yet. The read-modify-write mechanics live in MEM
 (section 2e); decode and hazard handling treat AMO/LR like a load with a
 possible conditional write, described in 2b/2c.
 
@@ -1177,12 +1180,7 @@ is correctly still a read, which is also how Spike models it.
   (`-march=rv32im`, a strict subset of what this core implements).
 - **No hardware PTE A/D auto-update** — a PTE missing Accessed (or Dirty,
   for a store) faults rather than being set automatically by the walker.
-- **PMP is enforced on both cores' data paths, and on `CORE=inorder`'s
-  instruction fetch** (`pmpcfg0-3`/`pmpaddr0-15`, correct WARL/lock
-  semantics, `rv32mi-p-pmpaddr` passes, a real access fault on a denied
-  load/store/AMO/fetch — `software/soc/pmptest.c`, run against whichever
-  core is active) — `CORE=ooo`'s instruction fetch is the one path left.
-  See `docs/roadmap.md`'s PMP entry. **No debug-spec triggers**
+- **No debug-spec triggers**
   (`tselect`/`tdata`) at all. The trigger gap is now the only feature the
   RISC-V architectural test suite fails this core on — see
   `tests/expected-failures.txt`.

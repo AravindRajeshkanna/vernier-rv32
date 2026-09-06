@@ -31,11 +31,17 @@ you are on the wrong connector.
 
 ## What works, and what will not
 
-The Debug Module implements System Bus Access only: it reads and writes
-memory, and it cannot halt the hart or read CPU registers. `gdb` will not work
-— see `rtl/debug/README.md` for why that half was built first.
+The Debug Module does System Bus Access, and, since #79-81, real
+halt/resume/register access over Abstract Command too - both proven
+against the RTL (`make sim_jtag`), neither run against a real adapter, per
+the caveat at the top of this file. **`gdb` will not work regardless of
+either.** OpenOCD's own RISC-V target driver expects the debug spec's
+full model - genuine debug-mode entry, a debug ROM, Program Buffer
+instruction injection - and this Debug Module answers a hand-rolled DMI
+client (`sim/tb_jtag.v`), not a standards-following one. `rtl/debug/README.md`
+has the full account of what was built instead and why.
 
-Reading a word:
+Reading a word from memory (System Bus Access):
 
 ```
 riscv dmi_write 0x10 0x1          ;# dmcontrol.dmactive = 1
@@ -57,6 +63,23 @@ riscv dmi_write 0x3c <value>
 
 `dmi_write 0x10 0x3` sets `ndmreset` alongside `dmactive` and resets
 everything except the debug path itself.
+
+Halting, reading a register, and resuming (Abstract Command):
+
+```
+riscv dmi_write 0x10 0x80000001   ;# dmcontrol: dmactive=1, haltreq=1
+riscv dmi_read  0x11              ;# dmstatus - poll until allhalted (bit 9)
+riscv dmi_write 0x17 0x0022100a   ;# command: read (aarsize=32-bit,
+                                   ;# transfer=1, write=0), regno 0x100a = x10/a0
+riscv dmi_read  0x04              ;# data0 - a0's value
+riscv dmi_write 0x10 0x40000001   ;# dmcontrol: dmactive=1, resumereq=1
+```
+
+Writing a0 instead: `command = 0x0023100a` (same fields, `write=1`), value
+staged into `data0` (`0x04`) *before* the `command` write, not after -
+matching `rtl/debug/dm.v`'s Abstract Command FSM, which latches `data0` at
+the moment it sees the `command` write. GPRs are `regno` `0x1000`-`0x101f`
+(x0-x31); `dcsr` is `0x07b0`, `dpc` is `0x07b1`.
 
 ## Sizes
 

@@ -164,6 +164,7 @@ ident
 initramfs
 injective
 inlined
+inspectable
 interconnect
 iverilog
 kconfig
@@ -213,6 +214,7 @@ nextpnr
 ns
 openFPGALoader
 overclaimed
+parameterizes
 pid
 pinout
 pipelined
@@ -253,6 +255,7 @@ shaders
 snapshotting
 sret
 stdout
+strided
 strobed
 submodule
 subtest

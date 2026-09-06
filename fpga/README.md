@@ -41,7 +41,7 @@ retries seeds and stops at the first close — the normal build closes by seed
 | **All 32 MB of SDRAM** | ✅ **confirmed on silicon** — every one of 8192 rows, 8M unique words, 4,031 ms measured retention. `BOARD=ulx3s85-sdramfull` |
 | **SDRAM as data, on a board** | ✅ **`SDRAM-CHECK: PASS`** — failed first at one word in a thousand; see the clock-phase diagnosis below |
 | Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
-| Video scan-out on a board | ❌ **not routed** — needs a PLL and a TMDS serializer |
+| Video scan-out on a board | ⚠️ **wired, not yet run against a monitor** — encoder, PLL, serializer and real GPDI pins all done and gated in `make verify` (`sim_ulx3s_video`); opt-in via `BOARD=ulx3s85-video` since it costs this board's already-thin timing margin (see `docs/roadmap.md`'s Phase 4 entry) |
 | **Sv32 MMU on a board** | ✅ **confirmed on silicon** — Linux runs its whole linear map through it |
 | **PLIC on a board** | ⚠️ **probed, not fired** — Linux maps 8 interrupts over 2 contexts; no interrupt has been *delivered* on silicon. `BOARD=ulx3s85-plictest` now covers both the GPIO's and the **UART's** source and settles it in one flash |
 | **ns16550 console on a board** | ✅ **confirmed on silicon** — `ttyS0 ... is a 16450`, and the handover from the SBI earlycon is clean |
@@ -78,7 +78,17 @@ Boot HART PMP Count         : 0
 Domain0 Next Address        : 0x90400000
 Domain0 Next Arg1           : 0x91e00000
 Domain0 Next Mode           : S-mode
+```
 
+**`Boot HART PMP Count : 0` above predates PMP entirely** - this capture
+is from before `rtl/csr_file.v` gained real `pmpcfg`/`pmpaddr` storage.
+`software/opensbi/README.md` has the re-capture showing `16` once that
+CSR work landed, and `docs/roadmap.md`'s PMP entry has the full account
+of enforcement on both cores' data path and instruction fetch since -
+none of it has been re-verified on this specific board, only in
+simulation, and this transcript has not been re-run to reflect it.
+
+```
 Linux version 6.18.45 (aravindrajeshkanna@iMac) (riscv64-unknown-elf-gcc
   (g1b306039a) 15.1.0, Homebrew LLD 21.1.8) #2 Sat Aug 22 15:53:52 IST 2026
 OF: fdt: Ignoring memory block 0x80000000 - 0x80040000

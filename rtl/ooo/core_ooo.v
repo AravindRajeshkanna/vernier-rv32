@@ -257,6 +257,30 @@ module core_ooo #(
 
     assign imem_addr = fetch_phys_addr;
 
+    // ---- PMP: instruction fetch (stage 5 - the fetch-side gap stage 3/4
+    // left, named explicitly in their own PRs) ----
+    // Same module, same CSRs, same "not mid-walk, not a faulted walk's
+    // garbage result" gate `PMP_ISSL`/`PMP_HEAD` below use for the data
+    // path, and the identical instance `cpu_core.v` already carries for
+    // `CORE=inorder`'s fetch - `fetch_pmp_pa_valid` mirrors
+    // `head_pmp_pa_valid` exactly, so a page fault (already checked above,
+    // `itlb_fault_now`) always outranks a PMP access fault the same way it
+    // does on the data path and on the inorder core's own fetch. Privilege
+    // is `current_priv` directly, never `effective_priv_for_data` - MPRV
+    // relocates loads/stores only, never fetch. Every fetch is word-sized:
+    // this ISA has no compressed extension, so there is no misalignment
+    // case to gate on either.
+    wire fetch_pmp_pa_valid = !itlb_req || (itlb_ok && !itlb_fault);
+    wire fetch_pmp_fault_raw;
+    pmp PMP_FETCH (
+        .pmpcfg(csr_pmpcfg), .pmpaddr(csr_pmpaddr),
+        .addr(fetch_phys_addr), .size(2'b10),
+        .is_write(1'b0), .is_fetch(1'b1),
+        .priv(current_priv),
+        .fault(fetch_pmp_fault_raw)
+    );
+    wire fetch_pmp_fault_now = fetch_pmp_pa_valid && fetch_pmp_fault_raw;
+
     wire btb_pred_taken;
     wire [31:0] btb_pred_target;
 
@@ -271,23 +295,25 @@ module core_ooo #(
     // =======================================================================
     // IF/ID: the same 4-deep fetch buffer as stage 1c, popped one at a time
     // =======================================================================
-    reg [31:0] fb_pc      [0:FB_DEPTH-1];
-    reg [31:0] fb_instr   [0:FB_DEPTH-1];
-    reg        fb_fault   [0:FB_DEPTH-1];
-    reg        fb_ptaken  [0:FB_DEPTH-1];
-    reg [31:0] fb_ptarget [0:FB_DEPTH-1];
+    reg [31:0] fb_pc        [0:FB_DEPTH-1];
+    reg [31:0] fb_instr     [0:FB_DEPTH-1];
+    reg        fb_fault     [0:FB_DEPTH-1];
+    reg        fb_pmp_fault [0:FB_DEPTH-1];
+    reg        fb_ptaken    [0:FB_DEPTH-1];
+    reg [31:0] fb_ptarget   [0:FB_DEPTH-1];
 
     reg [FB_AW-1:0] fb_head, fb_tail;
     reg [FB_AW:0]   fb_count;
 
     wire fb_empty = (fb_count == 0);
 
-    wire        if_id_valid        = !fb_empty;
-    wire [31:0] if_id_pc           = fb_pc[fb_head];
-    wire [31:0] if_id_instr        = fb_instr[fb_head];
-    wire        if_id_ifetch_fault = fb_fault[fb_head];
-    wire        if_id_pred_taken   = fb_ptaken[fb_head];
-    wire [31:0] if_id_pred_target  = fb_ptarget[fb_head];
+    wire        if_id_valid          = !fb_empty;
+    wire [31:0] if_id_pc             = fb_pc[fb_head];
+    wire [31:0] if_id_instr          = fb_instr[fb_head];
+    wire        if_id_ifetch_fault   = fb_fault[fb_head];
+    wire        if_id_pmp_fetch_fault = fb_pmp_fault[fb_head];
+    wire        if_id_pred_taken     = fb_ptaken[fb_head];
+    wire [31:0] if_id_pred_target    = fb_ptarget[fb_head];
 
     // =======================================================================
     // ID stage: decode - unchanged from stage 1c's slot-0 decoder
@@ -439,18 +465,33 @@ module core_ooo #(
     wire illegal = !valid_opcode || alu_op_illegal || !branch_funct3_ok ||
                    !load_funct3_ok || !store_funct3_ok || csr_illegal || priv_illegal || amo_illegal;
 
-    wire d_fetch_fault    = if_id_ifetch_fault;
-    wire is_trap_event    = illegal || is_ecall || is_ebreak || d_fetch_fault;
-    wire suppress_effects = illegal || d_fetch_fault;
+    // An instruction-fetch page fault is discovered even earlier than any
+    // of the above (in IF, not ID) - it must unconditionally override
+    // whatever `illegal`/ECALL/EBREAK the garbage `if_id_instr` bits of a
+    // faulting fetch would otherwise combinationally decode to, and
+    // suppress every side effect the same way `illegal` already does. A
+    // PMP-denied fetch is discovered the same way, one stage earlier than
+    // decode - `fetch_pmp_fault_now` is already gated on `!itlb_fault` (see
+    // its own definition), so it and `d_fetch_fault` can never both be true
+    // for the same instruction; the explicit priority below just makes that
+    // the same "page fault outranks PMP" ordering the data path and
+    // `cpu_core.v`'s own fetch enforcement use, rather than relying on the
+    // two being mutually exclusive by construction alone.
+    wire d_fetch_fault     = if_id_ifetch_fault;
+    wire d_pmp_fetch_fault = if_id_pmp_fetch_fault;
+    wire is_trap_event    = illegal || is_ecall || is_ebreak || d_fetch_fault || d_pmp_fetch_fault;
+    wire suppress_effects = illegal || d_fetch_fault || d_pmp_fetch_fault;
 
     wire [31:0] ecall_cause = (current_priv == PRIV_M) ? 32'd11 :
                               (current_priv == PRIV_S) ? 32'd9  : 32'd8;
-    wire [31:0] d_trap_cause = d_fetch_fault ? 32'd12 :
-                                illegal      ? 32'd2  :
-                                is_ecall     ? ecall_cause :
-                                is_ebreak    ? 32'd3  : 32'd0;
-    wire [31:0] d_trap_val   = d_fetch_fault ? if_id_pc :
-                                illegal      ? if_id_instr : 32'd0;
+    wire [31:0] d_trap_cause = d_fetch_fault     ? 32'd12 :
+                                d_pmp_fetch_fault ? 32'd1  :
+                                illegal          ? 32'd2  :
+                                is_ecall         ? ecall_cause :
+                                is_ebreak        ? 32'd3  : 32'd0;
+    wire [31:0] d_trap_val   = d_fetch_fault     ? if_id_pc :
+                                d_pmp_fetch_fault ? if_id_pc :
+                                illegal          ? if_id_instr : 32'd0;
 
     wire use_funct7b5 = is_op || (is_opimm && d_funct3 == 3'b101);
     // LUI/AUIPC force ADD (4'b0000) regardless of what `d_funct3` reads:
@@ -513,7 +554,29 @@ module core_ooo #(
     // trap never taken. Found via the SoC acceptance program's own
     // deliberately-illegal-R-type instruction: one fewer trap-handler
     // entry than every other cause of entry accounted for.
-    wire d_is_alu_class = ((is_op && !is_muldiv) || is_opimm || is_lui || is_auipc) && !illegal;
+    //
+    // `&& !d_fetch_fault && !d_pmp_fetch_fault`: the exact same shape of
+    // bug, for a different reason a fetch can carry a trap despite
+    // decoding to a well-formed ALU-class opcode - a faulting fetch's
+    // *bits* are whatever the physical memory or PMP-denied region really
+    // holds, not a synthetic illegal encoding, so nothing here guarantees
+    // they decode as illegal the way most faulting addresses' all-zero
+    // memory happens to (opcode 000_0000 has no valid RV32I major opcode,
+    // which is exactly why the pre-existing ITLB fetch-page-fault path
+    // never tripped this: nothing before this round pointed a fetch fault
+    // at a deliberately well-formed, non-illegal instruction word). PMP
+    // stage 5's own `denied_code[0]` does exactly that on purpose (a real
+    // `addi`, chosen so the test proves a clean non-execution rather than
+    // trusting a decode accident) - which is what finally exercised this,
+    // the same way the illegal-R-type case above was found by hitting it
+    // rather than reasoned out in advance. Without this, a denied fetch
+    // still correctly suppressed the register write (`suppress_effects`)
+    // but the pipeline just carried on to the next instruction instead of
+    // ever reaching the trap handler - no trap, stale `mcause`/`mtval`/
+    // count, the exact symptom a merely-suppressed-but-untrapped access
+    // would produce.
+    wire d_is_alu_class = ((is_op && !is_muldiv) || is_opimm || is_lui || is_auipc) &&
+                           !illegal && !d_fetch_fault && !d_pmp_fetch_fault;
 
     // =======================================================================
     // Renaming: RAT + physical register file
@@ -1969,11 +2032,12 @@ module core_ooo #(
             fb_count <= {(FB_AW+1){1'b0}};
         end else begin
             if (fb_push) begin
-                fb_pc[fb_tail]      <= pc;
-                fb_instr[fb_tail]   <= imem_rdata;
-                fb_fault[fb_tail]   <= itlb_fault_now;
-                fb_ptaken[fb_tail]  <= btb_pred_taken;
-                fb_ptarget[fb_tail] <= btb_pred_target;
+                fb_pc[fb_tail]        <= pc;
+                fb_instr[fb_tail]     <= imem_rdata;
+                fb_fault[fb_tail]     <= itlb_fault_now;
+                fb_pmp_fault[fb_tail] <= fetch_pmp_fault_now;
+                fb_ptaken[fb_tail]    <= btb_pred_taken;
+                fb_ptarget[fb_tail]   <= btb_pred_target;
                 fb_tail             <= fb_tail + {{(FB_AW-1){1'b0}}, 1'b1};
             end
             if (fb_pop) fb_head <= fb_head + {{(FB_AW-1){1'b0}}, 1'b1};

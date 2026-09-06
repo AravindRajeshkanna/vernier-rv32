@@ -133,9 +133,7 @@ static void s_mode_main(void)
     uint32_t wdeny_addr = (uint32_t)(uintptr_t)&wdeny_word;
     uint32_t rdeny_addr = (uint32_t)(uintptr_t)&rdeny_word;
     uint32_t allow_addr = (uint32_t)(uintptr_t)&allow_word;
-#ifndef CORE_OOO
     uint32_t xdeny_addr = (uint32_t)(uintptr_t)&denied_code[0];
-#endif
     uint32_t dummy;
 
     put_str("  reached S-mode\n\n");
@@ -167,15 +165,11 @@ static void s_mode_main(void)
      *         failed to deny it, `denied_code[0]` (`addi a0, zero, 1`)
      *         would run first and overwrite it before the same `ret`.
      *
-     *         CORE_OOO only enforces PMP on its data path so far
-     *         (docs/roadmap.md's PMP entry) - fetch-side enforcement is
-     *         CORE=inorder only this round, a real and currently-permanent
-     *         asymmetry between the two cores, not something to paper
-     *         over by skipping this test silently. Stated in the output
-     *         either way, so a CORE_OOO run's shorter check list reads as
-     *         a documented gap rather than four checks that quietly
-     *         stopped existing. */
-#ifndef CORE_OOO
+     *         Runs identically on both cores - CORE_OOO's fetch buffer
+     *         (rtl/ooo/core_ooo.v) carries the same PMP_FETCH instance and
+     *         fault-priority ordering CORE=inorder's IF/ID pipeline already
+     *         had, closing the asymmetry the previous round of this file
+     *         (and docs/roadmap.md's PMP entry) documented as still open. */
     trap_arm(1);
     {
         register uint32_t a0_reg asm("a0") = 0xDEADBEEFu;
@@ -193,9 +187,6 @@ static void s_mode_main(void)
         report("denied fetch: mtval is the faulting address", TRAP_MTVAL == xdeny_addr);
         report("denied fetch: instruction never ran", ran_result == 0xDEADBEEFu);
     }
-#else
-    put_str("  denied fetch: skipped - CORE_OOO has no fetch-side PMP yet\n");
-#endif
 
     /* ---- 4. the open region still works normally - no trap armed, so an
      *         unexpected fault here is caught by crt0_ram.S's own loud,

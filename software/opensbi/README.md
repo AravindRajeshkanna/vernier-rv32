@@ -64,9 +64,8 @@ assumed: a full `make sim_linux` under this exact enforcement reaches
 `VERNIER-RV32-LINUX-BOOT-OK` with an identical trap profile to before
 enforcement existed (same first trap, `mcause=2` at the same `pc`, an
 unrelated firmware feature-probe) and zero access faults anywhere in the
-run. `docs/roadmap.md`'s PMP entry has the full account, including why
-`CORE=ooo`'s instruction fetch is still explicitly unenforced (its data
-path and `CORE=inorder`'s instruction fetch are not).
+run. `docs/roadmap.md`'s PMP entry has the full account - both cores now
+enforce PMP on their data path and their instruction fetch.
 
 ## The five defects between "builds" and "boots"
 

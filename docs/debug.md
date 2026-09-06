@@ -82,10 +82,15 @@ hanging before its console comes up, a boot ROM stopping with no output, a
 kernel dying between `earlycon` and `ttyS0`. In all of those the interesting
 state is sitting in memory and there has been no way to look at it.
 
-**What it cannot do:** halt the hart, read its registers, or set a breakpoint.
-The Debug Module implements System Bus Access only, and `rtl/debug/README.md`
-explains why that half first — the other half lands on the fetch and writeback
-paths of a design with almost no timing margin.
+**What it cannot do:** attach a real `openocd`+`gdb`, or set a breakpoint.
+Halt, resume, single-step and register access all work now (`CORE=inorder`,
+simulation only) — over Abstract Command, the real DMI wire, not a
+simulation shortcut — but deliberately skip the RISC-V debug spec's full
+debug ROM/Program Buffer model, which is what a real debugger needs and
+what would land on the fetch and writeback paths of a design with almost
+no timing margin. `CORE=ooo` has none of this yet, System Bus Access
+only. `rtl/debug/README.md` has the full account of what exists and why
+the harder half was scoped out.
 
 `make sim_jtag` drives the four pins the way an adapter does and is gated in
 `make verify`.
@@ -124,11 +129,15 @@ so treat a surprising reading as a question about the probe first:
 
 ## OpenOCD/gdb: still not implemented
 
-**Update:** the two pieces below marked done were built after the "three
-pieces" analysis in this section was first written, and shipped the JTAG TAP
-and Debug Module (#34). The section is kept as-is rather than rewritten,
-because the remaining gap (item 3) is exactly the reasoning that was already
-here — only the status of items 1 and 2 changed.
+**Update (this round):** items 2 and 3 below are now mostly done too -
+Abstract Command register access and hart control (halt/resume/single-step)
+both shipped, `CORE=inorder`, simulation-only (#79, #80, #81). The
+remaining gap is narrower than the original "three pieces" framing: not
+"debug mode in the core doesn't exist," but specifically that it was built
+via a deliberate shortcut (see below) that a real `openocd`+`gdb` cannot use.
+Kept as a running record rather than rewritten from scratch, matching how
+the first update (JTAG TAP + Debug Module, #34) was handled - only the
+status changes each time, not the reasoning already here.
 
 A working `openocd` → `gdb` flow needs three pieces:
 
@@ -137,45 +146,46 @@ A working `openocd` → `gdb` flow needs three pieces:
    debug-transport registers `dtmcs` and `dmi`, crossing from the JTAG clock
    domain into the core clock domain through `rtl/debug/dmi_cdc.v`.
 
-2. ~~**A Debug Module**~~ — **partly done.** `rtl/debug/dm.v` implements the
-   `dmcontrol`/`dmstatus`/DMI register set and System Bus Access (a fourth
+2. ~~**A Debug Module**~~ — **done.** `rtl/debug/dm.v` implements the
+   `dmcontrol`/`dmstatus`/DMI register set, System Bus Access (a fourth
    Wishbone master that reads and writes memory without the hart's
-   cooperation). It does not implement the program buffer or abstract-command
-   register/memory access, which is what the rest of this section is about.
+   cooperation), and now Abstract Command register access too - `regno`/
+   `write`/`data0` over the real DMI wire, not a simulation shortcut. No
+   program buffer (see item 3 - nothing here executes instructions in debug
+   mode, so there is nothing for one to feed).
 
-3. **Debug mode in the core** — and this is the part that reaches into
-   `cpu_core.v` rather than bolting on beside it:
-   - `dcsr` and `dpc` CSRs, and a fourth privilege state (debug mode) that is
-     not one of M/S/U.
-   - `EBREAK` conditionally entering debug mode instead of trapping.
-   - A `dret` instruction.
-   - A halt request that stops the pipeline cleanly at an instruction
-     boundary, and a resume that restarts it — including getting the
-     in-flight EX/MEM state right, which is precisely where this core's
-     trickiest existing bugs have lived.
-   - Single-step, which means retiring exactly one instruction and halting
-     again.
+3. ~~**Debug mode in the core**~~ — **halt/resume/register access/single-step
+   are done; the RISC-V debug-spec model they were built instead of is
+   not, on purpose.** `rtl/debug/README.md` has the full design: halt means
+   freezing pipeline admission in place rather than entering a real fourth
+   privilege state, `dcsr`/`dpc` are private registers outside
+   `csr_file.v`'s normal CSR path rather than spec-visible CSRs, `EBREAK`
+   still traps rather than conditionally entering debug mode, and there is
+   no `dret` or debug ROM - resume just un-freezes admission where execution
+   already was. This sacrifices spec purity for dramatically lower risk to
+   the timing-critical fetch path, the same tradeoff `synth_ecp5.sh`'s own
+   thin timing margin (`fpga/README.md`) already made unattractive to
+   spend on a full debug-mode implementation. **What this means
+   concretely: a real `openocd` cannot attach here.** OpenOCD's own RISC-V
+   target implementation expects the spec's debug-mode entry/exit and
+   Program Buffer, neither of which exists - this Debug Module answers a
+   hand-rolled DMI client (`sim/tb_jtag.v`), not a standards-following one.
 
 The debug-spec **trigger module** (`tselect`/`tdata1`/`tdata2`, hardware
 breakpoints) is the same feature family, which is why
 `rv32mi-p-breakpoint` is the one riscv-tests failure attributable to it —
 see `tests/expected-failures.txt`.
 
-### Why it was not done in this pass
+### Why the remaining gap was not closed
 
-It is a milestone, not a task. Item 3 alone is comparable in size to the M/S/U
-privilege work, and it touches the pipeline-control logic that the rest of
-this round's verification work was busy proving correct. Doing both at once
-would have meant the new tests were chasing a moving target.
-
-There is also an ordering argument. The value of JTAG is interactive
-debugging on real hardware — and this design does not fit on the FPGA target
-yet (`fpga/README.md`: the core alone is ~55% over the largest iCE40's LUT
-budget, and the full SoC does not finish synthesis). Until that is fixed,
-JTAG would be debugging a simulation, which the tracer and co-simulation
-already do more thoroughly than a `gdb` prompt would: they check every
-retired instruction against a reference model, which no interactive session
-does.
-
-The sequence that makes sense is: make it fit, then add the debug module,
-then attach OpenOCD to real silicon.
+A real `openocd`+`gdb` flow needs the full debug-spec model item 3 was
+built without: genuine debug-mode entry (via `EBREAK` or a halt request),
+a debug ROM the core vectors into, and Program Buffer instruction
+injection. That is a second, harder round on top of the one already
+done, not a small extension of it, and it reaches into the same
+timing-critical fetch/writeback logic `fpga/README.md`'s own Fmax numbers
+show has little margin to spare - `synth_ecp5.sh` closes on only 2 of 6
+placement seeds today, before adding anything. Cheaper, real value came
+first: halt/resume/register access already turns "a board that is not
+printing" into something inspectable without a debugger attached at all,
+the same problem this file's own probes exist to solve for simulation.

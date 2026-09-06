@@ -58,7 +58,7 @@ board prints the same thing.
 | console handover from `sbi0` to `ttyS0` | ✅ |
 | `Run /init as init process`, and `/init` printing | ✅ |
 | **On hardware** | ✅ ULX3S / LFE5U-85F — [the transcript](../../fpga/README.md#linux-on-the-board) |
-| **On the wide core** (`CORE=ooo`) | ❌ boots the whole kernel, then `Failed to execute /init (error -14)` — see below |
+| **On the wide core** (`CORE=ooo`) | ✅ **also reaches userspace** — `VERNIER-RV32-LINUX-BOOT-OK`, root-caused and fixed; see below |
 
 The `isa` line is the point of printing `/proc/cpuinfo`: it is what the kernel
 parsed out of `dts/soc.dts` and believed, so a boot that gets here has proved
@@ -66,6 +66,17 @@ the device tree was read *and* acted on. `zaamo`/`zalrsc` are the kernel
 spelling out what `a` decomposes into.
 
 ## The wide core: everything but `execve`
+
+**RESOLVED - root-caused and fixed; `make sim_linux CORE=ooo` now reaches
+`/init` and prints `VERNIER-RV32-LINUX-BOOT-OK`, all 6,335 UART bytes sent
+in order.** `docs/roadmap.md`'s "Stage 1d was built anyway" section,
+Update 15, has the full account - the failure point moved several times
+as each fix in this section's own history landed (past `execve` itself,
+to a supervisor store fault, to a corrupted `rwsem` word, and finally to
+a real AMO issue/completion-ordering bug in `core_ooo.v`, fixed there).
+Kept below exactly as it was written, as the record of what was chased
+and found on the way to that fix, not because any of it is still the
+current failure.
 
 `make sim_linux CORE=ooo` had never been run. It boots almost all of the way:
 
