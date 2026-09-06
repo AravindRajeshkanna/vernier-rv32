@@ -204,6 +204,17 @@ module ulx3s_top #(
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n),
         .gpio({gn[1:0], gp[13:0]}),
 
+        // Deliberately not routed to a real pin yet - every `gn`/`gp` site
+        // this header exposes is already spoken for (16 for GPIO, 4 for
+        // JTAG), the same "encode/PLL/serialize first, real pins as a later
+        // stage" sequencing docs/roadmap.md's Phase 4 entry already used for
+        // video out. Left unconnected: synthesis strips the whole timer's
+        // PWM output logic (the counter/compare/interrupt path stays, since
+        // nothing else here is conditioned on this port), which is
+        // correct for a peripheral whose interrupt-driven "general-purpose
+        // timer" half is the proven part this round.
+        .pwm_out(),
+
         .jtag_tck(gn[2]), .jtag_tms(gn[3]), .jtag_tdi(gn[4]),
         .jtag_tdo(jtag_tdo), .jtag_tdo_oe(),
 

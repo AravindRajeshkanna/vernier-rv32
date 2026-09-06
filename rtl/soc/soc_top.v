@@ -88,6 +88,9 @@ module soc_top #(
     input  wire spi_miso,
     output wire spi_cs_n,
 
+    // ---- general-purpose timer / PWM, rtl/soc/wb_timer.v ----
+    output wire pwm_out,
+
     // ---- video scan-out ----
     // A pixel stream, not a display interface: syncs, data-enable and RGB888,
     // all in this module's own clock domain. Driving a real monitor means
@@ -119,11 +122,12 @@ module soc_top #(
 
     output wire trap
 );
-    localparam NUM_SLAVES = 9;
+    localparam NUM_SLAVES = 10;
 
     // Slave index assignment (also the bit position in the vectors below).
     localparam S_ROM = 0, S_CLINT = 1, S_PLIC = 2, S_UART = 3,
-               S_GPIO = 4, S_SPI = 5, S_FB = 6, S_RAM = 7, S_SDRAM = 8;
+               S_GPIO = 4, S_SPI = 5, S_FB = 6, S_RAM = 7, S_SDRAM = 8,
+               S_TIMER = 9;
 
     // addr[31:24] each slave answers to, and which of those bits are
     // compared, packed 8 bits per slave. A mask of 0xFF is one 16 MB window.
@@ -142,6 +146,7 @@ module soc_top #(
     // Widening the global decode instead would have shrunk every peripheral
     // window to buy this one slave more room.
     wire [NUM_SLAVES*8-1:0] s_base = {
+        8'h08, // S_TIMER
         8'h90, // S_SDRAM
         8'h80, // S_RAM
         8'h07, // S_FB
@@ -153,6 +158,7 @@ module soc_top #(
         8'h00  // S_ROM
     };
     wire [NUM_SLAVES*8-1:0] s_mask = {
+        8'hFF, // S_TIMER
         8'hFE, // S_SDRAM  0x90-0x91, 32 MB
         8'hFF, // S_RAM
         8'hFF, // S_FB
@@ -430,8 +436,9 @@ module soc_top #(
     localparam NUM_IRQ = 8;
     wire        gpio_irq;
     wire        uart_irq;
-    wire [NUM_IRQ-1:0] irq_sources = {5'b0, 1'b0, gpio_irq, uart_irq};
-    //                                spare  src3  src2      src1
+    wire        timer_irq;
+    wire [NUM_IRQ-1:0] irq_sources = {5'b0, timer_irq, gpio_irq, uart_irq};
+    //                                spare  src3        src2      src1
     // Source 1 was reserved for the UART and tied low for as long as the UART
     // had no interrupt to raise. rtl/uart.v is an ns16550 now and does.
 
@@ -515,5 +522,13 @@ module soc_top #(
         .wb_dat_r(s_dat_r[32*S_SPI +: 32]), .wb_ack(s_ack[S_SPI]),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n)
+    );
+
+    wb_timer TIMER (
+        .clk(clk), .rst(rst_soc),
+        .wb_cyc(s_cyc), .wb_stb(s_stb[S_TIMER]), .wb_we(s_we),
+        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_dat_r(s_dat_r[32*S_TIMER +: 32]), .wb_ack(s_ack[S_TIMER]),
+        .pwm_out(pwm_out), .irq(timer_irq)
     );
 endmodule

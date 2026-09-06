@@ -644,7 +644,7 @@ The short version:
 | 9 | DDR | blocked on a board with DDR (this project's board is SDR-only) |
 | 10 | GPU — 2D acceleration | ✅ fill, overlap-safe copy, and Bresenham line drawing all shipped, extending the existing framebuffer's Wishbone slave |
 | 11 | DSP | blocked on a human decision — F/D float, packed SIMD, or a coprocessor, not yet picked |
-| 12 | Peripheral interfaces — I2C, timers, PWM | GPIO/SPI/UART already real; I2C, a general-purpose timer, and PWM are the open items |
+| 12 | Peripheral interfaces — I2C, timers, PWM | ✅ GPIO/SPI/UART already real; the general-purpose timer/PWM peripheral shipped too (one channel). I2C's own shape - a real hardware master versus a bit-banged GPIO driver - is the remaining open item |
 | 13 | Multi-core: both cores, one SoC | assessed, not started — the PLIC and interconnect are closer to ready than not, but there is no cache/reservation coherence protocol of any kind yet, which is the real open question |
 
 Before any of Phase 5's RTL, the SoC now builds under **Verilator** as well as

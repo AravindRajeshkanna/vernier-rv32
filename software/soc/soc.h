@@ -34,6 +34,7 @@
 #define GPIO_BASE   0x05000000u
 #define SPI_BASE    0x06000000u
 #define FB_BASE     0x07000000u
+#define TIMER_BASE  0x08000000u
 #define RAM_BASE    0x80000000u
 /* External SDRAM. Must match the S_SDRAM base byte in rtl/soc/soc_top.v and
  * the ORIGIN addresses in software/soc/link_sdram.ld. The window is the
@@ -119,6 +120,16 @@
 
 #define BOOT_STAGE_SET(s) \
     (GPIO_OUT = (GPIO_OUT & ~BOOT_STAGE_MASK) | ((s) & BOOT_STAGE_MASK))
+
+/* ---- General-purpose timer / PWM (rtl/soc/wb_timer.v) ---- */
+#define TIMER_CTRL    REG32(TIMER_BASE + 0x00)
+#define TIMER_COUNT   REG32(TIMER_BASE + 0x04)
+#define TIMER_PERIOD  REG32(TIMER_BASE + 0x08)
+#define TIMER_COMPARE REG32(TIMER_BASE + 0x0C)
+#define TIMER_IE      REG32(TIMER_BASE + 0x10)
+#define TIMER_IP      REG32(TIMER_BASE + 0x14)
+#define TIMER_CTRL_EN     (1u << 0)
+#define TIMER_CTRL_PWM_EN (1u << 1)
 
 /* ---- SPI (rtl/soc/wb_spi.v) ---- */
 #define SPI_CTRL   REG32(SPI_BASE + 0x00)
