@@ -119,8 +119,9 @@ exercise rather than a way of dodging it:
 
 No `--pmpregions` override: this core now implements the same 16 regions
 Spike defaults to (see docs/roadmap.md's PMP entry) — the pmpcfg/pmpaddr
-storage is real and matches Spike trace for trace, though nothing enforces
-it against an access path yet.
+storage is real and matches Spike trace for trace, and both cores now
+enforce it against their data path and instruction fetch, not just store
+and read it back.
 
 **What the four fields cannot contain.** A store writes no register, so `rd`
 and `value` are empty for one and the comparison reduces to "a store retired

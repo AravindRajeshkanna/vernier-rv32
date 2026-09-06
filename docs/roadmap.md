@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | — | Never mentioned anywhere in this repo, not even as "deferred." Unlike PMP (named as a known gap), this is a silent single-hart assumption — the PLIC has exactly one hart's worth of M/S contexts wired |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. A real assessment found the PLIC and interconnect closer to ready than not, but the memory subsystem has no cache/reservation coherence story at all today — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -2378,11 +2378,20 @@ EEMBC-certified scores.
 
 The framebuffer works and is verified by capturing a frame off the scan-out and
 comparing it back (`make sim_video`), and the CPU's path to it is covered on
-hardware by the acceptance test. **Nothing is routed to the HDMI pins.**
+hardware by the acceptance test.
 
-That needs a PLL and a TMDS serializer, neither of which exists. It is
-independent of every other phase, which makes it a good one to pick up in
-isolation.
+**Update: all four stages below are now done - the encoder, the PLL, the
+serializer, and real GPDI pin wiring (`fpga/video_out.v`,
+`fpga/constraints/ulx3s.lpf`), gated in `make verify` via `sim_ulx3s_video`
+and synthesizing/routing for real via an opt-in `BOARD=ulx3s85-video`
+target (opt-in because it costs this project's primary board target real
+timing margin, measured below - not because anything is unfinished).**
+The one thing left is the "done when" below, unchanged since this section
+was first written: nothing has run against a real monitor yet. This
+opening paragraph used to say nothing was routed to the HDMI pins at
+all - kept accurate here rather than left to contradict the stage-by-stage
+account immediately below, which was updated each time but never fed back
+up to this summary.
 
 **Done when:** a monitor shows the colour ramp the acceptance test leaves in
 the framebuffer.
@@ -3511,6 +3520,117 @@ protocol timing check standing in for one.
 
 ---
 
+## Phase 13 — Multi-core: both cores, one SoC
+
+**The question this phase answers: `rtl/cpu_core.v` and
+`rtl/ooo/core_ooo.v` are two complete, independently-verified core
+implementations, but `CORE=inorder`/`CORE=ooo` make them mutually
+exclusive at build time - only one hart exists in any given bitstream
+or simulation. Could both be instantiated at once, as two harts sharing
+this SoC's bus and peripherals, with Linux booting SMP across them?** A
+real assessment was done this round rather than assumed either way -
+close reading of the interconnect, PLIC, CLINT, boot ROM, and the
+OpenSBI/Linux SMP path, not a guess from the architecture alone.
+
+**More already points toward "yes" than the silent single-hart
+assumption the previous table entry here implied.** `rtl/plic.v`
+already parameterizes `NUM_CONTEXTS` (currently 2, wired to hart 0's
+M-mode and S-mode) with per-context enable/threshold/claim arrays and a
+standard strided memory map - bumping it to 4 and wiring two more `eip`
+lines to a second `csr_file` instance is close to plug-in work, not a
+redesign. `rtl/soc/wb_interconnect.v`'s slave-side decode is already
+parameterized (`NUM_SLAVES`), and its master-side port list has grown
+twice before by the same hand-edited pattern (the page-table-walker,
+then the debug module) - a fifth and sixth master (a second core's
+fetch/data ports) is mechanically the same kind of change. OpenSBI's
+own `PLATFORM=generic` FDT-driven boot (`software/opensbi/README.md`)
+has no repo-local hart-count assumption baked in; it reports whatever
+`dts/soc.dts` describes.
+
+**What is genuinely just plumbing, enumerated rather than waved at:**
+
+- `rtl/clint.v` has one global `mtimecmp`/`msip`, no hart-ID indexing
+  anywhere - needs the standard per-hart-indexed arrays and address
+  striding a real CLINT uses, built from zero rather than widened from
+  an existing array (unlike the PLIC's head start above).
+- `rtl/csr_file.v`'s `mhartid` is a `localparam` hardwired to 0, not a
+  module parameter - a second instance needs its own hart ID, and
+  nothing about the module's structure resists that, it simply has not
+  been asked to vary yet.
+- `software/soc/bootrom.c` has no `mhartid` read anywhere and no
+  spin-wait/mailbox gate - every existing test implicitly assumes it is
+  the only thing executing from reset. The standard RISC-V SMP pattern
+  (hart 0 proceeds, every other hart parks on a mailbox until released)
+  does not exist here in any form yet.
+- `dts/soc.dts` declares one `cpu@0` node; a second hart needs its own
+  `cpu@1` and interrupt controller node, and `software/linux/vernier_rv32.config`
+  currently has `CONFIG_SMP` explicitly unset.
+
+**The one item on this list that is a real redesign, not more of the
+same wiring: this SoC has no cache or reservation coherence protocol in
+any form, because it has never needed one.** Two separate gaps, both
+found by reading the code that would have to change, not inferred from
+the architecture in the abstract:
+
+- `rtl/soc/cpu_wb.v`'s write-through D-cache is explicitly commented as
+  correct only in a single-master system - nothing snoops the bus for a
+  second master's writes to a line either core has cached, and
+  `rtl/soc/wb_ram.v`/`rtl/soc/wb_sdram.v` have no invalidation path to
+  offer one.
+- `rtl/cpu_core.v`'s LR/SC reservation is a private per-core register,
+  invalidated only by that same core's own subsequent trap/SC/write.
+  Two harts each holding a reservation on the same address, invisible
+  to each other, is a direct violation of LR/SC's cross-hart contract,
+  not a performance gap.
+
+**A third, easy-to-miss consequence of the same root cause:**
+`wb_interconnect.v`'s fixed-priority arbitration (debug > data > walker
+> fetch) is not just a scheduling policy - its header documents that
+AMO atomicity depends on there being exactly *one* data master, which
+holds the bus continuously across an AMO's read and write phases. A
+second, co-equal-priority data master can win arbitration in the idle
+gap between those two phases and race the same address, which breaks
+atomicity independently of the cache-coherence question above. Adding a
+second hart's data port is not just "a fifth wire in the mux" the way
+the walker and debug ports were - the priority scheme itself needs to
+account for an in-flight AMO owning the bus for its whole
+read-modify-write, not just its current single cycle-by-cycle grant.
+
+**Why this is stated as "plumbing plus one real redesign" rather than
+scoped further this round.** Every other phase in this file has been
+substantially "wire existing, verified pieces together" work - PMP's
+own module predates every stage that enforced it, GPU stages extend an
+existing Wishbone slave, Phase 12's peripherals follow an established
+convention. Coherence is different in kind: there is no existing,
+verified-in-isolation module to wire in, because nothing in this
+project has ever had to reason about two masters observing the same
+memory. Picking a shape (a real snoop/invalidation path into the
+interconnect, dropping to no per-core caching as a simpler
+correctness-first step, or something else) is a design decision on its
+own, not a known quantity waiting to be assembled - the honest thing is
+to name it as the load-bearing open question rather than pre-committing
+to an answer before anyone has weighed the tradeoff.
+
+**Also worth naming plainly: this would be a heterogeneous multi-core
+system, not the usual "replicate one core N times" shape most SMP
+designs are.** Running the in-order and out-of-order implementations as
+two hardware-different harts under one Linux image means real per-hart
+timing asymmetry (different IPC, different latency to the same
+peripheral) that a kernel built assuming identical cores does not
+usually have to reason about, even though Linux's own heterogeneous
+scheduling support (big.LITTLE and similar) is real precedent that this
+is not unprecedented in principle.
+
+**Done when:** a coherence approach is picked and stated as a decision
+(not a default), both harts are visible to OpenSBI/Linux via the device
+tree, `CONFIG_SMP=y` boots to userspace with both harts detected and
+idle-looping correctly (not just hart 0 alive), and a directed test
+demonstrates the specific hazard the chosen coherence approach claims
+to close - an LR/SC pair split across both harts behaving per spec, at
+minimum.
+
+---
+
 ## Beyond the phases
 
 **PMP**, which [SECURITY.md](../SECURITY.md) lists as a known gap rather than
@@ -3970,6 +4090,111 @@ therefore a pre-existing, tree-wide blocker on real synthesis for
 measurable, and this stage ships with that checklist item honestly
 unticked rather than guessed at. Resolving the deeper crash is its own,
 separate round.
+
+**Stage 5: enforcement on `CORE=ooo`'s instruction fetch, closing the
+asymmetry stage 3/4 both named as still open.** `rtl/ooo/core_ooo.v`
+gains a fourth `pmp` instance, `PMP_FETCH`, checked against
+`fetch_phys_addr` with `.is_fetch(1'b1)` and `.priv(current_priv)` -
+byte-for-byte the same instantiation `cpu_core.v` already carries for
+`CORE=inorder`'s fetch, not a new design. The one real adaptation is
+where the fault has to be *carried*: `cpu_core.v` has a single `if_id`
+pipeline register between IF and ID, but `core_ooo.v` fetches into a
+4-deep buffer (`fb_pc`/`fb_instr`/`fb_fault`/...) that can hold several
+outstanding fetches before ID ever sees the oldest one - so
+`fetch_pmp_fault_now` is captured into a new parallel array,
+`fb_pmp_fault[fb_tail]`, at the exact same `fb_push` moment
+`fb_fault[fb_tail] <= itlb_fault_now` already captures the page-fault
+case, and read back the same way at the buffer's head
+(`if_id_pmp_fetch_fault = fb_pmp_fault[fb_head]`). ID-stage priority is
+unchanged from `cpu_core.v`'s own ordering: page fault (cause 12)
+outranks PMP (cause 1), enforced both by construction
+(`fetch_pmp_pa_valid` already excludes a faulted or in-flight
+translation) and by explicit ternary order, matching the reasoning
+`cpu_core.v`'s own comment gives for doing both rather than relying on
+mutual exclusivity alone.
+
+**`software/soc/pmptest.c` lost its `#ifndef CORE_OOO` entirely, rather
+than gaining a second, parallel enforcement check.** The four
+fetch-denial assertions stage 4 wrote already say exactly what this
+core needs proven (exactly one trap, cause 1, correct `mtval`, the
+denied instruction never ran) - nothing about them was inorder-specific,
+so the honest fix for "this core doesn't enforce this yet" was always
+going to be deleting the guard once it stopped being true, not writing
+a second copy. The Makefile followed the same direction: `pmptest.c`'s
+*C source* no longer differs by core at all, so `$(CORE_DEFINES)`
+reaching its compile (and `verify_ooo`'s extra `rm -f` for its derived
+`.elf`/`.bin`/`.hex`, both added specifically for stage 4's asymmetry)
+are reverted along with it - carrying either forward would have been
+solving a problem that no longer exists.
+
+**A real, pre-existing `core_ooo.v` bug, found by this stage's own test
+rather than introduced by it.** The first run of the ported fetch-denial
+check failed all three trap-identity assertions while still passing
+"instruction never ran" - a denied fetch was correctly kept from
+retiring its register write, but no trap was ever taken at all
+(`TRAP_COUNT`/`TRAP_MCAUSE`/`TRAP_MTVAL` all stayed at the *previous*
+check's values). `d_is_alu_class` - which routes an instruction through
+Class B's fast ALU retirement instead of the ROB-head synchronous-trap
+check - already excluded `illegal` for exactly this reason (its own
+comment documents an identical bug, found earlier, for an illegal
+R-type opcode), but never excluded `d_fetch_fault`/`d_pmp_fetch_fault`:
+the *bits* of a faulting fetch are whatever the denied region or
+unmapped memory really holds, not a synthetic illegal encoding, so
+nothing guaranteed they decode as illegal the way most fetch-fault targets'
+all-zero memory happens to (opcode `000_0000` matches no valid RV32I
+major opcode). Every fetch-fault test before this one pointed at
+memory that decoded that way by accident; `denied_code[0]` is
+deliberately a real, well-formed `addi` (chosen so the test proves
+clean non-execution rather than trusting a decode accident), which is
+what finally exercised the gap. Fixed the same way the `illegal` case
+was: `d_is_alu_class` now excludes `d_fetch_fault`/`d_pmp_fetch_fault`
+too. This also means the pre-existing ITLB instruction-fetch page-fault
+path had the identical latent gap for any implementation that ever
+pointed a faulting fetch at a non-illegal-shaped instruction word - and,
+caught only after this stage looked like it was ready to ship, it turns
+out something already did.
+
+**Correction, found by CI rather than by this stage's own gate: it was
+already reachable, and already silently wrong, on `CORE=ooo` before this
+stage touched anything.** `sim/tb_top.v`'s own Part 13 - `mret`-into-U-mode
+landing on a supervisor-only page, an existing, unrelated test predating
+this PR entirely - is exactly this shape: the faulting instruction there
+also decodes non-illegal, confirmed by instrumenting `d_fetch_fault`
+directly rather than assumed. CI's flat "RTL (no toolchain)" job flagged
+it first, as a hard-coded `BTB mispredict_count` mismatch (`expect 54:
+53`) this branch had not touched; a clean `main` checkout reproduced 54
+(matching), isolating the shift to this stage's own `d_is_alu_class`
+change by bisection, not guesswork. With the trap now genuinely firing
+for Part 13 too, the CPU redirects to the handler immediately instead of
+incorrectly falling through the fault first (measured, not derived: 660
+-> 657 out-of-order ALU issues, 19580 -> 19581 retired) - fewer dynamic
+control-flow decisions, one fewer mispredict. `sim/tb_top.v`'s own
+`EXPECT_MISPREDICTS` has exactly this precedent already, from an earlier,
+narrower version of the same bug (excluding `illegal` alone): "a real
+control-flow change anywhere in program.hex will legitimately move this
+number, at which point it should be recomputed, not bumped blindly."
+Recomputed here the same way, with the mechanism behind the new number
+stated in the same comment, not just the number itself. `CORE_OOO` and
+the in-order baseline now happen to land on the same count (53) - kept as
+two separate `ifdef` arms rather than collapsed into one, since nothing
+about *why* they agree guarantees they still will after the next
+legitimate change to either core.
+
+**Verified against the full trusted gate on both cores**, matching
+every prior PMP stage's own standard of evidence - simulation only, the
+same scope every stage since stage 2 has confirmed.
+
+**No new Fmax claim made or needed.** Stage 4 already disclosed that
+real FPGA synthesis is blocked tree-wide by a separate, pre-existing
+yosys crash (`std::out_of_range: vector` in `wb_framebuffer.v`, two
+entries up in this same "Beyond the phases" section) unrelated to any
+PMP work - that blocker is unchanged by this stage and not re-litigated
+here.
+
+`SECURITY.md`, `docs/architecture.md`, `docs/comparison.md`,
+`docs/soc.md` and `software/opensbi/README.md` all named the
+`CORE=ooo`-fetch gap explicitly as of stage 4; all five are corrected
+here rather than left describing a gap that no longer exists.
 
 **Documentation had no gate at all.** Every other layer of this project -
 RTL, firmware, the ISA suite, formal proofs - runs through `make verify` or

@@ -33,9 +33,11 @@ compiled C from block RAM on a real ECP5.
 Two things still need a board and have not got one to work yet: **the SD
 card** (a 64 GB SDXC card never answers CMD0 — cards above 32 GB are not
 required to implement SPI mode, and the test bitstream sidesteps it by
-preloading RAM from the bitstream) and **video scan-out**, which is generated
-and simulated but not routed to the HDMI pins, since that needs a PLL and a
-TMDS serializer neither of which exists yet. **Linux boots to userspace on the
+preloading RAM from the bitstream) and **video scan-out**, which is generated,
+simulated, and now fully wired to the real GPDI pins (encoder, PLL,
+serializer — `fpga/video_out.v`, opt-in via `BOARD=ulx3s85-video` since it
+costs this board's thin timing margin), but has not yet run against an
+actual monitor. **Linux boots to userspace on the
 board** — 6.18.45 rv32ima, through OpenSBI, out of 32 MB of external SDRAM,
 with the image sent over the serial line by the boot ROM's own loader. The
 ["Can this run Linux?"](#5-then-install-linux-and-test-cpu-performance--the-honest-picture)
@@ -618,13 +620,19 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | ✅ **built and measured, all the way through 1d** — `rtl/ooo/core_ooo.v` now has register renaming, an 8-entry reorder buffer and general out-of-order issue, `make verify_ooo` green. CoreMark says the honest thing: 448,728 cycles, barely faster than the in-order core (453,844) and slower than the narrower 1b+1c design it replaced (434,822) — the ROI case made *before* 1d was built held up once it was measured. Full accounting, including why, in `docs/roadmap.md` |
-| 2 | Break the memory ceiling — external DRAM | ✅ **done, on silicon** — a 99 KB program sent over the serial line into external SDRAM on a ULX3S 85F and executed from there. 64 KB of block RAM is no longer the ceiling |
-| 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | I-cache **1.79×** and D-cache **1.11×** on CoreMark, both in the bus adapter and shared by both cores. Interrupt-driven UART and multi-word lines remain |
-| 4 | Video out | the framebuffer works; nothing is routed to the HDMI pins |
-| 5 | Run software this project did not write — OpenSBI, Zephyr | ✅ **OpenSBI boots** — banner, platform detected from the device tree, root domain built, prepared to enter S-mode. `make sim_opensbi`. A kernel to hand off to is the remaining half |
-| 6 | Debug infrastructure — JTAG, a Debug Module | makes every other phase cheaper |
-| 7 | Close the boot path — the SD card | the only untested link in the boot chain — and the only phase nothing else is waiting on |
+| 1 | **Superscalar issue and out-of-order execution** | ✅ **built and measured, all the way through 1d** — `rtl/ooo/core_ooo.v` has register renaming, an 8-entry reorder buffer and general out-of-order issue, `make verify_ooo` green, Linux boots to userspace on it too. CoreMark says the honest thing: barely faster than the in-order core and slower than the narrower design it replaced — the ROI case made *before* 1d was built held up once it was measured. `CORE=ooo` still has no measurable Fmax at all (place-and-route fails outright on a combinational loop, still open after several rounds of investigation). Full accounting in `docs/roadmap.md` |
+| 2 | Break the memory ceiling — external DRAM | ✅ **done, on silicon** — 32 MB of external SDRAM confirmed byte-for-byte, a 99 KB program sent over the serial line and executed from it. 64 KB of block RAM is no longer the ceiling |
+| 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | ✅ I-cache **1.79×** and D-cache **1.11×** on CoreMark, interrupt-driven UART done, both in the bus adapter and shared by both cores. Hardware PTE A/D auto-update and multi-word cache lines remain |
+| 4 | Video out | ✅ **encoder, PLL, serializer and real GPDI pin wiring all done**, gated in `make verify`, opt-in on hardware (`BOARD=ulx3s85-video`) since it costs this board's thin timing margin. Only a real monitor hasn't confirmed it yet |
+| 5 | Run software this project did not write — OpenSBI, a kernel | ✅ **done** — OpenSBI boots and hands off, and **Linux 6.18.45 reaches userspace**, on both cores in simulation and for real on an LFE5U-85F. `make sim_opensbi` / `make sim_linux` |
+| 6 | Debug infrastructure — JTAG, a Debug Module | ✅ System Bus Access, plus halt/resume/single-step/register access (`CORE=inorder`, simulation-only). No board has a debug adapter connected, and a real `openocd`+`gdb` attach needs the full debug-spec model this deliberately doesn't have |
+| 7 | Close the boot path — the SD card | the only untested link in the boot chain — a 64 GB SDXC card never answers CMD0; untested below 32 GB |
+| 8 | PCIe | blocked on a board with a PCIe connector and SerDes — this project's current board has neither |
+| 9 | DDR | blocked on a board with DDR (this project's board is SDR-only) |
+| 10 | GPU — 2D acceleration | ✅ fill, overlap-safe copy, and Bresenham line drawing all shipped, extending the existing framebuffer's Wishbone slave |
+| 11 | DSP | blocked on a human decision — F/D float, packed SIMD, or a coprocessor, not yet picked |
+| 12 | Peripheral interfaces — I2C, timers, PWM | GPIO/SPI/UART already real; I2C, a general-purpose timer, and PWM are the open items |
+| 13 | Multi-core: both cores, one SoC | assessed, not started — the PLIC and interconnect are closer to ready than not, but there is no cache/reservation coherence protocol of any kind yet, which is the real open question |
 
 Before any of Phase 5's RTL, the SoC now builds under **Verilator** as well as
 Icarus (`sim/verilator_soc.cpp`). That is not a nicety: a Linux boot is order
@@ -636,23 +644,21 @@ of that loop is what decides whether the work takes weeks or months.
 cycle count, the same refresh count and the same output, so the fast path
 cannot quietly drift from the slow one.
 
-Phase 1 is first because it replaces the machine every later phase builds on,
-and is cheaper to do before they widen the surface it has to preserve — but it
-is the largest thing on the list by a wide margin, and `docs/roadmap.md` is
-specific about what it requires and what must not regress while it happens.
-Phase 7 needs a card of 32 GB or less and about five minutes. It is last
-because nothing else is blocked by it — every hardware run preloads the program
-into the bitstream and that works — not because it is hard.
+Phase 1 was first because it replaces the machine every later phase builds
+on, and was cheaper to do before they widened the surface it has to
+preserve. Phases 8 and 9 sit where they do because nothing else is blocked
+by them — they wait on a different board, not on any work in this repo.
+`docs/roadmap.md` is specific, phase by phase, about what each one requires
+and what must not regress while it happens.
 
 Several known defects are open and unscheduled, written down rather than
 left to be rediscovered — among them the intermittent `ISA-TIMEOUT` under
 `make verify` (still undiagnosed; it self-reports rather than hanging
-silently now, which is not the same as being fixed), the wide core's Linux
-boot still not reaching userspace, and `CORE=ooo` having no measurable Fmax
-at all — place-and-route's static timing analysis fails outright on a
-combinational loop in its completion-bus muxing, a different and more
-significant gap than a missed frequency. `docs/roadmap.md`'s own "Known
-defects" section has the full, current list.
+silently now, which is not the same as being fixed), and `CORE=ooo` having
+no measurable Fmax at all — place-and-route's static timing analysis fails
+outright on a combinational loop, a different and more significant gap than
+a missed frequency, and still open after several rounds of investigation.
+`docs/roadmap.md`'s own "Known defects" section has the full, current list.
 
 ---
 

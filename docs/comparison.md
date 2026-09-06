@@ -59,7 +59,7 @@ rather than the only build possible.
 
 | | Interconnect | Interrupts | Debug / JTAG | Reference peripherals | Boot chain |
 |---|---|---|---|---|---|
-| **Vernier-RV32** | Wishbone B4, priority-arbitrated 2-master/7-slave crossbar (`rtl/soc/wb_interconnect.v`) | CLINT (mtime/mtimecmp/msip) + a real PLIC, delivered to both M- and S-mode | a JTAG TAP + Debug Module, gated in `make verify` (`make sim_jtag`) - but System Bus Access only: it reads/writes any address without the hart's help, and cannot halt, resume, or read a register (`docs/debug.md`) | UART (interrupt-driven TX), GPIO with per-pin interrupts, an SPI master driving SD-card boot, an SDR SDRAM controller (32 MB external) | boot ROM → SPI/SD first-stage loader → OpenSBI → kernel |
+| **Vernier-RV32** | Wishbone B4, priority-arbitrated 2-master/7-slave crossbar (`rtl/soc/wb_interconnect.v`) | CLINT (mtime/mtimecmp/msip) + a real PLIC, delivered to both M- and S-mode | a JTAG TAP + Debug Module, gated in `make verify` (`make sim_jtag`) - System Bus Access, plus halt/resume/single-step/register access (`CORE=inorder`, simulation-only, no real `openocd`+`gdb` attach yet - `docs/debug.md`) | UART (interrupt-driven TX), GPIO with per-pin interrupts, an SPI master driving SD-card boot, an SDR SDRAM controller (32 MB external) | boot ROM → SPI/SD first-stage loader → OpenSBI → kernel |
 | SERV | none of its own - the core is bus-agnostic; its reference integration, "SERVANT," supplies whatever its FuseSoC target needs | none bundled in the core | not part of SERV/SERVANT | SERVANT: memory, GPIO, UART, FuseSoC-managed and board-parameterized | SERVANT boots Zephyr, not Linux |
 | PicoRV32 | PicoSoC's own simple memory-mapped bus, not a named standard interconnect | none - no PLIC/CLINT; a custom, non-standard fast-IRQ mechanism (`getq`/`setq`/`retirq`/`maskirq` over four q-registers) is a core feature instead | none | a UART with a baud-rate divider, and memory-mapped SPI flash used for execute-in-place | no separate boot-ROM stage - fetches its first instructions directly out of SPI flash |
 | Ibex | TileLink Uncached Lite (TL-UL) crossbar, in the separate `ibex-demo-system` repo | `irq_fast` inputs built into the core, hardware-prioritized but explicitly not RISC-V PLIC-spec-compliant per lowRISC's own sources; OpenTitan pairs Ibex with its own separate `rv_plic` peripheral for standard external sources | an integrated, PULP-derived Debug Module (RISC-V debug spec 0.13); the demo system debugs over OpenOCD/GDB via USB on an Arty A7, no external probe needed | GPIO, PWM, UART, an SPI host | target-dependent - simulated flash in simulation, SPI flash on the FPGA target |
@@ -77,12 +77,14 @@ because there is no SoC layer to put them in. NEORV32 is the odd one out in
 the opposite direction: peripherals, bootloader and debugger all ship
 *inside* the same package as the core, more like a microcontroller vendor's
 SDK than a CPU repository. Debug is the one row where "does it have JTAG"
-undersells the gap: Vernier-RV32's Debug Module is real and gated in CI, but
-System Bus Access only - it can read and write memory without stopping the
-hart, and nothing more. NEORV32, Ibex and VexRiscv (with its debug plugin)
-all document a working `openocd`+`gdb` flow - halt, resume, single-step,
-read a register - which needs debug mode built into the core itself and is
-explicitly not done here yet (see section 6).
+undersells the gap: Vernier-RV32's Debug Module is real and gated in CI,
+and does more than System Bus Access now - halt, resume, single-step and
+register access all work (`CORE=inorder`, simulation-only, `docs/debug.md`)
+- but a real `openocd`+`gdb` attach is still the piece NEORV32, Ibex and
+VexRiscv (with its debug plugin) all document and this project does not:
+that needs the RISC-V debug spec's own debug ROM/Program Buffer model,
+deliberately skipped here to avoid reaching into the timing-critical fetch
+path (see section 6).
 
 ## 4. Three groups, and where this core doesn't fit neatly into any of them
 
@@ -158,18 +160,6 @@ declaring a winner.
   little timing margin to spare, which is also why a real `openocd`+`gdb`
   cannot attach to it. NEORV32, Ibex and VexRiscv's debug plugin all have
   that working today.
-- **PMP is enforced on both cores' data paths and on `CORE=inorder`'s
-  instruction fetch, but not `CORE=ooo`'s fetch.** `pmpcfg0-3`/
-  `pmpaddr0-15` are real, WARL-correct storage on both cores
-  (`docs/roadmap.md`'s PMP entry), and a denied load/store/AMO on either
-  core - or a denied fetch on `CORE=inorder` - takes a real access fault,
-  verified against a full Linux boot, not just the ISA suite.
-  `CORE=ooo`'s fetch enforcement is still open, blocked on the same
-  ROB-based speculative fetch path that made its data-path enforcement
-  the harder of the two rounds - `SECURITY.md` has the precise boundary.
-  Every peer with M/S/U privilege and any security posture (Ibex/OpenTitan
-  especially) treats physical memory protection, including on fetch, as
-  load-bearing.
 - **One proven FPGA target.** The ULX3S/ECP5-85F is the only board this
   project has actually run on; VexRiscv (via LiteX) and Rocket/CVA6 (via
   their respective ecosystems) both span many more boards and, for the

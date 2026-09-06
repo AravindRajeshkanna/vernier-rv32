@@ -90,20 +90,44 @@ module tb_top;
     // executes. That is a control-flow change in the program, which is
     // exactly the case this comment says to recompute for.
     //
-    // CORE_OOO differs from that baseline by exactly one, and legitimately
-    // so: stage 1d's `d_is_alu_class` classified an instruction purely by
+    // CORE_OOO used to differ from that baseline by exactly one, for a
+    // reason worth keeping even though the number itself has moved again:
+    // stage 1d's `d_is_alu_class` classified an instruction purely by
     // opcode bits, with no legality check, so Part 4's deliberately-illegal
     // R-type (a well-formed OP opcode, an undefined funct7) was routed to
     // the out-of-order ALU class instead of the ROB head, where the only
     // logic that ever takes a trap lives - it completed as an undefined
     // ALU result and retired normally, no trap, ever. Fixed by excluding
-    // `illegal` from `d_is_alu_class`. The trap now genuinely fires, and
-    // firing it is a real, only-now-possible control-flow redirect the BTB
-    // was never trained to predict (an illegal instruction was never a
-    // branch), so it costs exactly one more mispredict here than the
-    // shared in-order baseline this same value serves below.
+    // `illegal` from `d_is_alu_class`, which made the trap genuinely fire -
+    // a real, only-now-possible control-flow redirect the BTB was never
+    // trained to predict, costing exactly one more mispredict than the
+    // shared in-order baseline.
+    //
+    // Moved 54 -> 53 (PMP stage 5): the exact same bug, for a different
+    // reason `d_is_alu_class` still didn't cover - a *fetch-fault-flagged*
+    // instruction (page fault or PMP denial) can also decode to a
+    // well-formed, non-illegal ALU-class opcode, since the bits are
+    // whatever the faulting address's real memory holds, not a synthetic
+    // illegal encoding. Part 13's own instruction-fetch page-fault test
+    // (the comment above, `mret`-into-U-mode landing on a supervisor-only
+    // page) hits exactly this: confirmed by instrumenting `d_fetch_fault`
+    // directly, it decodes non-illegal at the faulting PC, so it was
+    // *also* silently swallowed by this core specifically - `illegal=0`,
+    // `d_is_alu_class` misclassified, no trap ever taken, despite Part 13's
+    // own comment describing a real one. Fixed by excluding
+    // `d_fetch_fault`/`d_pmp_fetch_fault` from `d_is_alu_class` too
+    // (`core_ooo.v`, PMP stage 5). With the trap now genuinely firing, the
+    // CPU redirects to the handler immediately instead of incorrectly
+    // falling through the fault and executing further into the deliberately
+    // unmapped region first - a real reduction in dynamic control flow
+    // (660 -> 657 out-of-order ALU issues, 19580 -> 19581 retired, measured
+    // both ways, not derived) that removes one mispredict rather than
+    // adding one, landing CORE_OOO on the same count as the in-order
+    // baseline below by coincidence, not by construction - keep the
+    // `ifdef` rather than collapsing it, since nothing guarantees the two
+    // stay equal after the next legitimate change either.
 `ifdef CORE_OOO
-    localparam EXPECT_MISPREDICTS = 54;
+    localparam EXPECT_MISPREDICTS = 53;
 `else
     localparam EXPECT_MISPREDICTS = 53;
 `endif
