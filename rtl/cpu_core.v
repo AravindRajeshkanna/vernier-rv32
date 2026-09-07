@@ -65,7 +65,11 @@
 // would actually be required to run Linux.
 // ---------------------------------------------------------------------------
 module cpu_core #(
-    parameter RESET_PC = 32'h0000_0000
+    parameter RESET_PC = 32'h0000_0000,
+    // Passed straight through to csr_file.v's mhartid. Defaults to 0,
+    // matching the one hart every instantiation of this core builds today -
+    // see docs/roadmap.md's Phase 13 entry.
+    parameter [31:0] HARTID = 32'h0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -1311,7 +1315,7 @@ module cpu_core #(
     wire sret_en = id_ex_valid && id_ex_is_sret && !interrupt_taken && ex_commit;
     assign trap = take_trap;
 
-    csr_file CSR (
+    csr_file #(.HARTID(HARTID)) CSR (
         .clk(clk), .rst(rst),
         .addr(id_ex_csr_addr), .we(id_ex_valid && id_ex_csr_we && !interrupt_taken && ex_commit),
         .wdata(csr_new_value), .rdata(csr_rdata), .rdata_rmw(csr_rdata_rmw),

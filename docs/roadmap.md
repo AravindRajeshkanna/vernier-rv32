@@ -3600,14 +3600,14 @@ has no repo-local hart-count assumption baked in; it reports whatever
 
 **What is genuinely just plumbing, enumerated rather than waved at:**
 
-- `rtl/clint.v` has one global `mtimecmp`/`msip`, no hart-ID indexing
-  anywhere - needs the standard per-hart-indexed arrays and address
-  striding a real CLINT uses, built from zero rather than widened from
-  an existing array (unlike the PLIC's head start above).
-- `rtl/csr_file.v`'s `mhartid` is a `localparam` hardwired to 0, not a
-  module parameter - a second instance needs its own hart ID, and
-  nothing about the module's structure resists that, it simply has not
-  been asked to vary yet.
+- ~~`rtl/clint.v` has one global `mtimecmp`/`msip`, no hart-ID indexing
+  anywhere~~ **Done (Stage 2, below):** `NUM_HARTS`-parameterized,
+  standard per-hart-strided arrays, `mtime` still shared as a real CLINT's
+  is. Not yet instantiated with `NUM_HARTS>1` anywhere.
+- ~~`rtl/csr_file.v`'s `mhartid` is a `localparam` hardwired to 0, not a
+  module parameter~~ **Done (Stage 2, below):** a `HARTID` parameter,
+  threaded through `cpu_core.v`/`core_ooo.v`. Every instantiation still
+  defaults it to 0.
 - `software/soc/bootrom.c` has no `mhartid` read anywhere and no
   spin-wait/mailbox gate - every existing test implicitly assumes it is
   the only thing executing from reset. The standard RISC-V SMP pattern
@@ -3712,6 +3712,64 @@ Nor does it touch the *cache*-coherence half of the "one real redesign"
 finding - this closes the AMO-atomicity gap specifically, which turned
 out to be provable and closeable on its own, independent of picking a
 cache-coherence approach for the other half.
+
+**Stage 2: two of the four enumerated plumbing items, parameterized and
+proven in isolation, with every real build still defaulting to exactly
+today's single-hart behavior.** `rtl/clint.v` gained a `NUM_HARTS`
+parameter (default 1): `msip`/`mtimecmp` became the standard per-hart-
+strided arrays a real CLINT uses (`msip` for hart *h* at `0x0000 + 4h`,
+`mtimecmp` at `0x4000 + 8h`), while `mtime` stays the one free-running
+counter every hart shares, same as a real CLINT. `rtl/csr_file.v`'s
+`mhartid` stopped being a hardwired `localparam` and became a `HARTID`
+parameter (default 0) instead, threaded through as a same-named
+parameter on `rtl/cpu_core.v` and `rtl/ooo/core_ooo.v` (passed straight
+to their own `csr_file` instantiation). Neither `rtl/top.v` nor
+`rtl/soc/soc_top.v` was touched - both keep instantiating with every
+parameter at its default, so this stage changes no observed behavior in
+any build that exists today; it only makes hart-ID-dependent behavior
+*possible* to configure, which is a different thing from *building* it.
+
+Proven, not just written: two new directed tests join `make verify`.
+`sim/tb_mhartid.v` instantiates `csr_file` twice, `HARTID=0` and
+`HARTID=3` side by side, and reads `mhartid` (CSR `0xF14`) back from
+both - catching not just "the parameter is ignored" but the sneakier
+"the two instances' values got swapped" failure a same-value smoke test
+would miss. `sim/tb_clint_multihart.v` instantiates `clint` with
+`NUM_HARTS=2` and confirms `msip`/`mtimecmp` land in independent
+storage per hart (not aliased to one bit or one register) and that
+`mtip` per hart tracks that hart's own `mtimecmp` against the one
+shared `mtime`, then instantiates a second, `NUM_HARTS=1` copy - the
+default every real build uses - and confirms it still responds to
+exactly the old fixed offsets, including that hart 1's would-be
+`mtimecmp` slot (meaningless at `NUM_HARTS=1`) is a bounds-checked
+no-op rather than an accidental alias into hart 0's own register. Both
+tests were run once with a deliberately reintroduced aliasing bug
+first (indexing every hart's storage at a hardwired 0) to confirm they
+actually fail before trusting them to pass - the same standard
+`sim/tb_pmp_csr.v` set for this kind of isolated, pre-integration test.
+
+**A real Verilator-only failure found and fixed along the way, not
+present under Icarus:** the first version indexed `clint.v`'s new
+per-hart arrays with the full, untruncated address-derived word index
+(14 bits) against arrays that are only 1-2 entries deep at `NUM_HARTS=1`
+- legal Verilog (array indices are unsigned integers, not slices, so an
+oversized index just selects by value), and Icarus accepted it without
+comment, but Verilator's own `WIDTHTRUNC` check - already strict enough
+to fail the build over exactly this in the real `make verilator_check`
+gate - correctly refused it. Fixed by narrowing the index to
+`$clog2(NUM_HARTS)` bits (special-cased to 1 bit when `NUM_HARTS<=1`,
+since `$clog2(1)` is 0), the same `CTXW`-style convention `rtl/plic.v`
+already established for its own per-context arrays, for the same
+reason.
+
+**Left genuinely open, matching the plumbing list above exactly:**
+`software/soc/bootrom.c` still has no `mhartid` read or spin-wait/
+mailbox gate, and `dts/soc.dts` still declares only one `cpu@0` node
+with `CONFIG_SMP` unset - both need a real second hart to test against
+meaningfully, unlike the two pieces this stage closed, which could be
+proven correct standalone. Nothing anywhere passes a non-default
+`NUM_HARTS` or `HARTID` yet; a future hart 2 still has to actually wire
+these parameters, not just find them already connected.
 
 **Why this is stated as "plumbing plus one real redesign" rather than
 scoped further this round.** Every other phase in this file has been

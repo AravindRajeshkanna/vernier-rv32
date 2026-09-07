@@ -1326,6 +1326,28 @@ sim_pmp_csr: sim/sim_pmp_csr.out
 	@grep -aq "PMP-CSR-TEST: PASS" sim/pmp_csr.log && echo "PMP CSR OK" || \
 	    { echo "FAILED: PMP CSR WARL/lock semantics"; exit 1; }
 
+# ---- Phase 13 stage 2: hart-ID plumbing (mhartid, CLINT per-hart arrays) ----
+#
+# Both board-independent, like sim_pmp/sim_pmp_csr above: proves the new
+# HARTID/NUM_HARTS parameters actually reach independent storage per hart,
+# in isolation, before any second hart exists to wire them to for real - see
+# docs/roadmap.md's Phase 13 entry.
+sim/sim_mhartid.out: sim/tb_mhartid.v rtl/csr_file.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_mhartid.v rtl/csr_file.v
+
+sim_mhartid: sim/sim_mhartid.out
+	cd sim && $(VVP) sim_mhartid.out $(VVP_DUMP) | tee mhartid.log
+	@grep -aq "MHARTID-TEST: PASS" sim/mhartid.log && echo "MHARTID OK" || \
+	    { echo "FAILED: csr_file.v HARTID parameter"; exit 1; }
+
+sim/sim_clint_multihart.out: sim/tb_clint_multihart.v rtl/clint.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_clint_multihart.v rtl/clint.v
+
+sim_clint_multihart: sim/sim_clint_multihart.out
+	cd sim && $(VVP) sim_clint_multihart.out $(VVP_DUMP) | tee clint_multihart.log
+	@grep -aq "CLINT-MULTIHART-TEST: PASS" sim/clint_multihart.log && echo "CLINT MULTIHART OK" || \
+	    { echo "FAILED: clint.v NUM_HARTS parameter"; exit 1; }
+
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
@@ -1468,6 +1490,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \
+        sim_mhartid \
+        sim_clint_multihart \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \

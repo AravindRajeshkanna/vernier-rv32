@@ -36,7 +36,13 @@
 // write it: the `sip` write path below reaches SSIP and nothing else, because
 // S-mode clearing its own external-interrupt pending bit would let it drop an
 // interrupt the PLIC is still asserting.
-module csr_file (
+module csr_file #(
+    // mhartid's value for this instance. Every existing instantiation
+    // (cpu_core.v, core_ooo.v) defaults this to 0, matching the one hart
+    // that exists in any build today - see docs/roadmap.md's Phase 13
+    // entry for why this can vary and nothing that reads mhartid does.
+    parameter [31:0] HARTID = 32'h0
+) (
     input  wire        clk,
     input  wire        rst,
 
@@ -149,7 +155,6 @@ module csr_file (
     // S-mode payload. The Spike co-simulation caught the second one by
     // diffing the value a `csrr a0, misa` actually returned.
     localparam MISA    = 32'h4014_1101;
-    localparam MHARTID = 32'h0000_0000;
 
     reg [1:0]  current_priv;
     integer    i; // pmpaddr_r reset loop only
@@ -441,7 +446,7 @@ module csr_file (
             12'h3A1: rdata = pmpcfg1_r;
             12'h3A2: rdata = pmpcfg2_r;
             12'h3A3: rdata = pmpcfg3_r;
-            12'hF14: rdata = MHARTID;
+            12'hF14: rdata = HARTID;
             default: rdata = 32'b0;
         endcase
         // pmpaddr0-15: 16 consecutive addresses, one array - see is_pmpaddr_addr
