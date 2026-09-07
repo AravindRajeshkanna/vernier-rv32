@@ -148,8 +148,8 @@ public_flat_rd -module "wb_interconnect" -var "s_dat_w"
 public_flat_rd -module "wb_interconnect" -var "s_sel"
 public_flat_rd -module "wb_interconnect" -var "fin_ack"
 public_flat_rd -module "wb_interconnect" -var "fin_dat"
-public_flat_rd -module "wb_interconnect" -var "sel_m1"
-public_flat_rd -module "wb_interconnect" -var "sel_m2"
+public_flat_rd -module "wb_interconnect" -var "sel_d"
+public_flat_rd -module "wb_interconnect" -var "sel_w"
 
 // And the instruction the core actually consumes, which the bus check above
 // cannot see: a fetch that hits in the I-cache never reaches the bus at all,

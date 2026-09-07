@@ -347,18 +347,25 @@ module soc_top #(
         .dbg_reg_rdata(dbg_reg_rdata), .dbg_reg_err(dbg_reg_err)
     );
 
+    // NUM_HARTS=1 (the default): this SoC has exactly one hart today, so
+    // each per-hart vector port below is exactly one bit/word wide and
+    // connects directly to the same single fetch/data/walker signals this
+    // instantiation always has - see rtl/soc/wb_interconnect.v's own header
+    // for why this collapses to precisely the original 4-master shape and
+    // docs/roadmap.md's Phase 13 entry for what a second hart still needs
+    // beyond this.
     wb_interconnect #(.NUM_SLAVES(NUM_SLAVES)) BUS (
         .clk(clk), .rst(rst_soc),
-        .m0_cyc(iwb_cyc), .m0_stb(iwb_stb), .m0_adr(iwb_adr),
-        .m0_dat_r(iwb_dat_r), .m0_ack(iwb_ack),
-        .m1_cyc(dwb_cyc), .m1_stb(dwb_stb), .m1_we(dwb_we), .m1_adr(dwb_adr),
-        .m1_dat_w(dwb_dat_w), .m1_sel(dwb_sel),
-        .m1_dat_r(dwb_dat_r), .m1_ack(dwb_ack),
-        .m2_cyc(pwb_cyc), .m2_stb(pwb_stb), .m2_adr(pwb_adr),
-        .m2_dat_r(pwb_dat_r), .m2_ack(pwb_ack),
-        .m3_cyc(dbg_cyc), .m3_stb(dbg_stb), .m3_we(dbg_we), .m3_adr(dbg_adr),
-        .m3_dat_w(dbg_dat_w), .m3_sel(dbg_sel),
-        .m3_dat_r(dbg_dat_r), .m3_ack(dbg_ack),
+        .f_cyc(iwb_cyc), .f_stb(iwb_stb), .f_adr(iwb_adr),
+        .f_dat_r(iwb_dat_r), .f_ack(iwb_ack),
+        .d_cyc(dwb_cyc), .d_stb(dwb_stb), .d_we(dwb_we), .d_adr(dwb_adr),
+        .d_dat_w(dwb_dat_w), .d_sel(dwb_sel),
+        .d_dat_r(dwb_dat_r), .d_ack(dwb_ack),
+        .w_cyc(pwb_cyc), .w_stb(pwb_stb), .w_adr(pwb_adr),
+        .w_dat_r(pwb_dat_r), .w_ack(pwb_ack),
+        .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),
+        .dbg_dat_w(dbg_dat_w), .dbg_sel(dbg_sel),
+        .dbg_dat_r(dbg_dat_r), .dbg_ack(dbg_ack),
         .s_base(s_base), .s_mask(s_mask),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),

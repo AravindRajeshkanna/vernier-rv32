@@ -3771,6 +3771,65 @@ proven correct standalone. Nothing anywhere passes a non-default
 `NUM_HARTS` or `HARTID` yet; a future hart 2 still has to actually wire
 these parameters, not just find them already connected.
 
+**Stage 3: the interconnect itself generalized to `NUM_HARTS`-wide ports,
+formally proven at `NUM_HARTS=2`, before a second hart exists to connect
+to them.** The problem statement much further above ("Adding a second
+hart's data port is not just 'a fifth wire in the mux' the way the walker
+and debug ports were - the priority scheme itself needs to account for an
+in-flight AMO owning the bus...") is now out of date in the specific way
+it predicted would be hard: `rtl/soc/wb_interconnect.v`'s `m0`-`m3` named
+ports (one fetch, one data, one walker, one debug) became `NUM_HARTS`-wide
+`f_*`/`d_*`/`w_*` vectors plus one still-singular `dbg_*` port, with the
+fixed priority order (debug > data > walker > fetch) replicated per hart
+via a plain "lowest hart index wins" tie-break within each tier, proven
+safe rather than assumed (every candidate's own access is one bounded
+transaction that then completes, the same reasoning the original order's
+own fetch-starvation argument already used). `NUM_HARTS=1` - what
+`rtl/soc/soc_top.v` still instantiates - collapses every array to exactly
+the original four ports and behavior; nothing observable changes for the
+SoC that exists today, confirmed by the full `make verify`/`make
+verify_ooo` regression passing unchanged.
+
+The part of the old problem statement that was genuinely hard, not just
+unwritten yet: stage 1's per-master AMO-continuation override
+(`m1_continuing`) had to become per-*hart* - hart A's own follow-up phase
+must win against hart B's simultaneous request, but must not be
+satisfiable by hart B's own activity, and the tie-break among ordinary
+(non-continuing) requests needed its own defined order too, not just "the
+one master that used to be named m1." `formal/fv_interconnect.v` was
+generalized the same way, alongside the RTL, and proven at `NUM_HARTS=2`
+specifically
+(not `NUM_HARTS=1` - that configuration's correctness is exactly what the
+existing simulation regression, exercising the real single-hart SoC end
+to end, already establishes; formally proving it again would be strictly
+weaker evidence than what those gates already provide, where
+`NUM_HARTS=2` has nothing else in the tree exercising it yet). One
+property was wrong on the first attempt, caught by the solver rather than
+by inspection: it asserted a continuing hart's own `d_ack` bit directly,
+which does not distinguish "arbitration granted this hart" from "the
+slave's own ack happens to land this exact cycle" - a multi-wait-state
+slave's continuing write phase can take more than one cycle to actually
+ack, exactly like the original single-hart property already knew (it
+checked `s_data_master`, never `m1_ack`, for the same reason) but the
+generalization lost. Fixed by checking the granted-hart's identity via
+the broadcast bus address instead, matching the original's own approach.
+A new directed test, `sim/tb_interconnect_multihart.v`
+(`sim_interconnect_multihart`, now in `make verify`), demonstrates both
+new behaviors - cross-hart tier priority and per-hart AMO continuation -
+against a real, 1-wait-state slave model over an actual cycle-by-cycle
+trace, run once against a deliberately reintroduced cross-hart
+continuation bug first to confirm it can fail before trusting it to pass.
+
+**What this stage deliberately does not do:** instantiate a second hart,
+give the boot ROM a mailbox gate, or add a second `cpu` node to
+`dts/soc.dts` - those remain exactly as open as stage 2 left them. Nor
+does the walker role change in kind: each hart still gets its own single
+walker port, matching `rtl/soc/wb_ptw.v`'s existing one-port-per-core
+shape - whether a second hart needs its own `wb_ptw.v` instance or that
+module gains its own internal arbitration for more than one core's
+walkers is a decision for whichever stage actually instantiates hart 1,
+not this one.
+
 **Why this is stated as "plumbing plus one real redesign" rather than
 scoped further this round.** Every other phase in this file has been
 substantially "wire existing, verified pieces together" work - PMP's
