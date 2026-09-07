@@ -69,12 +69,22 @@
 // grant depends on `lock`, which is a flip-flop, and `lock`'s next value
 // depends on `ack`. Nothing goes round without passing through the register.
 //
-// **Atomics** were previously safe purely because the data master always
-// wins, and they still are - cpu_wb.v holds `cyc` across both phases of an
-// AMO's read-modify-write, so priority alone keeps any other master out of
-// the gap. The lock does not weaken that: when the read phase's ack releases
-// the lock, `m1_cyc` is still asserted, so master 1 immediately wins
-// re-arbitration for the write phase.
+// **Atomics** are safe because the data master's own lock now stays held
+// across an AMO's two phases, not because priority happens to re-win it.
+// cpu_core.v holds `dmem_is_amo` (and so `cyc`) for an AMO's entire
+// read-then-write duration, one instruction the whole way through; on that
+// master's own ack, this file re-locks to it rather than releasing,
+// whenever `cyc` is still up (`m1_continuing`, below - specific to the data
+// master, deliberately not a general "whoever still wants it keeps it" rule
+// - see that signal's own comment for why applying this to fetch or the
+// walker would be actively wrong, not just unneeded). Priority alone used
+// to be given as the reason ("master 1 immediately wins re-arbitration for
+// the write phase"), which was true only as long as nothing else with
+// equal-or-higher priority could also want the bus that same cycle - the
+// debug module always could, rarely enough in practice not to matter, but a
+// second *data* master (docs/roadmap.md's Phase 13) would not be rare.
+// Re-locking closes both cases the same way, without needing to reason
+// about who else might be asking.
 //
 // It also can't starve the fetch path despite always losing: a data access
 // is one transaction that then completes, and while it is outstanding
@@ -177,8 +187,44 @@ module wb_interconnect #(
     reg        lock;            // a transfer is in flight and owns the bus
     reg  [3:0] lock_who;        // which master owns it, one-hot
 
-    wire want_m3 = m3_cyc;
-    wire want_m1 = m1_cyc && !m3_cyc;
+    // Registered: did the data master's own transfer ack *last* cycle,
+    // checked against *this* cycle's `m1_cyc` - not the same-cycle `m1_ack`,
+    // which is trivially true for every transaction the instant it
+    // completes (Wishbone `cyc` does not drop until the master reacts to
+    // seeing the ack, one cycle later, so it is high at the ack cycle for
+    // an ordinary access exactly as much as for an AMO) and so cannot tell
+    // a genuine follow-up phase from an unrelated one just starting. This
+    // can: only a master that immediately re-asserts `cyc` with nothing in
+    // between looks like this, which is exactly what an AMO's read phase
+    // immediately followed by its write phase does - cpu_core.v holds
+    // `dmem_is_amo`, and so `cyc`, continuously across both (see
+    // cpu_wb.v's own MEM-stage comment).
+    reg m1_acked_prev;
+    always @(posedge clk or posedge rst) begin
+        if (rst) m1_acked_prev <= 1'b0;
+        else     m1_acked_prev <= m1_ack;
+    end
+
+    // The data master's own immediate follow-up phase wins arbitration
+    // unconditionally, ahead of even the debug module. This is deliberately
+    // narrow - one cycle, and specific to the data master - not a general
+    // "whoever still wants the bus keeps it" rule; see this signal's own
+    // header-comment cross-reference for why applying it to fetch or the
+    // walker would be actively wrong (both can hold `cyc` continuously
+    // across their own back-to-back but *unrelated* transactions, where
+    // losing arbitration between them is correct, not a bug). A worst case
+    // of repeated back-to-back data accesses from one hart costs whoever
+    // else wants the bus one extra cycle's wait each time, the same
+    // "unmeasurable in practice" cost this file already accepts for
+    // debug's own top priority.
+    wire m1_continuing = m1_acked_prev && m1_cyc;
+
+    // `!m1_cyc` already rules out `m1_continuing` in want_m2/want_m0 below
+    // (the latter implies the former by construction), so it needs no
+    // separate mention there - only want_m3 competes with `m1_continuing`
+    // while `m1_cyc` might itself be true.
+    wire want_m3 = m3_cyc && !m1_continuing;
+    wire want_m1 = m1_cyc && (m1_continuing || !m3_cyc);
     wire want_m2 = m2_cyc && !m3_cyc && !m1_cyc;
     wire want_m0 = m0_cyc && !m3_cyc && !m1_cyc && !m2_cyc;
 
@@ -257,7 +303,15 @@ module wb_interconnect #(
     // Take the lock only when a transfer actually starts and does *not*
     // complete in its first cycle, so zero-wait-state slaves (the peripheral
     // bridges, and an unmapped address) behave exactly as they did before
-    // this existed and never touch the lock at all.
+    // this existed and never touch the lock at all. This mechanism is
+    // unchanged by `m1_continuing` above - that one protects the one-cycle
+    // *gap* between an ack and a possible same-master follow-up, entirely
+    // through the `want_*`/`sel_*` computation; this one protects an
+    // already-granted multi-cycle transfer from being preempted mid-wait
+    // (property 9), a different moment for a different reason. They compose
+    // rather than interact: whichever master is decided by combinational
+    // priority (now including `m1_continuing`'s override) is what gets
+    // locked in here if its own transfer takes more than one cycle.
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             lock     <= 1'b0;

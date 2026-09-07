@@ -3647,6 +3647,72 @@ the walker and debug ports were - the priority scheme itself needs to
 account for an in-flight AMO owning the bus for its whole
 read-modify-write, not just its current single cycle-by-cycle grant.
 
+**Stage 1: the interconnect's own AMO-atomicity assumption, fixed and
+formally proven, before any second hart's data master exists to need
+it.** The third consequence named just above is real, and closing it
+does not need hart 1 to exist first - it is provable against
+`rtl/soc/wb_interconnect.v` exactly as it stands today, the same
+"verify the hard piece in isolation before wiring it to something real"
+sequencing `rtl/pmp.v` itself used. Tracing it precisely surfaced a
+sharper, more general finding than "a second data master would break
+this": the *existing*, single-hart design was already one narrow
+exception away from the same bug. `cpu_core.v` holds `dmem_is_amo` (and
+so `cyc`) continuously across an AMO's whole read-then-write duration,
+but the interconnect's lock unconditionally released the instant the
+read phase's ack fired - safe today only because the sole thing that
+could win the reopened arbitration in that one-cycle gap is the debug
+module, asking once per JTAG transaction, rarely enough not to matter.
+A second, *continuously running* data master would not be rare.
+
+Fixed once, generally, rather than as a two-master special case: the
+data master's own follow-up phase (detected as "my own ack fired last
+cycle, and I am still asking" - not same-cycle `cyc`, which is high at
+every ack regardless of whether anything follows, and so cannot tell an
+AMO's second phase from an ordinary access finishing) now wins
+arbitration unconditionally, including against the debug module.
+Deliberately narrow to the data master specifically, not a general
+"whoever still wants the bus keeps it" rule - fetch and the walker also
+hold `cyc` continuously across their own back-to-back but *unrelated*
+transactions, where losing arbitration between them is correct
+behavior, not a bug a fix should close.
+
+Two real missteps on the way there, both caught by the formal flow
+refusing to pass rather than by reasoning it through by hand
+beforehand: the first attempt kept the *existing* lock register held
+across the gap, which does correctly protect a multi-cycle transfer's
+own two phases but does nothing for a phase that acks in its own first
+cycle (a zero-wait-state slave) - `formal/fv_interconnect.v`'s own new
+property (10, below) refuted immediately. The second attempt fixed
+that by triggering the same lock on *any* same-cycle ack for a master
+still asking - which happened to also fire for the fetch master's own ordinary,
+unrelated back-to-back transactions (the CPU is essentially always
+still asking for the next instruction), and would have let fetch
+monopolize the bus indefinitely the first time it got a foothold.
+Neither was caught by inspection; both were caught by z3 refusing the
+corresponding property. The version that finally holds is narrower than
+either: a one-cycle, data-master-specific override, added directly to
+the `want_*`/`sel_*` computation rather than to the lock register at
+all, which is a different mechanism for a different moment (a
+multi-cycle transfer already granted, versus the one-cycle gap right
+after any ack).
+
+`formal/fv_interconnect.v` gained one new property (10) proving the
+data master's identity survives its own multi-phase sequence, and two
+existing ones (4z, 6's debug case) needed a stated exception for
+exactly this case - both refuted the naive versions of the fix before
+being corrected to describe the new, intentional behavior rather than
+the old, accidental one. All six formal modules PROVED at depth 12
+afterward, `fv_interconnect` included.
+
+**What this stage deliberately does not do:** instantiate a second
+hart, extend the interconnect's own master count, or touch CLINT/
+`mhartid`/the boot ROM/PLIC contexts - all of that plumbing, named
+above, is unaffected by this fix and remains exactly as open as it was.
+Nor does it touch the *cache*-coherence half of the "one real redesign"
+finding - this closes the AMO-atomicity gap specifically, which turned
+out to be provable and closeable on its own, independent of picking a
+cache-coherence approach for the other half.
+
 **Why this is stated as "plumbing plus one real redesign" rather than
 scoped further this round.** Every other phase in this file has been
 substantially "wire existing, verified pieces together" work - PMP's
