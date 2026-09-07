@@ -103,7 +103,11 @@
 // would actually be required to run Linux.
 // ---------------------------------------------------------------------------
 module core_ooo #(
-    parameter RESET_PC = 32'h0000_0000
+    parameter RESET_PC = 32'h0000_0000,
+    // Passed straight through to csr_file.v's mhartid. Defaults to 0,
+    // matching the one hart every instantiation of this core builds today -
+    // see docs/roadmap.md's Phase 13 entry.
+    parameter [31:0] HARTID = 32'h0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -1404,7 +1408,7 @@ module core_ooo #(
     // instruction read back as its pre-patch encoding.
     assign fence_i = fence_i_head && headS_ready && head_ex_commit && !interrupt_taken;
 
-    csr_file CSR (
+    csr_file #(.HARTID(HARTID)) CSR (
         .clk(clk), .rst(rst),
         .addr(rob_csr_addr[rob_head]), .we(headS_valid && rob_is_csr[rob_head] && rob_csr_we[rob_head] && !interrupt_taken && head_ex_commit),
         .wdata(csr_new_value), .rdata(csr_rdata), .rdata_rmw(csr_rdata_rmw),
