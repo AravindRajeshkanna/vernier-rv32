@@ -858,12 +858,18 @@ lock itself is combinational. **Registering it breaks the loop**: the grant
 depends on `lock`, a flip-flop, and `lock`'s next value depends on `ack`, so
 nothing goes round without passing through the register.
 
-Atomics were previously safe purely because the data master always wins, and
-still are — `cpu_wb.v` holds `cyc` across both phases of an AMO's
-read-modify-write, so priority alone keeps anything else out of the gap. The
-lock does not weaken it: when the read phase's ack releases the lock,
-`m1_cyc` is still asserted, so the data master immediately wins
-re-arbitration for the write phase.
+Atomics are safe because the data master's own lock now stays held across an
+AMO's two phases, not because priority happens to re-win it. `cpu_core.v`
+holds `dmem_is_amo` (and so `cyc`) for an AMO's entire read-then-write
+duration; on that master's own ack, `rtl/soc/wb_interconnect.v` re-locks to
+it rather than releasing, whenever `cyc` is still up. Priority alone was the
+original reason given, which held only as long as nothing else with
+equal-or-higher priority could also want the bus that exact cycle - true for
+this two-master picture, but not once the interconnect grew a debug-module
+master (`rtl/soc/wb_interconnect.v`'s own header has the current, four-master
+account) and, in principle, a second hart's own data master
+(`docs/roadmap.md`'s Phase 13 entry). Re-locking closes both cases the same
+way, proven in `formal/fv_interconnect.v`.
 
 One requirement the arbiter now depends on: **both masters must tie `stb` to
 `cyc`.** It grants on `cyc` alone, so a master asserting `cyc` without `stb`

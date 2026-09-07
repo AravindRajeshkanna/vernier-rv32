@@ -149,12 +149,13 @@ module fv_interconnect #(
                    (m2_cyc && m2_stb) || (m3_cyc && m3_stb);
     wire any_ack = m0_ack || m1_ack || m2_ack || m3_ack;
 
-    reg p_any_req, p_any_ack, p_dm, p_rst;
+    reg p_any_req, p_any_ack, p_dm, p_rst, p_m1_ack;
     always @(posedge clk) begin
         p_any_req <= any_req;
         p_any_ack <= any_ack;
         p_dm      <= s_data_master;
         p_rst     <= rst;
+        p_m1_ack  <= m1_ack;
     end
 
     // True exactly when a transfer started earlier and has not completed, so
@@ -203,12 +204,20 @@ module fv_interconnect #(
         //     of the gap - and instruction fetch carries on translating while
         //     the MEM stage sits in an AMO, so the walker genuinely can ask
         //     during it.
-        // 4z. Debug outranks everything, whenever arbitration is open. It
-        //     asks about once per JTAG transaction, so the cost is one
-        //     arbitration slot; the benefit is that a host can read the
-        //     memory of a machine whose CPU is spinning on the bus, which is
-        //     the case a debugger is for.
-        if (m3_cyc && !in_flight) begin
+        // 4z. Debug outranks everything, whenever arbitration is open -
+        //     except the data master's own immediate follow-up phase
+        //     (`p_m1_ack && m1_cyc`, the same condition the DUT's own
+        //     `m1_continuing` computes internally, derived here from ports
+        //     rather than peeked at directly, matching this file's own
+        //     "expressed over ports only" rule). That exception is
+        //     deliberate and is what property 10 below exists to prove -
+        //     the whole reason it needs proving is that this line used to
+        //     say debug wins *unconditionally*. Debug otherwise asks about
+        //     once per JTAG transaction, so the cost is one arbitration
+        //     slot; the benefit is that a host can read the memory of a
+        //     machine whose CPU is spinning on the bus, which is the case
+        //     a debugger is for.
+        if (m3_cyc && !in_flight && !(p_m1_ack && m1_cyc)) begin
             assert (!m0_ack);
             assert (!m1_ack);
             assert (!m2_ack);
@@ -253,7 +262,10 @@ module fv_interconnect #(
         // The debug master needs it most: a host can ask for any address at
         // all, including ones that decode to nothing, and a debug read that
         // hangs the bus would take the machine down rather than report a hole.
-        if (m3_cyc && m3_stb && !in_flight && (s_stb == {NUM_SLAVES{1'b0}}))
+        // Same exemption as property 4z, for the same reason: the data
+        // master's own immediate follow-up phase wins this cycle instead.
+        if (m3_cyc && m3_stb && !in_flight && (s_stb == {NUM_SLAVES{1'b0}}) &&
+            !(p_m1_ack && m1_cyc))
             assert (m3_ack);
         if (m2_cyc && m2_stb && !m1_cyc && !m3_cyc && !in_flight &&
             (s_stb == {NUM_SLAVES{1'b0}}))
@@ -300,5 +312,22 @@ module fv_interconnect #(
         //    with the wrong data. Silent corruption, not a hang, which is why
         //    it is worth proving rather than hoping a test trips over it.
         if (in_flight) assert (s_data_master == p_dm);
+
+        // 10. The data master keeps the bus across its own multi-phase
+        //     sequence, not just across one transfer. `in_flight` (property 9)
+        //     goes false the instant an ack fires - by design, that is the
+        //     one cycle arbitration is genuinely open - so this is a
+        //     different claim: if the data master's *own* ack fired last
+        //     cycle and it is *still asking* this cycle (an AMO's write
+        //     phase immediately following its read phase, driven by the
+        //     same instruction the whole way through - cpu_core.v holds
+        //     `dmem_is_amo` for the duration), nobody else may have won that
+        //     gap cycle instead. Without the re-lock this proves, debug's
+        //     absolute priority (property 4z) could interpose here - rare
+        //     enough in practice not to matter with one data master, not
+        //     rare enough once a second one exists (docs/roadmap.md's
+        //     Phase 13 entry). This is what makes that eventually safe,
+        //     proved here before any second data master exists to need it.
+        if (p_m1_ack && m1_cyc) assert (s_data_master);
     end
 endmodule
