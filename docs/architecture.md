@@ -866,10 +866,13 @@ it rather than releasing, whenever `cyc` is still up. Priority alone was the
 original reason given, which held only as long as nothing else with
 equal-or-higher priority could also want the bus that exact cycle - true for
 this two-master picture, but not once the interconnect grew a debug-module
-master (`rtl/soc/wb_interconnect.v`'s own header has the current, four-master
-account) and, in principle, a second hart's own data master
-(`docs/roadmap.md`'s Phase 13 entry). Re-locking closes both cases the same
-way, proven in `formal/fv_interconnect.v`.
+master, nor once it grew `NUM_HARTS`-many hart-indexed fetch/data/walker
+triples on top of that (`rtl/soc/wb_interconnect.v`'s own header has the
+current account) - a second hart's own data master is no longer just a
+future possibility to design around, since `docs/roadmap.md`'s Phase 13
+entry (Stage 3) already generalized and formally proved the arbitration
+for it, though no second hart exists yet to actually drive one. Re-locking
+closes every case the same way, proven in `formal/fv_interconnect.v`.
 
 One requirement the arbiter now depends on: **both masters must tie `stb` to
 `cyc`.** It grants on `cyc` alone, so a master asserting `cyc` without `stb`

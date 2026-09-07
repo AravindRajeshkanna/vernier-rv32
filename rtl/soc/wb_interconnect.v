@@ -1,31 +1,56 @@
-// Wishbone B4 "classic" shared-bus interconnect: 3 masters, NUM_SLAVES
-// slaves, fixed-priority arbitration and a masked addr[31:24] address decode.
+// Wishbone B4 "classic" shared-bus interconnect: NUM_HARTS (fetch, data)
+// master pairs, one page-table-walk master per hart, one debug master
+// shared by all harts, NUM_SLAVES slaves, fixed-priority arbitration and a
+// masked addr[31:24] address decode.
 //
-// ---- The third master: page-table walks ----
+// ---- NUM_HARTS: generalized from a fixed 4-master shape ----
 //
-// Master 2 is rtl/soc/wb_ptw.v, the two Sv32 walkers arbitrated into one
-// port. They used to read PTEs through a second port on wb_ram.v's block
-// RAM, which meant page tables could only live in block RAM - and an SDRAM
-// has no second port, so that arrangement could never reach one. Linux puts
-// page tables in DRAM, so the walkers had to become bus masters.
+// Every hart gets its own fetch master, data master and page-table-walk
+// master - the same three roles `rtl/cpu_core.v`/`rtl/ooo/core_ooo.v` and
+// `rtl/soc/wb_ptw.v` already have today, just replicated per hart rather
+// than named once. `NUM_HARTS=1` (the default, and every instantiation in
+// this tree today - `rtl/soc/soc_top.v`) collapses every array below to
+// exactly one element per role, and the arbitration reduces to precisely
+// the original fixed order: debug > data > walker > fetch. Nothing has
+// been asked to instantiate a second hart yet - see docs/roadmap.md's
+// Phase 13 entry.
 //
-// ---- Priority: data > walker > fetch ----
+// ---- The third master role: page-table walks ----
 //
-// Not the obvious order, and each of the two comparisons is load-bearing.
+// Each hart's own `rtl/soc/wb_ptw.v` arbitrates that hart's two Sv32
+// walkers (icache, dcache) into one bus master port. They used to read
+// PTEs through a second port on wb_ram.v's block RAM, which meant page
+// tables could only live in block RAM - and an SDRAM has no second port,
+// so that arrangement could never reach one. Linux puts page tables in
+// DRAM, so the walkers had to become bus masters.
+//
+// ---- Priority: debug > data (by hart) > walker (by hart) > fetch (by hart) ----
+//
+// Not the obvious order, and each comparison is load-bearing - unchanged
+// in kind from the original 4-master version, just replicated per hart for
+// the three per-hart roles. Within a tier that now has more than one
+// candidate (two harts' data masters, say), the lowest hart index wins -
+// a plain, provable tie-break, not round-robin fairness. That is safe for
+// the same reason the original order does not starve fetch: every
+// candidate's own access is one bounded transaction that then completes
+// (cpu_wb.v/core_ooo.v freeze the issuing hart's own pipeline while it is
+// outstanding), so losing arbitration costs whoever else wants the bus a
+// few extra cycles' wait per access, never an unbounded one.
 //
 // **Data still outranks the walker**, which looks wrong for a requester
-// everything else is waiting on, and is what keeps atomics atomic. cpu_wb.v
-// holds `cyc` across both phases of an AMO's read-modify-write and relies on
-// the data master always winning to keep anyone else out of the gap. A
-// walker that could preempt would break that - and it genuinely could ask
-// during the gap, because instruction fetch carries on translating while the
-// MEM stage sits in an AMO.
+// everything else is waiting on, and is what keeps atomics atomic. Each
+// hart's own core holds `cyc` across both phases of an AMO's
+// read-modify-write and relies on that hart's own data master always
+// winning against *any* walker (its own, or another hart's) to keep
+// anyone else out of the gap. A walker that could preempt would break
+// that - and it genuinely could ask during the gap, because instruction
+// fetch carries on translating while the MEM stage sits in an AMO.
 //
-// This cannot deadlock. A data access reaches the bus only from EX/MEM, by
-// which point its address is already translated: while a data walk is in
-// flight the instruction that needs it is still in EX and has issued
-// nothing. So the data master is never waiting on the walker while holding
-// the bus.
+// This cannot deadlock, for the same reason it could not with one hart: a
+// data access reaches the bus only from EX/MEM, by which point its address
+// is already translated, so a hart's own data master is never waiting on
+// a walker while holding the bus. It also cannot deadlock *across* harts -
+// no hart's progress depends on another hart's walker completing.
 //
 // **The walker outranks fetch**, because fetch is nearly continuous and a
 // walk that lost to it could be starved indefinitely. The reverse cannot
@@ -42,99 +67,90 @@
 //
 // Shared bus, not a crossbar: exactly one master owns the bus at a time, so
 // `adr`/`dat_w`/`we`/`sel` are a single broadcast copy and only `stb` is
-// decoded per slave. A crossbar would let an instruction fetch and a data
-// access to *different* slaves proceed in the same cycle; this doesn't, so a
-// load/store costs the fetch behind it a cycle. That's the classic
+// decoded per slave. A crossbar would let two masters to *different* slaves
+// proceed in the same cycle; this doesn't, so a fetch behind a data access
+// (or, now, behind another hart's access) costs a cycle. That's the classic
 // single-port-memory SoC tradeoff, taken deliberately here for a much
 // smaller and more obviously-correct interconnect.
 //
-// Arbitration is fixed priority - master 1 (data) always outranks master 0
-// (instruction) - and is *combinational while the bus is idle but latched for
-// the duration of a transfer*. Both halves of that matter:
+// Arbitration is fixed priority and is *combinational while the bus is idle
+// but latched for the duration of a transfer*. Both halves of that matter:
 //
 //  - **Combinational when idle** means starting a transfer costs nothing. A
 //    registered "go to GRANT state" arbiter would add a cycle to every single
 //    bus access, fetches included.
 //  - **Latched once a transfer is under way** is what makes a multi-cycle
 //    slave safe. Now that the memories are synchronous block RAMs with a wait
-//    state (see wb_ram.v), a purely combinational grant would let master 1
-//    take the bus in the middle of master 0's read - and then the RAM's ack,
-//    which belongs to master 0's address, would be delivered to master 1
-//    along with master 0's data. Silent corruption, not a hang.
+//    state (see wb_ram.v), a purely combinational grant would let a higher-
+//    priority master take the bus in the middle of another master's read -
+//    and then the RAM's ack, which belongs to that other master's address,
+//    would be delivered along with that other master's data. Silent
+//    corruption, not a hang.
 //
-// An earlier version of this file argued that stickiness was unimplementable
-// because "stickiness combined with combinational re-arbitration on `ack`
-// creates a combinational loop: ack -> grant -> stb -> ack". That is only
-// true if the lock is combinational. Registering it breaks the loop: the
-// grant depends on `lock`, which is a flip-flop, and `lock`'s next value
-// depends on `ack`. Nothing goes round without passing through the register.
-//
-// **Atomics** are safe because the data master's own lock now stays held
-// across an AMO's two phases, not because priority happens to re-win it.
-// cpu_core.v holds `dmem_is_amo` (and so `cyc`) for an AMO's entire
-// read-then-write duration, one instruction the whole way through; on that
-// master's own ack, this file re-locks to it rather than releasing,
-// whenever `cyc` is still up (`m1_continuing`, below - specific to the data
-// master, deliberately not a general "whoever still wants it keeps it" rule
-// - see that signal's own comment for why applying this to fetch or the
-// walker would be actively wrong, not just unneeded). Priority alone used
-// to be given as the reason ("master 1 immediately wins re-arbitration for
+// **Atomics** are safe because a data master's own lock stays held across
+// an AMO's two phases, not because priority happens to re-win it. Each
+// hart's core holds its own `dmem_is_amo` (and so `cyc`) for an AMO's
+// entire read-then-write duration, one instruction the whole way through;
+// on that master's own ack, this file re-locks to it rather than
+// releasing, whenever `cyc` is still up for *that specific hart* (see
+// `d_continuing`, below - specific to each hart's own data master,
+// deliberately not a general "whoever still wants it keeps it" rule, and
+// deliberately per-hart rather than "any data master" so hart A's
+// follow-up phase cannot be satisfied by hart B happening to also be
+// asking). Priority alone used to be given as the reason this was safe
+// with a single data master ("master 1 immediately wins re-arbitration for
 // the write phase"), which was true only as long as nothing else with
 // equal-or-higher priority could also want the bus that same cycle - the
-// debug module always could, rarely enough in practice not to matter, but a
-// second *data* master (docs/roadmap.md's Phase 13) would not be rare.
-// Re-locking closes both cases the same way, without needing to reason
-// about who else might be asking.
+// debug module always could, rarely enough in practice not to matter, but
+// a second *data* master would not be rare. Re-locking closes both cases
+// the same way, without needing to reason about who else might be asking.
 //
-// It also can't starve the fetch path despite always losing: a data access
-// is one transaction that then completes, and while it is outstanding
-// cpu_wb.v freezes the whole pipeline, so nothing can queue behind it. The
-// CPU can only make progress by fetching, so the data master necessarily
-// goes idle.
-//
-// **Both masters must tie `stb` to `cyc`.** Arbitration grants on `cyc`
+// **Every master must tie `stb` to `cyc`.** Arbitration grants on `cyc`
 // alone, so a master that asserted `cyc` without `stb` - legal Wishbone, a
 // master holding the bus between transfers - would take the bus and never
-// strobe, blocking the other master until it let go. cpu_wb.v drives each
+// strobe, blocking everyone else until it let go. Every core drives each
 // pair from a single expression, so this holds by construction; the formal
 // properties in formal/fv_interconnect.v assume it explicitly rather than
 // leaving it as folklore.
 //
 // An access that decodes to no slave is acknowledged immediately with zero
-// data rather than left hanging. A bus that never acks would wedge the CPU
-// forever (its pipeline is frozen waiting on `ack`), turning a stray pointer
-// into a silent hang instead of something the running program can survive.
+// data rather than left hanging. A bus that never acks would wedge the
+// issuing hart forever (its pipeline is frozen waiting on `ack`), turning a
+// stray pointer into a silent hang instead of something the running
+// program can survive.
 module wb_interconnect #(
-    parameter NUM_SLAVES = 7
+    parameter NUM_SLAVES = 7,
+    parameter NUM_HARTS  = 1
 )(
     input  wire        clk,
     input  wire        rst,
 
-    // ---- master 0: instruction fetch ----
-    input  wire        m0_cyc,
-    input  wire        m0_stb,
-    input  wire [31:0] m0_adr,
-    output wire [31:0] m0_dat_r,
-    output wire        m0_ack,
+    // ---- per-hart instruction fetch masters (read-only) ----
+    // Hart h's signals occupy bit/word h of each vector below.
+    input  wire [NUM_HARTS-1:0]      f_cyc,
+    input  wire [NUM_HARTS-1:0]      f_stb,
+    input  wire [NUM_HARTS*32-1:0]   f_adr,
+    output wire [NUM_HARTS*32-1:0]   f_dat_r,
+    output wire [NUM_HARTS-1:0]      f_ack,
 
-    // ---- master 1: data ----
-    input  wire        m1_cyc,
-    input  wire        m1_stb,
-    input  wire        m1_we,
-    input  wire [31:0] m1_adr,
-    input  wire [31:0] m1_dat_w,
-    input  wire [3:0]  m1_sel,
-    output wire [31:0] m1_dat_r,
-    output wire        m1_ack,
+    // ---- per-hart data masters ----
+    input  wire [NUM_HARTS-1:0]      d_cyc,
+    input  wire [NUM_HARTS-1:0]      d_stb,
+    input  wire [NUM_HARTS-1:0]      d_we,
+    input  wire [NUM_HARTS*32-1:0]   d_adr,
+    input  wire [NUM_HARTS*32-1:0]   d_dat_w,
+    input  wire [NUM_HARTS*4-1:0]    d_sel,
+    output wire [NUM_HARTS*32-1:0]   d_dat_r,
+    output wire [NUM_HARTS-1:0]      d_ack,
 
-    // ---- master 2: page-table walks (read-only) ----
-    input  wire        m2_cyc,
-    input  wire        m2_stb,
-    input  wire [31:0] m2_adr,
-    output wire [31:0] m2_dat_r,
-    output wire        m2_ack,
+    // ---- per-hart page-table-walk masters (read-only) ----
+    input  wire [NUM_HARTS-1:0]      w_cyc,
+    input  wire [NUM_HARTS-1:0]      w_stb,
+    input  wire [NUM_HARTS*32-1:0]   w_adr,
+    output wire [NUM_HARTS*32-1:0]   w_dat_r,
+    output wire [NUM_HARTS-1:0]      w_ack,
 
-    // ---- master 3: the debug module (rtl/debug/dm.v) ----
+    // ---- the debug module (rtl/debug/dm.v): one, regardless of hart count ----
     //
     // **Highest priority**, which is the opposite of what "a debugger should
     // not disturb the machine" suggests, and is deliberate.
@@ -144,20 +160,20 @@ module wb_interconnect #(
     // apart at any plausible TCK against a 25 MHz system clock. So the
     // interference is one arbitration slot per access and is unmeasurable.
     //
-    // The alternative starves it. The fetch master asserts `cyc` almost
+    // The alternative starves it. A fetch master asserts `cyc` almost
     // continuously, so anything placed below it waits for a cache miss to
     // coincide with an idle data port, and a debugger reading a wedged
-    // machine's memory is exactly the case where the CPU is hammering the bus
+    // machine's memory is exactly the case where a hart is hammering the bus
     // in a loop. A debug port that works only when the machine is healthy is
     // not a debug port.
-    input  wire        m3_cyc,
-    input  wire        m3_stb,
-    input  wire        m3_we,
-    input  wire [31:0] m3_adr,
-    input  wire [31:0] m3_dat_w,
-    input  wire [3:0]  m3_sel,
-    output wire [31:0] m3_dat_r,
-    output wire        m3_ack,
+    input  wire        dbg_cyc,
+    input  wire        dbg_stb,
+    input  wire        dbg_we,
+    input  wire [31:0] dbg_adr,
+    input  wire [31:0] dbg_dat_w,
+    input  wire [3:0]  dbg_sel,
+    output wire [31:0] dbg_dat_r,
+    output wire        dbg_ack,
 
     // ---- shared slave bus ----
     // `s_base` is the addr[31:24] value each slave answers to and `s_mask`
@@ -174,90 +190,139 @@ module wb_interconnect #(
     input  wire [NUM_SLAVES*32-1:0]  s_dat_r,
     input  wire [NUM_SLAVES-1:0]     s_ack,
 
-    // High when the *data* master owns the bus. Peripherals with a
+    // High when *some* hart's data master owns the bus. Peripherals with a
     // read side effect (the PLIC's claim register, the UART's RXDATA) gate
-    // their read strobe on this, so a stray instruction fetch into MMIO
-    // space can't silently claim an interrupt or eat a received byte.
+    // their read strobe on this, so a stray instruction fetch (or a walker
+    // read) into MMIO space can't silently claim an interrupt or eat a
+    // received byte. Which hart does not matter to a peripheral - only
+    // whether this is a real data access, as opposed to fetch, a walker, or
+    // the debug module (see `dbg_ack`'s own property in
+    // formal/fv_interconnect.v for why debug must never assert this).
     output wire                      s_data_master
 );
-    // ---- arbitration: fixed priority, debug > data > walker > fetch ----
+    // ---- per-hart AMO-follow-up detection, generalized from stage 1 ----
     //
-    // `lock_who` is one-hot over {m3, m2, m1, m0} and is only meaningful
-    // while `lock` is set. The lock itself works exactly as it always has.
-    reg        lock;            // a transfer is in flight and owns the bus
-    reg  [3:0] lock_who;        // which master owns it, one-hot
-
-    // Registered: did the data master's own transfer ack *last* cycle,
-    // checked against *this* cycle's `m1_cyc` - not the same-cycle `m1_ack`,
-    // which is trivially true for every transaction the instant it
-    // completes (Wishbone `cyc` does not drop until the master reacts to
-    // seeing the ack, one cycle later, so it is high at the ack cycle for
-    // an ordinary access exactly as much as for an AMO) and so cannot tell
-    // a genuine follow-up phase from an unrelated one just starting. This
-    // can: only a master that immediately re-asserts `cyc` with nothing in
-    // between looks like this, which is exactly what an AMO's read phase
-    // immediately followed by its write phase does - cpu_core.v holds
-    // `dmem_is_amo`, and so `cyc`, continuously across both (see
-    // cpu_wb.v's own MEM-stage comment).
-    reg m1_acked_prev;
+    // Registered: did hart h's own data master ack *last* cycle, checked
+    // against *this* cycle's d_cyc[h] - not the same-cycle d_ack[h], which
+    // is trivially true for every transaction the instant it completes
+    // (Wishbone cyc does not drop until the master reacts to seeing the
+    // ack, one cycle later, so it is high at the ack cycle for an ordinary
+    // access exactly as much as for an AMO) and so cannot tell a genuine
+    // follow-up phase from an unrelated one just starting. This can: only a
+    // master that immediately re-asserts cyc with nothing in between looks
+    // like this, which is exactly what an AMO's read phase immediately
+    // followed by its write phase does.
+    reg  [NUM_HARTS-1:0] d_acked_prev;
     always @(posedge clk or posedge rst) begin
-        if (rst) m1_acked_prev <= 1'b0;
-        else     m1_acked_prev <= m1_ack;
+        if (rst) d_acked_prev <= {NUM_HARTS{1'b0}};
+        else     d_acked_prev <= d_ack;
     end
 
-    // The data master's own immediate follow-up phase wins arbitration
-    // unconditionally, ahead of even the debug module. This is deliberately
-    // narrow - one cycle, and specific to the data master - not a general
-    // "whoever still wants the bus keeps it" rule; see this signal's own
-    // header-comment cross-reference for why applying it to fetch or the
-    // walker would be actively wrong (both can hold `cyc` continuously
-    // across their own back-to-back but *unrelated* transactions, where
-    // losing arbitration between them is correct, not a bug). A worst case
-    // of repeated back-to-back data accesses from one hart costs whoever
-    // else wants the bus one extra cycle's wait each time, the same
-    // "unmeasurable in practice" cost this file already accepts for
-    // debug's own top priority.
-    wire m1_continuing = m1_acked_prev && m1_cyc;
+    // Per-hart, deliberately: hart A's follow-up phase must not be
+    // satisfiable by hart B merely also asking. Each hart's own immediate
+    // follow-up wins arbitration unconditionally, ahead of even the debug
+    // module - deliberately narrow (one cycle, specific to that hart's data
+    // master), not a general "whoever still wants the bus keeps it" rule;
+    // see this signal's own use below for why applying it to fetch or the
+    // walker would be actively wrong (both can hold cyc continuously across
+    // their own back-to-back but *unrelated* transactions, where losing
+    // arbitration between them is correct, not a bug).
+    wire [NUM_HARTS-1:0] d_continuing = d_acked_prev & d_cyc;
+    wire                 any_continuing = |d_continuing;
 
-    // `!m1_cyc` already rules out `m1_continuing` in want_m2/want_m0 below
-    // (the latter implies the former by construction), so it needs no
-    // separate mention there - only want_m3 competes with `m1_continuing`
-    // while `m1_cyc` might itself be true.
-    wire want_m3 = m3_cyc && !m1_continuing;
-    wire want_m1 = m1_cyc && (m1_continuing || !m3_cyc);
-    wire want_m2 = m2_cyc && !m3_cyc && !m1_cyc;
-    wire want_m0 = m0_cyc && !m3_cyc && !m1_cyc && !m2_cyc;
+    // At most one hart can be "continuing" in any reachable cycle (only the
+    // hart that was actually granted the bus last cycle could have just
+    // acked), but arbitration still needs a defined single winner for the
+    // solver to reason about every input combination, reachable or not -
+    // lowest hart index wins, same tie-break as every other tier below.
+    wire [NUM_HARTS-1:0] continuing_win = d_continuing &
+                                          ~(d_continuing - 1'b1);
 
-    wire sel_m3 = lock ? lock_who[3] : want_m3;
-    wire sel_m1 = lock ? lock_who[1] : want_m1;
-    wire sel_m2 = lock ? lock_who[2] : want_m2;
-    wire sel_m0 = lock ? lock_who[0] : want_m0;
+    // ---- per-tier "lowest asking hart wins" priority encode ----
+    //
+    // want_T[h] is true only if hart h's own tier-T request is asking AND
+    // no lower-indexed hart's tier-T request is also asking - a
+    // combinational priority encoder, generalizing the original file's
+    // single named bit per role to NUM_HARTS bits per role. NUM_HARTS=1
+    // reduces each of these to a bare `cyc`, exactly as before.
+    wire [NUM_HARTS-1:0] want_d_tier = d_cyc & ~(d_cyc - 1'b1);
+    wire [NUM_HARTS-1:0] want_w_tier = w_cyc & ~(w_cyc - 1'b1);
+    wire [NUM_HARTS-1:0] want_f_tier = f_cyc & ~(f_cyc - 1'b1);
 
-    wire [3:0] sel_who = {sel_m3, sel_m2, sel_m1, sel_m0};
+    wire any_d_asking = |d_cyc;
 
-    // Only the *data* master gets this. A peripheral with a read side effect
-    // (the PLIC's claim register, the UART's RXDATA) gates its read strobe on
-    // it, and a walk is no more entitled to claim an interrupt than a stray
-    // instruction fetch is - less so, since a walker address comes from a
-    // PTE the program may not even have meant to install.
-    // Note what this does *not* include: the debug master. A host reading the
-    // UART's RBR or the PLIC's claim register through rtl/debug/dm.v gets the
-    // value without the side effect - it does not eat a received byte or
-    // claim an interrupt. That is the difference between a debug port and a
-    // second CPU, and it is one word of code.
-    assign s_data_master = sel_m1;
+    // ---- top-level tiers, in fixed priority order ----
+    wire        want_dbg = dbg_cyc && !any_continuing;
+    wire [NUM_HARTS-1:0] want_d = want_d_tier &
+                                  {NUM_HARTS{!any_continuing && !dbg_cyc}};
+    wire [NUM_HARTS-1:0] want_w = want_w_tier &
+                                  {NUM_HARTS{!any_continuing && !dbg_cyc &&
+                                              !any_d_asking}};
+    wire [NUM_HARTS-1:0] want_f = want_f_tier &
+                                  {NUM_HARTS{!any_continuing && !dbg_cyc &&
+                                              !any_d_asking && !(|w_cyc)}};
 
-    assign s_cyc   = sel_m3 ? m3_cyc :
-                     (sel_m1 ? m1_cyc : (sel_m2 ? m2_cyc : (sel_m0 ? m0_cyc : 1'b0)));
-    wire   cur_stb = sel_m3 ? m3_stb :
-                     (sel_m1 ? m1_stb : (sel_m2 ? m2_stb : (sel_m0 ? m0_stb : 1'b0)));
-    // Neither the fetch master nor the walker has a write path; the debug
-    // module and the data master do.
-    assign s_we    = sel_m3 ? m3_we : (sel_m1 ? m1_we : 1'b0);
-    assign s_adr   = sel_m3 ? m3_adr :
-                     (sel_m1 ? m1_adr : (sel_m2 ? m2_adr : m0_adr));
-    assign s_dat_w = sel_m3 ? m3_dat_w : (sel_m1 ? m1_dat_w : 32'b0);
-    assign s_sel   = sel_m3 ? m3_sel : (sel_m1 ? m1_sel : 4'b1111);
+    reg        lock;
+    reg        lock_dbg;
+    reg  [NUM_HARTS-1:0] lock_d, lock_w, lock_f;
+
+    // Only lock_d/lock_w/lock_f/lock_dbg need to survive into the lock -
+    // the mux below only ever asks "which master is selected", never "was
+    // this cycle's selection the continuing override or the ordinary
+    // tier-2 winner", so that distinction does not need its own storage.
+    wire        sel_dbg        = lock ? lock_dbg        : want_dbg;
+    wire [NUM_HARTS-1:0] sel_d = lock ? lock_d : (any_continuing ? continuing_win : want_d);
+    wire [NUM_HARTS-1:0] sel_w = lock ? lock_w : want_w;
+    wire [NUM_HARTS-1:0] sel_f = lock ? lock_f : want_f;
+
+    // A data master is selected either because it is genuinely the winning
+    // tier-2 request, or because it is the one continuing a locked-in AMO -
+    // `sel_d` already covers both (the ternary above), so this is just "any
+    // hart's data master is the granted master."
+    wire any_d_sel = |sel_d;
+
+    assign s_data_master = any_d_sel;
+
+    // ---- response mux over the selected master ----
+    //
+    // Built by OR-reducing each hart's contribution rather than a single
+    // flat priority chain, since at most one of sel_dbg/any_d_sel/sel_w/
+    // sel_f (and, within sel_d/sel_w/sel_f, at most one hart) is ever true -
+    // guaranteed by construction above, not assumed.
+    reg [31:0] cur_adr, cur_dat_w;
+    reg [3:0]  cur_sel;
+    reg        cur_we, cur_stb;
+    integer h;
+    always @(*) begin
+        cur_adr   = 32'b0;
+        cur_dat_w = 32'b0;
+        cur_sel   = 4'b0;
+        cur_we    = 1'b0;
+        cur_stb   = 1'b0;
+        if (sel_dbg) begin
+            cur_adr = dbg_adr; cur_dat_w = dbg_dat_w; cur_sel = dbg_sel;
+            cur_we  = dbg_we;  cur_stb   = dbg_stb;
+        end
+        for (h = 0; h < NUM_HARTS; h = h + 1) begin
+            if (sel_d[h]) begin
+                cur_adr = d_adr[32*h +: 32]; cur_dat_w = d_dat_w[32*h +: 32];
+                cur_sel = d_sel[4*h +: 4];   cur_we    = d_we[h];
+                cur_stb = d_stb[h];
+            end
+            if (sel_w[h]) begin
+                cur_adr = w_adr[32*h +: 32]; cur_stb = w_stb[h];
+            end
+            if (sel_f[h]) begin
+                cur_adr = f_adr[32*h +: 32]; cur_stb = f_stb[h];
+            end
+        end
+    end
+
+    assign s_cyc   = sel_dbg || any_d_sel || (|sel_w) || (|sel_f);
+    assign s_we    = cur_we;
+    assign s_adr   = cur_adr;
+    assign s_dat_w = cur_dat_w;
+    assign s_sel   = cur_sel;
 
     // ---- address decode ----
     reg  [NUM_SLAVES-1:0] hit;
@@ -291,35 +356,46 @@ module wb_interconnect #(
     wire        fin_ack = cur_stb && (decoded ? rsp_ack : 1'b1);
     wire [31:0] fin_dat = decoded ? rsp_dat : 32'b0;
 
-    assign m0_dat_r = fin_dat;
-    assign m1_dat_r = fin_dat;
-    assign m2_dat_r = fin_dat;
-    assign m3_dat_r = fin_dat;
-    assign m0_ack   = sel_m0 && fin_ack;
-    assign m1_ack   = sel_m1 && fin_ack;
-    assign m2_ack   = sel_m2 && fin_ack;
-    assign m3_ack   = sel_m3 && fin_ack;
+    genvar g;
+    generate
+        for (g = 0; g < NUM_HARTS; g = g + 1) begin : g_hart_resp
+            assign f_dat_r[32*g +: 32] = fin_dat;
+            assign d_dat_r[32*g +: 32] = fin_dat;
+            assign w_dat_r[32*g +: 32] = fin_dat;
+            assign f_ack[g] = sel_f[g] && fin_ack;
+            assign d_ack[g] = sel_d[g] && fin_ack;
+            assign w_ack[g] = sel_w[g] && fin_ack;
+        end
+    endgenerate
+    assign dbg_dat_r = fin_dat;
+    assign dbg_ack   = sel_dbg && fin_ack;
 
     // Take the lock only when a transfer actually starts and does *not*
     // complete in its first cycle, so zero-wait-state slaves (the peripheral
     // bridges, and an unmapped address) behave exactly as they did before
     // this existed and never touch the lock at all. This mechanism is
-    // unchanged by `m1_continuing` above - that one protects the one-cycle
-    // *gap* between an ack and a possible same-master follow-up, entirely
-    // through the `want_*`/`sel_*` computation; this one protects an
-    // already-granted multi-cycle transfer from being preempted mid-wait
-    // (property 9), a different moment for a different reason. They compose
-    // rather than interact: whichever master is decided by combinational
-    // priority (now including `m1_continuing`'s override) is what gets
-    // locked in here if its own transfer takes more than one cycle.
+    // unchanged by the continuing-override above - that one protects the
+    // one-cycle *gap* between an ack and a possible same-hart follow-up,
+    // entirely through the want_*/sel_* computation; this one protects an
+    // already-granted multi-cycle transfer from being preempted mid-wait, a
+    // different moment for a different reason. They compose rather than
+    // interact: whichever master is decided by combinational priority (now
+    // including the continuing override) is what gets locked in here if its
+    // own transfer takes more than one cycle.
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             lock     <= 1'b0;
-            lock_who <= 4'b0;
+            lock_dbg <= 1'b0;
+            lock_d   <= {NUM_HARTS{1'b0}};
+            lock_w   <= {NUM_HARTS{1'b0}};
+            lock_f   <= {NUM_HARTS{1'b0}};
         end else if (!lock) begin
             if (cur_stb && !fin_ack) begin
                 lock     <= 1'b1;
-                lock_who <= sel_who;
+                lock_dbg <= sel_dbg;
+                lock_d   <= sel_d;
+                lock_w   <= sel_w;
+                lock_f          <= sel_f;
             end
         end else if (fin_ack) begin
             lock <= 1'b0;

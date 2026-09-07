@@ -1120,8 +1120,8 @@ int main(int argc, char **argv) {
                 fprintf(wt_fp, "%ld %08x %08x %x %s\n", cycles, a,
                         root->soc_top__DOT__BUS__DOT__s_dat_w,
                         root->soc_top__DOT__BUS__DOT__s_sel,
-                        root->soc_top__DOT__BUS__DOT__sel_m1 ? "data" :
-                        root->soc_top__DOT__BUS__DOT__sel_m2 ? "walker"
+                        root->soc_top__DOT__BUS__DOT__sel_d ? "data" :
+                        root->soc_top__DOT__BUS__DOT__sel_w ? "walker"
                                                              : "fetch");
         }
 
@@ -1132,8 +1132,8 @@ int main(int argc, char **argv) {
             if (a >= rt_lo && a < rt_hi)
                 fprintf(rt_fp, "%ld %08x %08x %s\n", cycles, a,
                         root->soc_top__DOT__BUS__DOT__fin_dat,
-                        root->soc_top__DOT__BUS__DOT__sel_m1 ? "data" :
-                        root->soc_top__DOT__BUS__DOT__sel_m2 ? "walker"
+                        root->soc_top__DOT__BUS__DOT__sel_d ? "data" :
+                        root->soc_top__DOT__BUS__DOT__sel_w ? "walker"
                                                              : "fetch");
         }
 
@@ -1152,8 +1152,8 @@ int main(int argc, char **argv) {
                         reads_bad++;
                         if (reads_bad <= 12) {
                             const char *who =
-                                root->soc_top__DOT__BUS__DOT__sel_m1 ? "data" :
-                                root->soc_top__DOT__BUS__DOT__sel_m2 ? "walker"
+                                root->soc_top__DOT__BUS__DOT__sel_d ? "data" :
+                                root->soc_top__DOT__BUS__DOT__sel_w ? "walker"
                                                                      : "fetch";
                             printf("\n** bad read at cycle %ld: [0x%08x] = "
                                    "0x%08x, bus returned 0x%08x (%s master)\n",

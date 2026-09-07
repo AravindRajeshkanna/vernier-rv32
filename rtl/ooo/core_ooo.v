@@ -1492,9 +1492,9 @@ module core_ooo #(
     // TLB miss the walk is still mid-flight, `pte1_r` hasn't even been
     // fetched yet, and `head_mmu_pa` reads as a garbage address derived
     // from an all-zero PTE. Asserting `dmem_we` with that address anyway
-    // put a bogus, permanently-held write on the CPU's own data master
-    // (m1), and since wb_interconnect.v gives m1 strict priority over the
-    // page-table walker (m2, rtl/soc/wb_ptw.v) - by design, so an AMO's
+    // put a bogus, permanently-held write on the CPU's own data master,
+    // and since wb_interconnect.v gives the data master strict priority
+    // over the page-table walker (rtl/soc/wb_ptw.v) - by design, so an AMO's
     // read-modify-write can't be preempted mid-gap - that bogus write
     // starved the walker of the bus forever, so the walk that would have
     // resolved `head_mmu_pa` and cleared the condition never got to run: a

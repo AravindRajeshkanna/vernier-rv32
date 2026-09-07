@@ -1348,6 +1348,22 @@ sim_clint_multihart: sim/sim_clint_multihart.out
 	@grep -aq "CLINT-MULTIHART-TEST: PASS" sim/clint_multihart.log && echo "CLINT MULTIHART OK" || \
 	    { echo "FAILED: clint.v NUM_HARTS parameter"; exit 1; }
 
+# ---- Phase 13 stage 3: interconnect NUM_HARTS generalization ----
+#
+# Board-independent, like sim_pmp/sim_clint_multihart above: proves two of
+# the arbitration behaviors formal/fv_interconnect.v proves in the abstract
+# (cross-hart tier priority, per-hart AMO continuation) actually play out
+# over a real cycle-by-cycle trace against a real, multi-wait-state slave,
+# before any second hart exists to wire the new ports to for real - see
+# docs/roadmap.md's Phase 13 entry.
+sim/sim_interconnect_multihart.out: sim/tb_interconnect_multihart.v rtl/soc/wb_interconnect.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_interconnect_multihart.v rtl/soc/wb_interconnect.v
+
+sim_interconnect_multihart: sim/sim_interconnect_multihart.out
+	cd sim && $(VVP) sim_interconnect_multihart.out $(VVP_DUMP) | tee interconnect_multihart.log
+	@grep -aq "INTERCONNECT-MULTIHART-TEST: PASS" sim/interconnect_multihart.log && echo "INTERCONNECT MULTIHART OK" || \
+	    { echo "FAILED: wb_interconnect.v NUM_HARTS parameter"; exit 1; }
+
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
@@ -1492,6 +1508,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         sim_pmp_csr \
         sim_mhartid \
         sim_clint_multihart \
+        sim_interconnect_multihart \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \
