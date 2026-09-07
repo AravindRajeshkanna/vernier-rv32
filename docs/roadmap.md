@@ -5112,3 +5112,76 @@ and at this same scale with different logic, is also a real candidate
 for a yosys bug report upstream, not necessarily something this
 project's own RTL is doing wrong - that possibility has not been
 ruled out either, and would change what "fixing" this even means.
+
+**Update 1: the bisection above turned out impractical on available
+hardware, but a cheaper technique found the likely root mechanism -
+`mem[]` never maps to a real block RAM at all, which points squarely
+back at this project's own RTL.** The planned stage-by-stage bisection
+(fill-only, then +copy, then +line, each synthesized at real 320x240
+scale) does not complete on an 8 GB machine: even the simplest,
+fill-only variant was killed by the OS during `FSM_EXTRACT`, before
+reaching the `CHECK` pass this defect is actually about, so the
+technique could not distinguish "this stage is fine" from "this stage
+also crashes, just later." Comparing stages at full scale needs either
+more memory than was available this round or a different technique
+entirely.
+
+A different, much cheaper technique found something the bisection
+would not have: overriding `FB_WIDTH`/`FB_HEIGHT` via yosys's own
+`chparam` shrinks the array without touching a single line of RTL, and
+running the *actual, current* file (every stage's logic present) at
+8x8 through 128x128 reaches `CHECK` cleanly every time - no crash, no
+`std::out_of_range` - while still never once producing a "mapping
+memory `wb_framebuffer.mem` via ..." line from `MEMORY_LIBMAP`. Compared
+directly against `rtl/soc/wb_ram.v` in the same flow, which *does* map
+its own byte-lane-written array to `DP16KD` (`mapping memory wb_ram.mem
+via $__DP16KD_`), this means `wb_framebuffer.v`'s `mem[]` silently falls
+through to `MEMORY_MAP` (flip-flops and logic) at *every* size tested,
+scale-independent - it just so happens that the fallback is cheap enough
+to survive at 128x128 and is not at 320x240. This reframes the defect:
+the likely root cause is not an obscure `CHECK`-pass exception at all,
+but this array never being mapped to real block RAM in the first place,
+with `CHECK`'s crash being a downstream symptom of how large the
+fallback gets at the real buffer's actual size. `wb_ram.v`'s own header
+already documents this exact failure mode from this project's past ("the
+previous version... asynchronous reads on three separate ports... falls
+back to building the array out of flip-flops - two million of them - and
+never finishes... One port, not four.") - strong precedent that this is
+the same class of bug recurring, not a new yosys defect.
+
+**What is different here, and what has been ruled out trying to close
+that gap.** `wb_framebuffer.v`'s `mem[]` needs three effective ports (one
+write, shared by the CPU and the engine, plus Port A's own read and Port
+B's independent scan-out read) against `wb_ram.v`'s genuinely single
+port (one read, one write, same address, same always block) - a
+plausible reason `MEMORY_LIBMAP`'s default matching declines it. A
+from-scratch minimal reproduction (a 256-word array, one write port, two
+independent read ports, nothing else) rules out "three ports, full stop"
+as the explanation: it maps cleanly, via `$__PDPW16KD_`, to two real
+`DP16KD` primitives, in half a second. Three further synthetic
+reproductions, together covering every other feature `wb_framebuffer.v`'s
+real code actually has - byte-lane conditional writes (`wb_ram.v`'s own
+pattern) against two independent reads; the write scattered across
+separate case branches at different addresses (CPU write vs. the
+engine's own) combined with a read address multiplexed on an internal
+phase bit (`effective_read_addr`); and, in one module, all of the above
+plus a captured read register whose value feeds a *later* write
+(`copy_src_byte`) and two separate engine-write case branches to the
+same address (line vs. fill/copy) - every one of them still mapped
+cleanly to two `DP16KD`s at the same 256-word size the real file already
+fails at. None of these, alone or together, is the trigger.
+
+**What is not yet known, still.** The real file's specific wide,
+multiply-based address computation (`(blit_cur_y * FB_WIDTH) +
+{20'd0, blit_cur_x}`, sliced to `AW` bits out of a 32-bit intermediate)
+and its much larger total signal count (the Bresenham line state and
+everything else this module carries, well beyond any synthetic
+reproduction tried) remain untested as the specific trigger, individually
+or together. A fix attempt along the lines of `wb_ram.v`'s own historical
+one - explicitly splitting `mem[]` into two arrays, one per read port, so
+each individually looks like a single-port memory - was tried directly
+against the real file and did not restore BRAM mapping either, so the
+eventual fix is not yet known to be that simple. Left here rather than
+guessed at further this round, for the same reasons as before: nothing in
+`make verify`/`make verify_ooo` is affected, and no board is attached to
+this session.
