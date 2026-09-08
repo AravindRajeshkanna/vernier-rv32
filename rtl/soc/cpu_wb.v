@@ -34,7 +34,23 @@
 // address, a word on a multiple of four. This core has no misaligned-access
 // support to begin with and compilers don't emit misaligned accesses, so
 // that assumption is safe, but it is an assumption.
-module cpu_wb (
+module cpu_wb #(
+    // Disables the data cache entirely (every access reaches the bus, every
+    // cycle) without removing it - docs/roadmap.md's Phase 13 entry names
+    // this write-through cache as "correct only in a single-master system":
+    // nothing snoops the bus for a *second* master's writes to a line this
+    // one has cached, so a value changed by another hart's own store can be
+    // served stale here indefinitely, with nothing - not even the next
+    // access to the same address - ever correcting it. That is a
+    // consequence of there being no coherence protocol at all, not a
+    // one-line bug: closing it for real needs either a real snoop path into
+    // this cache or the correctness-first alternative the project chose -
+    // no per-core caching until one is built. This parameter is that
+    // alternative. Defaults to 1 (today's behavior, and the only value
+    // anything in this tree instantiates with yet); nothing has been asked
+    // to instantiate a second hart, or to set this to 0, yet either.
+    parameter DCACHE_ENABLE = 1
+)(
     input  wire        clk,
     input  wire        rst,
 
@@ -316,8 +332,15 @@ module cpu_wb (
     // 0x00_000000. Everything between them is a peripheral, where a read has
     // a side effect or a value that changes without a write - a UART status
     // register, `mtime`. Caching those would not be slow, it would be wrong.
-    wire dc_cacheable = (dmem_addr[31:24] == 8'h80) ||
-                        (dmem_addr[31:24] == 8'h00);
+    //
+    // `DCACHE_ENABLE` gates this rather than the individual fill/store/hit
+    // sites below, so disabling it is provably equivalent to the cache never
+    // having anything resident: `dc_present` (and so `load_hit`) is always
+    // false, every access falls through to the bus path, and `dc_fill`/
+    // `dc_store` (both already conditioned on `dc_cacheable`) never write
+    // the arrays at all.
+    wire dc_cacheable = DCACHE_ENABLE && ((dmem_addr[31:24] == 8'h80) ||
+                                           (dmem_addr[31:24] == 8'h00));
 
     wire [DC_IDX_BITS-1:0] dc_idx     = dmem_addr[DC_IDX_BITS+1:2];
     wire [DC_TAG_BITS-1:0] dc_tag_now = dmem_addr[31:DC_IDX_BITS+2];
