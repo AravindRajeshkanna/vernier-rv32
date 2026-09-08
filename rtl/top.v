@@ -128,7 +128,7 @@ module top #(
         .mtip(mtip), .msip_out(msip), .mtime_out(mtime)
     );
 
-    plic #(.NUM_SOURCES(NUM_IRQ_SOURCES)) PLIC (
+    plic #(.NUM_SOURCES(NUM_IRQ_SOURCES), .NUM_CONTEXTS(2)) PLIC (
         .clk(clk), .rst(rst),
         .addr(dmem_addr), .wdata(dmem_wdata),
         .we(dmem_we && is_plic), .re(dmem_re && is_plic),

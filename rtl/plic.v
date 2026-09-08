@@ -52,7 +52,15 @@
 // same reason.
 module plic #(
     parameter NUM_SOURCES  = 8,     // must be <= 31: one bitmap word
-    parameter NUM_CONTEXTS = 2      // 0 = hart0 M-mode, 1 = hart0 S-mode
+    // 0 = hart0 M-mode, 1 = hart0 S-mode, [2]/[3] = a second hart's own
+    // M-mode/S-mode, were one ever instantiated (docs/roadmap.md's Phase 13
+    // entry) - the default here is that near-term target, proven by
+    // formal/run.sh's "plic" target, which takes whatever this module
+    // declares since it has no separate wrapper (see the `ifdef FORMAL
+    // block below). rtl/soc/soc_top.v and rtl/top.v both pin this to 2
+    // explicitly, since that is the only hart count either actually
+    // builds - changing this default does not change their behavior.
+    parameter NUM_CONTEXTS = 4
 )(
     input  wire        clk,
     input  wire        rst,
