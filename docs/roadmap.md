@@ -3922,6 +3922,58 @@ invalidating on *any* hart's store to the same address, cached or not -
 two gaps). That remains exactly as open as the original assessment left
 it.
 
+**Stage 6: `rtl/soc/reservation_monitor.v`, the cross-hart half of LR/SC's
+contract, built and proven standalone before either core is wired to
+it.** Stage 5 named this the coherence gap a cache bypass cannot close:
+a reservation is a correctness primitive, not a performance feature, so
+there is no "just disable it" option the way there was for the D-cache.
+`rtl/cpu_core.v`'s `reservation_valid`/`reservation_addr` already
+invalidate correctly on that same hart's own subsequent trap/SC/write
+(`any_successful_write`) - the gap is specifically the case nothing
+local can see: a *different* hart's write landing on an address this
+hart still holds a reservation on.
+
+The new module takes each hart's own held reservation and each hart's
+own completed writes (a plain store, an SC's own write phase, or an
+AMO's write phase - the same set `any_successful_write` already
+aggregates for the single-hart case) and produces one invalidate pulse
+per hart for the cycle any *other* hart's write matches its reservation.
+Deliberately wired from each core's own write-completion signal rather
+than tapped off the shared bus post-arbitration: the bus's own broadcast
+address only carries which *master* currently owns it
+(`rtl/soc/wb_interconnect.v`'s `s_data_master`), not which *hart*, and
+turning that into a hart index would need the interconnect to expose one
+it has no other use for. A hart's own write to its own reservation is
+deliberately excluded from this module's own output - already correct,
+already handled locally - so wiring this in later only ever adds a
+cross-hart OR term to each core's existing clearing condition, not a
+replacement for it.
+
+Proven correct with a new directed test, `sim/tb_reservation_monitor.v`
+(`sim_reservation_monitor`, now in `make verify`): a cross-hart write
+invalidates, a write to a different address does not, a hart's own
+write to its own reservation is correctly *not* flagged here (that
+case belongs to existing local logic), no reservation held means
+nothing to invalidate, and the symmetric and simultaneous two-hart
+cases both hold. Confirmed to actually catch a regression: run once
+against a version with the self-exclusion removed, which the test
+correctly failed, before trusting it to pass against the real file.
+
+**Not gated by the full `make verify`/`make verify_ooo` this round, and
+that is a measured claim, not a shortcut:** this module is instantiated
+by nothing else in the tree yet - confirmed by grepping for its own name
+across every `.v` file, which finds only its own source and its own
+test - so the two-core regression is provably unaffected by this change
+regardless of whether it runs, the same reasoning that already governs
+which gates a genuinely disconnected addition needs.
+
+**What this stage deliberately does not do:** wire this module into
+`rtl/cpu_core.v`/`rtl/ooo/core_ooo.v`, instantiate a second hart, or
+touch the D-cache gap stage 5 already closed. Wiring a real core to
+this module's inputs and OR-ing its output into that core's own
+reservation-clearing condition remains open, for whichever stage
+actually instantiates a second hart.
+
 **Why this is stated as "plumbing plus one real redesign" rather than
 scoped further this round.** Every other phase in this file has been
 substantially "wire existing, verified pieces together" work - PMP's

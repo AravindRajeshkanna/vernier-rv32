@@ -1397,6 +1397,21 @@ sim_cpu_wb_dcache_bypass: sim/sim_cpu_wb_dcache_bypass.out
 	@grep -aq "CPU-WB-DCACHE-BYPASS-TEST: PASS" sim/cpu_wb_dcache_bypass.log && echo "CPU_WB DCACHE BYPASS OK" || \
 	    { echo "FAILED: cpu_wb.v DCACHE_ENABLE parameter"; exit 1; }
 
+# ---- Phase 13: cross-hart LR/SC reservation monitor ----
+#
+# Board-independent, like sim_cpu_wb_dcache_bypass above: a brand new,
+# standalone module nothing else in this tree instantiates yet - proven on
+# its own before either core is wired to it, matching every earlier Phase
+# 13 stage's own "verify the hard piece in isolation" sequencing. See
+# docs/roadmap.md's Phase 13 entry.
+sim/sim_reservation_monitor.out: sim/tb_reservation_monitor.v rtl/soc/reservation_monitor.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_reservation_monitor.v rtl/soc/reservation_monitor.v
+
+sim_reservation_monitor: sim/sim_reservation_monitor.out
+	cd sim && $(VVP) sim_reservation_monitor.out $(VVP_DUMP) | tee reservation_monitor.log
+	@grep -aq "RESERVATION-MONITOR-TEST: PASS" sim/reservation_monitor.log && echo "RESERVATION MONITOR OK" || \
+	    { echo "FAILED: rtl/soc/reservation_monitor.v"; exit 1; }
+
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
@@ -1544,6 +1559,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         sim_interconnect_multihart \
         sim_plic_4ctx \
         sim_cpu_wb_dcache_bypass \
+        sim_reservation_monitor \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \
