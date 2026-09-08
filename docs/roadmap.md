@@ -3867,6 +3867,61 @@ all - those remain exactly as open as stage 3 left them, and are what
 the plumbing list's own "wiring two more `eip` lines to a second
 `csr_file` instance" phrase still refers to.
 
+**Stage 5: a D-cache bypass in `rtl/soc/cpu_wb.v`, proving the chosen
+correctness-first coherence approach against the actual scenario it
+closes, before a second hart exists to need it.** This is the first
+stage to touch the "one real redesign" half of the phase's own
+assessment (the plumbing stages above were the other half) - and,
+matching the decision already made for it, it is the smaller of the two
+coherence gaps to close: a parameter, not a protocol. `DCACHE_ENABLE`
+(default 1, unchanged for every real build) gates `dc_cacheable`
+directly, so `DCACHE_ENABLE=0` makes `dc_present` always false, every
+access fall through to the bus, and the fill/store sites - already
+conditioned on `dc_cacheable` - never write the cache arrays at all.
+Nothing about the cache's own structure changed; it is proven inert
+when disabled, not removed.
+
+The new directed test, `sim/tb_cpu_wb_dcache_bypass.v`
+(`sim_cpu_wb_dcache_bypass`, now in `make verify`), earns its keep by
+proving the actual failure this stage exists to prevent, not just that
+the knob does not crash anything: two `cpu_wb` instances (one per
+setting) share a stimulus sequence and each get a *foreign write* -
+their own backing memory poked directly, never through either
+instance's own Wishbone port, standing in for a second hart's own store
+reaching the same physical address through a different bus master
+entirely. `DCACHE_ENABLE=1` (correctly, for the single-master SoC that
+exists today) then serves the *stale* cached value on the next load;
+`DCACHE_ENABLE=0` correctly sees the foreign write. Confirmed to
+actually catch a regression: run once against a version that ignored
+the parameter entirely, which the test correctly failed, before
+trusting it to pass against the real file.
+
+**Two real testbench-timing bugs found and fixed while building the
+test, neither in the RTL:** a store's own cache-fill update and this
+testbench's slave-side ack register both update via non-blocking
+assignment at the same clock edge, so the DUT's fill logic still sees
+the *pre*-edge (not-yet-acked) value of `dwb_ack` at the exact cycle
+`dbus_wait` first reads low - the actual cache write lands one edge
+later. An earlier version of the test returned from a store the moment
+`dbus_wait` cleared and immediately checked the line it had just
+written, reading back 0. Fixed by waiting one further edge after a
+*store* specifically; a *load*'s own hit path has no such cross-module
+dependency (both `dbus_wait` and `dc_line` come from the DUT's own
+already-updated registers), and adding the same extra wait there would
+instead have broken the check, reading `rdata_q` - which a hit never
+updates - one cycle after the value it was meant to catch had already
+passed.
+
+**What this stage deliberately does not do:** instantiate a second
+hart, or close the *other* coherence gap the original assessment
+named - `rtl/cpu_core.v`'s LR/SC reservation, a private per-core
+register whose own cross-hart invalidation contract is a different
+mechanism from anything a cache bypass addresses (a reservation needs
+invalidating on *any* hart's store to the same address, cached or not -
+"no caching" does not make that problem go away, it just removes one of
+two gaps). That remains exactly as open as the original assessment left
+it.
+
 **Why this is stated as "plumbing plus one real redesign" rather than
 scoped further this round.** Every other phase in this file has been
 substantially "wire existing, verified pieces together" work - PMP's

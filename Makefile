@@ -1380,6 +1380,23 @@ sim_interconnect_multihart: sim/sim_interconnect_multihart.out
 	@grep -aq "INTERCONNECT-MULTIHART-TEST: PASS" sim/interconnect_multihart.log && echo "INTERCONNECT MULTIHART OK" || \
 	    { echo "FAILED: wb_interconnect.v NUM_HARTS parameter"; exit 1; }
 
+# ---- Phase 13: cpu_wb.v D-cache bypass (DCACHE_ENABLE) ----
+#
+# Board-independent, like sim_interconnect_multihart above: proves the
+# actual coherence scenario DCACHE_ENABLE=0 exists to close - a foreign
+# write to the backing memory, standing in for a second hart's own store
+# reaching the same physical address through a different bus master
+# entirely - is served stale with caching on and correctly fresh with it
+# off, before any second hart exists to need the escape hatch for real -
+# see docs/roadmap.md's Phase 13 entry.
+sim/sim_cpu_wb_dcache_bypass.out: sim/tb_cpu_wb_dcache_bypass.v rtl/soc/cpu_wb.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_wb_dcache_bypass.v rtl/soc/cpu_wb.v
+
+sim_cpu_wb_dcache_bypass: sim/sim_cpu_wb_dcache_bypass.out
+	cd sim && $(VVP) sim_cpu_wb_dcache_bypass.out $(VVP_DUMP) | tee cpu_wb_dcache_bypass.log
+	@grep -aq "CPU-WB-DCACHE-BYPASS-TEST: PASS" sim/cpu_wb_dcache_bypass.log && echo "CPU_WB DCACHE BYPASS OK" || \
+	    { echo "FAILED: cpu_wb.v DCACHE_ENABLE parameter"; exit 1; }
+
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
@@ -1526,6 +1543,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         sim_clint_multihart \
         sim_interconnect_multihart \
         sim_plic_4ctx \
+        sim_cpu_wb_dcache_bypass \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \
