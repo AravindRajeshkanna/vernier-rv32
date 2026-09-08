@@ -3830,6 +3830,43 @@ module gains its own internal arbitration for more than one core's
 walkers is a decision for whichever stage actually instantiates hart 1,
 not this one.
 
+**Stage 4: `rtl/plic.v`'s `NUM_CONTEXTS` default bumped from 2 to 4 - a
+second hart's own M-mode/S-mode contexts - proven by the module's own
+existing formal properties without changing them.** The plumbing list
+above already named this as "close to plug-in work, not a redesign", and
+that held: `plic.v`'s embedded formal properties (`formal/run.sh`'s
+"plic" target - there is no separate wrapper, since the properties need
+the module's own per-context arrays) are written generically over
+`NUM_CONTEXTS` with `for` loops already, so proving the new value needed
+no property changes at all, only the module's own bare default - which
+`rtl/soc/soc_top.v` and `rtl/top.v` both override to `2` explicitly
+regardless, so the real SoC's behavior is unaffected either way (the one
+instantiation that did not already pin it, `rtl/top.v`, was given an
+explicit `.NUM_CONTEXTS(2)` as part of this stage, matching
+`soc_top.v`'s own existing discipline, so the default can move without
+silently changing what that build's `eip` port produces). `make formal`
+proves it clean at depth 12 with no other change required.
+
+A new directed test, `sim/tb_plic_4ctx.v` (`sim_plic_4ctx`, now in `make
+verify`), complements that proof with something the formal properties
+do not independently check: the exact byte offsets a real driver
+computes. The formal properties are stated in terms of each context's
+own logical correctness (does `eip` reflect eligibility, does a claim
+name the right source) and would still hold even if a stride bug moved
+a context's window to the wrong address entirely, as long as some
+consistent context answered some address - only a test that knows the
+documented offset in advance (matching `software/soc/soc.h`'s own
+`PLIC_ENABLE`/`PLIC_THRESHOLD`/`PLIC_CLAIM` macros) can catch that
+class of bug. Confirmed to actually catch one: run once against a
+deliberately shifted context-stride offset first, which the test
+correctly fails, before trusting it to pass against the real file.
+
+**What this stage deliberately does not do:** wire a second hart's `eip`
+lines to a second `csr_file` instance, or instantiate a second hart at
+all - those remain exactly as open as stage 3 left them, and are what
+the plumbing list's own "wiring two more `eip` lines to a second
+`csr_file` instance" phrase still refers to.
+
 **Why this is stated as "plumbing plus one real redesign" rather than
 scoped further this round.** Every other phase in this file has been
 substantially "wire existing, verified pieces together" work - PMP's

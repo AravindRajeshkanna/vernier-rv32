@@ -1077,6 +1077,22 @@ sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
 	@grep -q "RAMBOOT TEST PASSED" sim/plic.log || \
 	    { echo "sim_plic FAILED"; exit 1; }
 
+# ---- Phase 13: PLIC NUM_CONTEXTS default bumped to 4 ----
+#
+# Board-independent, like sim_pmp/sim_clint_multihart above: proves the two
+# new contexts (a second hart's own M-mode/S-mode) land at the exact byte
+# offsets software/soc/soc.h's own macros expect and are independently
+# addressable, complementing formal/run.sh's "plic" target (which proves the
+# logical properties generically but does not independently check the
+# strided address arithmetic) - see docs/roadmap.md's Phase 13 entry.
+sim/sim_plic_4ctx.out: sim/tb_plic_4ctx.v rtl/plic.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_plic_4ctx.v rtl/plic.v
+
+sim_plic_4ctx: sim/sim_plic_4ctx.out
+	cd sim && $(VVP) sim_plic_4ctx.out $(VVP_DUMP) | tee plic_4ctx.log
+	@grep -aq "PLIC-4CTX-TEST: PASS" sim/plic_4ctx.log && echo "PLIC 4CTX OK" || \
+	    { echo "FAILED: plic.v NUM_CONTEXTS default"; exit 1; }
+
 # ---- PMP: real S-mode enforcement, wired to the data access path ----
 #
 # rtl/pmp.v's own matching logic and rv32mi-p-pmpaddr's CSR-storage check
@@ -1509,6 +1525,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         sim_mhartid \
         sim_clint_multihart \
         sim_interconnect_multihart \
+        sim_plic_4ctx \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \
