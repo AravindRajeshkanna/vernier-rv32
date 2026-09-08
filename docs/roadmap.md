@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. A real assessment found the PLIC and interconnect closer to ready than not, but the memory subsystem has no cache/reservation coherence story at all today — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. A real assessment found the PLIC and interconnect closer to ready than not; a coherence approach is now decided and its pieces (a D-cache bypass, a standalone cross-hart reservation monitor, `cpu_core.v` ports exposing its reservation state) are each built and proven in isolation, but none of it is wired to a real second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -3998,6 +3998,90 @@ peripheral) that a kernel built assuming identical cores does not
 usually have to reason about, even though Linux's own heterogeneous
 scheduling support (big.LITTLE and similar) is real precedent that this
 is not unprecedented in principle.
+
+**Stage 7: `rtl/cpu_core.v`'s reservation state exposed as ports - the
+"give the hard piece a real core to eventually connect to" half of what
+stage 6 left open, not the wiring itself.** Five new ports: `resv_valid`/
+`resv_addr` (mirroring the existing private `reservation_valid`/
+`reservation_addr` registers outward), `store_fire`/`store_addr` (any
+completed write this hart makes, gated the same way the existing
+reservation-clearing logic already gates `any_successful_write` -
+`store_fire = any_successful_write && !dbus_stall`, since that signal is
+combinationally true for a multi-cycle write's entire duration, not just
+its completion cycle, and `store_fire` has no enclosing `if/else-if`
+chain of its own to borrow that distinction from), and
+`resv_invalidate_ext` (an input, OR'd into the existing reservation-
+clearing `always` block with the *highest* priority - checked ahead of
+even the block's own `dbus_stall` "hold" branch, since that branch exists
+to protect against a self-inflicted race in this hart's own SC ordering,
+a different situation from a genuine external invalidation that must not
+be held back by this hart's own local pipeline state).
+
+Every real instantiation site - `rtl/soc/soc_top.v`, `rtl/top.v`,
+`sim/tb_cpu_halt.v` - ties `resv_invalidate_ext` to `1'b0` explicitly and
+leaves the four outputs unconnected, so single-hart behavior is
+unchanged; `fpga/top_fpga.v` (already dead code no synthesis script
+references - see its own header) was left as-is rather than touched for
+symmetry with a build nothing runs. `rtl/soc/soc_top.v` and `rtl/top.v`
+both instantiate `cpu_core`/`core_ooo` through one shared `` `ifdef
+CORE_OOO ... `else ... `endif `` port-connection list, originally built
+for the debug/hart-control ports (#79-81) - adding these new ports there
+unconditionally would have broken the `CORE_OOO` build, since
+`rtl/ooo/core_ooo.v` has none of them. Caught before any gate ran, by
+re-reading the surrounding structure rather than by a compile failure;
+fixed by extending each file's existing `` `ifndef CORE_OOO `` tie-off
+block (the one already handling the debug ports) to cover these too,
+rather than adding a second conditional block. `rtl/ooo/core_ooo.v`
+itself is deliberately not touched this stage, matching the "in-order
+first" sequencing PMP's own stages and the hart-control stages both
+already established - it would need the equivalent ports in whichever
+later stage actually wires a second, out-of-order-capable hart in.
+
+Proven with a new directed test, `sim/tb_cpu_resv_ports.v`
+(`sim_cpu_resv_ports`, now in `make verify`), that drives `cpu_core.v`
+directly through a hand-assembled LR/SC program (encodings verified
+against the field-packing formula, not hand-trusted) attempting the same
+LR/SC pair on the same address twice: once left alone (the SC must
+succeed), once with `resv_invalidate_ext` pulsed from *outside* the
+module while the reservation is held, before the SC executes (the SC
+must then fail). Checks the real architectural register file for the
+SC's success/failure code, not just that `resv_valid` toggles, and
+separately confirms `store_fire`/`store_addr` pulse exactly once - for
+the first, successful SC's write, never for the second, failed one, since
+a failed SC does not touch memory
+(`amo_writes = ex_mem_is_amo_rmw || sc_success`). Confirmed non-vacuous
+the same way stage 6's own test was: run once against a scratch copy with
+the invalidate pulse skipped, which correctly failed all three of the
+attempt-2 checks, before trusting the real version to pass.
+
+**Gated by the full `make verify` and `make verify_ooo` this round**
+(unlike stage 6): both `soc_top.v` and `top.v` were touched, even though
+only inside their `` `ifndef CORE_OOO `` blocks, so `verify_ooo` is the
+regression that proves the `CORE_OOO` build still compiles and passes
+unaffected. Both gates are full green on the final tree - formal 6/6
+proved, cosim 84/84 on both cores. Two earlier runs on the same,
+otherwise-unchanged tree hit real gate failures that turned out to be
+this project's own previously-documented, environment-level
+nondeterminism, not a regression from this stage: a `verilator_check`
+divergence on `sim_sdramboot` (the exact "RESOLVED - not a design
+defect" signature a few phases up in this file - same tree, a rerun and
+a clean-`main` control both landed on the passing numbers), and an
+`rv32si-p-dirty XMATCH (expected to diverge but did not)` cosim failure
+on `CORE=ooo` (the exact flip this file's own Update 6/7/8 history
+already chased at length - a further full, dependency-graph-driven
+`make verify_ooo` rerun reverted to the expected `XDIVERGE`). Neither
+investigation was repeated from scratch; both were confirmed against the
+existing written record rather than re-litigated.
+
+**What this stage deliberately does not do:** connect
+`rtl/soc/reservation_monitor.v` to anything, instantiate a second hart,
+or touch `rtl/ooo/core_ooo.v`. Stage 6's own "what this stage
+deliberately does not do" paragraph named "wire this module into
+`rtl/cpu_core.v`/`rtl/ooo/core_ooo.v`, instantiate a second hart" as one
+open item together - this stage is only the first half of the first part
+of that: `cpu_core.v` now has somewhere for the monitor to plug in, but
+nothing plugs it in yet, and `core_ooo.v` still has nowhere at all. Both
+remain open for later stages.
 
 **Done when:** a coherence approach is picked and stated as a decision
 (not a default), both harts are visible to OpenSBI/Linux via the device

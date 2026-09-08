@@ -52,6 +52,11 @@ module tb_cpu_halt;
         .mtip(1'b0), .msip_in(1'b0), .meip(1'b0), .seip(1'b0),
         .mtime_in(64'b0),
         .fence_i(), .trap(trap),
+        // No second hart's rtl/soc/reservation_monitor.v exists yet to wire
+        // this to (Phase 13) - tied/left off exactly like every other real
+        // instantiation site. See docs/roadmap.md's Phase 13 entry.
+        .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
+        .resv_invalidate_ext(1'b0),
         .dbg_haltreq(dbg_haltreq), .dbg_resumereq(dbg_resumereq), .dbg_halted(dbg_halted),
         .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
         .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),

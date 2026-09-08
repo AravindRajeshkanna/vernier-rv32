@@ -106,7 +106,14 @@ module top #(
         , .dbg_haltreq(1'b0), .dbg_resumereq(1'b0),
         .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
         .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
-        .dbg_halted(), .dbg_reg_rdata(), .dbg_reg_err()
+        .dbg_halted(), .dbg_reg_rdata(), .dbg_reg_err(),
+        // Same discipline as the debug ports above: no second hart's
+        // rtl/soc/reservation_monitor.v exists to wire this to, and
+        // `resv_invalidate_ext` is an input - tied low explicitly rather
+        // than omitted, for the same X-poisoning reason. See
+        // docs/roadmap.md's Phase 13 entry.
+        .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
+        .resv_invalidate_ext(1'b0)
 `endif
     );
 

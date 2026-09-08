@@ -240,7 +240,14 @@ module soc_top #(
         .mtime_in(mtime),
         .fence_i(fence_i), .trap(trap)
 `ifndef CORE_OOO
-        , .dbg_haltreq(dbg_haltreq), .dbg_resumereq(dbg_resumereq), .dbg_halted(dbg_halted),
+        // core_ooo.v has no reservation-monitor ports yet either, same
+        // reason as the debug ports just below - nothing wires a second
+        // hart's rtl/soc/reservation_monitor.v to this yet, so this stays
+        // one hart, single-hart LR/SC, unchanged behavior. See
+        // docs/roadmap.md's Phase 13 entry.
+        , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
+        .resv_invalidate_ext(1'b0),
+        .dbg_haltreq(dbg_haltreq), .dbg_resumereq(dbg_resumereq), .dbg_halted(dbg_halted),
         .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
         .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
         .dbg_reg_rdata(dbg_reg_rdata), .dbg_reg_err(dbg_reg_err)

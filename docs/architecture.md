@@ -332,7 +332,14 @@ ignored (this core is single-hart, so there is nothing for
 them to fence against) - a real single-hart assumption, not just an
 in-order one: `docs/roadmap.md`'s Phase 13 entry names this same gap on
 the multi-hart side, alongside the cache/LR-SC coherence this core also
-has no protocol for yet. The read-modify-write mechanics live in MEM
+has no protocol for yet. `reservation_valid`/`reservation_addr` are
+mirrored outward as `resv_valid`/`resv_addr` ports, alongside a
+`store_fire`/`store_addr` pair and a `resv_invalidate_ext` input (Phase
+13, Stage 7), so a future cross-hart monitor has somewhere to plug in -
+every real instantiation site ties `resv_invalidate_ext` to 0 and leaves
+the outputs unconnected today, so this remains scaffolding, not a
+protocol: no monitor is connected and no second hart exists yet to make
+one matter. The read-modify-write mechanics live in MEM
 (section 2e); decode and hazard handling treat AMO/LR like a load with a
 possible conditional write, described in 2b/2c.
 
