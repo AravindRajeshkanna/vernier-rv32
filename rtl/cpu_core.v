@@ -108,6 +108,32 @@ module cpu_core #(
                                       // read-modify-write that takes two bus
                                       // phases (see rtl/soc/cpu_wb.v)
 
+    // ---- LR/SC reservation: exposed for cross-hart snooping ----
+    // `reservation_valid`/`reservation_addr` themselves are unchanged -
+    // this hart's own SC/trap/write already clears its own reservation
+    // correctly, with or without anything connected here (see the
+    // reservation-update block below). These four ports are the missing
+    // *cross*-hart half: rtl/soc/reservation_monitor.v (Phase 13,
+    // docs/roadmap.md) takes `resv_valid`/`resv_addr` from every hart and
+    // `store_fire`/`store_addr` from every hart, and feeds
+    // `resv_invalidate_ext` back to each - nothing does that wiring yet,
+    // so every existing instantiation ties `resv_invalidate_ext` to 0 and
+    // ignores the three outputs, which is exactly today's single-hart
+    // behavior with nothing added.
+    output wire         resv_valid,     // this hart currently holds a reservation
+    output wire [31:0]  resv_addr,      // ...on this address
+    // Pulses the cycle a write by *this* hart completes - a plain store or
+    // an AMO's write phase, the same `any_successful_write` this hart
+    // already uses to clear its own reservation, exposed so another hart's
+    // reservation_monitor input can see it too.
+    output wire         store_fire,
+    output wire [31:0]  store_addr,
+    // Level, not a pulse: driven by another hart's reservation_monitor for
+    // as long as its own snoop condition holds. OR'd into this hart's
+    // existing reservation-clearing condition, so it costs nothing extra
+    // to check and cannot itself introduce a new hold state.
+    input  wire         resv_invalidate_ext,
+
     // Bus wait states. Both default to "never wait" for a zero-latency
     // memory system (rtl/top.v ties them low, so that path is bit-identical
     // to before these existed); a real interconnect (rtl/soc/) drives them
@@ -1525,10 +1551,33 @@ module cpu_core #(
     wire       any_successful_write = (ex_mem_valid && ex_mem_mem_we) || dmem_we_amo;
     wire       any_sc_this_cycle    = ex_mem_valid && ex_mem_is_sc;
 
+    // `store_fire`: a write genuinely *completing* this cycle, for another
+    // hart's reservation_monitor to see. `any_successful_write` alone is
+    // not this - it stays combinationally true for every cycle of a
+    // multi-cycle write (`ex_mem_mem_we` doesn't drop until the access
+    // does), and only reads as "completed" inside the block below because
+    // `dbus_stall` is checked first there. Reproduced explicitly here since
+    // this port has no such enclosing if/else-if to borrow that gating from.
+    assign resv_valid  = reservation_valid;
+    assign resv_addr   = reservation_addr;
+    assign store_fire  = any_successful_write && !dbus_stall;
+    assign store_addr  = ex_mem_mem_addr;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             reservation_valid <= 1'b0;
             reservation_addr  <= 32'b0;
+        end else if (resv_invalidate_ext) begin
+            // A different hart's write landed on this reservation - see
+            // rtl/soc/reservation_monitor.v. Checked ahead of `dbus_stall`
+            // below, deliberately: that branch protects an in-flight SC's
+            // own read-then-clear ordering from *this hart's own*
+            // same-cycle write, a self-inflicted race. A genuine external
+            // invalidation is not that race and must not be held back by
+            // it - if another hart's write reaches memory first, this
+            // hart's own reservation is architecturally gone regardless of
+            // what this hart's own pipeline happens to be doing this cycle.
+            reservation_valid <= 1'b0;
         end else if (dbus_stall) begin
             // Hold until the access actually completes. This is load-bearing
             // for SC over a multi-cycle bus, not just tidiness: an SC both

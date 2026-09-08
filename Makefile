@@ -1294,6 +1294,24 @@ sim_cpu_halt: sim/sim_cpu_halt.out
 	@grep -aq "CPU-HALT-TEST: PASS" sim/cpu_halt.log && echo "CPU HALT/RESUME OK" || \
 	    { echo "FAILED: hart control (halt/resume/register access)"; exit 1; }
 
+# ---- Phase 13's reservation-exposure ports (rtl/cpu_core.v's resv_valid/
+# resv_addr/store_fire/store_addr/resv_invalidate_ext) ----
+#
+# CORE=inorder only, same reasoning as sim_cpu_halt above: rtl/ooo/core_ooo.v
+# has not been given these ports yet (docs/roadmap.md Phase 13, stage 7 -
+# "inorder first" precedent from the hart-control/PMP stages), so this is a
+# plain rtl/cpu_core.v build, independent of $(CORE_RTL)/$(SOC_RTL). See
+# sim/tb_cpu_resv_ports.v's own header for what this proves and why.
+sim/sim_cpu_resv_ports.out: sim/tb_cpu_resv_ports.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
+                       rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/cpu_core.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_resv_ports.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
+	    rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/cpu_core.v
+
+sim_cpu_resv_ports: sim/sim_cpu_resv_ports.out
+	cd sim && $(VVP) sim_cpu_resv_ports.out $(VVP_DUMP) | tee cpu_resv_ports.log
+	@grep -aq "CPU-RESV-PORTS-TEST: PASS" sim/cpu_resv_ports.log && echo "CPU RESERVATION PORTS OK" || \
+	    { echo "FAILED: cpu_core.v's reservation-exposure ports"; exit 1; }
+
 # ---- OOO CSR-write-timing hazard ----
 #
 # CORE_OOO hardcoded, not $(CORE_DEFINES)/$(CORE_RTL): this is specifically
@@ -1551,6 +1569,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
+        sim_cpu_resv_ports \
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \
