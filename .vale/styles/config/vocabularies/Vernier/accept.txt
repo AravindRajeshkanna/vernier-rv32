@@ -122,6 +122,7 @@ closeable
 combinational
 combinationally
 config
+conv
 coreplex
 cosim
 cosimulation
@@ -293,6 +294,7 @@ unexecuted
 unforgeable
 unfound
 uninstantiated
+unparked
 unsized
 unstalls
 unticked

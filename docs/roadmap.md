@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP; `software/soc/bootrom.c` still doesn't know a second hart exists; hart control (debug) stays hart-0-only; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`), proven through the real boot path rather than a shortcut. Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP; the boot ROM still has no device tree to hand onward (`a1` stays 0); hart control (debug) stays hart-0-only; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -3608,11 +3608,17 @@ has no repo-local hart-count assumption baked in; it reports whatever
   module parameter~~ **Done (Stage 2, below):** a `HARTID` parameter,
   threaded through `cpu_core.v`/`core_ooo.v`. Every instantiation still
   defaults it to 0.
-- `software/soc/bootrom.c` has no `mhartid` read anywhere and no
+- ~~`software/soc/bootrom.c` has no `mhartid` read anywhere and no
   spin-wait/mailbox gate - every existing test implicitly assumes it is
   the only thing executing from reset. The standard RISC-V SMP pattern
   (hart 0 proceeds, every other hart parks on a mailbox until released)
-  does not exist here in any form yet.
+  does not exist here in any form yet~~ **Done (Stage 12, below):**
+  `software/soc/crt0_rom.S` parks every non-zero hart on a RAM mailbox
+  before it touches anything shared; `bootrom.c` reads its own `mhartid`
+  and passes it (plus `a1=0`, no device tree yet) to whatever it jumps
+  to. Simulation-only - the mailbox needs RAM to start zeroed, true in
+  simulation and not on real silicon - and unreached on every real board
+  build, where `NUM_HARTS=1`.
 - ~~`dts/soc.dts` declares one `cpu@0` node; a second hart needs its own
   `cpu@1` and interrupt controller node, and
   `software/linux/vernier_rv32.config` currently has `CONFIG_SMP`
@@ -4397,22 +4403,154 @@ every real synthesis target still pins `NUM_HARTS=1` and
 build asks for it too. Those remain the genuinely open items, named
 plainly rather than folded into a claim this stage did not earn.
 
+**Stage 12: the boot ROM gets a real mailbox - closing the last bullet
+of this phase's own opening plumbing list, after the "Done when" bar
+itself was already fully closed by Stage 11.** Not part of that bar -
+nothing in it asked for `software/soc/bootrom.c` - but this phase's own
+opening assessment named the boot ROM's missing `mhartid` read and
+mailbox gate as one of the genuinely-just-plumbing items, and it stayed
+open through every stage since. `software/soc/crt0_rom.S` now reads
+`mhartid` as the very first thing at `_start`, before touching `gp`,
+`sp` or `.bss` - all three shared, single-instance resources that only
+make sense for whichever hart owns them - and every non-zero hart
+branches straight to a new `park_hart` label instead of proceeding into
+any of that. `park_hart` spins on a fixed RAM word
+(`hart_release_addr`, a new `volatile uint32_t` in `bootrom.c`) that
+hart 0 writes once it has finished loading a program and is ready to
+jump, releasing every parked hart to the same address.
+
+**A second, genuinely separate bug surfaced by writing this: the boot
+ROM's real jump to a loaded program never set `a0`/`a1` at all.** Every
+`entry()` call in `bootrom.c` was a bare `void (*)(void)` call - a0/a1
+held whatever the C code happened to leave in them, not the RISC-V
+firmware entry convention (`a0`=hart ID, `a1`=device-tree address) any
+real M-mode firmware, OpenSBI included, expects. This is unrelated to
+multi-hart in origin - even the single, always-hart-0 case never got it
+right - and was only found because giving secondary harts a correct
+`a0` required first making hart 0's own `a0` correct. Fixed together:
+`entry`'s type changed to `void (*)(uint32_t, uint32_t)`, `main()` reads
+its own `mhartid` once via inline asm, and all three jump sites
+(RAM-preload fast path, UART load, SD card) now call `entry(hartid, 0)`
+- `a1` stays explicitly, honestly 0, since nothing this ROM loads
+carries a device tree yet. That remaining gap - teaching the real boot
+ROM to locate and pass one - is a separate, larger piece of work, not
+attempted here.
+
+Both mechanisms are explicitly simulation-only, stated plainly in both
+files' own new comments rather than left implicit: `hart_release_addr`
+relies on RAM starting at 0, which `rtl/soc/wb_ram.v`'s own
+simulation-only zero-fill guarantees and real silicon does not (block
+RAM powers up undefined there) - harmless on every real board build
+regardless, since `NUM_HARTS=1` there means `park_hart` is simply
+unreached code.
+
+Proven by a new directed test, `sim/tb_ramboot_2hart.v`
+(`sim_ramboot_2hart`, now in `make verify`'s dependency list, built from
+`$(SOC_RTL)` so it runs under both `make verify` and `make verify_ooo` -
+`bootrom.c`/`crt0_rom.S` have no `CORE_OOO`-specific behavior, unlike
+the reservation-port tests Stages 7 and 9 needed pinned to
+`CORE=inorder`), that boots through the *real* boot ROM path with
+`NUM_HARTS=2` - not `sim/tb_soc_2hart.v`'s `RESET_PC`-into-RAM shortcut
+(Stage 8) and not `software/opensbi/sbi_stub.S`'s own hardcoded-address
+stand-in (Stage 10), both of which bypass the boot ROM entirely. A
+hand-assembled payload reads `a0` directly - proving the hand-off
+itself, not just that `mhartid` exists - and each hart writes a
+hart-specific sentinel to a hart-specific RAM word, with hart 0 waiting
+for hart 1's sentinel before writing the same "PASS" magic word
+`sim_ramboot`'s own acceptance test already uses. Confirmed non-vacuous:
+a scratch boot ROM built with the `park_hart` branch removed, run
+against the identical test, produced visibly garbled console output -
+two harts' own banners interleaving character-by-character, exactly
+what an unparked concurrent boot looks like - and failed rather than
+passing. Both `make verify` and `make verify_ooo` are fully green on the
+final tree, including every existing single-hart test
+(`sim_ramboot`/`sim_soc`/`trapcheck`/`sim_linux` among them) that also
+exercises this same rebuilt boot ROM and was unaffected.
+
+**What this stage deliberately does not do:** teach the boot ROM to
+locate or pass a device tree (`a1` stays 0), extend this mailbox
+mechanism to real hardware (it is simulation-only by construction), or
+touch `dts/soc.dts`, `rtl/ooo/core_ooo.v`, or hart control. Those remain
+open, named plainly.
+
 **Done when:** a coherence approach is picked and stated as a decision
 (not a default) - **done, Stage 5's D-cache bypass plus Stage 9's
 monitor wiring** - ~~both harts are visible to OpenSBI/Linux via the
 device tree~~ - **done, Stage 10 for OpenSBI (`Platform HART Count :
-2`) and this stage for Linux (`smp: Brought up 1 node, 2 CPUs`)** -
+2`) and Stage 11 for Linux (`smp: Brought up 1 node, 2 CPUs`)** -
 ~~`CONFIG_SMP=y` boots to userspace with both harts detected and
-idle-looping correctly (not just hart 0 alive)~~ - **done, this stage -
+idle-looping correctly (not just hart 0 alive)~~ - **done, Stage 11 -
 `sim_linux_2hart`, `/proc/cpuinfo` shows both harts, `CORE=inorder`
 only** - and ~~a directed test demonstrates the specific hazard the
 chosen coherence approach claims to close - an LR/SC pair split across
 both harts behaving per spec, at minimum~~ - **done, Stage 9,
 `sim/tb_soc_2hart_lrsc.v`, `CORE=inorder`.** Every clause of this bar is
-closed for the in-order core, in simulation. `CORE=ooo` coherence, hart
-control past hart 0, `software/soc/bootrom.c` awareness of a second
-hart, and an actual board build with `NUM_HARTS>1` all remain open, and
-none of them were ever part of what this bar asked for.
+closed for the in-order core, in simulation. `software/soc/bootrom.c`
+gained real `mhartid`/mailbox awareness of a second hart separately
+(Stage 12, above) - not part of this bar, but the last item this
+phase's own opening plumbing list had left open. `CORE=ooo` coherence,
+hart control past hart 0, a device tree the boot ROM can locate and
+pass onward, and an actual board build with `NUM_HARTS>1` all remain
+open, and none of them were ever part of what this bar asked for.
+
+---
+
+## Phase 14 — Neural processing (quantized inference)
+
+**A decision before it is a design, the same shape Phase 11 is, and for
+the same reason: naming a specific architecture here without having
+picked one would be exactly the estimate `docs/practices.md` warns
+against holding on to.** The target is scoped, though, which Phase 11's
+own "which extension" question is not yet: small quantized-inference
+workloads - int8 weights and activations, multiply-accumulate into a
+wider (int32) accumulator, the standard arithmetic shape of a quantized
+neural-network layer - not general floating-point math or training.
+
+**What exists today, precisely: nothing NPU-shaped.** RV32M
+(`rtl/muldiv_div.v`) gives integer multiply, one operation at a time, on
+the same pipeline every other instruction uses - no accumulation
+register, no wide (int8×int8→int32) datapath, no operation that reduces
+a vector or a matrix in hardware rather than in a software loop. A
+quantized MAC engine, in whatever shape this phase eventually picks,
+would be new hardware end to end, not a parameter added to something
+that already exists - the same starting position Phase 1's out-of-order
+rewrite was in, not the "close reading finds most of it is already
+plumbing" position Phase 13 started from.
+
+**The first open item, genuinely undecided rather than deferred: how
+this reaches the core.** Two shapes, at opposite ends of how much of
+`rtl/cpu_core.v`/`rtl/ooo/core_ooo.v` it touches:
+
+- **Custom RISC-V instructions**, matching how this project added `M`
+  and `A` - new decode, likely a new accumulator register or a
+  convention for reusing the existing integer register file in pairs,
+  and a multi-cycle execution unit alongside `rtl/muldiv_div.v`'s own.
+  Every program gets access without a driver, at the cost of reaching
+  into the pipeline's own decode/hazard logic the way Phase 1 and Phase
+  11's floating-point option both would.
+- **A memory-mapped peripheral on the Wishbone bus**, matching Phase
+  10's blit engine or Phase 4's video path - a new `rtl/soc/` slave the
+  CPU drives via MMIO registers (load operands, trigger, poll or
+  interrupt on completion), no ISA change at all. Trades "every program
+  gets it for free" for "a well-defined, self-contained block that
+  cannot destabilize the instruction pipeline's own timing," the exact
+  tradeoff Phase 10's own blit-engine option names for the same reason.
+
+Nothing about the quantized-inference target above decides this by
+itself - both shapes can do int8 MAC accumulation equally well - so this
+is a real open design choice for whoever starts this phase, not a
+placeholder for an answer already known.
+
+**Done when:** a real quantized-inference workload - the obvious
+candidate is a single small layer (a int8 matrix-vector multiply or a
+tiny conv layer) with an existing reference implementation to check
+against, the same role Spike plays for the integer ISA and a plain
+NumPy/C int8 reference would play here - runs, is verified
+bit-exact against that reference, and is *measured* against a
+software-only (RV32M-only) baseline computing the identical workload.
+"Faster" asserted without that baseline would be exactly the estimate
+this project's own practices exist to rule out - the same bar Phase
+11's own "Done when" already holds itself to.
 
 ---
 

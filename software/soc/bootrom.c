@@ -23,6 +23,17 @@
 #include <stdint.h>
 #include "soc.h"
 
+/* Phase 13: the mailbox software/soc/crt0_rom.S's park_hart spins on. Every
+ * non-zero hart parks there before touching anything C-visible; this hart
+ * (hart 0) writes the address it is about to jump to here, right before
+ * jumping there itself, releasing every parked hart to the same entry
+ * point. Zero means "not ready yet" - relies on .bss starting at 0, which
+ * only holds in simulation (rtl/soc/wb_ram.v zero-fills there; real block
+ * RAM powers up undefined), matching `NUM_HARTS>1` itself: no real board
+ * build has ever asked for a second hart, so this mailbox is unused and
+ * harmless on every board this ROM actually ships on. */
+volatile uint32_t hart_release_addr;
+
 static void uart_putc(char c) {
     while (!(UART_LSR & UART_LSR_THRE)) { }
     UART_THR = (uint32_t)(unsigned char)c;
@@ -435,7 +446,15 @@ void main(void) {
     uint8_t *hdr = (uint8_t *)(uintptr_t)PROGRAM_LOAD_ADDR;  /* scratch */
     uint8_t *dst;
     uint32_t magic, length, blocks, i;
-    void (*entry)(void);
+    uint32_t hartid;
+    /* a0 = hartid, a1 = device tree address - the RISC-V firmware entry
+     * convention every real M-mode firmware (OpenSBI included) expects.
+     * a1 is always 0 here: nothing this ROM loads carries a device tree
+     * yet, only a hart ID. See hart_release_addr above for the a0 half of
+     * this on a parked secondary hart. */
+    void (*entry)(uint32_t, uint32_t);
+
+    __asm__ volatile ("csrr %0, mhartid" : "=r"(hartid));
 
     BOOT_STAGE_SET(BOOT_STAGE_EARLY);
 
@@ -466,8 +485,9 @@ void main(void) {
             uart_puthex(first);
             uart_puts(")\r\n  skipping SD, starting it\r\n\r\n");
             install_rom_trap_vector();
-            entry = (void (*)(void))(uintptr_t)PROGRAM_LOAD_ADDR;
-            entry();
+            entry = (void (*)(uint32_t, uint32_t))(uintptr_t)PROGRAM_LOAD_ADDR;
+            hart_release_addr = (uint32_t)(uintptr_t)entry;
+            entry(hartid, 0);
             for (;;) { }
         }
     }
@@ -484,8 +504,9 @@ void main(void) {
             /* Same reason as the card path below: the image arrived through
              * the data side and is about to be fetched. */
             __asm__ volatile ("fence.i" ::: "memory");
-            entry = (void (*)(void))(uintptr_t)uart_entry;
-            entry();
+            entry = (void (*)(uint32_t, uint32_t))(uintptr_t)uart_entry;
+            hart_release_addr = (uint32_t)(uintptr_t)entry;
+            entry(hartid, 0);
             for (;;) { }
         }
     }
@@ -554,8 +575,9 @@ void main(void) {
      * costs one instruction here. */
     __asm__ volatile ("fence.i" ::: "memory");
 
-    entry = (void (*)(void))(uintptr_t)PROGRAM_LOAD_ADDR;
-    entry();
+    entry = (void (*)(uint32_t, uint32_t))(uintptr_t)PROGRAM_LOAD_ADDR;
+    hart_release_addr = (uint32_t)(uintptr_t)entry;
+    entry(hartid, 0);
 
     for (;;) { }
 }

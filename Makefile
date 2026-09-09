@@ -499,6 +499,55 @@ sim_ramboot: sim/bootrom.hex sim/ramimage.hex sim/sim_ramboot.out
 	@grep -q "RAMBOOT TEST PASSED" sim/ramboot.log || \
 	    { echo "sim_ramboot FAILED"; exit 1; }
 
+# ---- the preloaded-RAM boot path, with a second hart (Phase 13, Stage 12) ----
+#
+# Boots through the *real* software/soc/bootrom.c/crt0_rom.S path, not
+# sim/tb_soc_2hart.v's RESET_PC-into-RAM shortcut or
+# software/opensbi/sbi_stub.S's own hardcoded a0/a1 stand-in - both of those
+# bypass the boot ROM entirely. See sim/tb_ramboot_2hart.v's own header for
+# what this proves and the payload it runs. $(SOC_RTL), not
+# $(SOC_RTL_BASE): bootrom.c/crt0_rom.S are plain C/asm with no
+# CORE_OOO-specific behavior, so this runs under both `make verify` and
+# `make verify_ooo` for full coverage, unlike the reservation-port tests
+# (Stage 7/9) that genuinely needed CORE=inorder pinning.
+sim/ramimage2hart.hex: Makefile
+	@python3 -c "\
+	import sys;\
+	i_type = lambda imm, rs1, f3, rd, op: ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	j_type = lambda imm, rd, op: (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	b_type = lambda imm, rs1, rs2, f3, op: (((imm >> 12) & 1) << 31) | (((imm >> 5) & 0x3F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | (((imm >> 1) & 0xF) << 8) | (((imm >> 11) & 1) << 7) | (op & 0x7F);\
+	u_type = lambda imm20, rd, op: ((imm20 & 0xFFFFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	s_type = lambda imm, rs1, rs2, f3, op: (((imm >> 5) & 0x7F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((imm & 0x1F) << 7) | (op & 0x7F);\
+	prog = [\
+	    b_type(48, 10, 0, 0x1, 0x63),\
+	    u_type(0x80000, 1, 0x37),\
+	    i_type(0x100, 1, 0x0, 2, 0x13),\
+	    i_type(0x104, 1, 0x0, 3, 0x13),\
+	    i_type(0xA0, 0, 0x0, 4, 0x13),\
+	    s_type(0, 2, 4, 0x2, 0x23),\
+	    i_type(0, 3, 0x2, 5, 0x03),\
+	    b_type(-4, 5, 0, 0x0, 0x63),\
+	    u_type(0x50415, 6, 0x37),\
+	    i_type(0x353, 6, 0x0, 6, 0x13),\
+	    s_type(0, 1, 6, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	    u_type(0x80000, 1, 0x37),\
+	    i_type(0x104, 1, 0x0, 3, 0x13),\
+	    i_type(0xA1, 0, 0x0, 4, 0x13),\
+	    s_type(0, 3, 4, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	];\
+	words = [0] * 1024 + prog;\
+	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
+
+sim/sim_ramboot_2hart.out: sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage2hart.hex"' -o $@ sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL)
+
+sim_ramboot_2hart: sim/bootrom.hex sim/ramimage2hart.hex sim/sim_ramboot_2hart.out
+	@cd sim && $(VVP) sim_ramboot_2hart.out $(VVP_DUMP) 2>&1 | tee ramboot_2hart.log
+	@grep -q "RAMBOOT-2HART TEST PASSED" sim/ramboot_2hart.log || \
+	    { echo "sim_ramboot_2hart FAILED"; exit 1; }
+
 sim/sim_probe.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
@@ -1738,7 +1787,7 @@ verify_ooo:
 	$(MAKE) verify CORE=ooo
 	rm -f sim/*.out
 
-verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_cmd0 \
+verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
