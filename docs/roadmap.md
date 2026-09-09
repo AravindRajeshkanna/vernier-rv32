@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`), and cross-hart LR/SC is now coherent on the in-order core - `rtl/soc/reservation_monitor.v` is wired to both harts and a directed test proves a real hazard (hart 1's foreign write correctly fails hart 0's `SC.W`) - but `CORE=ooo` still has no coherence story (`rtl/ooo/core_ooo.v` never got the reservation ports). `dts/soc.dts` now declares both harts and OpenSBI genuinely detects them (`Platform HART Count : 2`), but the boot ROM still doesn't know a second hart exists, and Linux has never booted with `CONFIG_SMP=y` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP; `software/soc/bootrom.c` still doesn't know a second hart exists; hart control (debug) stays hart-0-only; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -3613,9 +3613,11 @@ has no repo-local hart-count assumption baked in; it reports whatever
   the only thing executing from reset. The standard RISC-V SMP pattern
   (hart 0 proceeds, every other hart parks on a mailbox until released)
   does not exist here in any form yet.
-- `dts/soc.dts` declares one `cpu@0` node; a second hart needs its own
-  `cpu@1` and interrupt controller node, and `software/linux/vernier_rv32.config`
-  currently has `CONFIG_SMP` explicitly unset.
+- ~~`dts/soc.dts` declares one `cpu@0` node; a second hart needs its own
+  `cpu@1` and interrupt controller node, and
+  `software/linux/vernier_rv32.config` currently has `CONFIG_SMP`
+  explicitly unset~~ **Done (Stages 10-11, below):** `cpu@1` node added,
+  `CONFIG_SMP=y`, and a real kernel boots both harts to userspace.
 
 **The one item on this list that is a real redesign, not more of the
 same wiring: this SoC has no cache or reservation coherence protocol in
@@ -4321,18 +4323,96 @@ board build still pins `NUM_HARTS=1`; enable `CONFIG_SMP` in
 `software/linux/`; or attempt an actual Linux SMP boot. Those remain
 fully open.
 
+**Stage 11: a real kernel brings up a second hart - the last clause of
+this phase's own "Done when" bar.** Two changes, both small: `software/
+linux/vernier_rv32.config` flips `# CONFIG_SMP is not set` to
+`CONFIG_SMP=y`, and the kernel is rebuilt against it - no `dts/soc.dts`
+or RTL changes this stage, since Stage 10 already gave the device tree
+its `cpu@1` node and the Makefile its `NUM_HARTS=2` Verilator variant
+(`$(VERILATOR_2HART_BIN)`), both reused unchanged. The rebuilt kernel
+still passes the existing ISA-vs-`rtl/` check (740,430 instructions,
+nothing outside `rv32ima` plus the privileged set) - `CONFIG_SMP=y`
+touches scheduling and synchronization code, not instruction selection,
+so this was expected rather than a coincidence, but it was checked
+rather than assumed.
+
+Two boots were run, deliberately in this order. First, the SMP-configured
+kernel against the *existing*, single-hart (`NUM_HARTS=1`) `make
+sim_linux` target - proving `CONFIG_SMP=y` alone does not regress the
+boot that already worked, even though the packed device tree (from
+Stage 10) now describes a `cpu@1` node the single-hart hardware cannot
+actually satisfy. It passed cleanly, reaching the existing boot marker
+with the same first-trap signature as every prior single-hart run.
+Second, the same kernel image against the real `NUM_HARTS=2` Verilator
+DUT: Linux itself printed `smp: Brought up 1 node, 2 CPUs`, and
+`/proc/cpuinfo` in the reached userspace shows both `processor : 0`
+(hart 0) and `processor : 1` (hart 1), each with the full
+`rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc` ISA string - a genuine SMP
+boot to userspace, not a single-hart fallback silently accepted as a
+pass.
+
+**Also, incidentally, the first real stress test cross-hart LR/SC
+coherence (Stage 9) has seen outside its own directed test.** Spinlocks
+and RCU lean on working atomics constantly during SMP bring-up - a
+broken `reservation_monitor.v` connection would far more plausibly hang
+or corrupt state somewhere in this boot than pass quietly. It didn't.
+
+The cycle budget needed real measurement, not a guess, in the same
+spirit as Stage 10's own OpenSBI-only discovery. A first attempt at 250M
+cycles timed out having gone no further than ordinary sysfs/kobject
+setup work for the newly-registered second CPU - confirmed by resolving
+the stuck PCs against `software/linux/build/vmlinux` with `addr2line`,
+not assumed from the trace alone. A 600M-cycle run confirmed success at
+cycle 286,259,012 - comfortably inside `sim_linux`'s own already-established
+400M-cycle budget, which is what the new `sim_linux_2hart` target
+actually ships with; no new number was invented for it.
+
+`sim_linux_2hart` mirrors `sim_linux` exactly - same `$(LINUX_MARKER)`,
+same `+checkuart` transmitter-drop check, same delimited-marker `grep`
+discipline (`docs/practices.md`'s own "a suite that passes is not a
+suite that ran the code" lesson already shaped `sim_linux`'s form, and
+this reuses it rather than re-deriving it) - but builds against
+`$(VERILATOR_2HART_BIN)` instead of `$(VERILATOR_BIN)`, and additionally
+greps for both `processor\t: 0` and `processor\t: 1` (the literal tab
+`/proc/cpuinfo` uses, checked byte-for-byte against a captured log with
+`od -c` before trusting the pattern), so a boot that silently fell back
+to one hart would fail this gate even if it still reached the marker.
+Like `sim_opensbi_2hart` and `sim_linux` itself, this is **not** part of
+`make verify`/`make verify_ooo` - it needs a kernel built from a
+separately-fetched source tree - so it is run by hand, the same way.
+
+This stage's own change is provably outside what `make verify`/
+`make verify_ooo` could be affected by - one new, additive Makefile
+target, not part of either gate's dependency list, plus the kernel
+config - so the full gate was not re-run this round, the same measured
+non-run Stage 6 already established precedent for.
+
+**What this stage deliberately does not do:** touch
+`software/soc/bootrom.c`, `rtl/ooo/core_ooo.v`, or hart control past
+hart 0 - none of those needed to change for this specific clause to
+close, and none of them did. `CORE=ooo` still has no cross-hart LR/SC
+coherence and cannot boot SMP Linux at all. No board build changed -
+every real synthesis target still pins `NUM_HARTS=1` and
+`CONFIG_SMP` is a simulation-only kernel config choice until a board
+build asks for it too. Those remain the genuinely open items, named
+plainly rather than folded into a claim this stage did not earn.
+
 **Done when:** a coherence approach is picked and stated as a decision
 (not a default) - **done, Stage 5's D-cache bypass plus Stage 9's
 monitor wiring** - ~~both harts are visible to OpenSBI/Linux via the
-device tree~~ - **done for OpenSBI, this stage - `Platform HART Count :
-2`, `sim_opensbi_2hart`. Linux has never seen a `cpu@1` node boot; that
-needs `CONFIG_SMP=y` and an actual SMP kernel run, still open** -
-`CONFIG_SMP=y` boots to userspace with both harts detected and
-idle-looping correctly (not just hart 0 alive), and ~~a directed test
-demonstrates the specific hazard the chosen coherence approach claims to
-close - an LR/SC pair split across both harts behaving per spec, at
-minimum~~ - **done, `sim/tb_soc_2hart_lrsc.v`, CORE=inorder.** Only the
-Linux-boot clause remains open.
+device tree~~ - **done, Stage 10 for OpenSBI (`Platform HART Count :
+2`) and this stage for Linux (`smp: Brought up 1 node, 2 CPUs`)** -
+~~`CONFIG_SMP=y` boots to userspace with both harts detected and
+idle-looping correctly (not just hart 0 alive)~~ - **done, this stage -
+`sim_linux_2hart`, `/proc/cpuinfo` shows both harts, `CORE=inorder`
+only** - and ~~a directed test demonstrates the specific hazard the
+chosen coherence approach claims to close - an LR/SC pair split across
+both harts behaving per spec, at minimum~~ - **done, Stage 9,
+`sim/tb_soc_2hart_lrsc.v`, `CORE=inorder`.** Every clause of this bar is
+closed for the in-order core, in simulation. `CORE=ooo` coherence, hart
+control past hart 0, `software/soc/bootrom.c` awareness of a second
+hart, and an actual board build with `NUM_HARTS>1` all remain open, and
+none of them were ever part of what this bar asked for.
 
 ---
 

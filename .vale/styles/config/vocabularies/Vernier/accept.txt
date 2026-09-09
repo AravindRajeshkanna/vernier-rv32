@@ -258,6 +258,7 @@ serializer
 shader
 shaders
 snapshotting
+spinlocks
 sret
 stdout
 strided

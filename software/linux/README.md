@@ -40,9 +40,49 @@ hart isa        : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
 === VERNIER-RV32-LINUX-BOOT-OK ===
 ```
 
-Verbatim from `make sim_linux`, which reaches the marker at cycle 132,938,924 —
-33 seconds of Verilator, and 5.3 seconds of wall time on a board at 25 MHz. The
-board prints the same thing.
+Verbatim from `make sim_linux`, which reaches the marker at cycle 222,201,505
+now that `CONFIG_SMP=y` (below) — up from 132,938,924 before that config
+changed, on the same single-hart hardware `make sim_linux` still builds: SMP
+support costs real cycles even with nothing but hart 0 to bring up (spinlock/
+percpu/IPI infrastructure that a `CONFIG_SMP=n` kernel simply does not build).
+89 seconds of Verilator, and 8.9 seconds of wall time on a board at 25 MHz.
+The board prints the same thing.
+
+## SMP: both harts to userspace
+
+`rtl/soc/soc_top.v` can build with `NUM_HARTS=2` (Phase 13, Stage 8) with
+`rtl/soc/reservation_monitor.v` wired to both harts for coherent cross-hart
+LR/SC (Stage 9), `dts/soc.dts` describing both to firmware (Stage 10), and
+`CONFIG_SMP=y` here (Stage 11) - `make sim_linux_2hart` boots the same kernel
+this page already describes against that second hart, and Linux itself
+brings it up:
+
+```
+smp: Bringing up secondary CPUs ...
+smp: Brought up 1 node, 2 CPUs
+```
+
+```
+--- /proc/cpuinfo ---
+processor       : 0
+hart            : 0
+isa             : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
+...
+processor       : 1
+hart            : 1
+isa             : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
+...
+
+=== VERNIER-RV32-LINUX-BOOT-OK ===
+```
+
+Reaches the marker at cycle 286,259,012 - real overhead on top of the
+single-hart figure above, from bringing a genuine second hart through SBI
+HSM and the kernel's own secondary-CPU bring-up, not noise. `NUM_HARTS=2`
+is simulation-only: no board build has ever asked for it, and the boot ROM
+(below) still has no idea a second hart could exist. `docs/roadmap.md`'s
+Phase 13 entry has the full account, including what closing this specific
+gap deliberately did not also close.
 
 | | |
 |---|---|
@@ -451,10 +491,20 @@ Configuration is not sufficient anyway: `arch/riscv/Makefile` appends `_zacas`
 and `_zabha` to `-march` whenever the *toolchain* supports them, keyed on
 symbols with no prompt, so the compiler is allowed to emit an `amocas` no
 Kconfig option would stop. `isacheck.py` therefore disassembles the finished
-`vmlinux` - 641,785 instructions - and checks every mnemonic against what
-`rtl/` implements. Four Svinval instructions are present and unreachable
-(`has_svinval()` is false because `dts/soc.dts` does not advertise it); they
-are listed by name so that a *change* in the count is visible.
+`vmlinux` - 740,430 instructions now that `CONFIG_SMP=y` (below) has real
+spinlock/percpu/IPI code to check, up from 641,785 before - and checks every
+mnemonic against what `rtl/` implements. Four Svinval instructions are
+present and unreachable (`has_svinval()` is false because `dts/soc.dts` does
+not advertise it); they are listed by name so that a *change* in the count is
+visible - unchanged at four, both before and after `CONFIG_SMP=y`.
+
+`CONFIG_SMP=y` (Phase 13, Stage 11) is the newest line in here, and the one
+most worth naming explicitly: this SoC has always been able to build with a
+second hart in simulation (`rtl/soc/soc_top.v`'s `NUM_HARTS`), but a
+`CONFIG_SMP=n` kernel has no code path that would ever look for one. Setting
+it costs real cycles on *every* boot, single-hart included - see "Status,
+precisely" above - because the kernel now builds and runs the same
+spinlock/percpu/IPI machinery regardless of how many harts actually show up.
 
 ## /init has no libc
 
