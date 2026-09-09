@@ -645,7 +645,7 @@ The short version:
 | 10 | GPU — 2D acceleration | ✅ fill, overlap-safe copy, and Bresenham line drawing all shipped, extending the existing framebuffer's Wishbone slave |
 | 11 | DSP | blocked on a human decision — F/D float, packed SIMD, or a coprocessor, not yet picked |
 | 12 | Peripheral interfaces — I2C, timers, PWM | ✅ GPIO/SPI/UART already real; the general-purpose timer/PWM peripheral shipped too (one channel). I2C's own shape - a real hardware master versus a bit-banged GPIO driver - is the remaining open item |
-| 13 | Multi-core: both cores, one SoC | assessed, not started — the PLIC and interconnect are closer to ready than not, but there is no cache/reservation coherence protocol of any kind yet, which is the real open question |
+| 13 | Multi-core: both cores, one SoC | ✅ **every "Done when" clause closed, for the in-order core, in simulation** — `rtl/soc/soc_top.v` builds and runs two harts (`NUM_HARTS=2`), cross-hart LR/SC is coherent (a directed test proves a real hazard), both harts are visible to OpenSBI (`Platform HART Count : 2`) and to a `CONFIG_SMP=y` Linux that reaches userspace on both (`/proc/cpuinfo` shows harts 0 and 1), and the boot ROM parks a second hart and hands it a correct `mhartid` through the real boot path. `CORE=ooo` has no coherence story at all, hart control (debug) stays hart-0-only, the boot ROM still has no device tree to hand onward, and no board build has ever asked for a second hart — nothing outside simulation can reach one yet |
 
 Before any of Phase 5's RTL, the SoC now builds under **Verilator** as well as
 Icarus (`sim/verilator_soc.cpp`). That is not a nicety: a Linux boot is order
