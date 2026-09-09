@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. A real assessment found the PLIC and interconnect closer to ready than not; a coherence approach is now decided and its pieces (a D-cache bypass, a standalone cross-hart reservation monitor, `cpu_core.v` ports exposing its reservation state) are each built and proven in isolation, but none of it is wired to a real second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. `rtl/soc/soc_top.v` genuinely builds and runs with a second hart's hardware now (`NUM_HARTS=2`: its own core, bus adapter, page-table walker, CLINT timer, PLIC context pair), proven by a directed test - but `rtl/soc/reservation_monitor.v` is still connected to nothing, so cross-hart LR/SC has no coherence story yet, and neither the boot ROM nor the device tree know this second hart exists — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -4081,6 +4081,89 @@ deliberately does not do" paragraph named "wire this module into
 open item together - this stage is only the first half of the first part
 of that: `cpu_core.v` now has somewhere for the monitor to plug in, but
 nothing plugs it in yet, and `core_ooo.v` still has nowhere at all. Both
+remain open for later stages.
+
+**Stage 8: a real second hart's hardware in `rtl/soc/soc_top.v` - the
+"instantiate a second hart" half of what stage 7 left open, still without
+touching coherence.** A new `NUM_HARTS` parameter (default 1, today's
+exact single-hart shape - every board build and every existing test) gates
+a `generate for` loop adding harts `1..NUM_HARTS-1`, each getting its own
+`cpu_core`/`core_ooo` (`HARTID(h)`), its own `cpu_wb` bus adapter and its
+own `wb_ptw` page-table walker - the same three-instance shape hart 0 has
+always had, parameterized on `h` rather than hardcoded, wired into
+`rtl/soc/wb_interconnect.v`'s already-`NUM_HARTS`-wide vector ports
+(Stage 3), `rtl/clint.v`'s already-`NUM_HARTS`-wide `mtip`/`msip_out`
+(Stage 2), and `rtl/plic.v`'s `NUM_CONTEXTS` now pinned to `2*NUM_HARTS`
+explicitly rather than a bare `2` (Stage 4's default already supported
+this; nothing before this stage ever asked for more than 2). Hart 0's own
+instantiation is otherwise unchanged, just reindexed onto slice 0 of each
+now-`NUM_HARTS`-wide wire.
+
+The D-cache bypass Stage 5 built stops being a knob nothing exercises and
+starts being load-bearing: a new `HART_DCACHE_ENABLE` localparam forces
+every hart's `DCACHE_ENABLE` to 0 the moment `NUM_HARTS>1`, since two real
+masters now genuinely share memory and nothing here snoops a foreign
+write into either one's cache - `NUM_HARTS=1` keeps today's
+`DCACHE_ENABLE=1` untouched. `rtl/soc/reservation_monitor.v` (Stage 6) and
+`cpu_core.v`'s reservation ports (Stage 7) are deliberately **not**
+connected to anything yet - every hart, hart 0 included, still ties
+`resv_invalidate_ext` to `1'b0` and leaves the four outputs unconnected,
+exactly as before this stage. Cross-hart LR/SC is therefore still
+completely unaddressed even with two harts now genuinely running: this
+stage proves the memory system holds together with a second real master
+on the bus, not that atomics are coherent between them.
+
+Three things stay hart-0-only on purpose, stated plainly rather than
+silently: hart control (`rtl/debug/dm.v` has no per-hart `hartsel` of its
+own yet - harts `1..NUM_HARTS-1` get `dbg_haltreq`/`dbg_resumereq`/
+`dbg_reg_valid`/`dbg_reg_we` tied to 0 and their status outputs left
+unconnected); this module's own `trap` output (a single bit - a second
+hart's own trap is not observable at `soc_top.v`'s boundary yet); and
+`rtl/ooo/core_ooo.v` itself (already has `HARTID` from Stage 2, still
+lacks the reservation ports Stage 7 gave only `cpu_core.v` - unaffected
+either way this round, since nothing wires those ports to anything yet
+regardless of core). `software/soc/bootrom.c` and `dts/soc.dts` are
+untouched - neither knows a second hart exists.
+
+**A real gate failure, found and fixed, unrelated to this stage's own
+logic.** `rtl/plic.v`'s `NUM_CONTEXTS`, now arriving as the computed
+expression `2*NUM_HARTS` rather than a bare literal `2`, tripped a new
+Verilator `WIDTHEXPAND` warning in `plic.v`'s own `enable_off`/`ctx_off`
+bounds checks (`enable_off < (NUM_CONTEXTS * 24'h80)` and the `ctx_off`
+equivalent) - an unsized parameter multiplied against a 24-bit constant
+infers a wider result type from a computed expression than from a
+literal, even when the two evaluate to the identical value. The trusted
+gate treats any Verilator warning here as fatal, so this failed
+`make verify` outright on the first attempt. Fixed at the root in
+`plic.v` itself, not by changing `soc_top.v`'s own expression: a new
+`NUM_CONTEXTS_W8` localparam, explicitly 8 bits, used only in those two
+comparisons - the same narrowing discipline `CTXW` already applies to the
+context *index*, extended to the context *count*. Verified with a
+standalone `verilator --lint-only -Wall` pass before re-running the full
+gate, confirming the warning was gone rather than assuming the fix
+worked.
+
+Proven with a new directed test, `sim/tb_soc_2hart.v`
+(`sim_soc_2hart`, now in `make verify`'s dependency list, gated under both
+`CORE=inorder` and `CORE=ooo`): `RESET_PC` points straight into RAM,
+preloaded with a small hand-assembled program (`sim/soc2hart.hex`,
+generated the same field-packing way `sim/jtagram.hex` is, not
+hand-typed hex) rather than booting through the real boot ROM, since
+`bootrom.c` does not know a second hart exists yet. Each hart reads its
+own `mhartid`, branches to its own path, and stores a hart-specific
+sentinel to a hart-specific RAM word; the test checks both landed and
+that hart 0 never trapped. Confirmed non-vacuous: a scratch control run
+forcing `NUM_HARTS(1)` in the same testbench correctly failed exactly the
+hart-1 check, with hart 0's own check still passing, before trusting the
+real `NUM_HARTS(2)` version to pass. Both `make verify` and
+`make verify_ooo` are fully green on the final tree - formal 6/6 proved,
+cosim 84/84 on both cores, `verilator_check` clean.
+
+**What this stage deliberately does not do:** connect
+`rtl/soc/reservation_monitor.v` to either hart, give `rtl/ooo/core_ooo.v`
+the reservation ports `cpu_core.v` has had since Stage 7, extend hart
+control past hart 0, or touch `software/soc/bootrom.c`/`dts/soc.dts` -
+nothing outside simulation can reach this second hart yet. All four
 remain open for later stages.
 
 **Done when:** a coherence approach is picked and stated as a decision

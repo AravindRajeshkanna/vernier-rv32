@@ -240,6 +240,7 @@ reframed
 reframes
 reframing
 reimplements
+reindexed
 repo
 requesters
 retargeted
@@ -290,6 +291,7 @@ unexecuted
 unforgeable
 unfound
 uninstantiated
+unsized
 unstalls
 unticked
 untruncated

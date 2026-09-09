@@ -1312,6 +1312,45 @@ sim_cpu_resv_ports: sim/sim_cpu_resv_ports.out
 	@grep -aq "CPU-RESV-PORTS-TEST: PASS" sim/cpu_resv_ports.log && echo "CPU RESERVATION PORTS OK" || \
 	    { echo "FAILED: cpu_core.v's reservation-exposure ports"; exit 1; }
 
+# ---- Phase 13 stage 8: rtl/soc/soc_top.v's NUM_HARTS=2, a real second
+# hart's hardware ----
+#
+# RESET_PC points straight into RAM: software/soc/bootrom.c does not know a
+# second hart exists yet, so this cannot boot through the real boot ROM the
+# way `make sim_soc` does. Encoded via the same field-packing helpers
+# sim/jtagram.hex's own generator uses, not hand-typed hex - see
+# sim/tb_soc_2hart.v's own header for the program and what it proves.
+sim/soc2hart.hex: Makefile
+	@python3 -c "\
+	import sys;\
+	i_type = lambda imm, rs1, f3, rd, op: ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	j_type = lambda imm, rd, op: (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	b_type = lambda imm, rs1, rs2, f3, op: (((imm >> 12) & 1) << 31) | (((imm >> 5) & 0x3F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | (((imm >> 1) & 0xF) << 8) | (((imm >> 11) & 1) << 7) | (op & 0x7F);\
+	u_type = lambda imm20, rd, op: ((imm20 & 0xFFFFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	s_type = lambda imm, rs1, rs2, f3, op: (((imm >> 5) & 0x7F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((imm & 0x1F) << 7) | (op & 0x7F);\
+	words = [\
+	    i_type(0xF14, 0, 0x2, 1, 0x73),\
+	    u_type(0x80000, 2, 0x37),\
+	    b_type(20, 1, 0, 0x1, 0x63),\
+	    i_type(0x100, 2, 0x0, 2, 0x13),\
+	    u_type(0xAAAA0, 3, 0x37),\
+	    s_type(0, 2, 3, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	    i_type(0x104, 2, 0x0, 2, 0x13),\
+	    u_type(0xBBBB0, 3, 0x37),\
+	    s_type(0, 2, 3, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	];\
+	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
+
+sim/sim_soc_2hart.out: sim/tb_soc_2hart.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart.v $(SOC_RTL)
+
+sim_soc_2hart: sim/soc2hart.hex sim/sim_soc_2hart.out
+	cd sim && $(VVP) sim_soc_2hart.out $(VVP_DUMP) | tee soc_2hart.log
+	@grep -aq "SOC-2HART-TEST: PASS" sim/soc_2hart.log && echo "SOC 2-HART HARDWARE OK" || \
+	    { echo "FAILED: rtl/soc/soc_top.v's NUM_HARTS=2"; exit 1; }
+
 # ---- OOO CSR-write-timing hazard ----
 #
 # CORE_OOO hardcoded, not $(CORE_DEFINES)/$(CORE_RTL): this is specifically
@@ -1570,6 +1609,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
         sim_cpu_resv_ports \
+        sim_soc_2hart \
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \
