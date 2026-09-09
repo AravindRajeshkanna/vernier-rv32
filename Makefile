@@ -1066,6 +1066,41 @@ sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
 	    echo "LINUX BOOT PASSED - reached userspace" || \
 	    { echo "LINUX BOOT FAILED - never reached /init"; exit 1; }
 
+# ---- Linux, with a second hart (Phase 13, Stage 11) ----
+#
+# The same sim/linuximage.hex sim_linux already builds - same OpenSBI, same
+# stub, same dts/soc.dtb (both cpu@0 and cpu@1), same kernel Image, built
+# with CONFIG_SMP=y (software/linux/vernier_rv32.config) - only the soc_top
+# build parameter differs, exactly like sim_opensbi_2hart. Not part of
+# `verify`, for the same reason `sim_linux` itself is not: it needs a kernel
+# off the network. Same 400M-cycle budget as `sim_linux` - measured at
+# 286,259,012 cycles to reach the marker here, comfortably inside it, so no
+# separate number was needed.
+#
+# This is the roadmap's own last "Done when" clause for Phase 13: not just
+# that OpenSBI can count two harts (Stage 10), but that a real kernel brings
+# up a second one and both reach userspace. `smp: Brought up 1 node, 2 CPUs`
+# is Linux's own accounting, not this harness's; `/proc/cpuinfo` printing
+# both `processor 0` and `processor 1` is what `grep`s below actually check.
+# It is also, incidentally, the first real stress test cross-hart LR/SC
+# coherence (Stage 9) has seen outside its own directed test - spinlocks and
+# RCU lean on working atomics constantly during SMP bring-up, and a broken
+# reservation_monitor.v connection would much more plausibly hang or corrupt
+# state here than pass quietly.
+sim_linux_2hart: sim/linuximage.hex $(VERILATOR_2HART_BIN)
+	@cd sim && ../$(VERILATOR_2HART_BIN) +sdram=linuximage.hex +uart_clks=224 \
+	    +sdram_words=16777216 +maxcycles=400000000 +checkuart \
+	    +stopon=$(LINUX_MARKER) | tee linux_2hart.log
+	@grep -aq "dropped by the transmitter" sim/linux_2hart.log && \
+	    { echo "LINUX 2-HART BOOT FAILED - the console did not send every byte"; \
+	      exit 1; } || true
+	@grep -aq "=== $(LINUX_MARKER) ===" sim/linux_2hart.log && \
+	    grep -aq "processor	: 0" sim/linux_2hart.log && \
+	    grep -aq "processor	: 1" sim/linux_2hart.log && \
+	    echo "LINUX 2-HART BOOT PASSED - both harts reached userspace" || \
+	    { echo "LINUX 2-HART BOOT FAILED - never reached /init, or only one hart did"; \
+	      exit 1; }
+
 # ---- the ns16550 register map, and the UART's interrupt ----
 #
 # The surface a *driver* touches that no program here did: DLAB, the divisor
