@@ -10,6 +10,9 @@
 .section .text.start
 .global _start
 _start:
+    csrr t0, mhartid
+    bnez t0, park_hart
+
     .option push
     .option norelax
     la gp, __global_pointer$
@@ -29,6 +32,31 @@ _start:
 
 halt:
     j halt
+
+/* Secondary harts (Phase 13): park here immediately, before touching gp,
+ * sp or .bss - all three are shared, single-instance resources (one stack,
+ * one .bss image) that only make sense for the hart that owns them, and
+ * mhartid is read first so a parked hart never risks racing hart 0's own
+ * use of any of them.
+ *
+ * Spins on a fixed RAM word (hart_release_addr, software/soc/bootrom.c)
+ * that hart 0 writes once it has finished loading a program and is ready
+ * to jump. Relies on that word starting at 0, which simulation's own block
+ * RAM model guarantees (rtl/soc/wb_ram.v zero-fills for simulation) but
+ * real silicon does not - block RAM powers up undefined there - so this is
+ * a simulation-only mechanism, matching `NUM_HARTS>1` itself: no real
+ * board build has ever asked for a second hart. See
+ * software/soc/bootrom.c's own comment on `hart_release_addr` and
+ * docs/roadmap.md's Phase 13 entry.
+ */
+park_hart:
+    la t1, hart_release_addr
+1:
+    lw t2, 0(t1)
+    beqz t2, 1b
+    mv a0, t0     /* a0 = mhartid - the RISC-V firmware entry convention */
+    li a1, 0      /* a1 = 0 - no device tree carried by this path yet */
+    jr t2
 
 /* Trap vector for the *loaded program*.
  *
