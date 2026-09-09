@@ -138,6 +138,7 @@ TB  = sim/tb_top.v
 SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
           rtl/uart.v rtl/btb.v rtl/mmu.v rtl/pmp.v rtl/cpu_core.v \
           rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ptw.v \
+          rtl/soc/reservation_monitor.v \
           rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
@@ -1351,6 +1352,67 @@ sim_soc_2hart: sim/soc2hart.hex sim/sim_soc_2hart.out
 	@grep -aq "SOC-2HART-TEST: PASS" sim/soc_2hart.log && echo "SOC 2-HART HARDWARE OK" || \
 	    { echo "FAILED: rtl/soc/soc_top.v's NUM_HARTS=2"; exit 1; }
 
+# ---- Phase 13 stage 9: rtl/soc/reservation_monitor.v wired to both harts
+# - cross-hart LR/SC coherence, not just hardware that runs ----
+#
+# Same RESET_PC-into-RAM approach as sim/soc2hart.hex, for the same reason
+# (bootrom.c doesn't know a second hart exists). See sim/tb_soc_2hart_lrsc.v's
+# own header for the two-hart handshake this program runs and what it proves.
+sim/soc2hart_lrsc.hex: Makefile
+	@python3 -c "\
+	import sys;\
+	i_type = lambda imm, rs1, f3, rd, op: ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	j_type = lambda imm, rd, op: (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	b_type = lambda imm, rs1, rs2, f3, op: (((imm >> 12) & 1) << 31) | (((imm >> 5) & 0x3F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | (((imm >> 1) & 0xF) << 8) | (((imm >> 11) & 1) << 7) | (op & 0x7F);\
+	u_type = lambda imm20, rd, op: ((imm20 & 0xFFFFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	s_type = lambda imm, rs1, rs2, f3, op: (((imm >> 5) & 0x7F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((imm & 0x1F) << 7) | (op & 0x7F);\
+	r_type = lambda f5, aq, rl, rs2, rs1, f3, rd, op: ((f5 & 0x1F) << 27) | ((aq & 1) << 26) | ((rl & 1) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	words = [\
+	    i_type(0xF14, 0, 0x2, 10, 0x73),\
+	    u_type(0x80000, 1, 0x37),\
+	    b_type(44, 10, 0, 0x1, 0x63),\
+	    i_type(0x200, 1, 0x0, 2, 0x13),\
+	    i_type(0x304, 1, 0x0, 4, 0x13),\
+	    i_type(0x308, 1, 0x0, 5, 0x13),\
+	    r_type(0x02, 0, 0, 0, 2, 0x2, 6, 0x2F),\
+	    i_type(0, 4, 0x2, 8, 0x03),\
+	    b_type(-4, 8, 0, 0x0, 0x63),\
+	    i_type(0xAB, 0, 0x0, 9, 0x13),\
+	    r_type(0x03, 0, 0, 9, 2, 0x2, 11, 0x2F),\
+	    s_type(0, 5, 11, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	    i_type(0x200, 1, 0x0, 2, 0x13),\
+	    i_type(0x304, 1, 0x0, 4, 0x13),\
+	    i_type(200, 0, 0x0, 12, 0x13),\
+	    i_type(-1, 12, 0x0, 12, 0x13),\
+	    b_type(-4, 12, 0, 0x1, 0x63),\
+	    i_type(0xCD, 0, 0x0, 9, 0x13),\
+	    s_type(0, 2, 9, 0x2, 0x23),\
+	    i_type(1, 0, 0x0, 7, 0x13),\
+	    s_type(0, 4, 7, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	];\
+	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
+
+# CORE=inorder only, same reasoning as sim_cpu_halt/sim_cpu_resv_ports:
+# rtl/ooo/core_ooo.v has no reservation ports (Phase 13 stage 7 gave those
+# to rtl/cpu_core.v only), so under CORE_OOO rtl/soc/soc_top.v ties every
+# hart's resv_valid/store_fire to 0 - the monitor never fires and this
+# test's own SC-must-fail expectation would be simply wrong, not a build
+# failure to catch. `-g2012` (not $(IVFLAGS)) and $(SOC_RTL_BASE) (not
+# $(SOC_RTL)) deliberately bypass $(CORE_DEFINES)/$(CORE_RTL) so this
+# target always builds and tests the in-order core's own cross-hart
+# coherence, regardless of `make verify_ooo`'s ambient CORE=ooo - the same
+# thing soc_top.v's own `ifdef CORE_OOO` would otherwise silently switch
+# out from under it.
+sim/sim_soc_2hart_lrsc.out: sim/tb_soc_2hart_lrsc.v $(SOC_RTL_BASE)
+	$(IVERILOG) -g2012 -o $@ sim/tb_soc_2hart_lrsc.v $(SOC_RTL_BASE)
+
+sim_soc_2hart_lrsc: sim/soc2hart_lrsc.hex sim/sim_soc_2hart_lrsc.out
+	cd sim && $(VVP) sim_soc_2hart_lrsc.out $(VVP_DUMP) | tee soc_2hart_lrsc.log
+	@grep -aq "SOC-2HART-LRSC-TEST: PASS" sim/soc_2hart_lrsc.log && echo "CROSS-HART LR/SC OK" || \
+	    { echo "FAILED: rtl/soc/reservation_monitor.v wired to soc_top.v"; exit 1; }
+
 # ---- OOO CSR-write-timing hazard ----
 #
 # CORE_OOO hardcoded, not $(CORE_DEFINES)/$(CORE_RTL): this is specifically
@@ -1610,6 +1672,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_b
         sim_cpu_halt \
         sim_cpu_resv_ports \
         sim_soc_2hart \
+        sim_soc_2hart_lrsc \
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \

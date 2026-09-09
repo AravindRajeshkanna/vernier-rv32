@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. `rtl/soc/soc_top.v` genuinely builds and runs with a second hart's hardware now (`NUM_HARTS=2`: its own core, bus adapter, page-table walker, CLINT timer, PLIC context pair), proven by a directed test - but `rtl/soc/reservation_monitor.v` is still connected to nothing, so cross-hart LR/SC has no coherence story yet, and neither the boot ROM nor the device tree know this second hart exists — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`), and cross-hart LR/SC is now coherent on the in-order core - `rtl/soc/reservation_monitor.v` is wired to both harts and a directed test proves a real hazard (hart 1's foreign write correctly fails hart 0's `SC.W`) - but `CORE=ooo` still has no coherence story (`rtl/ooo/core_ooo.v` never got the reservation ports), and neither the boot ROM nor the device tree know a second hart exists, so nothing outside simulation can reach one yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -4166,13 +4166,80 @@ control past hart 0, or touch `software/soc/bootrom.c`/`dts/soc.dts` -
 nothing outside simulation can reach this second hart yet. All four
 remain open for later stages.
 
+**Stage 9: `rtl/soc/reservation_monitor.v` wired to both harts - cross-hart
+LR/SC coherence, not just a second hart that runs.** Stages 6-8 built
+every piece and left them unconnected: the monitor itself (Stage 6),
+`cpu_core.v`'s ports for it (Stage 7), and a real second hart to have an
+opinion at all (Stage 8). This stage is the wiring, and only the wiring -
+five new vectors (`resv_valid`/`resv_addr`/`store_fire`/`store_addr`/
+`resv_invalidate`) connect a `reservation_monitor #(.NUM_HARTS(NUM_HARTS))`
+instance to every hart's own reservation ports, replacing the literal
+`resv_invalidate_ext(1'b0)` tie-off every hart has carried since Stage 7.
+`NUM_HARTS=1` still genuinely instantiates the monitor rather than
+special-casing it away - with only one hart, the monitor's own
+self-exclusion rule means `resv_invalidate[0]` is provably always 0, the
+same "generalize, default preserves today's behavior" shape every other
+Phase 13 stage already used. `CORE_OOO` ties every hart's monitor inputs
+to constant 0 instead (`rtl/ooo/core_ooo.v` still has no reservation ports
+of its own to drive them with - unaffected by this stage either way,
+still zero cross-hart coherence, exactly as before it).
+
+Proven by a new directed test, `sim/tb_soc_2hart_lrsc.v`
+(`sim_soc_2hart_lrsc`, now in `make verify`'s dependency list, deliberately
+built CORE=inorder-only regardless of `make verify_ooo`'s own ambient
+`CORE=ooo` - `$(SOC_RTL_BASE)` and a bare `-g2012`, not
+`$(IVFLAGS)`/`$(SOC_RTL)` - since `core_ooo.v` has nothing for this test to
+prove): hart 0 executes `LR.W`, hart 1 performs a real handshake-gated
+foreign write to the same address, and hart 0's subsequent `SC.W` must
+fail. This is this same entry's own "Done when" bar's directed-test
+requirement, now met - **for the in-order core only**; `CORE=ooo` has no
+LR/SC coherence story of any kind yet, since it never got the reservation
+ports in the first place.
+
+**A real bug, caught in the test itself rather than the RTL, worth
+recording as plainly as any RTL bug this file records.** The first
+version of this test had hart 0 write its own "reservation is set" flag
+right after the `LR.W`, to hand-shake with hart 1 - and it passed, for the
+wrong reason: `rtl/cpu_core.v`'s reservation-clearing logic invalidates a
+hart's own reservation on *any* successful write by that hart, to *any*
+address (`any_successful_write`, address-independent, pre-existing
+behavior this stage did not touch - see `docs/architecture.md`'s LR/SC
+section). Hart 0's own flag write was clearing its own reservation before
+hart 1 ever did anything, making the test vacuous. Caught the same way
+every RTL directed test in this file earns trust: run against a version
+that should fail. A scratch copy of `soc_top.v` with hart 0's
+`resv_invalidate_ext` forced back to a constant 0 - simulating a
+disconnected monitor - should have failed this test and instead still
+passed, which was the tell. Fixed by redesigning hart 0 to make zero
+writes between its `LR.W` and its `SC.W`: hart 1 instead uses a fixed,
+generous delay-loop budget before its own foreign write, needing no
+signal from hart 0 in that direction at all. Re-run against the same
+disconnected-monitor scratch copy afterward: it correctly failed, both on
+the foreign-write check and the SC-result check.
+
+Both `make verify` and `make verify_ooo` are fully green on the final
+tree - formal 6/6 proved, cosim 84/84 on both cores, `verilator_check`
+clean.
+
+**What this stage deliberately does not do, and what is not yet true even
+though the coherence mechanism itself now is:** `software/soc/bootrom.c`
+still does not know a second hart exists (this test bypasses the real boot
+ROM entirely, the same way Stage 8's own test did); `dts/soc.dts` has no
+`cpu@1` node; hart control is still hart-0-only; and `rtl/ooo/core_ooo.v`
+still has no reservation ports at all. **Proving the mechanism works is
+not the same as the system using it** - nothing outside simulation can
+reach a second hart yet, and OpenSBI/Linux have never seen one. Those
+remain the open items for later stages.
+
 **Done when:** a coherence approach is picked and stated as a decision
-(not a default), both harts are visible to OpenSBI/Linux via the device
+(not a default) - **done, Stage 5's D-cache bypass plus this stage's
+monitor wiring** - both harts are visible to OpenSBI/Linux via the device
 tree, `CONFIG_SMP=y` boots to userspace with both harts detected and
-idle-looping correctly (not just hart 0 alive), and a directed test
-demonstrates the specific hazard the chosen coherence approach claims
-to close - an LR/SC pair split across both harts behaving per spec, at
-minimum.
+idle-looping correctly (not just hart 0 alive), and ~~a directed test
+demonstrates the specific hazard the chosen coherence approach claims to
+close - an LR/SC pair split across both harts behaving per spec, at
+minimum~~ - **done, `sim/tb_soc_2hart_lrsc.v`, CORE=inorder.** The device
+tree and Linux-boot clauses remain open.
 
 ---
 

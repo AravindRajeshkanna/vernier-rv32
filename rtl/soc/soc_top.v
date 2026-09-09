@@ -38,14 +38,16 @@
 module soc_top #(
     // Number of harts sharing this bus. Defaults to 1 - today's exact
     // single-hart shape, and every board/synthesis build's own value.
-    // `NUM_HARTS=2` is exercised only by sim/tb_soc_2hart.v so far: hart 1's
-    // hardware (its own cpu_core/cpu_wb/wb_ptw, HARTID=1, its own CLINT
-    // timer/PLIC contexts) exists and runs, but nothing wires
-    // rtl/soc/reservation_monitor.v to either hart yet, hart 1 gets no debug
-    // access at all (rtl/debug/dm.v stays hart-0-only - see the tie-off
-    // where hart control is wired below), and neither software/soc/bootrom.c
-    // nor dts/soc.dts know a second hart exists. See docs/roadmap.md's
-    // Phase 13 entry for what is and is not done here.
+    // `NUM_HARTS=2` is exercised only by sim/tb_soc_2hart.v and
+    // sim/tb_soc_2hart_lrsc.v so far: hart 1's hardware (its own
+    // cpu_core/cpu_wb/wb_ptw, HARTID=1, its own CLINT timer/PLIC contexts)
+    // exists and runs, and rtl/soc/reservation_monitor.v is wired to both
+    // harts' reservation ports, so cross-hart LR/SC is coherent - but hart
+    // 1 gets no debug access at all (rtl/debug/dm.v stays hart-0-only - see
+    // the tie-off where hart control is wired below), and neither
+    // software/soc/bootrom.c nor dts/soc.dts know a second hart exists yet.
+    // See docs/roadmap.md's Phase 13 entry for what is and is not done
+    // here.
     parameter NUM_HARTS       = 1,
     parameter ROM_WORDS       = 4096,      // 16 KB boot ROM
     parameter RAM_BYTES       = 262144,    // 256 KB main RAM
@@ -204,6 +206,21 @@ module soc_top #(
     wire [63:0] mtime;   // one shared counter - clint.v's mtime_out is not per-hart
     wire [NUM_HARTS-1:0]    fence_i;
 
+    // ---- cross-hart LR/SC coherence (rtl/soc/reservation_monitor.v,
+    // Phase 13 stage 9) ----
+    //
+    // Every hart's own resv_valid/resv_addr/store_fire/store_addr feeds the
+    // monitor; its per-hart resv_invalidate feeds back into that same
+    // hart's resv_invalidate_ext. `NUM_HARTS=1` still instantiates the
+    // monitor (below) rather than tying resv_invalidate_ext to a literal
+    // 0 - with only one hart, the monitor's own self-exclusion rule means
+    // it has no "other hart" to ever report, so resv_invalidate[0] is
+    // always 0 by construction, not by a special case. CORE_OOO ties these
+    // to 0 directly (see the `ifdef CORE_OOO` assign below): core_ooo.v
+    // has no resv_valid/store_fire outputs of its own to drive them with.
+    wire [NUM_HARTS-1:0]    resv_valid, store_fire, resv_invalidate;
+    wire [NUM_HARTS*32-1:0] resv_addr, store_addr;
+
     // ---- Wishbone masters, one triple per hart ----
     wire [NUM_HARTS-1:0]    iwb_cyc, iwb_stb, iwb_ack;
     wire [NUM_HARTS*32-1:0] iwb_adr, iwb_dat_r;
@@ -270,14 +287,12 @@ module soc_top #(
         .mtime_in(mtime),
         .fence_i(fence_i[0]), .trap(trap)
 `ifndef CORE_OOO
-        // core_ooo.v has no reservation-monitor ports yet either, same
-        // reason as the debug ports just below - nothing wires a second
-        // hart's rtl/soc/reservation_monitor.v to this or any other hart
-        // yet, even now that a second hart's hardware can exist
-        // (NUM_HARTS>1 below) - single-hart LR/SC only, unchanged. See
-        // docs/roadmap.md's Phase 13 entry.
-        , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
-        .resv_invalidate_ext(1'b0),
+        // core_ooo.v has no reservation-monitor ports yet - see the
+        // `ifdef CORE_OOO` assign below, which ties this hart's own slice
+        // of the monitor's inputs to 0 in that build instead.
+        , .resv_valid(resv_valid[0]), .resv_addr(resv_addr[31:0]),
+        .store_fire(store_fire[0]), .store_addr(store_addr[31:0]),
+        .resv_invalidate_ext(resv_invalidate[0]),
         .dbg_haltreq(dbg_haltreq), .dbg_resumereq(dbg_resumereq), .dbg_halted(dbg_halted),
         .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
         .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
@@ -295,6 +310,18 @@ module soc_top #(
     assign dbg_halted    = 1'b0;
     assign dbg_reg_rdata = 32'b0;
     assign dbg_reg_err   = 1'b1;
+    // Same honesty rule for coherence: core_ooo.v has no resv_valid/
+    // store_fire outputs to drive the monitor with, so every hart reports
+    // "no reservation, no write" rather than leaving these floating.
+    // rtl/soc/reservation_monitor.v's own resv_invalidate output is simply
+    // unread on this build - there is no resv_invalidate_ext input to feed
+    // it into. See docs/roadmap.md's Phase 13 entry: CORE=ooo has no
+    // cross-hart LR/SC coherence of any kind yet, same as before this
+    // stage, since the gap was cpu_core.v-only from Stage 7 onward.
+    assign resv_valid  = {NUM_HARTS{1'b0}};
+    assign resv_addr   = {(NUM_HARTS*32){1'b0}};
+    assign store_fire  = {NUM_HARTS{1'b0}};
+    assign store_addr  = {(NUM_HARTS*32){1'b0}};
 `endif
 
     cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (
@@ -332,13 +359,14 @@ module soc_top #(
     // walker - the same three-instance shape hart 0 has just above,
     // parameterized on `h` instead of hardcoded. CORE=inorder and CORE=ooo
     // both build this loop (core_ooo.v can be instantiated more than once
-    // with no issue of its own), but three things stay hart-0-only
+    // with no issue of its own), but two things stay hart-0-only
     // regardless: `trap` (a single module-level bit - a second hart's own
-    // trap is not yet observable at this module's boundary), hart control
-    // (rtl/debug/dm.v has no per-hart select - see the tie-off below), and
-    // reservation-monitor wiring (deferred for every hart, hart 0 included -
-    // see the comment on hart 0's own tie-off above). See docs/roadmap.md's
-    // Phase 13 entry for what each of these still needs.
+    // trap is not yet observable at this module's boundary) and hart
+    // control (rtl/debug/dm.v has no per-hart select - see the tie-off
+    // below). Every hart's own reservation ports, by contrast, DO connect
+    // to rtl/soc/reservation_monitor.v below, hart 0 included - Phase 13
+    // stage 9. See docs/roadmap.md's Phase 13 entry for what still isn't
+    // done (CORE_OOO's own coherence gap, and hart control past hart 0).
     genvar h;
     generate
         for (h = 1; h < NUM_HARTS; h = h + 1) begin : g_hart
@@ -362,8 +390,9 @@ module soc_top #(
                 .mtime_in(mtime),
                 .fence_i(fence_i[h]), .trap()
 `ifndef CORE_OOO
-                , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
-                .resv_invalidate_ext(1'b0),
+                , .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
+                .store_fire(store_fire[h]), .store_addr(store_addr[32*h +: 32]),
+                .resv_invalidate_ext(resv_invalidate[h]),
                 // No per-hart select exists in rtl/debug/dm.v yet (RISC-V
                 // debug spec's `hartsel`) - every hart past 0 is simply not
                 // reachable from the debug path this round. Tied to explicit
@@ -404,6 +433,20 @@ module soc_top #(
             );
         end
     endgenerate
+
+    // Closes the cross-hart LR/SC gap docs/roadmap.md's Phase 13 entry
+    // named from Stage 6 onward: every hart's own resv_valid/resv_addr/
+    // store_fire/store_addr feeds this, and its per-hart resv_invalidate
+    // feeds back into that same hart's own resv_invalidate_ext above.
+    // `NUM_HARTS=1` collapses this to the module's own single-hart case -
+    // one hart, no "other" hart to ever report, resv_invalidate[0] always
+    // 0 - the same "generalize, default preserves today's behavior"
+    // pattern every other Phase 13 stage already used.
+    reservation_monitor #(.NUM_HARTS(NUM_HARTS)) RESVMON (
+        .resv_valid(resv_valid), .resv_addr(resv_addr),
+        .store_fire(store_fire), .store_addr(store_addr),
+        .resv_invalidate(resv_invalidate)
+    );
 
     // ---- the debug path: four pins to a bus master ----
     //

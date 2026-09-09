@@ -329,18 +329,18 @@ Opcode `0101111`, `funct3=010` (word-only, all this core implements).
 `AMOAND`(01100)/`AMOOR`(01000)/`AMOMIN`(10000)/`AMOMAX`(10100)/
 `AMOMINU`(11000)/`AMOMAXU`(11100); `aq`/`rl` are decoded but functionally
 ignored - this core itself has no fence protocol for them to invoke,
-regardless of how many of it a SoC instantiates: `docs/roadmap.md`'s
-Phase 13 entry names this same gap on the multi-hart side, alongside the
-cache/LR-SC coherence this core also has no protocol for yet.
+regardless of how many of it a SoC instantiates. `docs/roadmap.md`'s
+Phase 13 entry names this same limitation on the multi-hart side.
 `reservation_valid`/`reservation_addr` are mirrored outward as
 `resv_valid`/`resv_addr` ports, alongside a `store_fire`/`store_addr`
-pair and a `resv_invalidate_ext` input (Phase 13, Stage 7), so a future
-cross-hart monitor has somewhere to plug in - every real instantiation
-site still ties `resv_invalidate_ext` to 0 and leaves the outputs
-unconnected, so this remains scaffolding, not a protocol, even now that
-`rtl/soc/soc_top.v` can genuinely instantiate and run a second hart of
-this core (Phase 13, Stage 8): the hardware to make the gap matter exists,
-but nothing connects `rtl/soc/reservation_monitor.v` to either hart yet.
+pair and a `resv_invalidate_ext` input (Phase 13, Stage 7). As of Stage 9,
+these are no longer just scaffolding on `CORE=inorder`:
+`rtl/soc/soc_top.v` wires every hart's own ports to a real
+`rtl/soc/reservation_monitor.v` instance, so a foreign hart's write
+genuinely clears this hart's reservation over the real bus, proven by a
+directed test at `NUM_HARTS=2`. `CORE=ooo` is unaffected either way -
+`rtl/ooo/core_ooo.v` has none of these ports, so it still has no
+cross-hart LR/SC story at all, coherent or otherwise.
 The read-modify-write mechanics live in MEM
 (section 2e); decode and hazard handling treat AMO/LR like a load with a
 possible conditional write, described in 2b/2c.
