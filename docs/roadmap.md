@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`), and cross-hart LR/SC is now coherent on the in-order core - `rtl/soc/reservation_monitor.v` is wired to both harts and a directed test proves a real hazard (hart 1's foreign write correctly fails hart 0's `SC.W`) - but `CORE=ooo` still has no coherence story (`rtl/ooo/core_ooo.v` never got the reservation ports), and neither the boot ROM nor the device tree know a second hart exists, so nothing outside simulation can reach one yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | Named and scoped, not silent anymore. `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`), and cross-hart LR/SC is now coherent on the in-order core - `rtl/soc/reservation_monitor.v` is wired to both harts and a directed test proves a real hazard (hart 1's foreign write correctly fails hart 0's `SC.W`) - but `CORE=ooo` still has no coherence story (`rtl/ooo/core_ooo.v` never got the reservation ports). `dts/soc.dts` now declares both harts and OpenSBI genuinely detects them (`Platform HART Count : 2`), but the boot ROM still doesn't know a second hart exists, and Linux has never booted with `CONFIG_SMP=y` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -4225,21 +4225,114 @@ clean.
 though the coherence mechanism itself now is:** `software/soc/bootrom.c`
 still does not know a second hart exists (this test bypasses the real boot
 ROM entirely, the same way Stage 8's own test did); `dts/soc.dts` has no
-`cpu@1` node; hart control is still hart-0-only; and `rtl/ooo/core_ooo.v`
-still has no reservation ports at all. **Proving the mechanism works is
-not the same as the system using it** - nothing outside simulation can
-reach a second hart yet, and OpenSBI/Linux have never seen one. Those
-remain the open items for later stages.
+`cpu@1` node yet either (Stage 10 gives it one); hart control is still
+hart-0-only; and `rtl/ooo/core_ooo.v` still has no reservation ports at
+all. **Proving the mechanism works is not the same as the system using
+it** - nothing outside simulation can reach a second hart yet, and
+OpenSBI/Linux have never seen one. Those remain the open items for later
+stages.
+
+**Stage 10: OpenSBI genuinely detects a second hart - the device-tree
+half of what Stage 9 left open, not `software/soc/bootrom.c` and not
+Linux.** Two changes, both small, both load-bearing. `dts/soc.dts` gains
+a `cpu@1` node, matching `cpu@0`'s shape (`reg = <1>`, its own
+`cpu1_intc`), and `clint0`'s/`plic0`'s `interrupts-extended` lists grow a
+second pair of entries each, in hart order - matching `rtl/clint.v`'s
+own per-hart `mtip`/`msip_out` convention (Stage 2) and
+`rtl/soc/soc_top.v`'s own `plic_eip[2*h]`/`plic_eip[2*h+1]` convention
+(Stage 8) exactly, so the position of each entry in the list is the same
+hart-to-context mapping the hardware already uses, not a fresh
+invention. `software/opensbi/sbi_stub.S` - the tiny test-harness stand-in
+for the boot ROM that `make sim_opensbi`/`sim_linux` actually build
+against, **not** `software/soc/bootrom.c`'s own real SD/UART-load path,
+which nothing in this project's automated testing exercises yet either
+way - had its hardcoded `li a0, 0` (hart ID) replaced with
+`csrr a0, mhartid`. That one instruction matters more than it looks:
+under `NUM_HARTS=1` it was a no-op (`mhartid` is always 0), which is
+exactly why it went unnoticed until now, but at `NUM_HARTS=2` both harts
+reset into this identical instruction stream, and the hardcoded version
+would have told OpenSBI both harts are hart 0 - the one thing a
+multi-hart SBI entry must never claim.
+
+**A second real gate failure, same class as Stage 8's own PLIC one, in a
+different module.** Building a new `NUM_HARTS=2` Verilator target
+tripped a `WIDTHEXPAND` warning in `rtl/clint.v`'s `word_idx`/
+`mtimecmp_hart` bounds checks - the identical mechanism Stage 8 already
+fixed once in `rtl/plic.v` (an unsized `NUM_HARTS` parameter, once it
+arrives via something other than a bare literal - a Makefile
+`-GNUM_HARTS=2` override this time rather than a computed expression -
+can get a wider inferred type than the literal default ever had). The
+fix is not quite the same one, though, which is worth stating precisely
+rather than assuming the precedent transfers unchanged: an 8-bit
+narrowed copy (`plic.v`'s own `NUM_CONTEXTS_W8` shape) still tripped the
+warning here, just on the *other* operand. Only a copy matching the
+comparison's own width exactly - `NUM_HARTS_W14`, 14 bits, the same
+width as `word_idx`/`mtimecmp_hart` - resolved it cleanly. Verified with
+a standalone `verilator --lint-only -Wall` pass before rebuilding, the
+same discipline Stage 8 used.
+
+Proven by a new Makefile target, `sim_opensbi_2hart`
+(`VERILATOR_2HART_BIN`, `NUM_HARTS=2`, built from `$(SOC_RTL_BASE)` for
+the same CORE=inorder-only reasoning Stage 9's own
+`sim_soc_2hart_lrsc` target used - `rtl/ooo/core_ooo.v` has nothing this
+target would exercise differently either way): it boots the exact same
+`sim/sbiimage.hex` `sim_opensbi` already builds - same OpenSBI binary,
+same stub, same `dts/soc.dtb` - with only the `soc_top` build parameter
+different, and checks for `Platform HART Count         : 2` in OpenSBI's
+own printed banner. Like `sim_opensbi` itself, this is **not** part of
+`make verify`/`make verify_ooo` - it needs OpenSBI's separately-cloned
+source tree, the same reason `sim_opensbi` already sits outside the
+automated gate - so it is run by hand, the same way.
+
+**A real measurement, not a guess, decided the cycle budget.** A first
+attempt at 40M cycles - `sim_opensbi`'s own budget - printed only the
+ASCII banner and nothing else, which looked like a hang. Resolving the
+looping PCs against the real `fw_jump.elf` with `addr2line` placed it
+inside libfdt's `fdt_next_node`/`fdt_next_tag` - consistent with either
+a genuine infinite loop or simply a slower walk now that `/cpus` has two
+subnodes instead of one, and those two explanations are
+indistinguishable from a PC trace alone. Distinguished empirically: a
+400M-cycle run got much further - the full platform/domain/hart-info
+block printed - before settling into a different, later loop
+(`sbi_illegal_insn_handler`/`sbi_pmu_ctr_incr_fw`) that matches this
+project's own already-documented "unrelated firmware feature-probe" trap
+signature (`software/opensbi/README.md`'s own account). That confirmed
+the 40M-cycle result was a budget problem, not a bug. A 100M-cycle run,
+captured in full rather than through a truncating `tail`, confirmed
+`Platform HART Count         : 2` prints correctly; the shipped target
+uses 150M for real margin over that measurement, not the measurement
+itself.
+
+Also fixed, found while reading the file for this stage:
+`dts/soc.dts`'s own top-of-file comment claimed the device tree "is
+*not* consumed by anything in this project today" - false since
+`software/opensbi/mkimage.py` has packed it into every `sim_opensbi`/
+`sim_linux` image since the OpenSBI integration landed, well before this
+stage. A stale claim from before that integration, never corrected.
+Fixed to say what is actually true now: OpenSBI genuinely parses it at
+runtime, while `software/soc/bootrom.c` and `software/soc/main.c` still
+use `software/soc/soc.h`'s compiled-in memory map instead, since both
+predate the device tree and have no reason to add a parser for one.
+
+**What this stage deliberately does not do:** touch
+`software/soc/bootrom.c` at all - the real board-boot path stays exactly
+as unaware of a second hart as before, and safely so, since every real
+board build still pins `NUM_HARTS=1`; enable `CONFIG_SMP` in
+`software/linux/`; or attempt an actual Linux SMP boot. Those remain
+fully open.
 
 **Done when:** a coherence approach is picked and stated as a decision
-(not a default) - **done, Stage 5's D-cache bypass plus this stage's
-monitor wiring** - both harts are visible to OpenSBI/Linux via the device
-tree, `CONFIG_SMP=y` boots to userspace with both harts detected and
+(not a default) - **done, Stage 5's D-cache bypass plus Stage 9's
+monitor wiring** - ~~both harts are visible to OpenSBI/Linux via the
+device tree~~ - **done for OpenSBI, this stage - `Platform HART Count :
+2`, `sim_opensbi_2hart`. Linux has never seen a `cpu@1` node boot; that
+needs `CONFIG_SMP=y` and an actual SMP kernel run, still open** -
+`CONFIG_SMP=y` boots to userspace with both harts detected and
 idle-looping correctly (not just hart 0 alive), and ~~a directed test
 demonstrates the specific hazard the chosen coherence approach claims to
 close - an LR/SC pair split across both harts behaving per spec, at
-minimum~~ - **done, `sim/tb_soc_2hart_lrsc.v`, CORE=inorder.** The device
-tree and Linux-boot clauses remain open.
+minimum~~ - **done, `sim/tb_soc_2hart_lrsc.v`, CORE=inorder.** Only the
+Linux-boot clause remains open.
 
 ---
 

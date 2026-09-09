@@ -6,6 +6,14 @@
  * entirely FDT-driven - has nothing to find. It does not limp along without
  * one; it cannot know what its console or timer even is.
  *
+ * a0 is read from `mhartid` rather than hardcoded to 0, unlike a1: at
+ * NUM_HARTS=1 (every board build, and every sim target before Phase 13
+ * Stage 10) mhartid is always 0 so this made no observable difference, but
+ * at NUM_HARTS=2 every hart resets into this exact same instruction stream
+ * (soc_top.v's RESET_PC is shared), and `li a0, 0` would tell OpenSBI both
+ * harts are hart 0 - the one thing a multi-hart SBI entry must never do,
+ * since hart identity is how it tells the boot hart from every other one.
+ *
  * So this sits at the reset vector, supplies both, and jumps. It is the
  * smallest possible stand-in for the boot ROM's eventual job of loading
  * firmware and handing it a device tree.
@@ -27,7 +35,7 @@
     .section .text
     .globl _start
 _start:
-    li      a0, 0                   /* hart ID                */
+    csrr    a0, mhartid             /* hart ID                */
     li      a1, 0x90008000          /* device tree blob       */
     li      t0, 0x90080000          /* OpenSBI's entry point  */
     jr      t0

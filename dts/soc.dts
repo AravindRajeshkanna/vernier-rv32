@@ -8,11 +8,13 @@
  *
  * What this is and isn't: it is an accurate description of the hardware in
  * the standard format that RISC-V firmware (OpenSBI, U-Boot, Linux) expects
- * to be handed. It is *not* consumed by anything in this project today - the
- * boot ROM and the RAM program both have the memory map compiled in via
- * software/soc/soc.h. It exists because a device tree is the interface any
- * real system software would come looking for, and writing it now is what
- * makes the address map explicit and reviewable in one place.
+ * to be handed. It compiles to dts/soc.dtb, which software/opensbi/mkimage.py
+ * packs into every image `make sim_opensbi`/`sim_linux` boot and OpenSBI
+ * genuinely parses at runtime - this stopped being aspirational once that
+ * integration landed (docs/roadmap.md's OpenSBI phase). The boot ROM and
+ * software/soc/main.c's own RAM program still have the memory map compiled
+ * in via software/soc/soc.h instead of reading this, since both predate the
+ * device tree and have no reason to add a parser for one.
  *
  * Anything here that would need to change before real supervisor software
  * could use it is called out in a comment rather than quietly fudged.
@@ -102,6 +104,33 @@
                 interrupt-controller;
             };
         };
+
+        /* Phase 13, Stage 10: a second hart, matching rtl/soc/soc_top.v's
+         * own NUM_HARTS=2 (simulation only - every real board build still
+         * pins NUM_HARTS=1, so this node describes hardware that exists
+         * under `make sim_opensbi`/`sim_linux` and nowhere else yet). `reg`
+         * is the hart ID clint0/plic0's own interrupts-extended lists below
+         * index by position, and rtl/cpu_core.v's own HARTID parameter -
+         * all three must agree, the same "nothing checks these match"
+         * caution every other duplicated constant in this file already
+         * carries. docs/roadmap.md's Phase 13 entry has the full account. */
+        cpu1: cpu@1 {
+            device_type = "cpu";
+            reg = <1>;
+            compatible = "riscv";
+            riscv,isa = "rv32ima_zicsr_zifencei";
+            riscv,isa-base = "rv32i";
+            riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei";
+            mmu-type = "riscv,sv32";
+            clock-frequency = <25000000>;
+            status = "okay";
+
+            cpu1_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                compatible = "riscv,cpu-intc";
+                interrupt-controller;
+            };
+        };
     };
 
     memory@80000000 {
@@ -164,8 +193,14 @@
         clint0: clint@2000000 {
             compatible = "riscv,clint0";
             reg = <0x02000000 0x00010000>;
-            /* 3 = machine software interrupt, 7 = machine timer interrupt */
-            interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+            /* 3 = machine software interrupt, 7 = machine timer interrupt,
+             * one pair per hart, in hart order - the standard aclint-mswi/
+             * aclint-mtimer convention, and rtl/clint.v's own
+             * NUM_HARTS-indexed msip_out/mtip vectors (Phase 13 stage 2)
+             * already match it: hart h's msip is bit h, hart h's mtip is
+             * bit h, independently of each other. */
+            interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7
+                                    &cpu1_intc 3 &cpu1_intc 7>;
         };
 
         plic0: plic@3000000 {
@@ -177,15 +212,18 @@
              * interconnect gives this slave 16 MB and this declares the part
              * of it that answers. */
             reg = <0x03000000 0x00400000>;
-            /* Two contexts, in the order rtl/plic.v numbers them: context 0
-             * is this hart's M-mode (cause 11, MEI) and context 1 is its
-             * S-mode (cause 9, SEI). The ordering is the interface - a driver
-             * derives the context index from position in this list - and
-             * nothing checks it against PLIC_CTX_M/PLIC_CTX_S in
-             * software/soc/soc.h. Getting it backwards points every driver at
-             * the other privilege level's threshold register and fails
-             * silently, by never delivering. */
-            interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
+            /* Two contexts per hart, in the order rtl/plic.v numbers them:
+             * context 2*h is hart h's M-mode (cause 11, MEI) and 2*h+1 is
+             * its S-mode (cause 9, SEI) - matching rtl/soc/soc_top.v's own
+             * plic_eip[2*h]/plic_eip[2*h+1] convention (Phase 13 stage 8).
+             * The ordering is the interface - a driver derives the context
+             * index from position in this list - and nothing checks it
+             * against PLIC_CTX_M/PLIC_CTX_S in software/soc/soc.h. Getting
+             * it backwards points every driver at the other privilege
+             * level's threshold register and fails silently, by never
+             * delivering. */
+            interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9
+                                    &cpu1_intc 11 &cpu1_intc 9>;
             interrupt-controller;
             #interrupt-cells = <1>;
             riscv,ndev = <8>;

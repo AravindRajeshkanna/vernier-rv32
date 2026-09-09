@@ -910,6 +910,44 @@ sim_opensbi: sim/sbiimage.hex $(VERILATOR_BIN)
 	    { echo "OPENSBI BOOT FAILED - no banner, or the platform was not detected"; \
 	      exit 1; }
 
+# ---- OpenSBI, with a second hart (Phase 13, Stage 10) ----
+#
+# Same sbiimage.hex, same OpenSBI binary, same dts/soc.dtb (now with a
+# cpu@1 node) - the only difference is the soc_top build underneath it,
+# at NUM_HARTS=2 instead of the default 1. Not part of `verify`, for the
+# same reason `sim_opensbi` is not (needs OpenSBI's cloned source tree);
+# run it by hand the same way. $(SOC_RTL_BASE), not $(SOC_RTL): this only
+# ever needs to prove the in-order core's own hart 1 is detected -
+# rtl/ooo/core_ooo.v has no reservation ports for cross-hart LR/SC
+# regardless, so there is nothing CORE=ooo-specific for this target to
+# check yet.
+#
+# 150M cycles, not sim_opensbi's own 40M: measured, not guessed - a 40M-cycle
+# run here times out having printed only the ASCII banner, nothing else, which
+# first looked like a hang (traced to a real, if slow, libfdt device-tree walk
+# taking noticeably longer with two /cpus subnodes to enumerate instead of
+# one). A 100M-cycle run reaches "Platform HART Count : 2" and the rest of the
+# banner cleanly; 150M leaves real margin rather than pinning to the
+# measurement exactly.
+VERILATOR_2HART_MDIR = obj_dir_soc_2hart
+VERILATOR_2HART_BIN  = $(VERILATOR_2HART_MDIR)/Vsoc_top
+
+$(VERILATOR_2HART_BIN): $(SOC_RTL_BASE) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
+	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O2" \
+	    --top-module soc_top \
+	    -GRAM_BYTES=65536 -GRESET_PC=0x90000000 -GNUM_HARTS=2 \
+	    --Mdir $(VERILATOR_2HART_MDIR) \
+	    $(SOC_RTL_BASE) sim/verilator_soc.vlt sim/verilator_soc.cpp
+
+sim_opensbi_2hart: sim/sbiimage.hex $(VERILATOR_2HART_BIN)
+	@cd sim && ../$(VERILATOR_2HART_BIN) +sdram=sbiimage.hex +uart_clks=224 \
+	    +maxcycles=150000000 +sdram_words=16777216 | tee opensbi_2hart.log
+	@grep -q "Platform HART Count         : 2" sim/opensbi_2hart.log && \
+	    grep -q "Boot HART Base ISA          : rv32ima" sim/opensbi_2hart.log && \
+	    echo "OPENSBI 2-HART BOOT PASSED" || \
+	    { echo "OPENSBI 2-HART BOOT FAILED - hart count not 2, or no banner"; \
+	      exit 1; }
+
 # ---- Linux, packed into the same SDRAM image ----
 #
 # Not part of `verify`, for the same reason OpenSBI is not: building it needs

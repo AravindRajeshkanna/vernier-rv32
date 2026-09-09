@@ -41,10 +41,24 @@ module clint #(
     // CTXW. $clog2(1) is 0, so NUM_HARTS=1 is special-cased to 1 rather
     // than a zero-width index.
     localparam HIDXW = (NUM_HARTS <= 1) ? 1 : $clog2(NUM_HARTS);
+    // An explicitly 14-bit copy of NUM_HARTS - exactly word_idx/
+    // mtimecmp_hart's own width below, so the comparison needs no implicit
+    // widening on either side - for the two bounds checks below. Same
+    // reasoning and same fix as rtl/plic.v's own NUM_CONTEXTS_W8 (Phase 13
+    // stage 8): NUM_HARTS is a plain, unsized parameter, and a caller
+    // passing it as a computed/overridden value (a Makefile NUM_HARTS
+    // override on the simulator command line, in this case) can hand the
+    // width checker a wider intermediate type than a literal would,
+    // tripping a spurious widen-on-comparison warning even though the real
+    // values are identical. A narrower-than-14-bit copy (8 bits, matching
+    // plic.v's own choice there) still tripped it here, just on the other
+    // operand - matching the comparison's width exactly, rather than
+    // merely making it smaller, is what actually avoids it.
+    localparam [13:0] NUM_HARTS_W14 = NUM_HARTS[13:0];
 
     wire [13:0]       word_idx = addr[15:2];
     wire              is_msip  = (addr[15:0] < 16'h4000);
-    wire              msip_ok  = is_msip && (word_idx < NUM_HARTS);
+    wire              msip_ok  = is_msip && (word_idx < NUM_HARTS_W14);
     wire [HIDXW-1:0]  msip_idx = word_idx[HIDXW-1:0];
 
     // mtimecmp region starts at word 0x1000 (byte 0x4000); each hart takes
@@ -54,7 +68,7 @@ module clint #(
     wire              is_mtimecmp   = (addr[15:0] >= 16'h4000) && (addr[15:0] < OFF_MTIME_LO);
     wire              mtimecmp_hi   = mtimecmp_word[0];
     wire [13:0]       mtimecmp_hart = mtimecmp_word >> 1;
-    wire              mtimecmp_ok   = is_mtimecmp && (mtimecmp_hart < NUM_HARTS);
+    wire              mtimecmp_ok   = is_mtimecmp && (mtimecmp_hart < NUM_HARTS_W14);
     wire [HIDXW-1:0]  mtimecmp_idx  = mtimecmp_hart[HIDXW-1:0];
 
     reg [63:0] mtime;
