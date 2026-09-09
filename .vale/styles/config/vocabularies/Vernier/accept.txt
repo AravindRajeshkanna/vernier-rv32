@@ -263,6 +263,7 @@ stdout
 strided
 strobed
 submodule
+subnodes
 subtest
 superpage
 superscalar
