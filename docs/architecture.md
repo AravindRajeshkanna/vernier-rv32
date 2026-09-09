@@ -328,18 +328,20 @@ Opcode `0101111`, `funct3=010` (word-only, all this core implements).
 `LR`(00010)/`SC`(00011)/`AMOSWAP`(00001)/`AMOADD`(00000)/`AMOXOR`(00100)/
 `AMOAND`(01100)/`AMOOR`(01000)/`AMOMIN`(10000)/`AMOMAX`(10100)/
 `AMOMINU`(11000)/`AMOMAXU`(11100); `aq`/`rl` are decoded but functionally
-ignored (this core is single-hart, so there is nothing for
-them to fence against) - a real single-hart assumption, not just an
-in-order one: `docs/roadmap.md`'s Phase 13 entry names this same gap on
-the multi-hart side, alongside the cache/LR-SC coherence this core also
-has no protocol for yet. `reservation_valid`/`reservation_addr` are
-mirrored outward as `resv_valid`/`resv_addr` ports, alongside a
-`store_fire`/`store_addr` pair and a `resv_invalidate_ext` input (Phase
-13, Stage 7), so a future cross-hart monitor has somewhere to plug in -
-every real instantiation site ties `resv_invalidate_ext` to 0 and leaves
-the outputs unconnected today, so this remains scaffolding, not a
-protocol: no monitor is connected and no second hart exists yet to make
-one matter. The read-modify-write mechanics live in MEM
+ignored - this core itself has no fence protocol for them to invoke,
+regardless of how many of it a SoC instantiates: `docs/roadmap.md`'s
+Phase 13 entry names this same gap on the multi-hart side, alongside the
+cache/LR-SC coherence this core also has no protocol for yet.
+`reservation_valid`/`reservation_addr` are mirrored outward as
+`resv_valid`/`resv_addr` ports, alongside a `store_fire`/`store_addr`
+pair and a `resv_invalidate_ext` input (Phase 13, Stage 7), so a future
+cross-hart monitor has somewhere to plug in - every real instantiation
+site still ties `resv_invalidate_ext` to 0 and leaves the outputs
+unconnected, so this remains scaffolding, not a protocol, even now that
+`rtl/soc/soc_top.v` can genuinely instantiate and run a second hart of
+this core (Phase 13, Stage 8): the hardware to make the gap matter exists,
+but nothing connects `rtl/soc/reservation_monitor.v` to either hart yet.
+The read-modify-write mechanics live in MEM
 (section 2e); decode and hazard handling treat AMO/LR like a load with a
 possible conditional write, described in 2b/2c.
 
@@ -876,10 +878,12 @@ this two-master picture, but not once the interconnect grew a debug-module
 master, nor once it grew `NUM_HARTS`-many hart-indexed fetch/data/walker
 triples on top of that (`rtl/soc/wb_interconnect.v`'s own header has the
 current account) - a second hart's own data master is no longer just a
-future possibility to design around, since `docs/roadmap.md`'s Phase 13
-entry (Stage 3) already generalized and formally proved the arbitration
-for it, though no second hart exists yet to actually drive one. Re-locking
-closes every case the same way, proven in `formal/fv_interconnect.v`.
+future possibility to design around: `docs/roadmap.md`'s Phase 13 entry
+(Stage 3) already generalized and formally proved the arbitration for it,
+and (Stage 8) `rtl/soc/soc_top.v` now genuinely instantiates and drives a
+second hart's own fetch/data/walker triple at `NUM_HARTS=2`, proven by a
+directed test rather than left as an unexercised knob. Re-locking closes
+every case the same way, proven in `formal/fv_interconnect.v`.
 
 One requirement the arbiter now depends on: **both masters must tie `stb` to
 `cyc`.** It grants on `cyc` alone, so a master asserting `cyc` without `stb`

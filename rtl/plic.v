@@ -80,6 +80,19 @@ module plic #(
     // Wide enough to index the contexts and no wider, so the array indices
     // below do not need truncating. $clog2(2) is 1.
     localparam CTXW = (NUM_CONTEXTS <= 1) ? 1 : $clog2(NUM_CONTEXTS);
+    // An explicitly 8-bit copy of NUM_CONTEXTS, for the two bounds checks
+    // below that multiply it against a 24-bit constant. NUM_CONTEXTS itself
+    // is a plain, unsized parameter, so a caller that computes it (rather
+    // than writing a bare literal, e.g. rtl/soc/soc_top.v's Phase 13
+    // NUM_CONTEXTS(2*NUM_HARTS)) can hand Verilator's own width inference a
+    // wider intermediate type than a literal would - real values are
+    // unaffected (256 contexts is far beyond anything this map's 24-bit
+    // address space could reach anyway), but the wider type alone is enough
+    // to trip Verilator's WIDTHEXPAND lint against `enable_off`/`ctx_off`
+    // below, which the trusted `verify`/`verify_ooo` gate treats as fatal.
+    // Sizing this once here, the same way CTXW already narrows the context
+    // *index*, keeps the *count* comparisons equally caller-agnostic.
+    localparam [7:0] NUM_CONTEXTS_W8 = NUM_CONTEXTS[7:0];
     // Likewise for indexing the source bitmaps. `claim_id` stays 8 bits wide
     // because that is what software reads out of the claim register; only the
     // slice used as an index is narrowed.
@@ -147,13 +160,13 @@ module plic #(
 
     wire [23:0] enable_off  = a - 24'h002000;
     wire        is_enable   = (a >= 24'h002000) &&
-                              (enable_off < (NUM_CONTEXTS * 24'h80)) &&
+                              (enable_off < (NUM_CONTEXTS_W8 * 24'h80)) &&
                               (enable_off[6:0] == 7'h00);
     wire [CTXW-1:0] enable_ctx = enable_off[7 +: CTXW];
 
     wire [23:0] ctx_off     = a - 24'h200000;
     wire        is_ctx      = (a >= 24'h200000) &&
-                              (ctx_off < (NUM_CONTEXTS * 24'h1000));
+                              (ctx_off < (NUM_CONTEXTS_W8 * 24'h1000));
     wire [CTXW-1:0] ctx_idx    = ctx_off[12 +: CTXW];
     wire        is_thresh   = is_ctx && (ctx_off[11:0] == 12'h000);
     wire        is_claim    = is_ctx && (ctx_off[11:0] == 12'h004);

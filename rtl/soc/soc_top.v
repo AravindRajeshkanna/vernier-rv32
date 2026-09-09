@@ -36,6 +36,17 @@
 //   2 = GPIO
 //   3..8 = spare, tied low
 module soc_top #(
+    // Number of harts sharing this bus. Defaults to 1 - today's exact
+    // single-hart shape, and every board/synthesis build's own value.
+    // `NUM_HARTS=2` is exercised only by sim/tb_soc_2hart.v so far: hart 1's
+    // hardware (its own cpu_core/cpu_wb/wb_ptw, HARTID=1, its own CLINT
+    // timer/PLIC contexts) exists and runs, but nothing wires
+    // rtl/soc/reservation_monitor.v to either hart yet, hart 1 gets no debug
+    // access at all (rtl/debug/dm.v stays hart-0-only - see the tie-off
+    // where hart control is wired below), and neither software/soc/bootrom.c
+    // nor dts/soc.dts know a second hart exists. See docs/roadmap.md's
+    // Phase 13 entry for what is and is not done here.
+    parameter NUM_HARTS       = 1,
     parameter ROM_WORDS       = 4096,      // 16 KB boot ROM
     parameter RAM_BYTES       = 262144,    // 256 KB main RAM
     parameter ROM_INIT_FILE   = "",
@@ -170,28 +181,37 @@ module soc_top #(
         8'hFF  // S_ROM
     };
 
-    // ---- CPU native ports ----
-    wire [31:0] imem_addr, imem_rdata;
-    wire [31:0] dmem_addr, dmem_wdata, dmem_rdata;
-    wire        dmem_we, dmem_re, dmem_is_amo, dmem_rvalid;
-    wire [1:0]  dmem_size;
-    wire        ibus_wait, dbus_wait;
-    wire        itlb_wait_stall;
-    wire        ptw_req, ptw_gnt, iptw_req, iptw_gnt;
-    wire [31:0] ptw_addr, ptw_rdata, iptw_addr, iptw_rdata;
-    wire        mtip, msip;
-    wire [1:0]  plic_eip;   // [0] M-mode context, [1] S-mode context
-    wire [63:0] mtime;
-    wire        fence_i;
+    // ---- CPU native ports, one slice per hart ----
+    // Hart h's signals occupy bit/word h of each vector below (bit 32*h+:32
+    // for the 32-bit ones), the same convention
+    // rtl/soc/wb_interconnect.v/rtl/soc/reservation_monitor.v already use.
+    // `NUM_HARTS=1` collapses every vector to exactly one bit/word, wired to
+    // exactly the same single hart these signals have always named.
+    wire [NUM_HARTS*32-1:0] imem_addr, imem_rdata;
+    wire [NUM_HARTS*32-1:0] dmem_addr, dmem_wdata, dmem_rdata;
+    wire [NUM_HARTS-1:0]    dmem_we, dmem_re, dmem_is_amo, dmem_rvalid;
+    wire [NUM_HARTS*2-1:0]  dmem_size;
+    wire [NUM_HARTS-1:0]    ibus_wait, dbus_wait;
+    wire [NUM_HARTS-1:0]    itlb_wait_stall;
+    wire [NUM_HARTS-1:0]    ptw_req, ptw_gnt, iptw_req, iptw_gnt;
+    wire [NUM_HARTS*32-1:0] ptw_addr, ptw_rdata, iptw_addr, iptw_rdata;
+    // clint.v's own mtip/msip_out ports are already NUM_HARTS-wide vectors
+    // (stage 2) - these wires just carry that shape through.
+    wire [NUM_HARTS-1:0]    mtip, msip;
+    // Hart h's contexts are plic_eip[2*h] (M-mode) / plic_eip[2*h+1]
+    // (S-mode), matching plic.v's own NUM_CONTEXTS=2*NUM_HARTS convention.
+    wire [2*NUM_HARTS-1:0]  plic_eip;
+    wire [63:0] mtime;   // one shared counter - clint.v's mtime_out is not per-hart
+    wire [NUM_HARTS-1:0]    fence_i;
 
-    // ---- Wishbone masters ----
-    wire        iwb_cyc, iwb_stb, iwb_ack;
-    wire [31:0] iwb_adr, iwb_dat_r;
-    wire        dwb_cyc, dwb_stb, dwb_we, dwb_ack;
-    wire [31:0] dwb_adr, dwb_dat_w, dwb_dat_r;
-    wire [3:0]  dwb_sel;
-    wire        pwb_cyc, pwb_stb, pwb_ack;
-    wire [31:0] pwb_adr, pwb_dat_r;
+    // ---- Wishbone masters, one triple per hart ----
+    wire [NUM_HARTS-1:0]    iwb_cyc, iwb_stb, iwb_ack;
+    wire [NUM_HARTS*32-1:0] iwb_adr, iwb_dat_r;
+    wire [NUM_HARTS-1:0]    dwb_cyc, dwb_stb, dwb_we, dwb_ack;
+    wire [NUM_HARTS*32-1:0] dwb_adr, dwb_dat_w, dwb_dat_r;
+    wire [NUM_HARTS*4-1:0]  dwb_sel;
+    wire [NUM_HARTS-1:0]    pwb_cyc, pwb_stb, pwb_ack;
+    wire [NUM_HARTS*32-1:0] pwb_adr, pwb_dat_r;
 
     // ---- shared slave bus ----
     wire                     s_cyc, s_we, s_data_master;
@@ -220,30 +240,41 @@ module soc_top #(
     // in-order-only this round - see the tie-off right after this
     // instantiation for why, and rtl/debug/README.md/docs/roadmap.md
     // Phase 6 for the full reasoning.
+
+    // Correctness-first D-cache bypass (rtl/soc/cpu_wb.v's DCACHE_ENABLE,
+    // Phase 13 stage 5): a write-through cache with no snoop path is only
+    // correct with one master on the bus. NUM_HARTS=1 keeps today's
+    // DCACHE_ENABLE=1 (unaffected); NUM_HARTS>1 forces it off for every
+    // hart, since two real masters now genuinely share this memory and
+    // nothing here watches for a foreign write into either hart's cache.
+    localparam HART_DCACHE_ENABLE = (NUM_HARTS > 1) ? 0 : 1;
+
+    // ---- hart 0 ----
 `ifdef CORE_OOO
-    core_ooo #(.RESET_PC(RESET_PC)) CPU (
+    core_ooo #(.RESET_PC(RESET_PC), .HARTID(0)) CPU (
 `else
-    cpu_core #(.RESET_PC(RESET_PC)) CPU (
+    cpu_core #(.RESET_PC(RESET_PC), .HARTID(0)) CPU (
 `endif
         .clk(clk), .rst(rst_soc),
-        .imem_addr(imem_addr), .imem_rdata(imem_rdata),
-        .itlb_wait_stall(itlb_wait_stall),
-        .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
-        .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size),
-        .dmem_rdata(dmem_rdata), .dmem_rvalid(dmem_rvalid), .dmem_is_amo(dmem_is_amo),
-        .ibus_wait(ibus_wait), .dbus_wait(dbus_wait),
-        .ptw_req(ptw_req), .ptw_addr(ptw_addr),
-        .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata),
-        .iptw_req(iptw_req), .iptw_addr(iptw_addr),
-        .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata),
-        .mtip(mtip), .msip_in(msip), .meip(plic_eip[0]), .seip(plic_eip[1]),
+        .imem_addr(imem_addr[31:0]), .imem_rdata(imem_rdata[31:0]),
+        .itlb_wait_stall(itlb_wait_stall[0]),
+        .dmem_addr(dmem_addr[31:0]), .dmem_wdata(dmem_wdata[31:0]),
+        .dmem_we(dmem_we[0]), .dmem_re(dmem_re[0]), .dmem_size(dmem_size[1:0]),
+        .dmem_rdata(dmem_rdata[31:0]), .dmem_rvalid(dmem_rvalid[0]), .dmem_is_amo(dmem_is_amo[0]),
+        .ibus_wait(ibus_wait[0]), .dbus_wait(dbus_wait[0]),
+        .ptw_req(ptw_req[0]), .ptw_addr(ptw_addr[31:0]),
+        .ptw_gnt(ptw_gnt[0]), .ptw_rdata(ptw_rdata[31:0]),
+        .iptw_req(iptw_req[0]), .iptw_addr(iptw_addr[31:0]),
+        .iptw_gnt(iptw_gnt[0]), .iptw_rdata(iptw_rdata[31:0]),
+        .mtip(mtip[0]), .msip_in(msip[0]), .meip(plic_eip[0]), .seip(plic_eip[1]),
         .mtime_in(mtime),
-        .fence_i(fence_i), .trap(trap)
+        .fence_i(fence_i[0]), .trap(trap)
 `ifndef CORE_OOO
         // core_ooo.v has no reservation-monitor ports yet either, same
         // reason as the debug ports just below - nothing wires a second
-        // hart's rtl/soc/reservation_monitor.v to this yet, so this stays
-        // one hart, single-hart LR/SC, unchanged behavior. See
+        // hart's rtl/soc/reservation_monitor.v to this or any other hart
+        // yet, even now that a second hart's hardware can exist
+        // (NUM_HARTS>1 below) - single-hart LR/SC only, unchanged. See
         // docs/roadmap.md's Phase 13 entry.
         , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
         .resv_invalidate_ext(1'b0),
@@ -266,21 +297,113 @@ module soc_top #(
     assign dbg_reg_err   = 1'b1;
 `endif
 
-    cpu_wb BUSADAPT (
+    cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (
         .clk(clk), .rst(rst_soc),
-        .imem_addr(imem_addr), .imem_rdata(imem_rdata), .ibus_wait(ibus_wait),
-        .itlb_wait_stall(itlb_wait_stall),
-        .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
-        .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_is_amo(dmem_is_amo),
-        .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),
-        .dmem_rvalid(dmem_rvalid), .dbus_wait(dbus_wait),
-        .fence_i(fence_i),
-        .iwb_cyc(iwb_cyc), .iwb_stb(iwb_stb), .iwb_adr(iwb_adr),
-        .iwb_dat_r(iwb_dat_r), .iwb_ack(iwb_ack),
-        .dwb_cyc(dwb_cyc), .dwb_stb(dwb_stb), .dwb_we(dwb_we),
-        .dwb_adr(dwb_adr), .dwb_dat_w(dwb_dat_w), .dwb_sel(dwb_sel),
-        .dwb_dat_r(dwb_dat_r), .dwb_ack(dwb_ack)
+        .imem_addr(imem_addr[31:0]), .imem_rdata(imem_rdata[31:0]), .ibus_wait(ibus_wait[0]),
+        .itlb_wait_stall(itlb_wait_stall[0]),
+        .dmem_addr(dmem_addr[31:0]), .dmem_wdata(dmem_wdata[31:0]),
+        .dmem_we(dmem_we[0]), .dmem_re(dmem_re[0]), .dmem_is_amo(dmem_is_amo[0]),
+        .dmem_size(dmem_size[1:0]), .dmem_rdata(dmem_rdata[31:0]),
+        .dmem_rvalid(dmem_rvalid[0]), .dbus_wait(dbus_wait[0]),
+        .fence_i(fence_i[0]),
+        .iwb_cyc(iwb_cyc[0]), .iwb_stb(iwb_stb[0]), .iwb_adr(iwb_adr[31:0]),
+        .iwb_dat_r(iwb_dat_r[31:0]), .iwb_ack(iwb_ack[0]),
+        .dwb_cyc(dwb_cyc[0]), .dwb_stb(dwb_stb[0]), .dwb_we(dwb_we[0]),
+        .dwb_adr(dwb_adr[31:0]), .dwb_dat_w(dwb_dat_w[31:0]), .dwb_sel(dwb_sel[3:0]),
+        .dwb_dat_r(dwb_dat_r[31:0]), .dwb_ack(dwb_ack[0])
     );
+
+    // The page-table walker, as a bus master rather than a private port on
+    // block RAM. This is what lets page tables live in SDRAM - see
+    // rtl/soc/wb_ptw.v for why mmu.v did not have to change for it.
+    wb_ptw PTW (
+        .clk(clk), .rst(rst_soc),
+        .ptw_req(ptw_req[0]),   .ptw_addr(ptw_addr[31:0]),
+        .ptw_gnt(ptw_gnt[0]),   .ptw_rdata(ptw_rdata[31:0]),
+        .iptw_req(iptw_req[0]), .iptw_addr(iptw_addr[31:0]),
+        .iptw_gnt(iptw_gnt[0]), .iptw_rdata(iptw_rdata[31:0]),
+        .wb_cyc(pwb_cyc[0]), .wb_stb(pwb_stb[0]), .wb_adr(pwb_adr[31:0]),
+        .wb_dat_r(pwb_dat_r[31:0]), .wb_ack(pwb_ack[0])
+    );
+
+    // ---- harts 1..NUM_HARTS-1 (empty when NUM_HARTS=1, the default) ----
+    //
+    // Each additional hart gets its own CPU, bus adapter and page-table
+    // walker - the same three-instance shape hart 0 has just above,
+    // parameterized on `h` instead of hardcoded. CORE=inorder and CORE=ooo
+    // both build this loop (core_ooo.v can be instantiated more than once
+    // with no issue of its own), but three things stay hart-0-only
+    // regardless: `trap` (a single module-level bit - a second hart's own
+    // trap is not yet observable at this module's boundary), hart control
+    // (rtl/debug/dm.v has no per-hart select - see the tie-off below), and
+    // reservation-monitor wiring (deferred for every hart, hart 0 included -
+    // see the comment on hart 0's own tie-off above). See docs/roadmap.md's
+    // Phase 13 entry for what each of these still needs.
+    genvar h;
+    generate
+        for (h = 1; h < NUM_HARTS; h = h + 1) begin : g_hart
+`ifdef CORE_OOO
+            core_ooo #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (
+`else
+            cpu_core #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (
+`endif
+                .clk(clk), .rst(rst_soc),
+                .imem_addr(imem_addr[32*h +: 32]), .imem_rdata(imem_rdata[32*h +: 32]),
+                .itlb_wait_stall(itlb_wait_stall[h]),
+                .dmem_addr(dmem_addr[32*h +: 32]), .dmem_wdata(dmem_wdata[32*h +: 32]),
+                .dmem_we(dmem_we[h]), .dmem_re(dmem_re[h]), .dmem_size(dmem_size[2*h +: 2]),
+                .dmem_rdata(dmem_rdata[32*h +: 32]), .dmem_rvalid(dmem_rvalid[h]), .dmem_is_amo(dmem_is_amo[h]),
+                .ibus_wait(ibus_wait[h]), .dbus_wait(dbus_wait[h]),
+                .ptw_req(ptw_req[h]), .ptw_addr(ptw_addr[32*h +: 32]),
+                .ptw_gnt(ptw_gnt[h]), .ptw_rdata(ptw_rdata[32*h +: 32]),
+                .iptw_req(iptw_req[h]), .iptw_addr(iptw_addr[32*h +: 32]),
+                .iptw_gnt(iptw_gnt[h]), .iptw_rdata(iptw_rdata[32*h +: 32]),
+                .mtip(mtip[h]), .msip_in(msip[h]), .meip(plic_eip[2*h]), .seip(plic_eip[2*h+1]),
+                .mtime_in(mtime),
+                .fence_i(fence_i[h]), .trap()
+`ifndef CORE_OOO
+                , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
+                .resv_invalidate_ext(1'b0),
+                // No per-hart select exists in rtl/debug/dm.v yet (RISC-V
+                // debug spec's `hartsel`) - every hart past 0 is simply not
+                // reachable from the debug path this round. Tied to explicit
+                // constants, not omitted, for the same X-poisoning reason
+                // hart 0's own tie-offs elsewhere in this file already are.
+                .dbg_haltreq(1'b0), .dbg_resumereq(1'b0), .dbg_halted(),
+                .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
+                .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
+                .dbg_reg_rdata(), .dbg_reg_err()
+`endif
+            );
+
+            cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (
+                .clk(clk), .rst(rst_soc),
+                .imem_addr(imem_addr[32*h +: 32]), .imem_rdata(imem_rdata[32*h +: 32]),
+                .ibus_wait(ibus_wait[h]),
+                .itlb_wait_stall(itlb_wait_stall[h]),
+                .dmem_addr(dmem_addr[32*h +: 32]), .dmem_wdata(dmem_wdata[32*h +: 32]),
+                .dmem_we(dmem_we[h]), .dmem_re(dmem_re[h]), .dmem_is_amo(dmem_is_amo[h]),
+                .dmem_size(dmem_size[2*h +: 2]), .dmem_rdata(dmem_rdata[32*h +: 32]),
+                .dmem_rvalid(dmem_rvalid[h]), .dbus_wait(dbus_wait[h]),
+                .fence_i(fence_i[h]),
+                .iwb_cyc(iwb_cyc[h]), .iwb_stb(iwb_stb[h]), .iwb_adr(iwb_adr[32*h +: 32]),
+                .iwb_dat_r(iwb_dat_r[32*h +: 32]), .iwb_ack(iwb_ack[h]),
+                .dwb_cyc(dwb_cyc[h]), .dwb_stb(dwb_stb[h]), .dwb_we(dwb_we[h]),
+                .dwb_adr(dwb_adr[32*h +: 32]), .dwb_dat_w(dwb_dat_w[32*h +: 32]), .dwb_sel(dwb_sel[4*h +: 4]),
+                .dwb_dat_r(dwb_dat_r[32*h +: 32]), .dwb_ack(dwb_ack[h])
+            );
+
+            wb_ptw PTW (
+                .clk(clk), .rst(rst_soc),
+                .ptw_req(ptw_req[h]),   .ptw_addr(ptw_addr[32*h +: 32]),
+                .ptw_gnt(ptw_gnt[h]),   .ptw_rdata(ptw_rdata[32*h +: 32]),
+                .iptw_req(iptw_req[h]), .iptw_addr(iptw_addr[32*h +: 32]),
+                .iptw_gnt(iptw_gnt[h]), .iptw_rdata(iptw_rdata[32*h +: 32]),
+                .wb_cyc(pwb_cyc[h]), .wb_stb(pwb_stb[h]), .wb_adr(pwb_adr[32*h +: 32]),
+                .wb_dat_r(pwb_dat_r[32*h +: 32]), .wb_ack(pwb_ack[h])
+            );
+        end
+    endgenerate
 
     // ---- the debug path: four pins to a bus master ----
     //
@@ -354,14 +477,13 @@ module soc_top #(
         .dbg_reg_rdata(dbg_reg_rdata), .dbg_reg_err(dbg_reg_err)
     );
 
-    // NUM_HARTS=1 (the default): this SoC has exactly one hart today, so
-    // each per-hart vector port below is exactly one bit/word wide and
-    // connects directly to the same single fetch/data/walker signals this
-    // instantiation always has - see rtl/soc/wb_interconnect.v's own header
-    // for why this collapses to precisely the original 4-master shape and
-    // docs/roadmap.md's Phase 13 entry for what a second hart still needs
-    // beyond this.
-    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES)) BUS (
+    // NUM_HARTS=1 (the default) collapses every per-hart vector port below
+    // to exactly one bit/word, connected to exactly hart 0's own fetch/
+    // data/walker signals - see rtl/soc/wb_interconnect.v's own header for
+    // why that is precisely the original 4-master shape, and
+    // docs/roadmap.md's Phase 13 entry for hart 1's own instantiation above
+    // and what still isn't wired to it.
+    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS)) BUS (
         .clk(clk), .rst(rst_soc),
         .f_cyc(iwb_cyc), .f_stb(iwb_stb), .f_adr(iwb_adr),
         .f_dat_r(iwb_dat_r), .f_ack(iwb_ack),
@@ -378,19 +500,6 @@ module soc_top #(
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
         .s_data_master(s_data_master)
-    );
-
-    // The page-table walkers, as a bus master rather than a private port on
-    // block RAM. This is what lets page tables live in SDRAM - see
-    // rtl/soc/wb_ptw.v for why mmu.v did not have to change for it.
-    wb_ptw PTW (
-        .clk(clk), .rst(rst_soc),
-        .ptw_req(ptw_req),   .ptw_addr(ptw_addr),
-        .ptw_gnt(ptw_gnt),   .ptw_rdata(ptw_rdata),
-        .iptw_req(iptw_req), .iptw_addr(iptw_addr),
-        .iptw_gnt(iptw_gnt), .iptw_rdata(iptw_rdata),
-        .wb_cyc(pwb_cyc), .wb_stb(pwb_stb), .wb_adr(pwb_adr),
-        .wb_dat_r(pwb_dat_r), .wb_ack(pwb_ack)
     );
 
     // =====================================================================
@@ -440,7 +549,7 @@ module soc_top #(
         .p_addr(clint_addr), .p_wdata(clint_wdata),
         .p_we(clint_we), .p_re(clint_re), .p_rdata(clint_rdata)
     );
-    clint CLINT (
+    clint #(.NUM_HARTS(NUM_HARTS)) CLINT (
         .clk(clk), .rst(rst_soc),
         .addr(clint_addr), .wdata(clint_wdata), .we(clint_we),
         .rdata(clint_rdata), .mtip(mtip), .msip_out(msip), .mtime_out(mtime)
@@ -467,10 +576,13 @@ module soc_top #(
         .p_addr(plic_addr), .p_wdata(plic_wdata),
         .p_we(plic_we), .p_re(plic_re), .p_rdata(plic_rdata)
     );
-    // Two contexts: 0 is hart 0 M-mode, 1 is hart 0 S-mode, which is what
-    // dts/soc.dts declares in `interrupts-extended` and what every stock
-    // PLIC driver assumes.
-    plic #(.NUM_SOURCES(NUM_IRQ), .NUM_CONTEXTS(2)) PLIC (
+    // Two contexts per hart: context 2*h is hart h's M-mode, 2*h+1 its
+    // S-mode - hart 0's pair (0, 1) is what dts/soc.dts declares in
+    // `interrupts-extended` and what every stock PLIC driver assumes; a
+    // second hart's own pair (2, 3) exists in hardware once NUM_HARTS>1 but
+    // dts/soc.dts does not describe it yet (docs/roadmap.md's Phase 13
+    // entry).
+    plic #(.NUM_SOURCES(NUM_IRQ), .NUM_CONTEXTS(2*NUM_HARTS)) PLIC (
         .clk(clk), .rst(rst_soc),
         .addr(plic_addr), .wdata(plic_wdata), .we(plic_we), .re(plic_re),
         .rdata(plic_rdata), .irq_sources(irq_sources), .eip(plic_eip)
