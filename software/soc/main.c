@@ -20,6 +20,7 @@
 #include "soc.h"
 #include "console.h"
 #include "trap.h"
+#include "npu_layer_data.h"
 
 static int failures = 0;
 
@@ -350,6 +351,76 @@ static int test_npu(void) {
     return (int32_t)NPU_RESULT == expected;
 }
 
+/* A tiny quantized dense layer - NPU_LAYER_OUT output neurons, each a
+ * NPU_VEC_LEN-wide dot product against one shared activation vector -
+ * built entirely from the peripheral above with no RTL change: this is
+ * the smallest thing that is genuinely "a single small layer" rather
+ * than the one dot product test_npu() already covers, closing
+ * docs/roadmap.md's Phase 14 "Done when" bar at this scale. Checked
+ * two independent ways against a third, independently-computed
+ * reference (Python, software/soc/gen_npu_layer.py): once through
+ * rtl/soc/wb_npu.v, once in plain RV32M-only C with no NPU access at
+ * all. Both paths' real cycle counts are measured and printed here,
+ * not estimated (docs/practices.md) - including every MMIO write the
+ * hardware path costs to load each neuron's weights, since reporting
+ * anything less than the full real cost would misrepresent it. */
+static int test_npu_layer(void) {
+    int32_t hw_result[NPU_LAYER_OUT];
+    int32_t sw_result[NPU_LAYER_OUT];
+    uint32_t aw[NPU_VEC_WORDS];
+    uint32_t n, i;
+    int ok = 1;
+
+    for (i = 0; i < NPU_VEC_WORDS; i++) {
+        aw[i] = ((uint32_t)(uint8_t)npu_layer_a[4*i + 0])       |
+                ((uint32_t)(uint8_t)npu_layer_a[4*i + 1] << 8)  |
+                ((uint32_t)(uint8_t)npu_layer_a[4*i + 2] << 16) |
+                ((uint32_t)(uint8_t)npu_layer_a[4*i + 3] << 24);
+    }
+
+    uint32_t hw_c0 = CSRR("cycle");
+    for (i = 0; i < NPU_VEC_WORDS; i++)
+        NPU_A(i) = aw[i];
+    for (n = 0; n < NPU_LAYER_OUT; n++) {
+        const int8_t *wv = npu_layer_w[n];
+        for (i = 0; i < NPU_VEC_WORDS; i++) {
+            uint32_t ww = ((uint32_t)(uint8_t)wv[4*i + 0])       |
+                          ((uint32_t)(uint8_t)wv[4*i + 1] << 8)  |
+                          ((uint32_t)(uint8_t)wv[4*i + 2] << 16) |
+                          ((uint32_t)(uint8_t)wv[4*i + 3] << 24);
+            NPU_W(i) = ww;
+        }
+        NPU_CTRL = NPU_CTRL_START;
+        while (NPU_STATUS & NPU_STATUS_BUSY) { }
+        hw_result[n] = (int32_t)NPU_RESULT;
+    }
+    uint32_t hw_cycles = CSRR("cycle") - hw_c0;
+
+    uint32_t sw_c0 = CSRR("cycle");
+    for (n = 0; n < NPU_LAYER_OUT; n++) {
+        int32_t acc = 0;
+        const int8_t *wv = npu_layer_w[n];
+        for (i = 0; i < NPU_VEC_LEN; i++)
+            acc += (int32_t)npu_layer_a[i] * (int32_t)wv[i];
+        sw_result[n] = acc;
+    }
+    uint32_t sw_cycles = CSRR("cycle") - sw_c0;
+
+    for (n = 0; n < NPU_LAYER_OUT; n++) {
+        if (hw_result[n] != npu_layer_expected[n]) ok = 0;
+        if (sw_result[n] != npu_layer_expected[n]) ok = 0;
+    }
+
+    put_str("    NPU layer, hardware: ");
+    put_dec((int)hw_cycles);
+    put_str(" cycles\n");
+    put_str("    NPU layer, software: ");
+    put_dec((int)sw_cycles);
+    put_str(" cycles\n");
+
+    return ok;
+}
+
 /* ---------------------------------------------------------------------
  * CLINT timer
  * ------------------------------------------------------------------- */
@@ -594,6 +665,7 @@ int main(void) {
     check("GPIO pin readback",     test_gpio());
     check("general-purpose timer/PWM", test_gpt());
     check("NPU int8 MAC engine",   test_npu());
+    check("NPU quantized dense layer", test_npu_layer());
     check("framebuffer read/write", test_framebuffer());
     check("blit fill engine",      test_blit());
     check("blit copy engine",      test_copy());

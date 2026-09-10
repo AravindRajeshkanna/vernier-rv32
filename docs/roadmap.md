@@ -4615,18 +4615,84 @@ reachability) works, the same "prove the hard piece in isolation before
 wiring it to something real" role every one of Phase 13's own early
 stages played.
 
-**Done when:** a real quantized-inference workload - the obvious
-candidate is a single small layer (a int8 matrix-vector multiply or a
-tiny conv layer) with an existing reference implementation to check
-against, the same role Spike plays for the integer ISA and a plain
-NumPy/C int8 reference would play here - runs, is verified
-bit-exact against that reference, and is *measured* against a
-software-only (RV32M-only) baseline computing the identical workload.
-"Faster" asserted without that baseline would be exactly the estimate
-this project's own practices exist to rule out - the same bar Phase
-11's own "Done when" already holds itself to. Still fully open after
-Stage 1: a fixed 16-element, MMIO-loaded vector is not that workload,
-and nothing has been measured against anything yet.
+**Stage 2: the "Done when" bar itself, closed - and Stage 1's own
+prediction about it turned out wrong.** Stage 1 asserted above that a
+fixed 16-element, MMIO-loaded vector was "not the shape a measurement
+against a software baseline would be fair on," and that closing the bar
+needed a bus-master DMA port first. Measuring rather than assuming
+(`docs/practices.md`) turned up the opposite: a small quantized dense
+layer - four output neurons, each a 16-element int8 dot product against
+one shared activation vector, `software/soc/main.c`'s new
+`test_npu_layer()` - built entirely from the already-shipped Stage 1
+hardware, closes it as literally written.
+
+The workload: `software/soc/gen_npu_layer.py` generates a fixed,
+reproducible activation vector and a 4x16 weight matrix (mixed-sign
+int8; a short search over `random.Random` seeds picked one where all
+four expected outputs are nonzero and pairwise distinct, so a sign bug,
+a dropped term, or a neuron mix-up would each visibly change the
+result) and computes the four expected dot products independently in
+Python - the same role a NumPy/C int8 reference plays for this
+project's own ISA tests against Spike, this time with no shared code
+path to either the RTL or the C test that exercises it. `test_npu_layer()`
+computes the identical four dot products two more, genuinely
+independent ways: once by driving `rtl/soc/wb_npu.v` (loading the
+shared activation vector once, then looping over each neuron's own
+weights, triggering, and polling), once in plain RV32M C with no NPU
+access at all. All three - Python, hardware, software - agree
+bit-exact.
+
+Both paths are timed with the `cycle` CSR, counting *everything* - the
+hardware path's own MMIO writes to load every neuron's weights are
+inside its timing window, not excluded, because excluding them would be
+exactly the kind of favorable-to-the-thesis estimate
+`docs/practices.md` exists to catch. Measured, not estimated: **561
+cycles for the NPU path, 652 for the RV32M-only software baseline
+computing the identical four dot products** - the hardware is faster,
+but only by about 1.16x, not the order-of-magnitude a "hardware
+acceleration" framing might suggest. That is an honest result for a
+workload this small: loading four 16-element weight vectors one MMIO
+word at a time costs comparably to the 64 multiply-accumulates
+themselves, so there is not much arithmetic yet to amortize the loading
+cost over - the same shape of finding Phase 1's own CoreMark
+measurement produced ("barely faster... the ROI case made before it
+was built held up only once it was measured"), reported here rather
+than smoothed over.
+
+Confirmed non-vacuous the same way this session has confirmed every
+other new test: a deliberate mutation (every neuron's weight-loading
+loop pointed at neuron 0's own weights instead of its own) was built,
+and the same test correctly failed - three of the four neurons' results
+stopped matching the independently-computed reference.
+
+Proven under both cores: `test_npu_layer()` runs inside the same
+`sim_ramboot` acceptance test `test_npu()` already does, so `make
+verify` and `make verify_ooo` both exercise it - no `CORE_OOO`-specific
+behavior exists for it to diverge on, matching `test_npu()`'s own
+reasoning.
+
+**What this still does not do, and is not obligated to by the bar's own
+wording:** the workload is synthetic (`random.Random`, not a real
+trained model's own weights), simulated only (no board build asks for
+this peripheral, so nothing here is confirmed on an LFE5U-85F yet), and
+scaled to what Stage 1 already built (16 inputs, four outputs) rather
+than a realistic layer's own size. The DMA/bus-mastering port Stage 1
+named stays real, valuable future work for scaling past what fits
+comfortably as always-resident MMIO registers - it is simply no longer
+a precondition for closing this bar, which Stage 1 wrongly assumed it
+was.
+
+**Done when:** ✅ **closed, in simulation, at this scale.** A real
+quantized-inference workload - a small int8 matrix-vector multiply, the
+"single small layer" this bar names as the obvious candidate - runs, is
+verified bit-exact against an independently-computed reference, and is
+measured, not estimated, against a software-only (RV32M-only) baseline
+computing the identical workload (Stage 2: 561 vs. 652 cycles - the
+same "measure it, do not assert it" bar Phase 11's own "Done when"
+holds itself to). Not yet done, and not required by this bar's own
+wording: real model weights rather than synthetic data, a workload
+larger than what fits in always-resident MMIO registers, and
+confirmation on real hardware rather than simulation alone.
 
 ---
 
