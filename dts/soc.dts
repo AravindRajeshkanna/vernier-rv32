@@ -368,5 +368,17 @@
             reg = <0x09000000 0x00010000>;
             status = "okay";
         };
+
+        /* Streaming FIR filter coprocessor (rtl/soc/wb_fir.v, Phase 11). No
+         * interrupt line - software polls STATUS.busy, the same choice
+         * npu0's own node above makes. No real kernel driver binds
+         * "riscv-fpga-cpu,fir0" either - informational, not yet a live
+         * Linux capability, same as every other custom node here.
+         */
+        fir0: fir@a000000 {
+            compatible = "riscv-fpga-cpu,fir0";
+            reg = <0x0A000000 0x00010000>;
+            status = "okay";
+        };
     };
 };

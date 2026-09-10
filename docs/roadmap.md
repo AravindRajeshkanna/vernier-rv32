@@ -3448,13 +3448,91 @@ of the existing pipeline it reaches into:
   hands off a specific, well-defined workload," the same tradeoff Phase
   10's blit-engine option makes for graphics.
 
+**Stage 1: the open question above answered, and a first, real filter
+engine built to prove it - not the "Done when" bar itself.** The
+decision, confirmed with the user rather than picked silently: a
+dedicated coprocessor, the same shape Phase 14's `wb_npu.v` and Phase
+10's blit engine both are - a self-contained Wishbone slave, not a new
+`rtl/cpu_core.v` execution unit, so neither core's own timing-critical
+decode/hazard logic is touched. A new slave, `rtl/soc/wb_fir.v`, at
+`0x0A00_0000`: an 8-tap streaming FIR (finite impulse response) filter.
+
+**Genuinely new, not a re-skin of `wb_npu.v`.** `wb_npu.v` loads two
+fixed vectors once and computes one dot product, then stops. A real
+filter is not that - it is "one new sample arrives, one new output
+comes out, forever," which needs state `wb_npu.v` never had to carry: a
+sliding window of the last `N_TAPS` samples (the delay line every FIR
+filter textbook draws), shifted on every new sample. Writing a new
+signed int16 sample to `INPUT` shifts it in and starts a new
+`N_TAPS`-cycle multiply-accumulate sweep over the updated window - the
+same `rtl/muldiv_div.v` sequential-not-combinational precedent
+`wb_npu.v` already used. It also needs a real answer to overflow a
+bounded int8 dot product never had to give: two 16-bit samples multiply
+to a 32-bit product, and summing `N_TAPS` of them can exceed 32 bits, so
+the accumulator is 40 bits internally and the result is **saturated**
+(clamped to `INT32_MIN`/`INT32_MAX`), not silently wrapped, into the
+32-bit `OUTPUT` register - the same behavior every real fixed-point
+audio path implements, since wrapping produces a far worse artifact
+than a clipped-but-recognizable one.
+
+**A real bug, caught in the test rather than the RTL, the same
+discipline this session has applied to both.** `sim/tb_wb_fir.v`'s own
+saturation cases initially reported values that did not match hand
+computation - not the intended saturated bound, and not the plain
+unsaturated sum either. Traced to a classic Verilog scoping mistake: the
+testbench's own `push_and_check` task, called from inside a `for (k =
+...)` loop in the saturation sections, used the *same shared,
+module-level* `k` for its own internal shift-and-sum loops - so each
+call left `k` at whatever value its own last internal loop had reached,
+silently truncating the caller's intended seven-iteration loop to one.
+The saturated-looking pass on the first attempt was the vacuous kind
+this project's own practices exist to catch: the DUT was matching a
+reference that was itself only summing one or two terms, not eight.
+Fixed by giving the task its own local loop variable, not by patching
+the specific loop that happened to trip over it - the structural fix
+that makes the whole class of bug impossible rather than one instance
+of it. Re-verified against exact hand arithmetic afterward: positive
+saturation reaches `INT32_MAX` at exactly the third accumulated term
+(`3 * 32767^2 = 3221028867`, the first partial sum past `2^31-1`), not
+before or after, and negative saturation reaches `INT32_MIN` at exactly
+the third term the same way - not merely "some clamp happened somewhere
+in the sequence."
+
+Confirmed non-vacuous a second way, matching every other new test this
+session has built: a deliberate RTL mutation (removing the busy guard
+on the coefficient-write path) was built, and the same test correctly
+failed.
+
+Proven under both cores: `software/soc/main.c`'s new `test_fir()` streams
+the same coefficient and sample sequence `sim/tb_wb_fir.v` does through
+the real CPU load/store path and the real interconnect address decode -
+the standalone test alone cannot prove reachability, the same reasoning
+`test_npu()`'s own pairing with `sim/tb_wb_npu.v` already established.
+No `CORE_OOO`-specific behavior exists for it to diverge on. Both `make
+verify` and `make verify_ooo` are green on the final tree.
+
+**What this stage deliberately does not do, and why "Done when" below
+is still fully open:** this is the mechanism, not the workload the bar
+asks for. No real audio filter has been run through it, nothing has
+been checked against an external reference implementation the way
+Phase 14's own `gen_npu_layer.py` used Python, and - critically -
+`docs/roadmap.md`'s own first line of this phase names measuring the
+*current soft-math baseline* as "the natural first step," which this
+stage has not done either. Both remain real, separate work for a later
+stage - proving the register interface, the sliding window, and
+saturation is what this stage does, the same "prove the hard piece in
+isolation before wiring it to something real" role every one of Phase
+13's and Phase 14's own early stages played.
+
 **Done when:** a real DSP-shaped workload - the obvious candidate is an
 audio FIR filter or a small FFT, something with an existing reference
 implementation to check correctness against, the same role Spike plays
 for the integer ISA - runs, is verified correct, and is *measured*
 against the current soft-math baseline this phase's own first step
 establishes. "Faster" asserted without that baseline would be exactly
-the estimate this project's own practices exist to rule out.
+the estimate this project's own practices exist to rule out. Still
+fully open after Stage 1: the mechanism proven above is not yet a real
+filtering workload, and no soft-math baseline has been measured.
 
 ---
 

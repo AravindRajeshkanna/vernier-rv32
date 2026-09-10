@@ -76,6 +76,7 @@ the size of the part on the board.
 | `0x0700_0000` | Framebuffer | 75 KB | 1 |
 | `0x0800_0000` | Timer/PWM | 24 B | 0 |
 | `0x0900_0000` | NPU (int8 MAC) | 44 B | 0 |
+| `0x0A00_0000` | FIR filter coprocessor | 48 B | 0 |
 | `0x8000_0000` | Main RAM (block) | 64 KB (FPGA) / 256 KB (sim) | 1 |
 | `0x9000_0000` | External SDRAM | 32 MB (mask `0xFE`) | ~6 on a row hit |
 
@@ -414,6 +415,31 @@ this stage deliberately does not build. Zero wait states.
 | `0x08`-`0x14` | A0-A3 | RW | activation vector, 4 int8 lanes per word, little-endian; ignored while `BUSY` |
 | `0x18`-`0x24` | W0-W3 | RW | weight vector, same packing; ignored while `BUSY` |
 | `0x28` | RESULT | RO | signed int32 accumulated dot product, valid once `BUSY` reads 0 after a start |
+
+### `wb_fir` — streaming FIR filter coprocessor, `0x0A00_0000`
+
+A fixed, 8-tap finite impulse response filter: writing a new signed int16
+sample shifts it into an internal sliding-window history buffer (the
+delay line every FIR filter textbook draws) and starts a new
+multiply-accumulate sweep over the updated window, one tap per cycle -
+the same `rtl/muldiv_div.v`/`wb_npu.v` sequential-not-combinational
+shape. Unlike `wb_npu.v`'s bounded int8 dot product, a real filter's
+accumulated sum can exceed 32 bits, so it accumulates in a 40-bit
+internal register and **saturates** (clamps to `INT32_MIN`/`INT32_MAX`)
+rather than silently wrapping into the 32-bit OUTPUT register - the same
+behavior every real fixed-point audio path implements, to avoid a
+wraparound producing a far worse artifact than a clipped-but-recognizable
+one. `docs/roadmap.md`'s Phase 11 entry has the design decision this
+closes (a memory-mapped coprocessor, not a core ISA extension) and what
+this stage deliberately does not build. Zero wait states.
+
+| Offset | Register | Access | Notes |
+|---|---|---|---|
+| `0x00` | CTRL | WO | bit 0 = reset; ignored if `BUSY` - clears the history buffer and OUTPUT, coefficients untouched |
+| `0x04` | STATUS | RO | bit 0 = `BUSY` |
+| `0x08`-`0x24` | COEF0-COEF7 | RW | filter coefficients, signed int16 each (low half of the word); ignored while `BUSY` |
+| `0x28` | INPUT | WO | new signed int16 sample; write pushes it into the history buffer and starts a new sweep; ignored while `BUSY` |
+| `0x2C` | OUTPUT | RO | saturated signed int32, valid once `BUSY` reads 0 after an INPUT write |
 
 ### `wb_periph_bridge`
 

@@ -49,6 +49,7 @@ MMUs
 Makefile
 Misprediction
 Murax
+NPU's
 Neumann
 OR
 PCIe
