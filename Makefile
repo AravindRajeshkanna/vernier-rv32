@@ -433,8 +433,15 @@ sim/bootrom.hex: software/soc/bootrom.elf software/bin2hex.py Makefile
 software/soc/npu_layer_data.h: software/soc/gen_npu_layer.py
 	python3 software/soc/gen_npu_layer.py > $@
 
+# Same reasoning - see the script's own header for the filter design and
+# why the expected outputs are independently computed, not derived from
+# the RTL or the C test that will exercise them.
+software/soc/fir_workload_data.h: software/soc/gen_fir_workload.py
+	python3 software/soc/gen_fir_workload.py > $@
+
 software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld $(SOC_HDRS) \
-                          software/soc/npu_layer_data.h
+                          software/soc/npu_layer_data.h \
+                          software/soc/fir_workload_data.h
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld -o $@ $(SOCPROG_SRCS)
 
 software/soc/newlibprobe.elf: $(PROBE_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
@@ -1920,6 +1927,7 @@ clean:
 	       software/soc/bootrom.elf software/soc/bootrom.bin \
 	       software/soc/socprog.elf software/soc/socprog.bin \
 	       software/soc/npu_layer_data.h \
+	       software/soc/fir_workload_data.h \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc.dtb \
 	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \

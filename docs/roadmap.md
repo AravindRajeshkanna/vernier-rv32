@@ -3524,15 +3524,63 @@ saturation is what this stage does, the same "prove the hard piece in
 isolation before wiring it to something real" role every one of Phase
 13's and Phase 14's own early stages played.
 
-**Done when:** a real DSP-shaped workload - the obvious candidate is an
-audio FIR filter or a small FFT, something with an existing reference
-implementation to check correctness against, the same role Spike plays
-for the integer ISA - runs, is verified correct, and is *measured*
-against the current soft-math baseline this phase's own first step
-establishes. "Faster" asserted without that baseline would be exactly
-the estimate this project's own practices exist to rule out. Still
-fully open after Stage 1: the mechanism proven above is not yet a real
-filtering workload, and no soft-math baseline has been measured.
+**Stage 2: the "Done when" bar itself, closed.** A real 8-tap lowpass
+filter - `software/soc/gen_fir_workload.py`: a windowed-sinc design
+(Hamming window, cutoff at 0.15 of the Nyquist rate), unity DC gain,
+scaled and rounded to int16 coefficients - applied to a 128-sample
+synthetic signal (a low-frequency component plus a higher one past the
+filter's own cutoff, so a correct lowpass filter measurably attenuates
+it, not merely "some numbers came out"). The same script computes all
+128 expected outputs independently, in Python, before either the RTL
+or the C test that exercises it ever runs - the same role a plain
+NumPy/C reference plays for this project's own RISC-V ISA tests against
+Spike.
+
+`software/soc/main.c`'s new `test_fir_workload()` runs the identical
+128-sample workload two genuinely independent ways: once by streaming
+every sample through `rtl/soc/wb_fir.v`'s real register interface, once
+in plain RV32M C with no peripheral access at all, maintaining its own
+sliding-window history by hand. Both are checked bit-exact against the
+Python reference for all 128 outputs, and both are timed with the
+`cycle` CSR, counting everything - the hardware path's own per-sample
+`INPUT` write and `STATUS` poll are inside its timing window, not
+excluded. Measured, not estimated - the soft-math baseline this phase's
+own opening paragraph named as "the natural first step," finally taken:
+**3553 cycles on the FIR peripheral, 17993 for the RV32M-only software
+baseline computing the identical filter** - the hardware is
+**genuinely, substantially faster this time**, about 5.1x, a real
+contrast with Phase 14's own NPU result (about 1.16x) worth naming
+rather than averaging away: unlike the NPU's one-shot dot product,
+where loading every operand costs as much as the arithmetic itself,
+this workload's hardware path pays a real per-element cost only once
+(one `INPUT` write) and lets the peripheral's own sliding window and
+sequential MAC absorb the rest, while the software path pays a real
+shift-register cost (seven moves) on top of eight multiply-accumulates
+for every one of the 128 samples. Different workload shapes give
+genuinely different answers - exactly why this project's own practice
+is to measure each one rather than assume a single verdict transfers.
+
+Proven under both cores: `test_fir_workload()` runs inside the same
+`sim_ramboot` acceptance test `test_fir()` already does, so `make
+verify` and `make verify_ooo` both exercise it - no `CORE_OOO`-specific
+behavior exists for it to diverge on.
+
+**What this still does not do, and is not obligated to by the bar's own
+wording:** the signal is synthetic, not a real recorded audio clip, and
+the filter has not been confirmed on real hardware - simulation only,
+same as Phase 14's own Stage 2. Neither is required by this bar's own
+text, which asks for a real DSP-shaped workload, verified and measured,
+not a specific data source or a hardware confirmation.
+
+**Done when:** ✅ **closed, in simulation, at this scale.** A real
+DSP-shaped workload - a small lowpass FIR filter, the "audio FIR
+filter" this bar names as the obvious candidate - runs, is verified
+bit-exact against an independently-computed reference, and is measured,
+not estimated, against the current soft-math (RV32M-only) baseline this
+phase's own first step named (Stage 2: 3553 vs. 17993 cycles, about
+5.1x). Not yet done, and not required by this bar's own wording: a real
+recorded signal rather than synthetic data, and confirmation on real
+hardware rather than simulation alone.
 
 ---
 

@@ -21,6 +21,7 @@
 #include "console.h"
 #include "trap.h"
 #include "npu_layer_data.h"
+#include "fir_workload_data.h"
 
 static int failures = 0;
 
@@ -464,6 +465,63 @@ static int test_fir(void) {
     return ok;
 }
 
+/* A real 8-tap lowpass filter (software/soc/gen_fir_workload.py: a
+ * windowed-sinc design, unity DC gain) applied to a 128-sample synthetic
+ * signal (a low frequency component plus a higher one past the filter's
+ * own cutoff) - closes docs/roadmap.md's Phase 11 "Done when" bar: a
+ * real DSP-shaped workload, checked bit-exact against an independently
+ * computed (Python) reference, and measured, not estimated, against the
+ * current soft-math (RV32M-only) baseline that same bar's own opening
+ * paragraph names as the phase's first real step. Both paths' real
+ * cycle counts are measured and printed, counting everything - the
+ * hardware path's own per-sample INPUT writes and STATUS polls are
+ * inside its timing window, not excluded. */
+static int test_fir_workload(void) {
+    int32_t hw_result[FIR_WORKLOAD_LEN];
+    int32_t sw_result[FIR_WORKLOAD_LEN];
+    int16_t hist[FIR_N_TAPS];
+    uint32_t i, k;
+    int ok = 1;
+
+    for (k = 0; k < FIR_N_TAPS; k++)
+        FIR_COEF(k) = (uint32_t)(uint16_t)fir_workload_coef[k];
+    FIR_CTRL = FIR_CTRL_RESET;   /* clear history left over from test_fir() */
+
+    uint32_t hw_c0 = CSRR("cycle");
+    for (i = 0; i < FIR_WORKLOAD_LEN; i++) {
+        FIR_INPUT = (uint32_t)(uint16_t)fir_workload_input[i];
+        while (FIR_STATUS & FIR_STATUS_BUSY) { }
+        hw_result[i] = (int32_t)FIR_OUTPUT;
+    }
+    uint32_t hw_cycles = CSRR("cycle") - hw_c0;
+
+    for (k = 0; k < FIR_N_TAPS; k++) hist[k] = 0;
+    uint32_t sw_c0 = CSRR("cycle");
+    for (i = 0; i < FIR_WORKLOAD_LEN; i++) {
+        int32_t acc = 0;
+        for (k = FIR_N_TAPS - 1; k > 0; k--) hist[k] = hist[k-1];
+        hist[0] = fir_workload_input[i];
+        for (k = 0; k < FIR_N_TAPS; k++)
+            acc += (int32_t)fir_workload_coef[k] * (int32_t)hist[k];
+        sw_result[i] = acc;
+    }
+    uint32_t sw_cycles = CSRR("cycle") - sw_c0;
+
+    for (i = 0; i < FIR_WORKLOAD_LEN; i++) {
+        if (hw_result[i] != fir_workload_expected[i]) ok = 0;
+        if (sw_result[i] != fir_workload_expected[i]) ok = 0;
+    }
+
+    put_str("    FIR workload, hardware: ");
+    put_dec((int)hw_cycles);
+    put_str(" cycles\n");
+    put_str("    FIR workload, software: ");
+    put_dec((int)sw_cycles);
+    put_str(" cycles\n");
+
+    return ok;
+}
+
 /* ---------------------------------------------------------------------
  * CLINT timer
  * ------------------------------------------------------------------- */
@@ -710,6 +768,7 @@ int main(void) {
     check("NPU int8 MAC engine",   test_npu());
     check("NPU quantized dense layer", test_npu_layer());
     check("FIR streaming filter",      test_fir());
+    check("FIR lowpass workload",      test_fir_workload());
     check("framebuffer read/write", test_framebuffer());
     check("blit fill engine",      test_blit());
     check("blit copy engine",      test_copy());
