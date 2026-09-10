@@ -427,7 +427,13 @@ sim/bootrom.hex: software/soc/bootrom.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/soc/bootrom.elf software/soc/bootrom.bin
 	python3 software/bin2hex.py --word-size=4 software/soc/bootrom.bin > $@
 
-software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
+# Generated, not hand-edited - see the script's own header for why the
+# specific values don't matter and what does (mixed sign, no collisions).
+software/soc/npu_layer_data.h: software/soc/gen_npu_layer.py
+	python3 software/soc/gen_npu_layer.py > $@
+
+software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld $(SOC_HDRS) \
+                          software/soc/npu_layer_data.h
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld -o $@ $(SOCPROG_SRCS)
 
 software/soc/newlibprobe.elf: $(PROBE_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
@@ -1894,6 +1900,7 @@ clean:
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \
 	       software/soc/bootrom.elf software/soc/bootrom.bin \
 	       software/soc/socprog.elf software/soc/socprog.bin \
+	       software/soc/npu_layer_data.h \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc.dtb \
 	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \
