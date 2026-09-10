@@ -305,6 +305,52 @@ static int test_gpt(void) {
 }
 
 /* ---------------------------------------------------------------------
+ * Quantized-inference MAC engine (rtl/soc/wb_npu.v, Phase 14)
+ * ------------------------------------------------------------------- */
+
+/* Loads a real, signed int8 activation/weight vector pair - mixed positive
+ * and negative, so a sign bug in either operand or in the accumulator
+ * would show up as a wrong result rather than passing by coincidence -
+ * through the register interface, triggers the MAC engine, and checks the
+ * accumulated result against the same reference dot product
+ * sim/tb_wb_npu.v's own independent computation already verifies in
+ * isolation. This is the same peripheral, exercised through the real CPU
+ * load/store path and the real interconnect address decode instead of a
+ * bare Wishbone-signal testbench - the two together are what actually
+ * proves 0x0900_0000 reaches rtl/soc/wb_npu.v and nothing else does. */
+static int test_npu(void) {
+    static const int8_t a_vec[NPU_VEC_LEN] = {
+        1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16
+    };
+    static const int8_t w_vec[NPU_VEC_LEN] = {
+        -16, 15, -14, 13, -12, 11, -10, 9, -8, 7, -6, 5, -4, 3, -2, 1
+    };
+    int32_t expected = 0;
+    uint32_t i, n;
+
+    for (i = 0; i < NPU_VEC_LEN; i++)
+        expected += (int32_t)a_vec[i] * (int32_t)w_vec[i];
+
+    for (n = 0; n < NPU_VEC_WORDS; n++) {
+        uint32_t aw = ((uint32_t)(uint8_t)a_vec[4*n + 0])       |
+                      ((uint32_t)(uint8_t)a_vec[4*n + 1] << 8)  |
+                      ((uint32_t)(uint8_t)a_vec[4*n + 2] << 16) |
+                      ((uint32_t)(uint8_t)a_vec[4*n + 3] << 24);
+        uint32_t ww = ((uint32_t)(uint8_t)w_vec[4*n + 0])       |
+                      ((uint32_t)(uint8_t)w_vec[4*n + 1] << 8)  |
+                      ((uint32_t)(uint8_t)w_vec[4*n + 2] << 16) |
+                      ((uint32_t)(uint8_t)w_vec[4*n + 3] << 24);
+        NPU_A(n) = aw;
+        NPU_W(n) = ww;
+    }
+
+    NPU_CTRL = NPU_CTRL_START;
+    while (NPU_STATUS & NPU_STATUS_BUSY) { }
+
+    return (int32_t)NPU_RESULT == expected;
+}
+
+/* ---------------------------------------------------------------------
  * CLINT timer
  * ------------------------------------------------------------------- */
 
@@ -547,6 +593,7 @@ int main(void) {
     check("LR/SC broken by store", test_lr_sc_failure());
     check("GPIO pin readback",     test_gpio());
     check("general-purpose timer/PWM", test_gpt());
+    check("NPU int8 MAC engine",   test_npu());
     check("framebuffer read/write", test_framebuffer());
     check("blit fill engine",      test_blit());
     check("blit copy engine",      test_copy());
