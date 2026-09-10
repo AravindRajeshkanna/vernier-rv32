@@ -64,6 +64,7 @@ PWM's
 QEMU
 Quartus
 ROB
+RTL's
 RXDATA
 Repurposing
 SDRAM
@@ -145,6 +146,7 @@ ecppack
 else
 emard
 epc
+errored
 erroring
 fallback
 fallthrough
@@ -237,6 +239,7 @@ pulldown
 raiseable
 rasterization
 rasterizer
+reachability
 reframed
 reframes
 reframing

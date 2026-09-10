@@ -142,7 +142,7 @@ SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/pli
           rtl/soc/wb_ram.v \
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
-          rtl/soc/wb_sdram.v rtl/soc/wb_timer.v \
+          rtl/soc/wb_sdram.v rtl/soc/wb_timer.v rtl/soc/wb_npu.v \
           rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
           rtl/soc/soc_top.v
 SOC_RTL = $(SOC_RTL_BASE) $(CORE_RTL)
@@ -1653,6 +1653,25 @@ sim_reservation_monitor: sim/sim_reservation_monitor.out
 	@grep -aq "RESERVATION-MONITOR-TEST: PASS" sim/reservation_monitor.log && echo "RESERVATION MONITOR OK" || \
 	    { echo "FAILED: rtl/soc/reservation_monitor.v"; exit 1; }
 
+# ---- Phase 14: quantized-inference MAC engine ----
+#
+# Standalone module test first, matching Phase 13's own "verify the hard
+# piece in isolation" sequencing (sim_reservation_monitor above being the
+# most recent precedent) - proves rtl/soc/wb_npu.v's own register interface
+# and MAC arithmetic against an independently-computed reference, without
+# going through the interconnect at all. `make sim_ramboot`'s own
+# acceptance test (software/soc/main.c's test_npu()) separately proves the
+# same peripheral is reachable at 0x0900_0000 through the real CPU load/
+# store path and the real address decode - the two together are what
+# actually closes the loop; this alone does not.
+sim/sim_wb_npu.out: sim/tb_wb_npu.v rtl/soc/wb_npu.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_wb_npu.v rtl/soc/wb_npu.v
+
+sim_wb_npu: sim/sim_wb_npu.out
+	cd sim && $(VVP) sim_wb_npu.out $(VVP_DUMP) | tee wb_npu.log
+	@grep -aq "WB-NPU-TEST: PASS" sim/wb_npu.log && echo "NPU MAC ENGINE OK" || \
+	    { echo "FAILED: rtl/soc/wb_npu.v"; exit 1; }
+
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
@@ -1804,6 +1823,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_plic_4ctx \
         sim_cpu_wb_dcache_bypass \
         sim_reservation_monitor \
+        sim_wb_npu \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \

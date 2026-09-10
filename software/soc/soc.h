@@ -35,6 +35,7 @@
 #define SPI_BASE    0x06000000u
 #define FB_BASE     0x07000000u
 #define TIMER_BASE  0x08000000u
+#define NPU_BASE    0x09000000u
 #define RAM_BASE    0x80000000u
 /* External SDRAM. Must match the S_SDRAM base byte in rtl/soc/soc_top.v and
  * the ORIGIN addresses in software/soc/link_sdram.ld. The window is the
@@ -130,6 +131,17 @@
 #define TIMER_IP      REG32(TIMER_BASE + 0x14)
 #define TIMER_CTRL_EN     (1u << 0)
 #define TIMER_CTRL_PWM_EN (1u << 1)
+
+/* ---- Quantized-inference MAC engine (rtl/soc/wb_npu.v, Phase 14) ---- */
+#define NPU_CTRL    REG32(NPU_BASE + 0x00)  /* bit0: start (ignored if busy) */
+#define NPU_STATUS  REG32(NPU_BASE + 0x04)  /* bit0: busy */
+#define NPU_A(n)    REG32(NPU_BASE + 0x08 + 4u * (n))  /* n = 0..NPU_VEC_WORDS-1 */
+#define NPU_W(n)    REG32(NPU_BASE + 0x18 + 4u * (n))
+#define NPU_RESULT  REG32(NPU_BASE + 0x28)  /* signed int32 */
+#define NPU_CTRL_START (1u << 0)
+#define NPU_STATUS_BUSY (1u << 0)
+#define NPU_VEC_LEN   16u  /* must match rtl/soc/wb_npu.v's own VEC_LEN */
+#define NPU_VEC_WORDS (NPU_VEC_LEN / 4u)
 
 /* ---- SPI (rtl/soc/wb_spi.v) ---- */
 #define SPI_CTRL   REG32(SPI_BASE + 0x00)

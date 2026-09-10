@@ -359,10 +359,11 @@ else
 RTL="rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/uart.v rtl/btb.v rtl/mmu.v rtl/pmp.v $CORE_RTL \
      rtl/soc/wb_interconnect.v rtl/soc/cpu_wb.v rtl/soc/wb_ptw.v \
+     rtl/soc/reservation_monitor.v \
      rtl/soc/wb_ram.v \
      rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
      rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
-     rtl/soc/wb_sdram.v rtl/soc/wb_timer.v \
+     rtl/soc/wb_sdram.v rtl/soc/wb_timer.v rtl/soc/wb_npu.v \
      rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
      rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
 fi

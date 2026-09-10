@@ -4541,6 +4541,80 @@ itself - both shapes can do int8 MAC accumulation equally well - so this
 is a real open design choice for whoever starts this phase, not a
 placeholder for an answer already known.
 
+**Stage 1: the open question above answered, and a first, deliberately
+small MAC engine built to prove it - not the "Done when" bar itself.**
+The decision: a memory-mapped peripheral, confirmed with the user rather
+than picked silently, for the reason already named above - it cannot
+destabilize either core's own timing-critical decode/hazard logic the
+way reaching into `rtl/cpu_core.v`/`rtl/ooo/core_ooo.v` would. A new
+Wishbone slave, `rtl/soc/wb_npu.v`, at `0x0900_0000`: two fixed
+16-element int8 vectors (`A0`-`A3`/`W0`-`W3`, 4 lanes per word), a
+`CTRL`/`STATUS` start-busy pair matching `wb_framebuffer.v`'s own
+`BLIT_CTRL`/`BLIT_STATUS` convention exactly (writes ignored while
+`BUSY`, not queued or errored), and one multiply-accumulate per cycle
+into a signed 32-bit `RESULT` - `rtl/muldiv_div.v`'s own sequential, not
+combinational, shape, since a real workload's vectors only get longer
+from here and a wide parallel multiply-add tree does not scale the same
+way a streamed one does.
+
+**A gate failure, same class as two already fixed this session in
+unrelated modules, caught before it could ship again.** `wb_npu.v`'s own
+`idx_r`-vs-`VEC_LEN-1` comparison tripped the identical `WIDTHEXPAND`
+issue `rtl/plic.v` (Phase 13 Stage 8) and `rtl/clint.v` (Stage 10) both
+needed fixing - an unsized parameter's arithmetic result compared
+against a narrower, explicitly-sized register. This one needed a step
+neither precedent did: a bare bit-slice of the parameter itself
+(`plic.v`'s own `NUM_CONTEXTS_W8` shape) was not available, since the
+comparison value is a *computed* expression (`VEC_LEN-1`), not the bare
+parameter - assigning that computed expression straight into a narrower
+`localparam` declaration tripped a different warning
+(`WIDTHTRUNC`) instead of the first. Resolved with a two-step
+`localparam`: a full-width `VEC_LEN_M1` holding the subtraction, then an
+explicit slice of *that* into the correctly narrow comparison value -
+verified clean with a standalone `verilator --lint-only -Wall` pass
+before rebuilding, the same discipline both earlier fixes used.
+
+Also caught, from the same "add a peripheral" checklist
+`docs/soc.md` section 6 already names as the step that bites: `fpga/
+synth/synth_ecp5.sh`'s own RTL file list was missing not just this
+stage's `wb_npu.v` but `rtl/soc/reservation_monitor.v` too - a real,
+already-shipped omission dating back to Stage 9, invisible until now
+because nothing in `make verify`/`make verify_ooo` exercises the actual
+FPGA synthesis script, and `soc_top.v` has unconditionally instantiated
+`reservation_monitor` since that stage. Both are in the file list now,
+confirmed by an actual `./fpga/synth/synth_ecp5.sh` run rather than
+assumed fixed by inspection.
+
+Proven by two directed tests, matching the checklist's own step 6 as
+well as Stage 6's own "verify the hard piece in isolation" precedent:
+`sim/tb_wb_npu.v` (`sim_wb_npu`, now in `make verify`) checks the MAC
+result against an independently-computed reference dot product - a
+plain sum-of-products loop in the testbench, not the RTL's own
+arithmetic copied - and separately checks that a `CTRL`/`A0` write
+attempted mid-computation is genuinely ignored, not just that the
+ordinary path works; confirmed non-vacuous by mutating the RTL (removing
+the busy-guard on the register-write block) and watching the same test
+fail on both the corrupted result and the exposed operand overwrite.
+`software/soc/main.c` gained `test_npu()`, matching `test_gpt()`'s own
+established per-peripheral shape exactly, proving the same peripheral is
+reachable at `0x0900_0000` through the real CPU load/store path and the
+real interconnect address decode - the standalone test alone cannot
+prove that. Both `make verify` and `make verify_ooo` are fully green on
+the final tree.
+
+**What this stage deliberately does not do, and why "Done when" below
+is still fully open:** the vector depth is a fixed 16 elements, loaded
+one MMIO write at a time - nowhere near a real layer's own operand
+count, and not the shape a measurement against a software baseline would
+be fair on. Closing the actual bar needs a bus-master port reading
+operands directly out of RAM - the same role `rtl/soc/wb_ptw.v` plays
+for page-table walks - and a real small workload with a reference to
+check against, neither attempted here. This stage proves the mechanism
+(operand loading, streamed MAC, accumulation, busy/done, real address
+reachability) works, the same "prove the hard piece in isolation before
+wiring it to something real" role every one of Phase 13's own early
+stages played.
+
 **Done when:** a real quantized-inference workload - the obvious
 candidate is a single small layer (a int8 matrix-vector multiply or a
 tiny conv layer) with an existing reference implementation to check
@@ -4550,7 +4624,9 @@ bit-exact against that reference, and is *measured* against a
 software-only (RV32M-only) baseline computing the identical workload.
 "Faster" asserted without that baseline would be exactly the estimate
 this project's own practices exist to rule out - the same bar Phase
-11's own "Done when" already holds itself to.
+11's own "Done when" already holds itself to. Still fully open after
+Stage 1: a fixed 16-element, MMIO-loaded vector is not that workload,
+and nothing has been measured against anything yet.
 
 ---
 
