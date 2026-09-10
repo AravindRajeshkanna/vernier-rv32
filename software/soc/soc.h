@@ -36,6 +36,7 @@
 #define FB_BASE     0x07000000u
 #define TIMER_BASE  0x08000000u
 #define NPU_BASE    0x09000000u
+#define FIR_BASE    0x0A000000u
 #define RAM_BASE    0x80000000u
 /* External SDRAM. Must match the S_SDRAM base byte in rtl/soc/soc_top.v and
  * the ORIGIN addresses in software/soc/link_sdram.ld. The window is the
@@ -142,6 +143,16 @@
 #define NPU_STATUS_BUSY (1u << 0)
 #define NPU_VEC_LEN   16u  /* must match rtl/soc/wb_npu.v's own VEC_LEN */
 #define NPU_VEC_WORDS (NPU_VEC_LEN / 4u)
+
+/* ---- Streaming FIR filter coprocessor (rtl/soc/wb_fir.v, Phase 11) ---- */
+#define FIR_CTRL    REG32(FIR_BASE + 0x00)  /* bit0: reset (ignored if busy) */
+#define FIR_STATUS  REG32(FIR_BASE + 0x04)  /* bit0: busy */
+#define FIR_COEF(n) REG32(FIR_BASE + 0x08 + 4u * (n))  /* n = 0..FIR_N_TAPS-1, signed int16 */
+#define FIR_INPUT   REG32(FIR_BASE + 0x28)  /* write: new signed int16 sample, pushes+starts */
+#define FIR_OUTPUT  REG32(FIR_BASE + 0x2C)  /* saturated signed int32 */
+#define FIR_CTRL_RESET  (1u << 0)
+#define FIR_STATUS_BUSY (1u << 0)
+#define FIR_N_TAPS 8u  /* must match rtl/soc/wb_fir.v's own N_TAPS */
 
 /* ---- SPI (rtl/soc/wb_spi.v) ---- */
 #define SPI_CTRL   REG32(SPI_BASE + 0x00)

@@ -143,6 +143,7 @@ SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/pli
           rtl/soc/wb_rom.v rtl/soc/wb_periph_bridge.v rtl/soc/wb_gpio.v \
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
           rtl/soc/wb_sdram.v rtl/soc/wb_timer.v rtl/soc/wb_npu.v \
+          rtl/soc/wb_fir.v \
           rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
           rtl/soc/soc_top.v
 SOC_RTL = $(SOC_RTL_BASE) $(CORE_RTL)
@@ -1678,6 +1679,23 @@ sim_wb_npu: sim/sim_wb_npu.out
 	@grep -aq "WB-NPU-TEST: PASS" sim/wb_npu.log && echo "NPU MAC ENGINE OK" || \
 	    { echo "FAILED: rtl/soc/wb_npu.v"; exit 1; }
 
+# ---- Phase 11: streaming FIR filter coprocessor ----
+#
+# Same "verify the hard piece in isolation" sequencing as sim_wb_npu above:
+# proves rtl/soc/wb_fir.v's own register interface, sliding-window shift,
+# and saturating accumulation against a reference tracked independently in
+# sim/tb_wb_fir.v, without going through the interconnect at all. `make
+# sim_ramboot`'s own acceptance test separately proves the same peripheral
+# is reachable through the real CPU load/store path and the real address
+# decode - the two together are what actually closes the loop.
+sim/sim_wb_fir.out: sim/tb_wb_fir.v rtl/soc/wb_fir.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_wb_fir.v rtl/soc/wb_fir.v
+
+sim_wb_fir: sim/sim_wb_fir.out
+	cd sim && $(VVP) sim_wb_fir.out $(VVP_DUMP) | tee wb_fir.log
+	@grep -aq "WB-FIR-TEST: PASS" sim/wb_fir.log && echo "FIR FILTER OK" || \
+	    { echo "FAILED: rtl/soc/wb_fir.v"; exit 1; }
+
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
@@ -1830,6 +1848,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_cpu_wb_dcache_bypass \
         sim_reservation_monitor \
         sim_wb_npu \
+        sim_wb_fir \
         sim_tmds_encode \
         sim_video_pll \
         sim_tmds_serialize \

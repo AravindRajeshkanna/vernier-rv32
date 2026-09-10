@@ -422,6 +422,49 @@ static int test_npu_layer(void) {
 }
 
 /* ---------------------------------------------------------------------
+ * Streaming FIR filter coprocessor
+ * ------------------------------------------------------------------- */
+
+/* Loads real filter coefficients, streams a sequence of samples through
+ * the register interface, and checks each output against a sliding-
+ * window convolution computed independently in this function - the same
+ * pairing test_npu() has with sim/tb_wb_npu.v, extended across a whole
+ * sequence rather than one dot product. Same coefficient and sample
+ * values as sim/tb_wb_fir.v's own streaming section, so a discrepancy
+ * between the two would itself be a signal. Proves the peripheral is
+ * reachable at 0x0A00_0000 through the real CPU load/store path and the
+ * real interconnect address decode - sim/tb_wb_fir.v's own saturation
+ * and busy-guard coverage is not repeated here. */
+static int test_fir(void) {
+    static const int16_t h[FIR_N_TAPS] = { 1, -2, 3, -4, 5, -6, 7, -8 };
+    static const int16_t samples[12] = {
+        10, 20, -30, 40, -50, 60, -70, 80, -90, 100, -110, 120
+    };
+    int16_t hist[FIR_N_TAPS];
+    uint32_t i, k;
+    int ok = 1;
+
+    for (k = 0; k < FIR_N_TAPS; k++) {
+        FIR_COEF(k) = (uint32_t)(uint16_t)h[k];
+        hist[k] = 0;
+    }
+
+    for (i = 0; i < 12; i++) {
+        int32_t expected = 0;
+        for (k = FIR_N_TAPS - 1; k > 0; k--) hist[k] = hist[k-1];
+        hist[0] = samples[i];
+        for (k = 0; k < FIR_N_TAPS; k++)
+            expected += (int32_t)h[k] * (int32_t)hist[k];
+
+        FIR_INPUT = (uint32_t)(uint16_t)samples[i];
+        while (FIR_STATUS & FIR_STATUS_BUSY) { }
+        if ((int32_t)FIR_OUTPUT != expected) ok = 0;
+    }
+
+    return ok;
+}
+
+/* ---------------------------------------------------------------------
  * CLINT timer
  * ------------------------------------------------------------------- */
 
@@ -666,6 +709,7 @@ int main(void) {
     check("general-purpose timer/PWM", test_gpt());
     check("NPU int8 MAC engine",   test_npu());
     check("NPU quantized dense layer", test_npu_layer());
+    check("FIR streaming filter",      test_fir());
     check("framebuffer read/write", test_framebuffer());
     check("blit fill engine",      test_blit());
     check("blit copy engine",      test_copy());
