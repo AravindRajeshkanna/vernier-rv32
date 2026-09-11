@@ -51,6 +51,7 @@ Misprediction
 Murax
 NPU's
 Neumann
+Nyquist
 OR
 PCIe
 PLIC
@@ -182,6 +183,7 @@ liveness
 localparam
 loopback
 lowRISC
+lowpass
 maintainer
 manycore
 markdownlint

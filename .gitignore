@@ -42,6 +42,9 @@ fpga/build/
 # above: Make regenerates it from the script, so it does not belong in git.
 software/soc/npu_layer_data.h
 
+# Same reasoning, for software/soc/gen_fir_workload.py.
+software/soc/fir_workload_data.h
+
 # Local tool config (not shared)
 .claude/
 
