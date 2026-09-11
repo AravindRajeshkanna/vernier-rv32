@@ -1,0 +1,41 @@
+name: dtc
+description: >-
+  Install the device tree compiler from apt, with retries and a bounded
+  failure.
+
+# Same shape as .github/actions/iverilog's own action, and for the same
+# reason: docs/practices.md section 13, and the PR #9 incident that action's
+# own comment already tells in full - a bare `apt-get` can sit for hours
+# against a down mirror instead of failing fast.
+#
+# A separate action rather than folded into iverilog's: this one job needs
+# both, but a hypothetical job needing only one of them should not have to
+# pay for installing the other, and "install this one apt package" is not
+# `iverilog`'s own concern to own.
+runs:
+  using: composite
+  steps:
+    - name: Install device tree compiler
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        for attempt in 1 2 3; do
+          echo "::group::apt attempt $attempt"
+          if timeout 240 sudo apt-get update -o Acquire::Retries=3 \
+             && timeout 240 sudo apt-get install -y --no-install-recommends \
+                  -o Acquire::Retries=3 device-tree-compiler; then
+            echo "::endgroup::"
+            dtc -v
+            exit 0
+          fi
+          echo "::endgroup::"
+          echo "apt attempt $attempt failed or timed out"
+          sleep $((attempt * 15))
+        done
+
+        echo "Could not install dtc after 3 attempts."
+        echo "This is an apt/mirror failure on the runner, not a repository"
+        echo "problem - re-run the job. If it persists, the package mirror is"
+        echo "down and every job that needs a toolchain will be affected."
+        exit 1

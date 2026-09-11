@@ -177,6 +177,12 @@ jobs:
 
       - uses: ./.github/actions/riscv-toolchain
 
+      # The boot ROM has embedded this project's own dts/soc.dtb since the
+      # device-tree hand-off change (docs/roadmap.md's Phase 13, Stage 13) -
+      # `make soc` below now reaches `make dtb`, which this job never needed
+      # dtc for before.
+      - uses: ./.github/actions/dtc
+
       # sim/program.hex is committed so the rtl job needs no toolchain; this
       # is where it gets proved to still match its source.
       - name: Core regression program matches its source
