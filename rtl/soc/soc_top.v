@@ -42,16 +42,15 @@
 module soc_top #(
     // Number of harts sharing this bus. Defaults to 1 - today's exact
     // single-hart shape, and every board/synthesis build's own value.
-    // `NUM_HARTS=2` is exercised only by sim/tb_soc_2hart.v and
-    // sim/tb_soc_2hart_lrsc.v so far: hart 1's hardware (its own
-    // cpu_core/cpu_wb/wb_ptw, HARTID=1, its own CLINT timer/PLIC contexts)
-    // exists and runs, and rtl/soc/reservation_monitor.v is wired to both
-    // harts' reservation ports, so cross-hart LR/SC is coherent - but hart
-    // 1 gets no debug access at all (rtl/debug/dm.v stays hart-0-only - see
-    // the tie-off where hart control is wired below), and neither
-    // software/soc/bootrom.c nor dts/soc.dts know a second hart exists yet.
-    // See docs/roadmap.md's Phase 13 entry for what is and is not done
-    // here.
+    // `NUM_HARTS=2` is exercised by sim/tb_soc_2hart.v, sim/tb_soc_2hart_lrsc.v
+    // and sim/tb_jtag.v so far: hart 1's hardware (its own cpu_core/cpu_wb/
+    // wb_ptw, HARTID=1, its own CLINT timer/PLIC contexts) exists and runs,
+    // rtl/soc/reservation_monitor.v is wired to both harts' reservation
+    // ports so cross-hart LR/SC is coherent, and rtl/debug/dm.v's own
+    // hartsel reaches every hart, not just hart 0 (see the mux where hart
+    // control is wired below) - but neither software/soc/bootrom.c nor
+    // dts/soc.dts know a second hart exists yet. See docs/roadmap.md's
+    // Phase 13 entry for what is and is not done here.
     parameter NUM_HARTS       = 1,
     parameter ROM_WORDS       = 4096,      // 16 KB boot ROM
     parameter RAM_BYTES       = 262144,    // 256 KB main RAM
@@ -248,14 +247,47 @@ module soc_top #(
 
     // ---- hart control (rtl/debug/dm.v <-> CPU), in-order-core only ----
     //
-    // dbg_reg_* carries Abstract Command register access (GPR/dcsr/dpc)
-    // between dm.v and cpu_core.v's dedicated debug port - real on
-    // CORE=inorder, tied inert for CORE_OOO below (core_ooo.v has no such
-    // port at all).
-    wire        dbg_haltreq, dbg_resumereq, dbg_halted;
+    // dbg_haltreq/dbg_resumereq/dbg_halted are NUM_HARTS wide, one bit per
+    // hart, straight from/to dm.v - it already produces/consumes them that
+    // shape (rtl/debug/dm.v's own hartsel comment). dbg_reg_* (Abstract
+    // Command register access - GPR/dcsr/dpc) stays scalar on dm.v's own
+    // side: it only ever talks to one hart's register port at a time.
+    // dbg_reg_valid_h/dbg_reg_rdata_h/dbg_reg_err_h below are this file's
+    // own per-hart fan-out/mux around that scalar port, gated and selected
+    // by dm.v's own `hartsel` output - Phase 13's hart-control-past-hart-0
+    // gap this closes. Tied inert for CORE_OOO below (core_ooo.v has no
+    // debug register port at all, on any hart).
+    wire [NUM_HARTS-1:0] dbg_haltreq, dbg_resumereq, dbg_halted;
     wire        dbg_reg_valid, dbg_reg_we, dbg_reg_err;
     wire [15:0] dbg_reg_num;
     wire [31:0] dbg_reg_wdata, dbg_reg_rdata;
+    wire [9:0]  hartsel;
+
+    // $clog2(1) is 0 - the same NUM_HARTS=1 special case rtl/debug/dm.v's
+    // own HIDXW already needs, applied here so hartsel_idx indexes the
+    // NUM_HARTS-wide per-hart arrays below without a width mismatch.
+    localparam DBG_HIDXW = (NUM_HARTS <= 1) ? 1 : $clog2(NUM_HARTS);
+    wire [DBG_HIDXW-1:0] hartsel_idx = hartsel[DBG_HIDXW-1:0];
+
+    wire [NUM_HARTS-1:0]    dbg_reg_valid_h;
+    wire [NUM_HARTS*32-1:0] dbg_reg_rdata_h;
+    wire [NUM_HARTS-1:0]    dbg_reg_err_h;
+
+    // Only the hart dm.v's own hartsel currently names ever sees
+    // dbg_reg_valid asserted; dbg_reg_rdata/err are read back from that
+    // same hart. A debugger addressing hart 1 while hart 0 happens to be
+    // halted too must not be able to read hart 0's registers by accident -
+    // this is what actually prevents that, not just dm.v's own cmderr
+    // check (which only knows the *selected* hart's halted state).
+    genvar dh;
+    generate
+        for (dh = 0; dh < NUM_HARTS; dh = dh + 1) begin : g_dbg_sel
+            assign dbg_reg_valid_h[dh] =
+                dbg_reg_valid && (hartsel_idx == dh[DBG_HIDXW-1:0]);
+        end
+    endgenerate
+    assign dbg_reg_rdata = dbg_reg_rdata_h[32*hartsel_idx +: 32];
+    assign dbg_reg_err   = dbg_reg_err_h[hartsel_idx];
 
     // Which core. -DCORE_OOO picks the wide/out-of-order one in rtl/ooo/.
     // See docs/roadmap.md Phase 1 - the in-order core stays the proven
@@ -301,10 +333,10 @@ module soc_top #(
         , .resv_valid(resv_valid[0]), .resv_addr(resv_addr[31:0]),
         .store_fire(store_fire[0]), .store_addr(store_addr[31:0]),
         .resv_invalidate_ext(resv_invalidate[0]),
-        .dbg_haltreq(dbg_haltreq), .dbg_resumereq(dbg_resumereq), .dbg_halted(dbg_halted),
-        .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
+        .dbg_haltreq(dbg_haltreq[0]), .dbg_resumereq(dbg_resumereq[0]), .dbg_halted(dbg_halted[0]),
+        .dbg_reg_valid(dbg_reg_valid_h[0]), .dbg_reg_we(dbg_reg_we),
         .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
-        .dbg_reg_rdata(dbg_reg_rdata), .dbg_reg_err(dbg_reg_err)
+        .dbg_reg_rdata(dbg_reg_rdata_h[0+:32]), .dbg_reg_err(dbg_reg_err_h[0])
 `endif
     );
 `ifdef CORE_OOO
@@ -315,9 +347,11 @@ module soc_top #(
     // dm.v itself also refuses any command while !halted (cmderr =
     // halt/resume required), so dbg_reg_err here is a backstop, not the
     // only thing standing between a host and a fabricated register value.
-    assign dbg_halted    = 1'b0;
-    assign dbg_reg_rdata = 32'b0;
-    assign dbg_reg_err   = 1'b1;
+    // Every hart, not just hart 0 - core_ooo.v never gets a debug register
+    // port regardless of which hart a host selects.
+    assign dbg_halted    = {NUM_HARTS{1'b0}};
+    assign dbg_reg_rdata_h = {(NUM_HARTS*32){1'b0}};
+    assign dbg_reg_err_h   = {NUM_HARTS{1'b1}};
     // Same honesty rule for coherence: core_ooo.v has no resv_valid/
     // store_fire outputs to drive the monitor with, so every hart reports
     // "no reservation, no write" rather than leaving these floating.
@@ -367,14 +401,14 @@ module soc_top #(
     // walker - the same three-instance shape hart 0 has just above,
     // parameterized on `h` instead of hardcoded. CORE=inorder and CORE=ooo
     // both build this loop (core_ooo.v can be instantiated more than once
-    // with no issue of its own), but two things stay hart-0-only
-    // regardless: `trap` (a single module-level bit - a second hart's own
-    // trap is not yet observable at this module's boundary) and hart
-    // control (rtl/debug/dm.v has no per-hart select - see the tie-off
-    // below). Every hart's own reservation ports, by contrast, DO connect
-    // to rtl/soc/reservation_monitor.v below, hart 0 included - Phase 13
-    // stage 9. See docs/roadmap.md's Phase 13 entry for what still isn't
-    // done (CORE_OOO's own coherence gap, and hart control past hart 0).
+    // with no issue of its own), but `trap` stays hart-0-only regardless (a
+    // single module-level bit - a second hart's own trap is not yet
+    // observable at this module's boundary). Every hart's own reservation
+    // ports, and now hart control too (dm.v's own hartsel, wired below),
+    // DO connect for every hart - Phase 13 stages 9 and, for hart control,
+    // the device-tree-hand-off stage's own follow-on. See docs/roadmap.md's
+    // Phase 13 entry for what still isn't done (CORE_OOO's own coherence
+    // and hart-control gaps).
     genvar h;
     generate
         for (h = 1; h < NUM_HARTS; h = h + 1) begin : g_hart
@@ -401,15 +435,15 @@ module soc_top #(
                 , .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
                 .store_fire(store_fire[h]), .store_addr(store_addr[32*h +: 32]),
                 .resv_invalidate_ext(resv_invalidate[h]),
-                // No per-hart select exists in rtl/debug/dm.v yet (RISC-V
-                // debug spec's `hartsel`) - every hart past 0 is simply not
-                // reachable from the debug path this round. Tied to explicit
-                // constants, not omitted, for the same X-poisoning reason
-                // hart 0's own tie-offs elsewhere in this file already are.
-                .dbg_haltreq(1'b0), .dbg_resumereq(1'b0), .dbg_halted(),
-                .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
-                .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
-                .dbg_reg_rdata(), .dbg_reg_err()
+                // Real per-hart wiring, gated by dm.v's own hartsel through
+                // dbg_reg_valid_h/dbg_reg_rdata_h/dbg_reg_err_h above - this
+                // hart is reachable from the debug path exactly when a host
+                // selects it, the same as hart 0.
+                .dbg_haltreq(dbg_haltreq[h]), .dbg_resumereq(dbg_resumereq[h]),
+                .dbg_halted(dbg_halted[h]),
+                .dbg_reg_valid(dbg_reg_valid_h[h]), .dbg_reg_we(dbg_reg_we),
+                .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
+                .dbg_reg_rdata(dbg_reg_rdata_h[32*h +: 32]), .dbg_reg_err(dbg_reg_err_h[h])
 `endif
             );
 
@@ -513,7 +547,7 @@ module soc_top #(
         .sys_done(dmi_done), .sys_rdata(dmi_rdata), .sys_resp(dmi_resp)
     );
 
-    dm DM (
+    dm #(.NUM_HARTS(NUM_HARTS)) DM (
         .clk(clk), .rst(rst),
         .dmi_valid(dmi_valid), .dmi_addr(dmi_addr),
         .dmi_wdata(dmi_wdata), .dmi_op(dmi_op),
@@ -523,6 +557,7 @@ module soc_top #(
         .wb_dat_r(dbg_dat_r), .wb_ack(dbg_ack),
         .ndmreset(dbg_ndmreset), .dmactive(),
         .haltreq(dbg_haltreq), .resumereq(dbg_resumereq), .halted(dbg_halted),
+        .hartsel(hartsel),
         .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
         .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
         .dbg_reg_rdata(dbg_reg_rdata), .dbg_reg_err(dbg_reg_err)

@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0) - both proven through the real boot path rather than a shortcut. Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP; hart control (debug) stays hart-0-only; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0); `rtl/debug/dm.v`'s own `hartsel` now reaches every hart too, not just hart 0 (Stage 14, with a real cross-hart register-isolation proof) - all three proven through the real boot/debug paths rather than a shortcut. Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP, nor does it have a debug register port on any hart; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -4669,6 +4669,59 @@ than a `NUM_HARTS>1` capability. `CORE=ooo` coherence, hart control
 past hart 0, and an actual board build with `NUM_HARTS>1` all remain
 open, and none of them were ever part of what the coherence bar above
 asked for either.
+
+**Stage 14: hart control past hart 0 - `rtl/debug/dm.v`'s own `hartsel`
+reaches every hart, not just hart 0.** The third of Phase 13's own named
+loose ends, and the one closest to a real redesign of the three: unlike
+Stage 13's boot-path plumbing, this touches `rtl/debug/dm.v` itself,
+the RISC-V Debug Spec's own `dmcontrol.hartsello` field, honored for the
+first time (previously accepted and silently ignored). `haltreq`/
+`resumereq`/`halted` become `NUM_HARTS`-wide - `haltreq`/`resumereq`
+one-hot on whichever hart `hartsel` currently names, matching the
+spec's own model of controlling one hart at a time. The Abstract
+Command register port (GPR/`dcsr`/`dpc` access) stays scalar on `dm.v`'s
+own side - it only ever talks to one hart's register port at a time -
+with `rtl/soc/soc_top.v` fanning it out and muxing it back per hart
+using `hartsel`, the same per-hart-wiring shape every other signal in
+that file already has (`resv_valid`, the Wishbone master triples, and
+now this).
+
+**A real correctness property, not just wiring: a debugger addressing
+hart 1 must not be able to read or write hart 0's registers, even
+while both happen to be halted at once.** `rtl/soc/soc_top.v` gates
+each hart's own `dbg_reg_valid` input on `hartsel == that hart`, not
+merely on `dbg_reg_valid` alone - the difference between "the DM issued
+a command" and "the DM issued a command *for this hart*." Confirmed
+non-vacuous by mutation: hardcoding hart 0's own gate to ignore
+`hartsel` and always accept `dbg_reg_valid` (a plausible real mistake -
+it is exactly what the tie-off used to be, before this stage) made the
+cross-hart isolation check below fail, corrupting hart 0's own register
+with hart 1's write.
+
+`sim/tb_jtag.v` now builds `NUM_HARTS=2` and proves the real thing, not
+just that `hartsel` accepts a write: hart 0 is halted first (the
+existing single-hart test sequence, unchanged), then hart 1 - never
+touched before this point - is confirmed running, halted independently,
+and given its own sentinel register value distinct from hart 0's own
+(`0xCAFE_0001` against hart 0's pre-existing `0xCAFE_F00D`). Switching
+`hartsel` back to hart 0 and reading its own `x5` proves it is *not*
+`0xCAFE_0001` - the actual cross-hart isolation property, not merely
+"hart 1's own write succeeded." Hart 1's own sentinel is then confirmed
+to have survived the round trip unchanged, and both harts resume
+independently. Every pre-existing single-hart check in this file still
+passes unchanged, proving `hartsel` defaulting to hart 0 on reset keeps
+every existing single-hart workflow working exactly as before.
+
+**What this still does not do:** `CORE=ooo` still has no debug register
+port on any hart, regardless of which one a host selects - the tie-off
+now honestly reports `cmderr`=halt/resume-required for every hart, not
+just hart 0. No hasel/hart-array group selection (the spec's own way to
+control several harts as one operation) - only one hart at a time,
+which is what a real debugger session actually does. `software/soc/
+bootrom.c` and `dts/soc.dts` still do not know a second hart exists.
+`CORE=ooo` coherence and an actual board build with `NUM_HARTS>1`
+remain open, closing out every item Phase 13 itself ever named as
+still open except those two.
 
 ---
 
