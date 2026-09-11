@@ -540,6 +540,37 @@ static int test_timer(void) {
     return t1 > t0;
 }
 
+/* The boot ROM (software/soc/bootrom.c) hands every loaded program a0 =
+ * hart ID, a1 = device tree address - the real RISC-V firmware entry
+ * convention - and software/soc/crt0_ram.S preserves both into these two
+ * globals before calling main(). Checked here through the real boot path
+ * this program was actually loaded by (make sim_ramboot/sim_soc/
+ * sim_uartload all exercise a different one of the boot ROM's three
+ * loading paths, and all three land here), not by inspecting crt0_ram.S's
+ * own logic in isolation.
+ *
+ * hartid == 0 is this board's own single-hart reality (docs/roadmap.md's
+ * Phase 13 entry), not a general claim - a real NUM_HARTS=2 build would
+ * need this test to accept either. The device-tree checks are real
+ * structural checks, not "nonzero": the address must land inside the
+ * boot ROM's own 16 KB (link_rom.ld) - where software/soc/gen_dtb_blob.py
+ * actually embedded it - and the four bytes there must be the real
+ * flattened-device-tree magic number (0xd00dfeed), not merely non-zero
+ * bytes that happen to be there. */
+static int test_boot_dtb(void) {
+    extern uint32_t boot_hartid, boot_dtb_addr;
+    volatile const uint8_t *dtb;
+    uint32_t magic;
+
+    if (boot_hartid != 0) return 0;
+    if (boot_dtb_addr == 0 || boot_dtb_addr >= 0x4000u) return 0;
+
+    dtb = (volatile const uint8_t *)(uintptr_t)boot_dtb_addr;
+    magic = ((uint32_t)dtb[0] << 24) | ((uint32_t)dtb[1] << 16) |
+            ((uint32_t)dtb[2] << 8) | (uint32_t)dtb[3];
+    return magic == 0xd00dfeedu;
+}
+
 /* misa must advertise every extension the hardware actually implements -
  * firmware reads it to decide what the hart can do. This used to claim 'I'
  * only, silently under-selling M and A. */
@@ -774,6 +805,7 @@ int main(void) {
     check("blit copy engine",      test_copy());
     check("blit line engine",      test_line());
     check("CLINT mtime advances",  test_timer());
+    check("boot ROM hands off a real DTB", test_boot_dtb());
     check("misa reports I+M+A",    test_misa());
     check("cycle/time/instret",    test_counters());
     check("misaligned access traps", test_misaligned_trap());

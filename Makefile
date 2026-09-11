@@ -421,7 +421,14 @@ sim_software: software
 # =====================================================================
 soc: sim/bootrom.hex sim/card.hex
 
-software/soc/bootrom.elf: $(BOOTROM_SRCS) software/soc/link_rom.ld software/soc/soc.h
+# Embeds this project's own real device tree into the boot ROM image - see
+# the generator script's own header for why (the boot ROM hands its address
+# onward as a1, the real RISC-V firmware entry convention).
+software/soc/dtb_blob.h: dts/soc.dtb software/soc/gen_dtb_blob.py
+	python3 software/soc/gen_dtb_blob.py > $@
+
+software/soc/bootrom.elf: $(BOOTROM_SRCS) software/soc/link_rom.ld software/soc/soc.h \
+                          software/soc/dtb_blob.h
 	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_rom.ld -o $@ $(BOOTROM_SRCS)
 
 sim/bootrom.hex: software/soc/bootrom.elf software/bin2hex.py Makefile
@@ -1928,6 +1935,7 @@ clean:
 	       software/soc/socprog.elf software/soc/socprog.bin \
 	       software/soc/npu_layer_data.h \
 	       software/soc/fir_workload_data.h \
+	       software/soc/dtb_blob.h \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc.dtb \
 	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \

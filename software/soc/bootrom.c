@@ -22,6 +22,7 @@
  */
 #include <stdint.h>
 #include "soc.h"
+#include "dtb_blob.h"
 
 /* Phase 13: the mailbox software/soc/crt0_rom.S's park_hart spins on. Every
  * non-zero hart parks there before touching anything C-visible; this hart
@@ -449,9 +450,13 @@ void main(void) {
     uint32_t hartid;
     /* a0 = hartid, a1 = device tree address - the RISC-V firmware entry
      * convention every real M-mode firmware (OpenSBI included) expects.
-     * a1 is always 0 here: nothing this ROM loads carries a device tree
-     * yet, only a hart ID. See hart_release_addr above for the a0 half of
-     * this on a parked secondary hart. */
+     * a1 is boot_dtb (dtb_blob.h): this project's own dts/soc.dts, built by
+     * `make dtb` and embedded here by software/soc/gen_dtb_blob.py, so
+     * anything this ROM loads gets a real, valid flattened device tree
+     * rather than a null pointer - the "boot ROM's eventual job"
+     * software/opensbi/sbi_stub.S's own comment already named. See
+     * hart_release_addr above for the a0 half of this on a parked
+     * secondary hart. */
     void (*entry)(uint32_t, uint32_t);
 
     __asm__ volatile ("csrr %0, mhartid" : "=r"(hartid));
@@ -487,7 +492,7 @@ void main(void) {
             install_rom_trap_vector();
             entry = (void (*)(uint32_t, uint32_t))(uintptr_t)PROGRAM_LOAD_ADDR;
             hart_release_addr = (uint32_t)(uintptr_t)entry;
-            entry(hartid, 0);
+            entry(hartid, (uint32_t)(uintptr_t)boot_dtb);
             for (;;) { }
         }
     }
@@ -506,7 +511,7 @@ void main(void) {
             __asm__ volatile ("fence.i" ::: "memory");
             entry = (void (*)(uint32_t, uint32_t))(uintptr_t)uart_entry;
             hart_release_addr = (uint32_t)(uintptr_t)entry;
-            entry(hartid, 0);
+            entry(hartid, (uint32_t)(uintptr_t)boot_dtb);
             for (;;) { }
         }
     }
@@ -577,7 +582,7 @@ void main(void) {
 
     entry = (void (*)(uint32_t, uint32_t))(uintptr_t)PROGRAM_LOAD_ADDR;
     hart_release_addr = (uint32_t)(uintptr_t)entry;
-    entry(hartid, 0);
+    entry(hartid, (uint32_t)(uintptr_t)boot_dtb);
 
     for (;;) { }
 }
