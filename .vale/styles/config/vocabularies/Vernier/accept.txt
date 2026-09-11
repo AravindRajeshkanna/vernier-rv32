@@ -159,6 +159,7 @@ floorplanning
 framebuffer
 fuzzer
 glibc
+globals
 halfword
 haltreq
 hardcoded

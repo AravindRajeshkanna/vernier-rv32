@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`), proven through the real boot path rather than a shortcut. Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP; the boot ROM still has no device tree to hand onward (`a1` stays 0); hart control (debug) stays hart-0-only; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0) - both proven through the real boot path rather than a shortcut. Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP; hart control (debug) stays hart-0-only; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -3738,13 +3738,13 @@ has no repo-local hart-count assumption baked in; it reports whatever
   spin-wait/mailbox gate - every existing test implicitly assumes it is
   the only thing executing from reset. The standard RISC-V SMP pattern
   (hart 0 proceeds, every other hart parks on a mailbox until released)
-  does not exist here in any form yet~~ **Done (Stage 12, below):**
+  does not exist here in any form yet~~ **Done (Stages 12-13, below):**
   `software/soc/crt0_rom.S` parks every non-zero hart on a RAM mailbox
   before it touches anything shared; `bootrom.c` reads its own `mhartid`
-  and passes it (plus `a1=0`, no device tree yet) to whatever it jumps
-  to. Simulation-only - the mailbox needs RAM to start zeroed, true in
-  simulation and not on real silicon - and unreached on every real board
-  build, where `NUM_HARTS=1`.
+  and passes it (`a0`), plus a real device-tree address (`a1`, Stage 13),
+  to whatever it jumps to. The mailbox itself is simulation-only - it
+  needs RAM to start zeroed, true in simulation and not on real silicon -
+  and unreached on every real board build, where `NUM_HARTS=1`.
 - ~~`dts/soc.dts` declares one `cpu@0` node; a second hart needs its own
   `cpu@1` and interrupt controller node, and
   `software/linux/vernier_rv32.config` currently has `CONFIG_SMP`
@@ -4614,10 +4614,61 @@ both harts behaving per spec, at minimum~~ - **done, Stage 9,
 closed for the in-order core, in simulation. `software/soc/bootrom.c`
 gained real `mhartid`/mailbox awareness of a second hart separately
 (Stage 12, above) - not part of this bar, but the last item this
-phase's own opening plumbing list had left open. `CORE=ooo` coherence,
-hart control past hart 0, a device tree the boot ROM can locate and
-pass onward, and an actual board build with `NUM_HARTS>1` all remain
-open, and none of them were ever part of what this bar asked for.
+phase's own opening plumbing list had left open.
+
+**Stage 13: the boot ROM gets a real device tree to hand onward -**
+also not part of the coherence bar above, but the other half of Stage
+12's own unfinished business: `a0` (hart ID) was fixed to a real value
+there, while `a1` (device tree address) stayed a literal 0 at all three
+of `bootrom.c`'s jump sites, exactly the gap
+`software/opensbi/sbi_stub.S`'s own comment already named as "the boot
+ROM's eventual job." `software/soc/gen_dtb_blob.py` embeds this
+project's own `dts/soc.dtb` (built by `make dtb`) into the boot ROM's
+own image as a plain `.rodata` byte array - no new loading mechanism,
+since the boot ROM's 16 KB budget has ample room (the DTB is ~3 KB) to
+carry its own copy alongside the code that already lives there. All
+three jump sites now pass its real address instead of 0.
+
+Proving this mattered more than writing it: `a0`/`a1` reach `entry()`'s
+own stack frame at the boot ROM level, but `software/soc/crt0_ram.S` -
+the startup code every loaded program shares - discarded both within a
+few instructions (its `.data`-copy loop reuses `a0`-`a2` as scratch,
+and `main()` is called with no arguments at all), so nothing was ever
+actually checking whether a real value reached a program instead of
+being silently dropped in transit. Fixed by preserving both in `s0`/
+`s1` across the existing setup loops and publishing them into two new
+`.bss`-resident globals (`boot_hartid`, `boot_dtb_addr`) once `.bss`
+itself is actually zeroed - defined in `crt0_ram.S` itself, not
+expected of each of the several programs that link against it, since
+most never look at either.
+
+`software/soc/main.c`'s new `test_boot_dtb()` checks three real things
+through the actual boot path a program was loaded by, not by reading
+`crt0_ram.S` and trusting it: the hart ID is this board's own real
+value (0), the device-tree address falls inside the boot ROM's own 16
+KB rather than being merely non-zero, and the four bytes there are the
+real flattened-device-tree magic number (`0xd00dfeed`) - a structural
+check, not a null check. Both the RAM-preload and SD-card jump sites
+(`make sim_ramboot`, `make sim_soc`) exercise it, since both load
+`main.c`'s own acceptance test; the UART path loads a different,
+smaller payload that does not, but shares the identical `bootrom.c`
+fix, already confirmed identical by inspection across all three call
+sites. Confirmed non-vacuous by mutation: dropping the `a1`
+preservation in `crt0_ram.S` (substituting a literal 0 for the
+preserved value) made the same check fail.
+
+**What this still does not do:** the boot ROM's three loading paths
+still only ever load a plain RAM program (`PROGRAM_LOAD_ADDR`, block
+RAM) - none of them can load OpenSBI into SDRAM the way
+`software/opensbi/sbi_stub.S`'s own minimal stand-in does for
+`make sim_opensbi`/`make sim_linux`. Handing a *loaded program* a real
+device tree and *loading OpenSBI itself* over the real boot path are
+two different gaps; this stage closes the first, not the second, and
+sits alongside Stage 12's own mailbox as boot-path plumbing rather
+than a `NUM_HARTS>1` capability. `CORE=ooo` coherence, hart control
+past hart 0, and an actual board build with `NUM_HARTS>1` all remain
+open, and none of them were ever part of what the coherence bar above
+asked for either.
 
 ---
 

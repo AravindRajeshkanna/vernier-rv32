@@ -18,6 +18,18 @@
 .section .text.start
 .global _start
 _start:
+    /* The boot ROM hands every program a0 = hart ID, a1 = device tree
+     * address (software/soc/bootrom.c) - the real RISC-V firmware entry
+     * convention. Both would otherwise be lost within a few instructions:
+     * the .data-copy loop below reuses a0-a2 as its own scratch registers.
+     * s0/s1 are free this early (nothing before `call main` needs them),
+     * so they carry the real values across both setup loops; boot_hartid/
+     * boot_dtb_addr below are where C code (software/soc/main.c) can read
+     * them back once .bss - which these two symbols live in - has actually
+     * been zeroed. */
+    mv s0, a0
+    mv s1, a1
+
     .option push
     .option norelax
     la gp, __global_pointer$
@@ -56,6 +68,15 @@ _start:
     addi a0, a0, 4
     j 3b
 4:
+    /* Now that .bss is actually zeroed, publish the real a0/a1 this file
+     * preserved in s0/s1 above - boot_hartid/boot_dtb_addr live in .bss,
+     * so storing into them any earlier would have been overwritten by the
+     * zeroing loop just above. */
+    la   t0, boot_hartid
+    sw   s0, 0(t0)
+    la   t0, boot_dtb_addr
+    sw   s1, 0(t0)
+
     /* Open PMP before running anything, the same "permit all" shape real
      * firmware (OpenSBI's generic platform init) already does on its own -
      * entry 0, NAPOT, the entire 32-bit space, R+W+X, unlocked.
@@ -85,6 +106,17 @@ _start:
 
 halt:
     j halt
+
+/* The boot-time a0/a1, published above - defined here rather than expected
+ * of each C program linked against this file, since crt0_ram.S is shared
+ * by every one of them (software/soc/main.c, mmutest.c, plictest.c, ...)
+ * and only some care to read these back. */
+.section .bss
+.align 2
+.global boot_hartid
+boot_hartid: .word 0
+.global boot_dtb_addr
+boot_dtb_addr: .word 0
 
 /* Minimal M-mode trap entry.
  *
