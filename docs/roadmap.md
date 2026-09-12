@@ -4877,7 +4877,7 @@ hardware path's own MMIO writes to load every neuron's weights are
 inside its timing window, not excluded, because excluding them would be
 exactly the kind of favorable-to-the-thesis estimate
 `docs/practices.md` exists to catch. Measured, not estimated: **561
-cycles for the NPU path, 652 for the RV32M-only software baseline
+cycles for the NPU path, 654 for the RV32M-only software baseline
 computing the identical four dot products** - the hardware is faster,
 but only by about 1.16x, not the order-of-magnitude a "hardware
 acceleration" framing might suggest. That is an honest result for a
@@ -4994,9 +4994,9 @@ Measured, not estimated, counting everything (every DMA register write
 and poll is inside the hardware path's own timing window, the same
 "count the real cost, not a favorable slice of it" rule Stage 2's own
 measurement already held itself to): **1220 cycles on the NPU's own DMA
-path, 4838 for the RV32M-only software baseline computing the identical
+path, 4840 for the RV32M-only software baseline computing the identical
 128-input, 4-neuron layer - about 4.0x**, a real and substantial win,
-in clear contrast with Stage 2's own MMIO-scale result (561 vs. 652,
+in clear contrast with Stage 2's own MMIO-scale result (561 vs. 654,
 about 1.16x). The reason is exactly the one Stage 2's own account named
 without being able to measure yet: at MMIO scale, loading every operand
 costs about as much as the arithmetic itself; at DMA scale, the
@@ -5027,12 +5027,101 @@ quantized-inference workload - a small int8 matrix-vector multiply, the
 verified bit-exact against an independently-computed reference, and is
 measured, not estimated, against a software-only (RV32M-only) baseline
 computing the identical workload (Stage 2, MMIO scale: 561 vs. 652
-cycles, about 1.16x; Stage 4, DMA scale, 128 inputs: 1220 vs. 4838
+cycles, about 1.16x; Stage 4, DMA scale, 128 inputs: 1220 vs. 4840
 cycles, about 4.0x - the same "measure it, do not assert it" bar Phase
 11's own "Done when" holds itself to, at two different scales rather
 than one). Not yet done, and not required by this bar's own wording:
 real trained-model weights rather than synthetic data, and confirmation
 on real hardware rather than simulation alone.
+
+**Stage 5: the exact inefficiency Stage 4 named, closed and measured -
+not part of the "Done when" bar itself, which Stage 4 already fully
+closed.** Stage 4's own account named a real cost plainly: every one of
+the four neurons in that workload re-fetches the entire 128-element
+activation vector out of RAM, even though `A_ADDR` never changes across
+them. `rtl/soc/wb_npu.v` gains a bounded, synthesis-time-sized on-chip
+cache (`A_CACHE_LEN`, default 128 - matching Stage 4's own workload
+exactly) that every ordinary DMA start (CTRL bit 1) populates as a side
+effect of its own A-fetch, plus a third way to start DMA mode (CTRL bit
+2) that reuses that cache instead of re-fetching `A_ADDR`, reading only
+`W_ADDR` out of RAM. `STATUS` bit 1 (`A_CACHE_VALID`) reports whether the
+cache actually holds the current run's own vector at the current `LEN` -
+a bit-2 start when it does not is a well-defined no-op, matching
+`wb_framebuffer.v`'s own `BLIT_CTRL`/`BLIT_STATUS` "ignored while busy"
+convention this register map already followed for bits 0/1, rather than
+a silent wrong answer.
+
+**Bounded deliberately:** `A_CACHE_LEN` is real on-chip storage, not a
+free abstraction over RAM, so a vector that does not fit (`LEN >
+A_CACHE_LEN`) simply is not cached - `A_CACHE_VALID` clears rather than
+the hardware silently caching a truncated or wrong vector.
+
+**A real FSM bug caught before any test ever ran, worth stating rather
+than folding into an already-clean account:** the first draft of the
+"not the last element" DMA transition unconditionally advanced to
+`S_DMA_FETCH_A` for the next word, regardless of mode - correct for a
+fresh fetch, wrong for a reuse-mode run, which must never re-enter that
+state at all. Caught by tracing the FSM's own transition table by hand
+before writing the final code, not by a test catching it after the
+fact; fixed by conditioning the transition on `reuse_mode_r`.
+
+Confirmed non-vacuous twice, matching this project's own "prove the
+mechanism, then through the real path" sequencing already used for
+Stage 3's own DMA master: `sim/tb_wb_npu.v` gained a standalone
+`cache_test` (populates the cache via an ordinary DMA run, corrupts the
+same RAM words the behavioral memory model backs, starts a reuse-mode
+run, and checks the result still matches the correct reference - plus
+confirms a mismatched-`LEN` reuse start is genuinely ignored) and an
+`oversized_test` (a `LEN` run exceeding `A_CACHE_LEN` leaves
+`A_CACHE_VALID` clear). Mutating the reuse-mode start transition
+(pointing it at `S_DMA_FETCH_A` instead of `S_DMA_FETCH_W` - the same
+class of bug named above, deliberately reintroduced) produced exactly
+two failures - the reused-result check and the ignored-mismatched-reuse
+check - both showing the RTL had silently re-read the now-corrupted RAM
+instead of using the cache. `software/soc/main.c` gained
+`test_npu_dma_cache()`, the same proof through the real interconnect and
+real RAM Stage 3's own `test_npu_dma()` already established for the DMA
+master itself: it runs Stage 4's own workload with neuron 0 fetching
+fresh and neurons 1-3 reusing the cache, corrupts a writable copy of the
+activation vector after the timed run closes, and confirms one more
+reuse-mode start still produces the correct result. The same mutation
+(confirmed independently on this file, not assumed to transfer from the
+standalone test) makes exactly this one new acceptance-test check fail,
+with every other check - including the pre-existing DMA workload
+measurement it sits next to - still passing.
+
+Measured, not estimated, timed with the identical `hw_c0`/`hw_cycles`
+window `test_npu_dma_workload()` already uses (same start point, same
+four neurons, nothing else inside it, so the two totals are a fair
+comparison - the correctness check above deliberately runs after this
+window closes, since corrupting RAM costs real cycles of its own that
+would otherwise inflate the very number being reported): **986 cycles,
+versus 1220 for the same workload without the cache - about 1.24x
+faster, roughly 19%.** Algebra against both aggregate numbers (four
+neurons at an uncached cost `x` each give `4x = 1220`; one neuron at
+cost `x` plus three at a cached-reuse cost `y` give `x + 3y = 986`) puts
+the uncached per-neuron cost at about 305 cycles and the cached-reuse
+cost at about 227 - a roughly 78-cycle saving for each of the three
+neurons that no longer re-fetch `A_ADDR`, smaller than a naive "removing
+a 32-word RAM read should save many hundreds of cycles" estimate would
+suggest, and named plainly rather than smoothed over: this RAM model's
+own per-word read cost inside `S_DMA_FETCH_A` is evidently cheap already
+relative to the rest of each neuron's own DMA sequence (arbitration, the
+W-fetch that still happens every time, and 128 MAC cycles), so removing
+it trims a real but modest fraction of the total rather than a
+dominant one.
+
+**What this still does not do:** the cache is populated only as a side
+effect of an ordinary (bit 1) DMA start and is sized for exactly this
+workload's own 128-element vector (`A_CACHE_LEN`'s default) - a vector
+wider than that is never cached at all, falling back to a fresh fetch
+every time with no error or degraded mode in between. No software
+anywhere in this tree yet uses the cache for anything beyond this one
+measurement; a real model with more than one shared-activation layer, or
+with an activation vector wider than 128, would need either a larger
+`A_CACHE_LEN` or to keep re-fetching, exactly as before this stage. Real
+trained-model weights and confirmation on real hardware remain open, as
+named at Stage 4 and unchanged by this stage.
 
 ---
 

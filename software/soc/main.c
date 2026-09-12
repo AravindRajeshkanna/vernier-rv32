@@ -510,6 +510,65 @@ static int test_npu_dma_workload(void) {
     return ok;
 }
 
+/* Same workload and expected values as test_npu_dma_workload() above, but
+ * closing the exact inefficiency that measurement's own account named:
+ * every neuron after the first starts with NPU_CTRL_START_DMA_REUSE
+ * instead of NPU_CTRL_START_DMA, so A_ADDR's own vector is fetched out of
+ * RAM once - by neuron 0 - rather than once per neuron. Timed exactly
+ * like test_npu_dma_workload()'s own hw_c0/hw_cycles window (same start
+ * point, same four neurons, nothing else inside it) so the two totals
+ * are a fair comparison - the correctness proof below deliberately runs
+ * AFTER that window closes, not inside it, since corrupting RAM costs
+ * real cycles of its own that have nothing to do with the workload being
+ * measured and would silently inflate the very number this test reports.
+ *
+ * Uses a writable copy of npu_dma_activation (which is `static const`,
+ * so writing through it directly would be undefined behavior) as the
+ * DMA source. After the timed run, corrupts that copy's own RAM bytes
+ * and starts one more reuse-mode run against a fresh weight vector:
+ * still producing the correct dot product proves the reused operand
+ * came from rtl/soc/wb_npu.v's own on-chip cache, not from re-reading
+ * (now-wrong) RAM - the same real-interconnect proof sim/tb_wb_npu.v's
+ * own cache_test already gives against a behavioral memory model, given
+ * here against actual SDRAM. */
+static int test_npu_dma_cache(void) {
+    static int8_t a_rw[NPU_DMA_INPUT_DIM];
+    int32_t hw_result[NPU_DMA_OUT];
+    uint32_t n, i;
+    int ok = 1;
+
+    for (i = 0; i < NPU_DMA_INPUT_DIM; i++)
+        a_rw[i] = npu_dma_activation[i];
+
+    uint32_t hw_c0 = CSRR("cycle");
+    NPU_A_ADDR = (uint32_t)(uintptr_t)a_rw;
+    NPU_LEN    = NPU_DMA_INPUT_DIM;
+    for (n = 0; n < NPU_DMA_OUT; n++) {
+        NPU_W_ADDR = (uint32_t)(uintptr_t)npu_dma_weights[n];
+        NPU_CTRL   = (n == 0) ? NPU_CTRL_START_DMA : NPU_CTRL_START_DMA_REUSE;
+        while (NPU_STATUS & NPU_STATUS_BUSY) { }
+        hw_result[n] = (int32_t)NPU_RESULT;
+    }
+    uint32_t hw_cycles = CSRR("cycle") - hw_c0;
+
+    if (!(NPU_STATUS & NPU_STATUS_A_CACHE_VALID)) ok = 0;
+    for (n = 0; n < NPU_DMA_OUT; n++)
+        if (hw_result[n] != npu_dma_expected[n]) ok = 0;
+
+    for (i = 0; i < NPU_DMA_INPUT_DIM; i++)
+        a_rw[i] = 0x7F;
+    NPU_W_ADDR = (uint32_t)(uintptr_t)npu_dma_weights[0];
+    NPU_CTRL   = NPU_CTRL_START_DMA_REUSE;
+    while (NPU_STATUS & NPU_STATUS_BUSY) { }
+    if ((int32_t)NPU_RESULT != npu_dma_expected[0]) ok = 0;
+
+    put_str("    NPU DMA workload, cached A: ");
+    put_dec((int)hw_cycles);
+    put_str(" cycles\n");
+
+    return ok;
+}
+
 /* ---------------------------------------------------------------------
  * Streaming FIR filter coprocessor
  * ------------------------------------------------------------------- */
@@ -888,6 +947,7 @@ int main(void) {
     check("NPU quantized dense layer", test_npu_layer());
     check("NPU DMA reaches real RAM",  test_npu_dma());
     check("NPU DMA-scale layer",       test_npu_dma_workload());
+    check("NPU DMA-scale layer, cached A", test_npu_dma_cache());
     check("FIR streaming filter",      test_fir());
     check("FIR lowpass workload",      test_fir_workload());
     check("framebuffer read/write", test_framebuffer());
