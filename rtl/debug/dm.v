@@ -53,13 +53,36 @@
 //   * read and write that hart's GPRs, `dcsr`, and `dpc` while halted
 //     (`CORE=inorder` only)
 //
+// ---- hartsel: which hart haltreq/resumereq/dmstatus/Abstract Command
+// all mean, until the host writes a different one ----
+//
+// dmcontrol.hartsello (bits [25:16], the only part of hartsel this DM
+// implements - no hasel/hart-array group selection, no hartselhi) selects
+// exactly one hart at a time. dmstatus's any*/all* fields answer for that
+// one hart - "any" and "all" are the same question here not because this
+// is a single-hart system (rtl/soc/soc_top.v's own NUM_HARTS may be more
+// than one now), but because exactly one hart is ever selected without
+// hasel, which this DM does not implement. Defaults to hart 0 on reset,
+// matching the state a host that never writes hartsel should see.
+//
+// haltreq/resumereq/halted below are NUM_HARTS wide - one bit per hart -
+// with haltreq/resumereq one-hot on whichever hart is currently selected.
+// The Abstract Command register port (dbg_reg_*) stays scalar: this DM
+// only ever talks to one hart's register port at a time (the selected
+// one), so rtl/soc/soc_top.v muxes dbg_reg_valid/rdata/err to and from
+// the right hart using the `hartsel` output below, the same way it
+// already muxes every other per-hart signal in that file.
+//
 // ---- What it still cannot ----
 //
 //   * single-step
 //   * execute the Program Buffer (there isn't one)
 //   * set a breakpoint
 //   * halt/resume, or touch a register on, `CORE=ooo` at all
-module dm (
+//   * select more than one hart at a time (no hasel/hart array)
+module dm #(
+    parameter NUM_HARTS = 1
+)(
     input  wire        clk,
     input  wire        rst,
 
@@ -92,12 +115,22 @@ module dm (
     output wire        dmactive,
 
     // ---- hart control ----
-    output wire        haltreq,     // level, sticky until the host clears it via dmcontrol
-    output reg         resumereq,   // one-cycle pulse
-    input  wire        halted,      // CORE=ooo ties this to 0 - see rtl/soc/soc_top.v
+    // One bit per hart; haltreq/resumereq are one-hot on whichever hart
+    // `hartsel` currently names. CORE=ooo ties its own bit of `halted` to
+    // 0 - see rtl/soc/soc_top.v.
+    output wire [NUM_HARTS-1:0] haltreq,     // level, sticky until the host clears it via dmcontrol
+    output reg  [NUM_HARTS-1:0] resumereq,   // one-cycle pulse
+    input  wire [NUM_HARTS-1:0] halted,
+
+    // Which hart haltreq/resumereq/dmstatus/the Abstract Command port below
+    // all currently mean - dmcontrol.hartsello, unmodified (10 bits, the
+    // spec's own field width); rtl/soc/soc_top.v uses only the low bits it
+    // needs. See the module comment above.
+    output wire [9:0]  hartsel,
 
     // ---- Abstract Command register access (rtl/cpu_core.v, CORE=inorder
-    // only - see the module comment above) ----
+    // only - see the module comment above). Scalar: always addresses
+    // whichever hart `hartsel` names, routed by rtl/soc/soc_top.v. ----
     output reg          dbg_reg_valid,
     output reg          dbg_reg_we,
     output reg  [15:0]  dbg_reg_num,
@@ -118,13 +151,35 @@ module dm (
 
     // ---- dmcontrol ----
     reg dmactive_r, ndmreset_r, haltreq_r;
+    reg [9:0] hartsel_r;
     assign dmactive = dmactive_r;
+    assign hartsel  = hartsel_r;
     // Gated by dmactive: the spec says everything in the DM stays reset while
     // dmactive is 0, and a stray ndmreset from a module the host has not
     // enabled would reset the SoC out from under a running program. haltreq
     // gets the same treatment, for the same reason.
     assign ndmreset = ndmreset_r && dmactive_r;
-    assign haltreq  = haltreq_r && dmactive_r;
+
+    // $clog2(1) is 0, so NUM_HARTS=1 (every board build) is special-cased
+    // to 1 rather than a zero-width index - same idiom rtl/clint.v's own
+    // HIDXW already uses for the identical NUM_HARTS parameter.
+    localparam HIDXW = (NUM_HARTS <= 1) ? 1 : $clog2(NUM_HARTS);
+    // Sliced down to exactly the width a NUM_HARTS-wide vector needs to be
+    // indexed by, rather than hartsel_r's full 10 bits - an oversized index
+    // into a narrower vector is the same width mismatch this project has
+    // already fixed the same way in rtl/plic.v, rtl/clint.v, rtl/soc/
+    // wb_npu.v and rtl/soc/wb_fir.v.
+    wire [HIDXW-1:0] hartsel_idx = hartsel_r[HIDXW-1:0];
+    wire [NUM_HARTS-1:0] hart_onehot =
+        ({{(NUM_HARTS-1){1'b0}}, 1'b1} << hartsel_idx);
+
+    assign haltreq = (haltreq_r && dmactive_r) ? hart_onehot : {NUM_HARTS{1'b0}};
+
+    // The hart currently selected, honestly: CORE=ooo ties every bit of
+    // `halted` to 0, so this reads not-halted regardless of hartsel_idx,
+    // matching the same-core dmstatus already reported before NUM_HARTS>1
+    // existed.
+    wire sel_halted = halted[hartsel_idx];
 
     // ---- sbcs ----
     //
@@ -168,18 +223,21 @@ module dm (
 
     // ---- dmstatus ----
     //
-    // any*/all* fields are identical pairs throughout: this is a single-hart
-    // system, so "any hart" and "all harts" are the same question and no
-    // `hartsel` handling is needed anywhere in this module.
+    // any*/all* fields are identical pairs throughout - not because this is
+    // a single-hart system (rtl/soc/soc_top.v's NUM_HARTS may be more than
+    // one now), but because without hasel/a hart array (neither implemented
+    // here) hartsel always selects exactly one hart, and dmstatus answers
+    // for that one hart alone.
     //
     // [9:8] any/allhalted and [11:10] any/allrunning now come from the real
-    // `halted` input (`CORE=inorder` only - `CORE=ooo` ties it to 0 in
-    // rtl/soc/soc_top.v, so this continues to report honestly for that
-    // core). [17:16] any/allresumeack is simplified to `!halted` rather than
-    // the spec's exact "resumed since the last resume request" edge -
-    // acceptable because no real debugger targets this DM yet (only this
-    // project's own sim/tb_jtag.v does), and worth tightening before one
-    // does.
+    // `halted` input, indexed by the currently selected hart (`sel_halted`,
+    // above) - `CORE=inorder` only; `CORE=ooo` ties every bit of `halted` to
+    // 0 in rtl/soc/soc_top.v, so this continues to report honestly for that
+    // core regardless of which hart is selected. [17:16] any/allresumeack is
+    // simplified to `!sel_halted` rather than the spec's exact "resumed
+    // since the last resume request" edge - acceptable because no real
+    // debugger targets this DM yet (only this project's own sim/tb_jtag.v
+    // does), and worth tightening before one does.
     //
     // Written as explicit bit assignments rather than one concatenation,
     // because the first version of this was a 34-bit concatenation whose
@@ -200,8 +258,8 @@ module dm (
     // directly - Verilator's width rules treat that replicate as a 2-bit
     // value being shifted in a 32-bit context and (correctly) flag it,
     // which this project's own build treats as an error, not a warning.
-    wire [31:0] halted_pair  = {30'b0, {2{halted}}};
-    wire [31:0] running_pair = {30'b0, {2{!halted}}};
+    wire [31:0] halted_pair  = {30'b0, {2{sel_halted}}};
+    wire [31:0] running_pair = {30'b0, {2{!sel_halted}}};
     wire [31:0] DMSTATUS =
           (32'd2          <<  0) |   // [3:0]   version = 2, debug spec 0.13
           (32'd0          <<  4) |   // [4]     confstrptrvalid - no config string
@@ -372,7 +430,7 @@ module dm (
                             // Per spec: the DM executes no further commands
                             // while cmderr is set, until the host clears it
                             // with an abstractcs write (below).
-                        end else if (!halted) begin
+                        end else if (!sel_halted) begin
                             ac_cmderr <= CMDERR_HALTRESUME;
                         end else if (!cmd_type_ok || cmd_postexec) begin
                             ac_cmderr <= CMDERR_NOTSUP;
@@ -426,7 +484,16 @@ module dm (
     reg [31:0] rd;
     always @(*) begin
         case (dmi_addr)
-            A_DMCONTROL:  rd = {30'b0, ndmreset_r, dmactive_r};
+            A_DMCONTROL:  rd = {6'b0,        // [31:26] haltreq/resumereq/
+                                              //   hartreset/ackhavereset/
+                                              //   reserved/hasel - write-only
+                                              //   or unsupported, not read back
+                                 hartsel_r,   // [25:16] hartsello
+                                 10'b0,       // [15:6]  hartselhi - no group select
+                                 2'b0,        // [5:4]   reserved
+                                 2'b0,        // [3:2]   set/clrresethaltreq - unsupported
+                                 ndmreset_r,  // [1]
+                                 dmactive_r}; // [0]
             A_DMSTATUS:   rd = DMSTATUS;
             A_HARTINFO:   rd = 32'b0;
             A_ABSTRACTCS: rd = abstractcs_value;
@@ -449,7 +516,8 @@ module dm (
             dmactive_r      <= 1'b0;
             ndmreset_r      <= 1'b0;
             haltreq_r       <= 1'b0;
-            resumereq       <= 1'b0;
+            hartsel_r       <= 10'b0;   // hart 0 selected until a host says otherwise
+            resumereq       <= {NUM_HARTS{1'b0}};
             sberror         <= SBERR_NONE;
             sbbusyerror     <= 1'b0;
             sbreadonaddr    <= 1'b0;
@@ -462,7 +530,7 @@ module dm (
         end else begin
             sb_start  <= 1'b0;
             dmi_done  <= 1'b0;
-            resumereq <= 1'b0;   // one-shot: cleared every cycle, set below on a write
+            resumereq <= {NUM_HARTS{1'b0}};   // one-shot: cleared every cycle, set below on a write
 
             if (dmi_valid) begin
                 dmi_done  <= 1'b1;
@@ -481,17 +549,27 @@ module dm (
                             // holds haltreq low after the first write race
                             // cpu_core.v's own halt-admission logic.
                             haltreq_r  <= dmi_wdata[31];
+                            hartsel_r  <= dmi_wdata[25:16];
                             // One-shot: dm.v's own always block clears this
                             // back to 0 unconditionally every cycle (see
                             // above); this sets it for exactly the cycle
-                            // after the write.
-                            resumereq  <= dmi_wdata[30];
+                            // after the write. Targets whichever hart *this*
+                            // write's own hartsel field names, not
+                            // hartsel_r's registered value above - both
+                            // fields land in the same dmcontrol write, and
+                            // hartsel_r would still hold last cycle's value
+                            // at this point.
+                            resumereq  <= dmi_wdata[30]
+                                          ? ({{(NUM_HARTS-1){1'b0}}, 1'b1} <<
+                                             dmi_wdata[16 +: HIDXW])
+                                          : {NUM_HARTS{1'b0}};
                             // Everything in the DM holds reset while
                             // dmactive is low, which is what lets a host
                             // recover a wedged Debug Module without a power
                             // cycle. haltreq gets the same treatment.
                             if (!dmi_wdata[0]) begin
                                 haltreq_r       <= 1'b0;
+                                hartsel_r       <= 10'b0;
                                 sberror         <= SBERR_NONE;
                                 sbbusyerror     <= 1'b0;
                                 sbreadonaddr    <= 1'b0;

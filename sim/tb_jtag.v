@@ -79,7 +79,13 @@ module tb_jtag;
     // the bus for the whole test, so every SBA access below is arbitrating
     // against a busy machine rather than an idle one. Nothing in the pattern
     // decodes as a store, so the CPU cannot disturb what is being checked.
+    // NUM_HARTS=2: both harts reset into the identical trap-loop pattern
+    // above (soc_top.v's RESET_PC is shared), which is exactly what the
+    // hart-select tests near the end of this file need - a second hart
+    // genuinely running and genuinely selectable, not a hypothetical one.
+    localparam NUM_HARTS_TEST = 2;
     soc_top #(
+        .NUM_HARTS(NUM_HARTS_TEST),
         .RAM_BYTES(65536),
         .ROM_INIT_FILE(""),
         .RAM_INIT_FILE("jtagram.hex"),
@@ -686,9 +692,80 @@ module tb_jtag;
 
         ac_write_reg(REGNO_DCSR, 32'h0000_0000, cerr);  // step is sticky - clear it
 
-        // Cleanup, not a check - leaves the hart running rather than ending
-        // the test with it wedged halted, the same way stage 8 and
-        // sim/tb_cpu_halt.v's own final dbg_resume do.
+        // ---- hart-select: dm.v's own hartsel reaches hart 1, independently
+        // of hart 0 (Phase 13's "hart control past hart 0" gap) ----
+        //
+        // Hart 0 is still genuinely halted from the single-step test above -
+        // confirmed before switching hartsel away from it, so a later
+        // mismatch cannot be blamed on hart 0 having moved on its own.
+        dmi_read(A_DMSTATUS, v);
+        check("hart 0 still halted before switching hartsel", v[9:8] === 2'b11);
+
+        // Hart 1 has never been touched by anything above. If hartsel were
+        // not actually reaching a second hart's own status - if this DM
+        // secretly still only ever reported hart 0 - this would read
+        // "halted" too.
+        dmi_write(A_DMCONTROL, 32'h0001_0001);  // hartsel=1, dmactive=1
+        dmi_read(A_DMSTATUS, v);
+        check("hart 1 reports running before ever being selected", v[11:10] === 2'b11);
+
+        dmi_write(A_DMCONTROL, 32'h8001_0001);  // haltreq=1, hartsel=1, dmactive=1
+        begin : h1_wait_halt
+            integer n;
+            reg     halted;
+            halted = 1'b0;
+            for (n = 0; n < 50 && !halted; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                halted = (v[9:8] === 2'b11);
+            end
+            check("hart 1 halts independently of hart 0", halted);
+        end
+
+        // A hart-1-only sentinel, distinct from hart 0's own 0xCAFE_F00D
+        // above. The actual proof this is two independent register files,
+        // not one dm.v happens to label two different ways: switch back to
+        // hart 0 (haltreq=0 in this write does not resume it - once
+        // genuinely halted, only an explicit resumereq does, the same
+        // property that already lets a hartsel switch land here safely at
+        // all) and confirm hart 0's own x5 does not read hart 1's value.
+        sentinel = 32'hCAFE_0001;
+        ac_write_reg(REGNO_X5, sentinel, cerr);
+        check("hart 1 x5 write: cmderr=none", cerr === CMDERR_NONE);
+
+        dmi_write(A_DMCONTROL, 32'h0000_0001);  // hartsel=0, dmactive=1
+        dmi_read(A_DMSTATUS, v);
+        check("hart 0 still halted after switching hartsel away and back",
+              v[9:8] === 2'b11);
+        ac_read_reg(REGNO_X5, v, cerr);
+        check("hart 0's own x5 is not hart 1's sentinel", v !== sentinel);
+
+        // Switch back to hart 1 and confirm its own sentinel survived the
+        // round trip through hart 0's own selection untouched.
+        dmi_write(A_DMCONTROL, 32'h0001_0001);  // hartsel=1, dmactive=1
+        ac_read_reg(REGNO_X5, v, cerr);
+        check_hex("hart 1's own x5 still holds its sentinel after the round trip",
+                  v, sentinel);
+
+        dmi_write(A_DMCONTROL, 32'h4001_0001);  // resumereq=1, hartsel=1, dmactive=1
+        begin : h1_wait_resume
+            integer n;
+            reg     running;
+            running = 1'b0;
+            for (n = 0; n < 50 && !running; n = n + 1) begin
+                dmi_read(A_DMSTATUS, v);
+                running = (v[11:10] === 2'b11);
+            end
+            check("hart 1 resumes independently of hart 0", running);
+        end
+
+        dmi_write(A_DMCONTROL, 32'h0000_0001);  // hartsel=0, dmactive=1
+        dmi_read(A_DMSTATUS, v);
+        check("hart 0 is still halted after hart 1's own independent resume",
+              v[9:8] === 2'b11);
+
+        // Cleanup, not a check - leaves both harts running rather than
+        // ending the test with either one wedged halted, the same way
+        // stage 8 and sim/tb_cpu_halt.v's own final dbg_resume do.
         dmi_write(A_DMCONTROL, 32'h4000_0001);
 `endif
 
