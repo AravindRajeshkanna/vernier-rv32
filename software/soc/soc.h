@@ -139,6 +139,10 @@
 #define NPU_A(n)    REG32(NPU_BASE + 0x08 + 4u * (n))  /* n = 0..NPU_VEC_WORDS-1, MMIO mode only */
 #define NPU_W(n)    REG32(NPU_BASE + 0x18 + 4u * (n))  /* MMIO mode only */
 #define NPU_RESULT  REG32(NPU_BASE + 0x28)  /* signed int32, valid after either mode */
+/* Offsets 0x30/0x34/0x38 must match rtl/soc/wb_npu.v's own OFF_A_ADDR/
+ * OFF_W_ADDR/OFF_LEN - a mismatch here would read/write the wrong register
+ * silently, not fail loudly, the same risk NPU_VEC_LEN's own comment above
+ * already names for the MMIO path. */
 #define NPU_A_ADDR  REG32(NPU_BASE + 0x30)  /* DMA mode: byte address of the activation vector in RAM */
 #define NPU_W_ADDR  REG32(NPU_BASE + 0x34)  /* DMA mode: byte address of the weight vector in RAM */
 #define NPU_LEN     REG32(NPU_BASE + 0x38)  /* DMA mode: element count - not tied to NPU_VEC_LEN */
