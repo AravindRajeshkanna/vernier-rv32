@@ -30,6 +30,7 @@ Endianness
 FFs
 FIFOs
 FPGAs
+FSM's
 Floorplan
 Fmax
 Framebuffer

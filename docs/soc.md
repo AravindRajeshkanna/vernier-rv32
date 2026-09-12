@@ -423,13 +423,27 @@ tied to a fixed depth the way the MMIO path still is.
 Zero wait states on the register interface; the DMA master's own reads
 take as many cycles as the bus does, like any other master here.
 
+**Cached-A DMA start** (a later stage still): a real measurement at DMA
+scale (`docs/roadmap.md`'s Phase 14 Stage 4) found that computing several
+neurons against one shared activation vector re-fetches that whole
+vector out of RAM once per neuron, even though `A_ADDR` never changes
+between them. Every ordinary DMA run (CTRL bit 1) that fits within
+`A_CACHE_LEN` (a synthesis-time parameter, default 128) populates an
+on-chip cache as a side effect; CTRL bit 2 starts a DMA run that reuses
+that cache instead of fetching `A_ADDR` fresh, reading only `W_ADDR` out
+of RAM. `STATUS` bit 1 (`A_CACHE_VALID`) tells software whether the
+cache actually holds the current run's own vector at the current `LEN`;
+a bit-2 start is a well-defined no-op, not a silent wrong answer, if
+either does not hold - the same "ignored while BUSY" convention CTRL
+bits 0/1 already use.
+
 | Offset | Register | Access | Notes |
 |---|---|---|---|
-| `0x00` | CTRL | WO | bit 0 = start MMIO mode; bit 1 = start DMA mode; both ignored if `BUSY`, matching `wb_framebuffer.v`'s own `BLIT_CTRL` convention |
-| `0x04` | STATUS | RO | bit 0 = `BUSY` |
+| `0x00` | CTRL | WO | bit 0 = start MMIO mode; bit 1 = start DMA mode, fetching A fresh; bit 2 = start DMA mode, reusing the cached A vector; all ignored if `BUSY`, matching `wb_framebuffer.v`'s own `BLIT_CTRL` convention; bit 2 additionally ignored if `A_CACHE_VALID` is 0 or `LEN` doesn't match the cached run |
+| `0x04` | STATUS | RO | bit 0 = `BUSY`; bit 1 = `A_CACHE_VALID` |
 | `0x08`-`0x14` | A0-A3 | RW | MMIO mode: activation vector, 4 int8 lanes per word, little-endian; ignored while `BUSY` |
 | `0x18`-`0x24` | W0-W3 | RW | MMIO mode: weight vector, same packing; ignored while `BUSY` |
-| `0x28` | RESULT | RO | signed int32 accumulated dot product, valid once `BUSY` reads 0 after a start (either mode) |
+| `0x28` | RESULT | RO | signed int32 accumulated dot product, valid once `BUSY` reads 0 after a start (any mode) |
 | `0x30` | A_ADDR | RW | DMA mode: byte address of the activation vector in RAM; ignored while `BUSY` |
 | `0x34` | W_ADDR | RW | DMA mode: byte address of the weight vector in RAM; ignored while `BUSY` |
 | `0x38` | LEN | RW | DMA mode: element count, any value - not tied to `VEC_LEN`; ignored while `BUSY` |
