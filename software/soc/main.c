@@ -422,6 +422,40 @@ static int test_npu_layer(void) {
     return ok;
 }
 
+/* Proves rtl/soc/wb_npu.v's own DMA master actually reaches real RAM
+ * through the real interconnect - not a behavioral memory model the way
+ * sim/tb_wb_npu.v's own standalone test already proves the mechanism in
+ * isolation. A 64-element vector, four times NPU_VEC_LEN's own fixed
+ * MMIO-mode depth - the actual point of DMA mode, which is not tied to
+ * NPU_VEC_LEN at all - stored as ordinary static arrays, so the linker,
+ * not a hand-picked address, decides where they land in RAM. Same
+ * mixed-sign generating pattern as sim/tb_wb_npu.v's own DMA test
+ * (a[i]/w[i] chosen so every term simplifies to -(i+1)(i+2), letting the
+ * total be checked by hand: -sum(k(k+1)) for k=1..64 = -91520), but a
+ * fresh, independent computation here, not a shared constant. */
+#define NPU_DMA_TEST_LEN 64
+static int8_t npu_dma_a[NPU_DMA_TEST_LEN];
+static int8_t npu_dma_w[NPU_DMA_TEST_LEN];
+
+static int test_npu_dma(void) {
+    int32_t expected = 0;
+    uint32_t i;
+
+    for (i = 0; i < NPU_DMA_TEST_LEN; i++) {
+        npu_dma_a[i] = (i % 2 == 0) ? (int8_t)(i + 1)  : (int8_t)(-(int32_t)(i + 1));
+        npu_dma_w[i] = (i % 2 == 0) ? (int8_t)(-(int32_t)(i + 2)) : (int8_t)(i + 2);
+        expected += (int32_t)npu_dma_a[i] * (int32_t)npu_dma_w[i];
+    }
+
+    NPU_A_ADDR = (uint32_t)(uintptr_t)npu_dma_a;
+    NPU_W_ADDR = (uint32_t)(uintptr_t)npu_dma_w;
+    NPU_LEN    = NPU_DMA_TEST_LEN;
+    NPU_CTRL   = NPU_CTRL_START_DMA;
+    while (NPU_STATUS & NPU_STATUS_BUSY) { }
+
+    return (int32_t)NPU_RESULT == expected;
+}
+
 /* ---------------------------------------------------------------------
  * Streaming FIR filter coprocessor
  * ------------------------------------------------------------------- */
@@ -798,6 +832,7 @@ int main(void) {
     check("general-purpose timer/PWM", test_gpt());
     check("NPU int8 MAC engine",   test_npu());
     check("NPU quantized dense layer", test_npu_layer());
+    check("NPU DMA reaches real RAM",  test_npu_dma());
     check("FIR streaming filter",      test_fir());
     check("FIR lowpass workload",      test_fir_workload());
     check("framebuffer read/write", test_framebuffer());

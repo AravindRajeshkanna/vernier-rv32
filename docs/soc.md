@@ -75,7 +75,7 @@ the size of the part on the board.
 | `0x0600_0000` | SPI | 12 B | 0 → many |
 | `0x0700_0000` | Framebuffer | 75 KB | 1 |
 | `0x0800_0000` | Timer/PWM | 24 B | 0 |
-| `0x0900_0000` | NPU (int8 MAC) | 44 B | 0 |
+| `0x0900_0000` | NPU (int8 MAC) | 60 B | 0 |
 | `0x0A00_0000` | FIR filter coprocessor | 48 B | 0 |
 | `0x8000_0000` | Main RAM (block) | 64 KB (FPGA) / 256 KB (sim) | 1 |
 | `0x9000_0000` | External SDRAM | 32 MB (mask `0xFE`) | ~6 on a row hit |
@@ -398,23 +398,41 @@ in simulation (`make sim_soc`'s acceptance test) regardless.
 
 ### `wb_npu` — quantized-inference MAC engine, `0x0900_0000`
 
-A fixed, 16-element int8 dot product: two int8 vectors loaded through the
-register interface (4 lanes packed per 32-bit word), one multiply-
-accumulate per cycle into a signed 32-bit accumulator - `rtl/muldiv_div.v`'s
-own sequential-not-combinational shape, not a wide parallel multiply-add
-tree. `docs/roadmap.md`'s Phase 14 entry has the design decision this
-closes (a memory-mapped peripheral, not custom RISC-V instructions) and
-what a real quantized-inference workload still needs beyond this - in
-particular, a bus-master port reading operands directly out of RAM, which
-this stage deliberately does not build. Zero wait states.
+Two ways to reach the same int8 MAC engine, one multiply-accumulate per
+cycle into a signed 32-bit accumulator - `rtl/muldiv_div.v`'s own
+sequential-not-combinational shape, not a wide parallel multiply-add
+tree. `docs/roadmap.md`'s Phase 14 entry has the design decisions this
+closes: a memory-mapped peripheral, not custom RISC-V instructions, and
+(a later stage) a genuine bus-master port rather than only the original
+MMIO-loaded path.
+
+**MMIO mode** (Stage 1): a fixed, 16-element int8 dot product, both
+vectors loaded through the register interface (4 lanes packed per
+32-bit word, CTRL bit 0 starts it). Still real, and still the smaller
+of the two paths.
+
+**DMA mode** (a later stage): `rtl/soc/wb_npu.v` also has its own
+Wishbone bus-master port, the same role `rtl/soc/wb_ptw.v` plays for
+page-table walks, arbitrated into `rtl/soc/wb_interconnect.v` at the
+lowest priority tier (nothing in this SoC depends on it winning the bus
+promptly, or at all - see that file's own header comment). `A_ADDR`/
+`W_ADDR`/`LEN` (CTRL bit 1 starts it) read both vectors directly out of
+RAM, same 4-lanes-per-word packing, with `LEN` a runtime register - not
+tied to a fixed depth the way the MMIO path still is.
+
+Zero wait states on the register interface; the DMA master's own reads
+take as many cycles as the bus does, like any other master here.
 
 | Offset | Register | Access | Notes |
 |---|---|---|---|
-| `0x00` | CTRL | WO | bit 0 = start; ignored if `BUSY`, matching `wb_framebuffer.v`'s own `BLIT_CTRL` convention |
+| `0x00` | CTRL | WO | bit 0 = start MMIO mode; bit 1 = start DMA mode; both ignored if `BUSY`, matching `wb_framebuffer.v`'s own `BLIT_CTRL` convention |
 | `0x04` | STATUS | RO | bit 0 = `BUSY` |
-| `0x08`-`0x14` | A0-A3 | RW | activation vector, 4 int8 lanes per word, little-endian; ignored while `BUSY` |
-| `0x18`-`0x24` | W0-W3 | RW | weight vector, same packing; ignored while `BUSY` |
-| `0x28` | RESULT | RO | signed int32 accumulated dot product, valid once `BUSY` reads 0 after a start |
+| `0x08`-`0x14` | A0-A3 | RW | MMIO mode: activation vector, 4 int8 lanes per word, little-endian; ignored while `BUSY` |
+| `0x18`-`0x24` | W0-W3 | RW | MMIO mode: weight vector, same packing; ignored while `BUSY` |
+| `0x28` | RESULT | RO | signed int32 accumulated dot product, valid once `BUSY` reads 0 after a start (either mode) |
+| `0x30` | A_ADDR | RW | DMA mode: byte address of the activation vector in RAM; ignored while `BUSY` |
+| `0x34` | W_ADDR | RW | DMA mode: byte address of the weight vector in RAM; ignored while `BUSY` |
+| `0x38` | LEN | RW | DMA mode: element count, any value - not tied to `VEC_LEN`; ignored while `BUSY` |
 
 ### `wb_fir` — streaming FIR filter coprocessor, `0x0A00_0000`
 
@@ -569,8 +587,11 @@ Step 4 is the one that bites — five places, none of which check each other.
 
 ## 7. What is not here
 
-- **No DMA.** The three bus masters are instruction fetch, data, and the
-  page-table walkers; nothing else moves data on its own.
+- **One DMA master, and it moves data only to itself.** `rtl/soc/wb_npu.v`'s
+  own bus-master port (Phase 14) reads the NPU's own operand vectors out of
+  RAM; nothing else on the bus reaches a peripheral this way, and this
+  master cannot write memory at all - a general-purpose DMA controller (RAM
+  to RAM, or peripheral to RAM without a fixed destination) does not exist.
 - **Caches are in the bus adapter, not here.** `cpu_wb.v` carries a
   direct-mapped I-cache and D-cache, one word per line. SDRAM is deliberately
   *not* cacheable, so every access to it reaches the chip.

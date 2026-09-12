@@ -134,14 +134,22 @@
 #define TIMER_CTRL_PWM_EN (1u << 1)
 
 /* ---- Quantized-inference MAC engine (rtl/soc/wb_npu.v, Phase 14) ---- */
-#define NPU_CTRL    REG32(NPU_BASE + 0x00)  /* bit0: start (ignored if busy) */
+#define NPU_CTRL    REG32(NPU_BASE + 0x00)  /* bit0: start MMIO mode, bit1: start DMA mode (both ignored if busy) */
 #define NPU_STATUS  REG32(NPU_BASE + 0x04)  /* bit0: busy */
-#define NPU_A(n)    REG32(NPU_BASE + 0x08 + 4u * (n))  /* n = 0..NPU_VEC_WORDS-1 */
-#define NPU_W(n)    REG32(NPU_BASE + 0x18 + 4u * (n))
-#define NPU_RESULT  REG32(NPU_BASE + 0x28)  /* signed int32 */
-#define NPU_CTRL_START (1u << 0)
+#define NPU_A(n)    REG32(NPU_BASE + 0x08 + 4u * (n))  /* n = 0..NPU_VEC_WORDS-1, MMIO mode only */
+#define NPU_W(n)    REG32(NPU_BASE + 0x18 + 4u * (n))  /* MMIO mode only */
+#define NPU_RESULT  REG32(NPU_BASE + 0x28)  /* signed int32, valid after either mode */
+/* Offsets 0x30/0x34/0x38 must match rtl/soc/wb_npu.v's own OFF_A_ADDR/
+ * OFF_W_ADDR/OFF_LEN - a mismatch here would read/write the wrong register
+ * silently, not fail loudly, the same risk NPU_VEC_LEN's own comment above
+ * already names for the MMIO path. */
+#define NPU_A_ADDR  REG32(NPU_BASE + 0x30)  /* DMA mode: byte address of the activation vector in RAM */
+#define NPU_W_ADDR  REG32(NPU_BASE + 0x34)  /* DMA mode: byte address of the weight vector in RAM */
+#define NPU_LEN     REG32(NPU_BASE + 0x38)  /* DMA mode: element count - not tied to NPU_VEC_LEN */
+#define NPU_CTRL_START     (1u << 0)
+#define NPU_CTRL_START_DMA (1u << 1)
 #define NPU_STATUS_BUSY (1u << 0)
-#define NPU_VEC_LEN   16u  /* must match rtl/soc/wb_npu.v's own VEC_LEN */
+#define NPU_VEC_LEN   16u  /* must match rtl/soc/wb_npu.v's own VEC_LEN - MMIO mode's own fixed depth */
 #define NPU_VEC_WORDS (NPU_VEC_LEN / 4u)
 
 /* ---- Streaming FIR filter coprocessor (rtl/soc/wb_fir.v, Phase 11) ---- */
