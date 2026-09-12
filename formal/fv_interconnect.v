@@ -19,6 +19,14 @@
 // gates already establish, where NUM_HARTS=2 is not exercised by anything
 // else in the tree yet.
 //
+// The NPU's own DMA master (rtl/soc/wb_npu.v, Phase 14) was added later, as
+// a sixth kind of contender rather than a seventh per-hart one - it exists
+// once regardless of NUM_HARTS, the same shape the debug master already has.
+// Properties 4c, and the extensions to 5/6/7/8 below, are what is new for it;
+// every earlier property already had to keep holding with a new contender
+// added, which is exactly the discipline the debug master's own arrival
+// established for this file.
+//
 // It became a *sequential* proof when the arbiter gained a lock. The
 // memories are now synchronous block RAMs with a wait state, so a transfer
 // spans several cycles, and a purely combinational grant would let a
@@ -53,6 +61,13 @@ module fv_interconnect #(
     input wire [31:0] dbg_adr, dbg_dat_w,
     input wire [3:0]  dbg_sel,
 
+    // The NPU's own DMA master (rtl/soc/wb_npu.v). Lowest priority of every
+    // master here - the opposite reason debug is highest: every property
+    // below has to hold with this contender added too, including the ones
+    // that say something *outranks* it.
+    input wire        n_cyc, n_stb,
+    input wire [31:0] n_adr,
+
     input wire [NUM_SLAVES*32-1:0] s_dat_r,
     input wire [NUM_SLAVES-1:0]    s_ack
 );
@@ -76,6 +91,8 @@ module fv_interconnect #(
     wire [NUM_HARTS-1:0]    f_ack, d_ack, w_ack;
     wire [31:0] dbg_dat_r;
     wire        dbg_ack;
+    wire [31:0] n_dat_r;
+    wire        n_ack;
     wire        s_cyc, s_we, s_data_master;
     wire [NUM_SLAVES-1:0] s_stb;
     wire [31:0] s_adr, s_dat_w;
@@ -93,6 +110,8 @@ module fv_interconnect #(
         .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),
         .dbg_dat_w(dbg_dat_w), .dbg_sel(dbg_sel),
         .dbg_dat_r(dbg_dat_r), .dbg_ack(dbg_ack),
+        .n_cyc(n_cyc), .n_stb(n_stb), .n_adr(n_adr),
+        .n_dat_r(n_dat_r), .n_ack(n_ack),
         .s_base(s_base), .s_mask(s_mask),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
@@ -131,21 +150,25 @@ module fv_interconnect #(
             assume (w_cyc[k] == w_stb[k]);
         end
         assume (dbg_cyc == dbg_stb);
+        assume (n_cyc == n_stb);
     end
 
     reg [NUM_HARTS-1:0] p_f_pending, p_d_pending, p_w_pending;
     reg                 p_dbg_pending;
+    reg                 p_n_pending;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             p_f_pending   <= {NUM_HARTS{1'b0}};
             p_d_pending   <= {NUM_HARTS{1'b0}};
             p_w_pending   <= {NUM_HARTS{1'b0}};
             p_dbg_pending <= 1'b0;
+            p_n_pending   <= 1'b0;
         end else begin
             p_f_pending   <= f_cyc & f_stb & ~f_ack;
             p_d_pending   <= d_cyc & d_stb & ~d_ack;
             p_w_pending   <= w_cyc & w_stb & ~w_ack;
             p_dbg_pending <= dbg_cyc && dbg_stb && !dbg_ack;
+            p_n_pending   <= n_cyc && n_stb && !n_ack;
         end
     end
     always @(*) begin
@@ -155,6 +178,7 @@ module fv_interconnect #(
             if (p_w_pending[k]) assume (w_cyc[k] && w_stb[k]);
         end
         if (p_dbg_pending) assume (dbg_cyc && dbg_stb);
+        if (p_n_pending)   assume (n_cyc && n_stb);
     end
 
     // ---- everything below is expressed over ports only ----
@@ -169,8 +193,10 @@ module fv_interconnect #(
     wire any_f_req = |(f_cyc & f_stb);
     wire any_d_req = |(d_cyc & d_stb);
     wire any_w_req = |(w_cyc & w_stb);
-    wire any_req   = any_f_req || any_d_req || any_w_req || (dbg_cyc && dbg_stb);
-    wire any_ack   = (|f_ack) || (|d_ack) || (|w_ack) || dbg_ack;
+    wire any_n_req = n_cyc && n_stb;
+    wire any_req   = any_f_req || any_d_req || any_w_req || any_n_req ||
+                      (dbg_cyc && dbg_stb);
+    wire any_ack   = (|f_ack) || (|d_ack) || (|w_ack) || dbg_ack || n_ack;
 
     reg                  p_any_req, p_any_ack, p_dm, p_rst;
     reg [NUM_HARTS-1:0]  p_d_ack;
@@ -204,7 +230,7 @@ module fv_interconnect #(
         for (k = 0; k < NUM_HARTS; k = k + 1)
             ack_count = ack_count + {3'b0, f_ack[k]} + {3'b0, d_ack[k]} +
                         {3'b0, w_ack[k]};
-        ack_count = ack_count + {3'b0, dbg_ack};
+        ack_count = ack_count + {3'b0, dbg_ack} + {3'b0, n_ack};
     end
 
     // A hart's own data master immediately re-asking the cycle right after
@@ -277,6 +303,15 @@ module fv_interconnect #(
         if (any_w_req && !any_d_req && !dbg_cyc && !in_flight)
             assert (!(|f_ack));
 
+        // 4c. The NPU's own DMA master outranks nothing: debug, any hart's
+        //     data or walker or fetch master, all win against it whenever
+        //     arbitration is open. It only ever gets the bus when none of
+        //     them want it - the flip side of rtl/soc/wb_interconnect.v's
+        //     own header comment on why it sits at the bottom rather than
+        //     the top.
+        if ((dbg_cyc || any_d_req || any_w_req || any_f_req) && !in_flight)
+            assert (!n_ack);
+
         // 5. Acks go to the master that made the request, and only to one -
         //    across every hart and every role, not just within one.
         for (k = 0; k < NUM_HARTS; k = k + 1) begin
@@ -285,6 +320,7 @@ module fv_interconnect #(
             if (w_ack[k]) assert (w_cyc[k]);
         end
         if (dbg_ack) assert (dbg_cyc);
+        if (n_ack)   assert (n_cyc);
         assert (ack_count <= 4'd1);
 
         // 6. An access to an address matching no slave still acks. A bus
@@ -312,6 +348,14 @@ module fv_interconnect #(
         if (any_w_req && !any_d_req && !dbg_cyc && !in_flight &&
             (s_stb == {NUM_SLAVES{1'b0}}))
             assert (|w_ack);
+        // The NPU DMA master gets the same treatment, least likely of all
+        // to matter in practice (software controls both A_ADDR/W_ADDR and
+        // the address map, unlike a debugger's arbitrary target or a
+        // walker's PTE-named one) but proven anyway rather than assumed
+        // safe by construction.
+        if (any_n_req && !dbg_cyc && !any_d_req && !any_w_req && !any_f_req &&
+            !in_flight && (s_stb == {NUM_SLAVES{1'b0}}))
+            assert (n_ack);
 
         // 7. The broadcast address belongs to the granted master.
         for (k = 0; k < NUM_HARTS; k = k + 1) begin
@@ -320,11 +364,14 @@ module fv_interconnect #(
             if (w_ack[k]) assert (s_adr == w_adr[32*k +: 32]);
         end
         if (dbg_ack) assert (s_adr == dbg_adr);
+        if (n_ack)   assert (s_adr == n_adr);
 
         // 8. Only a master that *has* a write path drives `s_we` - a data
-        //    master and the debug module. Fetch and the walkers have none,
-        //    so if this could fail either of them could corrupt memory.
+        //    master and the debug module. Fetch, the walkers, and the NPU
+        //    DMA master have none, so if this could fail any of them could
+        //    corrupt memory.
         if (s_we) assert (s_data_master || dbg_cyc);
+        if (n_ack) assert (!s_we);
     end
 
     // ---- the property that makes a multi-cycle slave safe ----

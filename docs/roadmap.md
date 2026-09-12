@@ -4912,6 +4912,70 @@ comfortably as always-resident MMIO registers - it is simply no longer
 a precondition for closing this bar, which Stage 1 wrongly assumed it
 was.
 
+**Stage 3: the DMA/bus-mastering port itself, built anyway - real,
+valuable work Stage 1 named and Stage 2 confirmed was not required to
+close the bar.** `rtl/soc/wb_npu.v` gains a second, independent way to
+reach the same MAC engine: a Wishbone bus-master port, the same role
+`rtl/soc/wb_ptw.v` plays for page-table walks, configured by two new
+registers (`A_ADDR`/`W_ADDR`, the RAM byte addresses of the operand
+vectors) and a third (`LEN`, a runtime element count - not a
+synthesis-time parameter, so a DMA-driven vector is no longer capped at
+`VEC_LEN` the way the original MMIO path still is). CTRL bit 1 starts
+it; the original CTRL bit 0/A0-A3/W0-W3 MMIO path is untouched and
+still the smaller of two ways to reach the engine, not replaced.
+
+**A new master needs a real place in `rtl/soc/wb_interconnect.v`'s own
+priority order, and this one gets the simplest possible answer: last.**
+Every existing tier's own priority is justified by what would go wrong
+if it lost - a stalled pipeline, a broken atomic, an indefinitely
+delayed page-table walk. None of that reasoning applies to a DMA
+transfer nothing else in the SoC is waiting on: it has no forward-
+progress dependency, and no correctness property depends on it winning
+the bus promptly, or at all. Placed at the bottom of the arbitration
+order specifically because it is the only master here with nothing to
+lose by waiting - lowest priority is not a judgment about importance,
+it is the conclusion the same "what breaks if this loses" reasoning
+every earlier tier already used actually reaches for this one.
+`formal/fv_interconnect.v` gained a new property (4c: fetch, walker,
+data, and debug all outrank it, whenever arbitration is genuinely open)
+and extended four existing ones (5, 6, 7, 8) to cover it - proved,
+depth 12, alongside the five properties already there, not asserted
+untested. Confirmed non-vacuous by mutation: letting the new tier win
+against fetch too (instead of losing to it, as designed) produced a
+real counterexample - two masters selected in the same cycle, an ack
+delivered under the wrong master's own address - within the same
+bounded-model-checking run, not a hypothetical.
+
+Proven two ways, matching this project's own "prove the mechanism in
+isolation, then through the real path" sequencing: `sim/tb_wb_npu.v`
+gained a standalone DMA test against a 1-wait-state behavioral memory
+model (the same timing shape as `rtl/soc/wb_ram.v`, so the test cannot
+pass merely because reads happen to resolve in zero cycles) - a
+32-element vector, double `VEC_LEN`'s own MMIO-mode cap, checked
+against a reference computed independently in the testbench and
+confirmed by hand arithmetic (every term of this stage's own test
+pattern simplifies to `-(i+1)(i+2)`, so the total is `-Σk(k+1)` for
+k=1..32, a closed-form sum checkable without trusting either
+implementation). Confirmed non-vacuous by mutation: freezing the DMA
+word index so it never advances past the first word produced a wrong,
+checkable-by-hand-as-wrong result. Separately, `software/soc/main.c`'s
+new `test_npu_dma()` proves the same master reaches real RAM through
+the real interconnect - a 64-element vector, stored as ordinary static
+arrays so the linker (not a hand-picked address) decides where they
+land, DMA'd and checked against an independently-computed reference
+(`-91520`, the same closed-form check scaled to 64 terms). Both `make
+verify` and `make verify_ooo` are green on the final tree, `make
+formal` included.
+
+**What this still does not do:** no real, larger-than-toy workload has
+been run through DMA mode yet, and nothing has been measured against a
+software baseline at DMA scale the way Stage 2 did at MMIO scale - this
+stage proves the mechanism (a bus-master port, correctly arbitrated,
+reaching real RAM) works, not that it is faster or that a real model
+has used it. Real trained-model weights, a workload real enough to be
+worth measuring at this larger scale, and confirmation on real hardware
+all remain open, exactly as Stage 2 already said they would.
+
 **Done when:** ✅ **closed, in simulation, at this scale.** A real
 quantized-inference workload - a small int8 matrix-vector multiply, the
 "single small layer" this bar names as the obvious candidate - runs, is
@@ -4921,8 +4985,10 @@ computing the identical workload (Stage 2: 561 vs. 652 cycles - the
 same "measure it, do not assert it" bar Phase 11's own "Done when"
 holds itself to). Not yet done, and not required by this bar's own
 wording: real model weights rather than synthetic data, a workload
-larger than what fits in always-resident MMIO registers, and
-confirmation on real hardware rather than simulation alone.
+larger than what fits in always-resident MMIO registers (Stage 3 built
+the mechanism for this - a bus-master DMA port - but has not yet run or
+measured a real workload through it), and confirmation on real
+hardware rather than simulation alone.
 
 ---
 

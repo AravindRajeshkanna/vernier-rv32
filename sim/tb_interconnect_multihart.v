@@ -54,6 +54,12 @@ module tb_interconnect_multihart;
         .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),
         .dbg_dat_w(dbg_dat_w), .dbg_sel(dbg_sel),
         .dbg_dat_r(dbg_dat_r), .dbg_ack(dbg_ack),
+        // Not exercised by this file - its own tests are about per-hart
+        // arbitration - but tied to explicit constants rather than left
+        // floating, the same X-poisoning reason every other tie-off in
+        // this tree already is.
+        .n_cyc(1'b0), .n_stb(1'b0), .n_adr(32'b0),
+        .n_dat_r(), .n_ack(),
         .s_base(8'h00), .s_mask(8'hFF),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),

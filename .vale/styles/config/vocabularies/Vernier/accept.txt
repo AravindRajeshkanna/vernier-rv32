@@ -17,6 +17,7 @@ Chipyard
 Combinational
 Cosimulation
 DDR
+DMA'd
 DRs
 DSPs
 DUT

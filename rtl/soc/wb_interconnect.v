@@ -1,7 +1,8 @@
 // Wishbone B4 "classic" shared-bus interconnect: NUM_HARTS (fetch, data)
 // master pairs, one page-table-walk master per hart, one debug master
-// shared by all harts, NUM_SLAVES slaves, fixed-priority arbitration and a
-// masked addr[31:24] address decode.
+// shared by all harts, one NPU DMA master (also shared, regardless of hart
+// count), NUM_SLAVES slaves, fixed-priority arbitration and a masked
+// addr[31:24] address decode.
 //
 // ---- NUM_HARTS: generalized from a fixed 4-master shape ----
 //
@@ -24,7 +25,8 @@
 // so that arrangement could never reach one. Linux puts page tables in
 // DRAM, so the walkers had to become bus masters.
 //
-// ---- Priority: debug > data (by hart) > walker (by hart) > fetch (by hart) ----
+// ---- Priority: debug > data (by hart) > walker (by hart) > fetch (by hart)
+// > NPU DMA ----
 //
 // Not the obvious order, and each comparison is load-bearing - unchanged
 // in kind from the original 4-master version, just replicated per hart for
@@ -55,6 +57,16 @@
 // **The walker outranks fetch**, because fetch is nearly continuous and a
 // walk that lost to it could be starved indefinitely. The reverse cannot
 // happen: a walk is two reads and then it is over.
+//
+// **The NPU's own DMA master (`rtl/soc/wb_npu.v`) outranks nothing and
+// starves nothing** - the opposite reasoning from every tier above it.
+// Every other master's own priority is justified by what would go wrong if
+// it lost: a stalled pipeline, a broken atomic, an indefinitely-delayed
+// walk. Losing arbitration costs the NPU DMA master only its own wall-clock
+// time - no hart's forward progress, and no correctness property, depends
+// on it winning promptly, or at all. Placing it lowest is therefore not a
+// judgment about its importance, only an acknowledgment that it is the one
+// master here with nothing to lose by waiting.
 //
 // ---- Decode: base and mask ----
 //
@@ -175,6 +187,23 @@ module wb_interconnect #(
     output wire [31:0] dbg_dat_r,
     output wire        dbg_ack,
 
+    // ---- the NPU's own DMA master (rtl/soc/wb_npu.v): one, regardless of
+    // hart count, the same shape the debug module above has ----
+    //
+    // **Lowest priority**, the opposite end of the scale from the debug
+    // module and for a correspondingly opposite reason: nothing in this SoC
+    // is waiting on this master to make progress. It has no forward-progress
+    // dependency the way a page-table walker's own stalled pipeline does,
+    // and no atomicity property depends on it winning arbitration promptly -
+    // it can only ever be starved of the bus, never cause anything else to
+    // be. Read-only, matching rtl/soc/wb_ptw.v's own master port shape - no
+    // `n_we`/`n_dat_w`/`n_sel`, since this master never writes memory.
+    input  wire        n_cyc,
+    input  wire        n_stb,
+    input  wire [31:0] n_adr,
+    output wire [31:0] n_dat_r,
+    output wire        n_ack,
+
     // ---- shared slave bus ----
     // `s_base` is the addr[31:24] value each slave answers to and `s_mask`
     // which of those bits are compared, both packed 8 bits per slave (slave i
@@ -261,19 +290,26 @@ module wb_interconnect #(
     wire [NUM_HARTS-1:0] want_f = want_f_tier &
                                   {NUM_HARTS{!any_continuing && !dbg_cyc &&
                                               !any_d_asking && !(|w_cyc)}};
+    // Lowest of all: wins only when literally nothing else - debug, any
+    // hart's data/walker/fetch master - wants the bus this cycle.
+    wire        want_n = n_cyc &&
+                         !any_continuing && !dbg_cyc && !any_d_asking &&
+                         !(|w_cyc) && !(|f_cyc);
 
     reg        lock;
     reg        lock_dbg;
     reg  [NUM_HARTS-1:0] lock_d, lock_w, lock_f;
+    reg        lock_n;
 
-    // Only lock_d/lock_w/lock_f/lock_dbg need to survive into the lock -
-    // the mux below only ever asks "which master is selected", never "was
-    // this cycle's selection the continuing override or the ordinary
+    // Only lock_d/lock_w/lock_f/lock_dbg/lock_n need to survive into the
+    // lock - the mux below only ever asks "which master is selected", never
+    // "was this cycle's selection the continuing override or the ordinary
     // tier-2 winner", so that distinction does not need its own storage.
     wire        sel_dbg        = lock ? lock_dbg        : want_dbg;
     wire [NUM_HARTS-1:0] sel_d = lock ? lock_d : (any_continuing ? continuing_win : want_d);
     wire [NUM_HARTS-1:0] sel_w = lock ? lock_w : want_w;
     wire [NUM_HARTS-1:0] sel_f = lock ? lock_f : want_f;
+    wire        sel_n          = lock ? lock_n          : want_n;
 
     // A data master is selected either because it is genuinely the winning
     // tier-2 request, or because it is the one continuing a locked-in AMO -
@@ -316,9 +352,12 @@ module wb_interconnect #(
                 cur_adr = f_adr[32*h +: 32]; cur_stb = f_stb[h];
             end
         end
+        if (sel_n) begin
+            cur_adr = n_adr; cur_stb = n_stb;
+        end
     end
 
-    assign s_cyc   = sel_dbg || any_d_sel || (|sel_w) || (|sel_f);
+    assign s_cyc   = sel_dbg || any_d_sel || (|sel_w) || (|sel_f) || sel_n;
     assign s_we    = cur_we;
     assign s_adr   = cur_adr;
     assign s_dat_w = cur_dat_w;
@@ -369,6 +408,8 @@ module wb_interconnect #(
     endgenerate
     assign dbg_dat_r = fin_dat;
     assign dbg_ack   = sel_dbg && fin_ack;
+    assign n_dat_r   = fin_dat;
+    assign n_ack     = sel_n && fin_ack;
 
     // Take the lock only when a transfer actually starts and does *not*
     // complete in its first cycle, so zero-wait-state slaves (the peripheral
@@ -389,6 +430,7 @@ module wb_interconnect #(
             lock_d   <= {NUM_HARTS{1'b0}};
             lock_w   <= {NUM_HARTS{1'b0}};
             lock_f   <= {NUM_HARTS{1'b0}};
+            lock_n   <= 1'b0;
         end else if (!lock) begin
             if (cur_stb && !fin_ack) begin
                 lock     <= 1'b1;
@@ -396,6 +438,7 @@ module wb_interconnect #(
                 lock_d   <= sel_d;
                 lock_w   <= sel_w;
                 lock_f          <= sel_f;
+                lock_n   <= sel_n;
             end
         end else if (fin_ack) begin
             lock <= 1'b0;

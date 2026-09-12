@@ -13,6 +13,9 @@ module tb_wb_npu;
     localparam [7:0] OFF_A0     = 8'h08;
     localparam [7:0] OFF_W0     = 8'h18;
     localparam [7:0] OFF_RESULT = 8'h28;
+    localparam [7:0] OFF_A_ADDR = 8'h30;
+    localparam [7:0] OFF_W_ADDR = 8'h34;
+    localparam [7:0] OFF_LEN    = 8'h38;
 
     reg clk = 0, rst = 1;
     always #5 clk = ~clk;
@@ -22,12 +25,32 @@ module tb_wb_npu;
     wire [31:0] wb_dat_r;
     wire        wb_ack;
 
+    wire        m_cyc, m_stb, m_ack;
+    wire [31:0] m_adr, m_dat_r;
+
     wb_npu #(.VEC_LEN(VEC_LEN)) DUT (
         .clk(clk), .rst(rst),
         .wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we),
         .wb_adr(wb_adr), .wb_dat_w(wb_dat_w),
-        .wb_dat_r(wb_dat_r), .wb_ack(wb_ack)
+        .wb_dat_r(wb_dat_r), .wb_ack(wb_ack),
+        .m_cyc(m_cyc), .m_stb(m_stb), .m_adr(m_adr),
+        .m_dat_r(m_dat_r), .m_ack(m_ack)
     );
+
+    // Small 1-wait-state behavioral memory model for the DMA master port -
+    // the same timing shape as rtl/soc/wb_ram.v (address in one cycle, ack
+    // and data the next), so the DMA test below cannot pass merely because
+    // reads happen to resolve in zero cycles - the real interconnect never
+    // gives it that, and rtl/soc/wb_ptw.v's own two walkers already depend
+    // on a master that can wait.
+    reg [31:0] dma_mem [0:31];
+    reg        m_ack_r;
+    always @(posedge clk or posedge rst) begin
+        if (rst) m_ack_r <= 1'b0;
+        else     m_ack_r <= m_cyc && m_stb && !m_ack_r;
+    end
+    assign m_ack   = m_ack_r;
+    assign m_dat_r = dma_mem[m_adr[6:2]];
 
     task wb_write(input [31:0] addr, input [31:0] data);
         begin
@@ -145,6 +168,65 @@ module tb_wb_npu;
         wb_read(OFF_A0, rdata);
         check("A0 unchanged by the disruptive write attempted mid-MAC",
               rdata, {a_ref[3][7:0], a_ref[2][7:0], a_ref[1][7:0], a_ref[0][7:0]});
+
+        // ---- DMA mode: a 32-element vector, twice VEC_LEN's own fixed
+        // MMIO-mode depth - the actual point of this stage. Populated
+        // directly into dma_mem (the behavioral memory the DUT's own bus-
+        // master port reads from), never through an MMIO register at all,
+        // and checked against a reference computed independently of both
+        // the RTL and the MMIO-mode test above. ----
+        begin : dma_test
+            integer m;
+            reg signed [7:0] a_dma, w_dma;
+            reg signed [31:0] dma_expected;
+            reg [31:0] rd;
+
+            dma_expected = 32'sd0;
+            for (m = 0; m < 32; m = m + 1) begin
+                a_dma = (m % 2 == 0) ? (m[7:0] + 8'sd1)  : -(m[7:0] + 8'sd1);
+                w_dma = (m % 2 == 0) ? -(m[7:0] + 8'sd2) : (m[7:0] + 8'sd2);
+                dma_mem[(m>>2)][8*(m&3) +: 8]      = a_dma;   // A vector: words 0-7
+                dma_mem[8 + (m>>2)][8*(m&3) +: 8]  = w_dma;   // W vector: words 8-15
+                dma_expected = dma_expected + ($signed(a_dma) * $signed(w_dma));
+            end
+
+            wb_write(OFF_A_ADDR, 32'h0000_0000);
+            wb_write(OFF_W_ADDR, 32'h0000_0020);   // word 8 * 4 bytes
+            wb_write(OFF_LEN,    32'd32);
+
+            wb_read(OFF_A_ADDR, rd);
+            check("A_ADDR reads back what was written", rd, 32'h0000_0000);
+            wb_read(OFF_LEN, rd);
+            check("LEN reads back what was written", rd, 32'd32);
+
+            wb_write(OFF_CTRL, 32'h2);   // bit1: start DMA mode
+            wb_read(OFF_STATUS, rd);
+            check("BUSY set immediately after a DMA start", rd, 32'h1);
+
+            // Disruptive writes attempted mid-DMA: both must be ignored,
+            // the same "ignored while busy" contract the MMIO path above
+            // already proved, now checked for the DMA-specific registers.
+            wb_write(OFF_LEN, 32'd1);
+            wb_write(OFF_A_ADDR, 32'hDEAD_BEEF);
+
+            begin : dma_poll
+                integer n;
+                n = 0;
+                rd = 32'h1;
+                while (rd[0] && n < 256) begin
+                    wb_read(OFF_STATUS, rd);
+                    n = n + 1;
+                end
+                check("DMA BUSY clears within a bounded number of polls", (n < 256), 1'b1);
+            end
+
+            wb_read(OFF_RESULT, rd);
+            check("DMA dot product (LEN=32) matches the independent reference",
+                  rd, dma_expected);
+            wb_read(OFF_LEN, rd);
+            check("LEN unchanged by the disruptive write attempted mid-DMA",
+                  rd, 32'd32);
+        end
 
         if (failures == 0) $display("\nWB-NPU-TEST: PASS");
         else                $display("\nWB-NPU-TEST: FAIL (%0d)", failures);

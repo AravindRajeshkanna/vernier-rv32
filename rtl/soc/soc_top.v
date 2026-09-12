@@ -503,6 +503,11 @@ module soc_top #(
     wire [3:0]  dbg_sel;
     wire        dbg_ndmreset;
 
+    // ---- the NPU's own DMA master (rtl/soc/wb_npu.v <-> the interconnect's
+    // new lowest-priority tier), Phase 14 ----
+    wire        npu_m_cyc, npu_m_stb, npu_m_ack;
+    wire [31:0] npu_m_adr, npu_m_dat_r;
+
     // Everything except the debug path resets when the host asks for it, or
     // when the board does. The TAP, the crossing and the Debug Module use
     // bare `rst`, which is the spec's rule and the only sensible one: a reset
@@ -581,6 +586,8 @@ module soc_top #(
         .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),
         .dbg_dat_w(dbg_dat_w), .dbg_sel(dbg_sel),
         .dbg_dat_r(dbg_dat_r), .dbg_ack(dbg_ack),
+        .n_cyc(npu_m_cyc), .n_stb(npu_m_stb), .n_adr(npu_m_adr),
+        .n_dat_r(npu_m_dat_r), .n_ack(npu_m_ack),
         .s_base(s_base), .s_mask(s_mask),
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
@@ -746,12 +753,16 @@ module soc_top #(
 
     // Phase 14: a quantized-inference MAC engine, not wired to either core's
     // own ISA - see rtl/soc/wb_npu.v's own header for why this shape, and
-    // docs/roadmap.md's Phase 14 entry for the decision it closes.
+    // docs/roadmap.md's Phase 14 entry for the decision it closes. Its own
+    // DMA master port (npu_m_*) reaches rtl/soc/wb_interconnect.v's new
+    // lowest-priority tier above, not the CPU-facing slave bus.
     wb_npu NPU (
         .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_NPU]), .wb_we(s_we),
         .wb_adr(s_adr), .wb_dat_w(s_dat_w),
-        .wb_dat_r(s_dat_r[32*S_NPU +: 32]), .wb_ack(s_ack[S_NPU])
+        .wb_dat_r(s_dat_r[32*S_NPU +: 32]), .wb_ack(s_ack[S_NPU]),
+        .m_cyc(npu_m_cyc), .m_stb(npu_m_stb), .m_adr(npu_m_adr),
+        .m_dat_r(npu_m_dat_r), .m_ack(npu_m_ack)
     );
 
     // Phase 11: a streaming FIR filter coprocessor, not wired to either
