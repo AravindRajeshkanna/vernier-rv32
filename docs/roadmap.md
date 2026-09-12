@@ -4976,19 +4976,63 @@ has used it. Real trained-model weights, a workload real enough to be
 worth measuring at this larger scale, and confirmation on real hardware
 all remain open, exactly as Stage 2 already said they would.
 
+**Stage 4: the workload Stage 3 left unmeasured, run and measured.**
+`software/soc/gen_npu_dma_workload.py` builds the identical shape Stage
+2's own `gen_npu_layer.py` already did - `NPU_DMA_OUT` output neurons,
+each a dot product against one shared activation vector, expected
+outputs computed independently in Python - at `NPU_DMA_INPUT_DIM=128`
+rather than 16: eight times `VEC_LEN`'s own MMIO-mode cap, specifically
+because that width cannot be reached through the MMIO path's fixed
+register file at all. `software/soc/main.c`'s new
+`test_npu_dma_workload()` runs it two genuinely independent ways -
+through `rtl/soc/wb_npu.v`'s own DMA master, and in plain RV32M C with
+no NPU access at all - checked bit-exact against the Python reference
+both times, the same three-way independence Stage 2's own measurement
+already established.
+
+Measured, not estimated, counting everything (every DMA register write
+and poll is inside the hardware path's own timing window, the same
+"count the real cost, not a favorable slice of it" rule Stage 2's own
+measurement already held itself to): **1220 cycles on the NPU's own DMA
+path, 4838 for the RV32M-only software baseline computing the identical
+128-input, 4-neuron layer - about 4.0x**, a real and substantial win,
+in clear contrast with Stage 2's own MMIO-scale result (561 vs. 652,
+about 1.16x). The reason is exactly the one Stage 2's own account named
+without being able to measure yet: at MMIO scale, loading every operand
+costs about as much as the arithmetic itself; at DMA scale, the
+hardware path's own per-element cost is a streamed bus read comparable
+to what the software loop's own memory reads already cost, so there is
+real arithmetic left over for the MAC engine to amortize against -
+which is the entire premise Stage 1 gave for building a streamed,
+one-element-per-cycle engine in the first place, now with a number
+attached to it instead of an assumption.
+
+**What this still does not do, named plainly rather than smoothed
+over:** this implementation's own DMA state machine re-fetches the
+*entire* activation vector out of RAM for every one of the four
+neurons, even though it is the same 128 elements each time and
+`A_ADDR` never changes between them - `rtl/soc/wb_npu.v` has no
+on-chip cache across separate DMA starts, only within one. A version
+that fetched the activation vector once and reused it across all four
+neurons would cost less than the 1220 cycles measured here, and this
+number should not be read as the ceiling DMA mode can reach - it is
+what this specific implementation, unoptimized in this one respect,
+actually measures today. Real trained-model weights rather than
+synthetic data, and confirmation on real hardware, remain open exactly
+as before.
+
 **Done when:** ✅ **closed, in simulation, at this scale.** A real
 quantized-inference workload - a small int8 matrix-vector multiply, the
 "single small layer" this bar names as the obvious candidate - runs, is
 verified bit-exact against an independently-computed reference, and is
 measured, not estimated, against a software-only (RV32M-only) baseline
-computing the identical workload (Stage 2: 561 vs. 652 cycles - the
-same "measure it, do not assert it" bar Phase 11's own "Done when"
-holds itself to). Not yet done, and not required by this bar's own
-wording: real model weights rather than synthetic data, a workload
-larger than what fits in always-resident MMIO registers (Stage 3 built
-the mechanism for this - a bus-master DMA port - but has not yet run or
-measured a real workload through it), and confirmation on real
-hardware rather than simulation alone.
+computing the identical workload (Stage 2, MMIO scale: 561 vs. 652
+cycles, about 1.16x; Stage 4, DMA scale, 128 inputs: 1220 vs. 4838
+cycles, about 4.0x - the same "measure it, do not assert it" bar Phase
+11's own "Done when" holds itself to, at two different scales rather
+than one). Not yet done, and not required by this bar's own wording:
+real trained-model weights rather than synthetic data, and confirmation
+on real hardware rather than simulation alone.
 
 ---
 

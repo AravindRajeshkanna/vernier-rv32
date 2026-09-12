@@ -446,9 +446,16 @@ software/soc/npu_layer_data.h: software/soc/gen_npu_layer.py
 software/soc/fir_workload_data.h: software/soc/gen_fir_workload.py
 	python3 software/soc/gen_fir_workload.py > $@
 
+# Same reasoning again - a real quantized dense layer at the scale
+# rtl/soc/wb_npu.v's own DMA master port (not the MMIO path) exists to
+# reach.
+software/soc/npu_dma_workload_data.h: software/soc/gen_npu_dma_workload.py
+	python3 software/soc/gen_npu_dma_workload.py > $@
+
 software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld $(SOC_HDRS) \
                           software/soc/npu_layer_data.h \
-                          software/soc/fir_workload_data.h
+                          software/soc/fir_workload_data.h \
+                          software/soc/npu_dma_workload_data.h
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld -o $@ $(SOCPROG_SRCS)
 
 software/soc/newlibprobe.elf: $(PROBE_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
@@ -1935,6 +1942,7 @@ clean:
 	       software/soc/socprog.elf software/soc/socprog.bin \
 	       software/soc/npu_layer_data.h \
 	       software/soc/fir_workload_data.h \
+	       software/soc/npu_dma_workload_data.h \
 	       software/soc/dtb_blob.h \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc.dtb \

@@ -22,6 +22,7 @@
 #include "trap.h"
 #include "npu_layer_data.h"
 #include "fir_workload_data.h"
+#include "npu_dma_workload_data.h"
 
 static int failures = 0;
 
@@ -456,6 +457,59 @@ static int test_npu_dma(void) {
     return (int32_t)NPU_RESULT == expected;
 }
 
+/* A real quantized dense layer at DMA scale - software/soc/
+ * gen_npu_dma_workload.py: the same "single small layer" shape Stage 2's
+ * own test_npu_layer() already closed the phase's "Done when" bar with,
+ * but 128 inputs rather than 16 - eight times VEC_LEN's own MMIO-mode
+ * cap, specifically because that width is unreachable through the MMIO
+ * path's own fixed register file at all. Checked bit-exact against an
+ * independently-computed (Python) reference two genuinely independent
+ * ways - once through rtl/soc/wb_npu.v's own DMA master, once in plain
+ * RV32M C with no NPU access - and both paths' real cycle counts are
+ * measured and printed, not estimated, the same discipline Stage 2's
+ * own MMIO-scale measurement used. */
+static int test_npu_dma_workload(void) {
+    int32_t hw_result[NPU_DMA_OUT];
+    int32_t sw_result[NPU_DMA_OUT];
+    uint32_t n, i;
+    int ok = 1;
+
+    uint32_t hw_c0 = CSRR("cycle");
+    NPU_A_ADDR = (uint32_t)(uintptr_t)npu_dma_activation;
+    NPU_LEN    = NPU_DMA_INPUT_DIM;
+    for (n = 0; n < NPU_DMA_OUT; n++) {
+        NPU_W_ADDR = (uint32_t)(uintptr_t)npu_dma_weights[n];
+        NPU_CTRL   = NPU_CTRL_START_DMA;
+        while (NPU_STATUS & NPU_STATUS_BUSY) { }
+        hw_result[n] = (int32_t)NPU_RESULT;
+    }
+    uint32_t hw_cycles = CSRR("cycle") - hw_c0;
+
+    uint32_t sw_c0 = CSRR("cycle");
+    for (n = 0; n < NPU_DMA_OUT; n++) {
+        int32_t acc = 0;
+        const int8_t *wv = npu_dma_weights[n];
+        for (i = 0; i < NPU_DMA_INPUT_DIM; i++)
+            acc += (int32_t)npu_dma_activation[i] * (int32_t)wv[i];
+        sw_result[n] = acc;
+    }
+    uint32_t sw_cycles = CSRR("cycle") - sw_c0;
+
+    for (n = 0; n < NPU_DMA_OUT; n++) {
+        if (hw_result[n] != npu_dma_expected[n]) ok = 0;
+        if (sw_result[n] != npu_dma_expected[n]) ok = 0;
+    }
+
+    put_str("    NPU DMA workload, hardware: ");
+    put_dec((int)hw_cycles);
+    put_str(" cycles\n");
+    put_str("    NPU DMA workload, software: ");
+    put_dec((int)sw_cycles);
+    put_str(" cycles\n");
+
+    return ok;
+}
+
 /* ---------------------------------------------------------------------
  * Streaming FIR filter coprocessor
  * ------------------------------------------------------------------- */
@@ -833,6 +887,7 @@ int main(void) {
     check("NPU int8 MAC engine",   test_npu());
     check("NPU quantized dense layer", test_npu_layer());
     check("NPU DMA reaches real RAM",  test_npu_dma());
+    check("NPU DMA-scale layer",       test_npu_dma_workload());
     check("FIR streaming filter",      test_fir());
     check("FIR lowpass workload",      test_fir_workload());
     check("framebuffer read/write", test_framebuffer());
