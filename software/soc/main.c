@@ -23,6 +23,7 @@
 #include "npu_layer_data.h"
 #include "fir_workload_data.h"
 #include "npu_dma_workload_data.h"
+#include "npu_trained_layer_data.h"
 
 static int failures = 0;
 
@@ -569,6 +570,51 @@ static int test_npu_dma_cache(void) {
     return ok;
 }
 
+/* Real trained-model weights, closing the one gap every earlier NPU
+ * stage has named as still open (docs/roadmap.md's Phase 14 entry):
+ * software/soc/gen_npu_trained_layer.py trains a from-scratch linear
+ * softmax classifier by gradient descent on a real cross-entropy loss
+ * - the weights below are the OUTPUT of that training, not drawn from
+ * random.Random the way every earlier NPU workload's own operands
+ * were (see that script's own header for exactly what is, and is not,
+ * "real" here). Runs through rtl/soc/wb_npu.v's own DMA master,
+ * exercising the Stage 5 on-chip cache too (NPU_TRAINED_INPUT_DIM is
+ * 128, the same as A_CACHE_LEN's own default): class 0's weights
+ * trigger a fresh DMA fetch of the activation vector, every class
+ * after it reuses the cache. Checked two ways: the raw dot product for
+ * every class against the independently-computed (Python) reference,
+ * and - the proof that actually matters for a "real trained model"
+ * claim, not just "the arithmetic matches" - that the class with the
+ * highest dot product (the hardware's own classification decision)
+ * matches NPU_TRAINED_CORRECT_CLASS, the label the ORIGINAL FLOAT
+ * model (before quantization, before ever touching this peripheral)
+ * assigned to this exact, held-out input. */
+static int test_npu_trained_layer(void) {
+    int32_t hw_result[NPU_TRAINED_CLASSES];
+    uint32_t k;
+    int ok = 1;
+    int predicted = 0;
+
+    NPU_A_ADDR = (uint32_t)(uintptr_t)npu_trained_activation;
+    NPU_LEN    = NPU_TRAINED_INPUT_DIM;
+    for (k = 0; k < NPU_TRAINED_CLASSES; k++) {
+        NPU_W_ADDR = (uint32_t)(uintptr_t)npu_trained_weights[k];
+        NPU_CTRL   = (k == 0) ? NPU_CTRL_START_DMA : NPU_CTRL_START_DMA_REUSE;
+        while (NPU_STATUS & NPU_STATUS_BUSY) { }
+        hw_result[k] = (int32_t)NPU_RESULT;
+    }
+
+    if (!(NPU_STATUS & NPU_STATUS_A_CACHE_VALID)) ok = 0;
+    for (k = 0; k < NPU_TRAINED_CLASSES; k++)
+        if (hw_result[k] != npu_trained_expected[k]) ok = 0;
+
+    for (k = 1; k < NPU_TRAINED_CLASSES; k++)
+        if (hw_result[k] > hw_result[predicted]) predicted = (int)k;
+    if (predicted != NPU_TRAINED_CORRECT_CLASS) ok = 0;
+
+    return ok;
+}
+
 /* ---------------------------------------------------------------------
  * Streaming FIR filter coprocessor
  * ------------------------------------------------------------------- */
@@ -948,6 +994,7 @@ int main(void) {
     check("NPU DMA reaches real RAM",  test_npu_dma());
     check("NPU DMA-scale layer",       test_npu_dma_workload());
     check("NPU DMA-scale layer, cached A", test_npu_dma_cache());
+    check("NPU trained-model layer", test_npu_trained_layer());
     check("FIR streaming filter",      test_fir());
     check("FIR lowpass workload",      test_fir_workload());
     check("framebuffer read/write", test_framebuffer());
