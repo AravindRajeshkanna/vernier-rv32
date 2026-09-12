@@ -281,7 +281,19 @@ module wb_npu #(
             a_cache_len_r   <= 32'b0;
             cacheable_r     <= 1'b0;
             reuse_mode_r    <= 1'b0;
-            for (c = 0; c < A_CACHE_LEN; c = c + 1) a_cache_mem[c] <= 8'sd0;
+            // Blocking, not non-blocking: A_CACHE_LEN=128 is too large to
+            // get fully unrolled the way the smaller per-context loops in
+            // rtl/plic.v/rtl/ooo/core_ooo.v do, so this stays a real
+            // (non-unrolled) loop, and a delayed (`<=`) write to an array
+            // element inside one of those is unsupported (BLKLOOPINIT) -
+            // only a blocking (`=`) one is. Safe here since nothing else
+            // touches a_cache_mem on this edge; the BLKSEQ warning below
+            // (blocking assignment in sequential logic) is the expected,
+            // narrow tradeoff, matching core_ooo.v's own lint_off/lint_on
+            // bracket around a different warning class.
+            /* verilator lint_off BLKSEQ */
+            for (c = 0; c < A_CACHE_LEN; c = c + 1) a_cache_mem[c] = 8'sd0;
+            /* verilator lint_on BLKSEQ */
         end else begin
             case (state_r)
                 S_IDLE: begin
