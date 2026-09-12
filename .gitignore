@@ -52,6 +52,9 @@ software/soc/dtb_blob.h
 # Same reasoning, for software/soc/gen_npu_dma_workload.py.
 software/soc/npu_dma_workload_data.h
 
+# Same reasoning, for software/soc/gen_npu_trained_layer.py.
+software/soc/npu_trained_layer_data.h
+
 # Local tool config (not shared)
 .claude/
 

@@ -5123,6 +5123,96 @@ with an activation vector wider than 128, would need either a larger
 trained-model weights and confirmation on real hardware remain open, as
 named at Stage 4 and unchanged by this stage.
 
+**Stage 6: real trained-model weights, closing the one gap every stage
+since Stage 2 has named as still open - not part of the "Done when" bar
+itself, which Stage 4 already fully closed.** Every earlier NPU
+workload's own int8 vectors - Stage 1's fixed 16 elements, Stage 2's
+layer, Stage 3/4/5's 128-input DMA workload - were drawn straight from
+`random.Random`, values with no relationship to any task at all, used
+purely as mixed-sign test vectors. `software/soc/gen_npu_trained_layer.py`
+is different in kind, not just in source: a from-scratch, pure-Python
+(no numpy/sklearn/torch exists in this environment) multi-class linear
+softmax classifier, trained by per-example stochastic gradient descent
+on a real cross-entropy loss, no bias term (the peripheral is a pure dot
+product with no accumulation input, so a model needing a bias would not
+be faithfully representable in this hardware at all). The weights below
+are the *output* of that training - the same category of artifact a
+real deployed quantized model's weights would be.
+
+**What is, and is not, "real" here, stated as plainly as the script's own
+header states it:** the weights are genuinely trained; the data they are
+trained and validated on is still synthetic - four class "prototype"
+directions in 128-dimensional space, real examples drawn as
+prototype-plus-noise, not sourced from any external real-world dataset,
+since none is fetched or bundled in this environment. This closes
+"trained weights", not "real-world data" - a model trained on genuinely
+real-world data remains a still-different, still-open gap, named here
+rather than folded into a claim this stage does not earn.
+
+Trained in float, quantized to int8 afterward - standard post-training
+quantization, per-tensor min-max scaling, separately for the weight
+matrix and for the one held-out activation vector actually fed through
+hardware - matching how quantized-inference deployments actually work,
+not an invented scheme. Held-out accuracy, measured over 100 fresh
+examples never used in training: **88.0%**, embedded as a comment in the
+generated header itself so the claim "this model actually learned
+something" is checkable, not just asserted. A short seed search (the
+same convention `gen_npu_layer.py` already established) additionally
+requires the one activation vector checked in hardware to be correctly
+classified by both the float model and its int8-quantized counterpart,
+so quantization provably does not flip this specific example's own
+decision.
+
+Runs through `rtl/soc/wb_npu.v`'s own DMA master at `NPU_TRAINED_INPUT_DIM
+= 128`, the same width as `A_CACHE_LEN`'s own default, so class 0's
+weights trigger a fresh DMA fetch of the activation vector and every
+class after it reuses Stage 5's own on-chip cache - real reuse of
+already-shipped machinery, not new hardware. `software/soc/main.c`'s new
+`test_npu_trained_layer()` checks two genuinely different things: the
+raw dot product for every class against the independently-computed
+(Python) reference - a fresh sum-of-products loop over the quantized
+int8 values alone, not derived from any training/quantization
+intermediate - and, the check that actually matters for a "real trained
+model" claim rather than "the arithmetic matches" (already proven
+several times over by every earlier NPU stage), that the class with the
+highest dot product - the hardware's own classification decision -
+matches `NPU_TRAINED_CORRECT_CLASS`, the label the *original float
+model*, before quantization, before ever touching this peripheral,
+assigned to this exact held-out input.
+
+**Confirmed non-vacuous, and an honest miss caught along the way.** The
+established mutation for this cache path (pointing the reuse-mode start
+transition at `S_DMA_FETCH_A` instead of `S_DMA_FETCH_W`) was tried here
+first, expecting it to fail this test the same way it fails
+`test_npu_dma_cache()` - it did not. Tracing through why: this test never
+corrupts RAM after the cache is populated, unlike `test_npu_dma_cache()`,
+so a reuse-mode run that mistakenly re-fetches from RAM instead of the
+cache still reads the same, uncorrupted, correct activation bytes and
+produces the same correct answer regardless of the bug. That is a real
+finding about this test's own coverage, not a reason to call it passing:
+this test does not re-prove cache correctness (Stage 5 already did, and
+still does), it only *uses* the cache as shipped. The mutation that
+actually exercises what this stage is new about targeted the generated
+data instead: hand-editing the built (gitignored, not committed)
+`npu_trained_layer_data.h` to flip `NPU_TRAINED_CORRECT_CLASS` to a wrong
+label produced exactly one failure - this test, on exactly the
+classification-decision check - with every other check, including the
+adjacent cache-reuse dot-product measurement, still passing. A second,
+separate mutation (corrupting one `npu_trained_expected[]` value by one)
+produced the same single, isolated failure, confirming the bit-exact
+dot-product check is independently live too, not dead code shadowed by
+the classification check. Both mutations were reverted (the header
+regenerated cleanly from the untouched script) and reconfirmed passing
+before this was written down.
+
+**What this still does not do:** the data is synthetic, not real-world,
+named above rather than smoothed over; no board build has ever asked for
+this peripheral, so nothing here is confirmed on real hardware; and this
+is a single linear layer with no bias, not a multi-layer network - a
+faithful match to what this specific piece of hardware can actually
+compute, not a claim about what quantized inference in general looks
+like.
+
 ---
 
 ## Beyond the phases

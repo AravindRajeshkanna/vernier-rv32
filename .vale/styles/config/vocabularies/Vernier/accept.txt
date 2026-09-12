@@ -160,6 +160,7 @@ fixup
 floorplanning
 framebuffer
 fuzzer
+gitignored
 glibc
 globals
 halfword
@@ -268,6 +269,7 @@ serializer
 shader
 shaders
 snapshotting
+softmax
 spinlocks
 sret
 stdout

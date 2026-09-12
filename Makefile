@@ -452,10 +452,17 @@ software/soc/fir_workload_data.h: software/soc/gen_fir_workload.py
 software/soc/npu_dma_workload_data.h: software/soc/gen_npu_dma_workload.py
 	python3 software/soc/gen_npu_dma_workload.py > $@
 
+# Same reasoning again, but the weights themselves are genuinely trained
+# (gradient descent on a real loss), not drawn from random.Random - see
+# the script's own header for exactly what that does and does not mean.
+software/soc/npu_trained_layer_data.h: software/soc/gen_npu_trained_layer.py
+	python3 software/soc/gen_npu_trained_layer.py > $@
+
 software/soc/socprog.elf: $(SOCPROG_SRCS) software/soc/link_ram.ld $(SOC_HDRS) \
                           software/soc/npu_layer_data.h \
                           software/soc/fir_workload_data.h \
-                          software/soc/npu_dma_workload_data.h
+                          software/soc/npu_dma_workload_data.h \
+                          software/soc/npu_trained_layer_data.h
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld -o $@ $(SOCPROG_SRCS)
 
 software/soc/newlibprobe.elf: $(PROBE_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
@@ -1943,6 +1950,7 @@ clean:
 	       software/soc/npu_layer_data.h \
 	       software/soc/fir_workload_data.h \
 	       software/soc/npu_dma_workload_data.h \
+	       software/soc/npu_trained_layer_data.h \
 	       software/soc/dtb_blob.h \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc.dtb \
