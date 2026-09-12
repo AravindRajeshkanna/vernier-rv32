@@ -49,6 +49,9 @@ software/soc/fir_workload_data.h
 # dts/soc.dtb, itself generated from dts/soc.dts).
 software/soc/dtb_blob.h
 
+# Same reasoning, for software/soc/gen_npu_dma_workload.py.
+software/soc/npu_dma_workload_data.h
+
 # Local tool config (not shared)
 .claude/
 
