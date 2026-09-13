@@ -214,7 +214,7 @@ module soc_top #(
     wire [NUM_HARTS-1:0]    fence_i;
 
     // ---- cross-hart LR/SC coherence (rtl/soc/reservation_monitor.v,
-    // Phase 13 stage 9) ----
+    // Phase 13 stage 9, extended to CORE_OOO by stage 16) ----
     //
     // Every hart's own resv_valid/resv_addr/store_fire/store_addr feeds the
     // monitor; its per-hart resv_invalidate feeds back into that same
@@ -222,11 +222,11 @@ module soc_top #(
     // monitor (below) rather than tying resv_invalidate_ext to a literal
     // 0 - with only one hart, the monitor's own self-exclusion rule means
     // it has no "other hart" to ever report, so resv_invalidate[0] is
-    // always 0 by construction, not by a special case. CORE_OOO ties these
-    // to 0 directly (see the `ifdef CORE_OOO` assign below): core_ooo.v
-    // has these same ports now (Stage 15), but wiring them for real
-    // cross-hart coherence is a later stage's own job - this build still
-    // ties them off exactly as before that stage.
+    // always 0 by construction, not by a special case. This wiring is the
+    // same regardless of core type: `cpu_core.v` (stage 7) and
+    // `rtl/ooo/core_ooo.v` (stage 15) both expose identically-shaped
+    // ports, so neither core needs special-casing here any more than
+    // `NUM_HARTS` itself does.
     wire [NUM_HARTS-1:0]    resv_valid, store_fire, resv_invalidate;
     wire [NUM_HARTS*32-1:0] resv_addr, store_addr;
 
@@ -327,26 +327,18 @@ module soc_top #(
         .iptw_gnt(iptw_gnt[0]), .iptw_rdata(iptw_rdata[31:0]),
         .mtip(mtip[0]), .msip_in(msip[0]), .meip(plic_eip[0]), .seip(plic_eip[1]),
         .mtime_in(mtime),
-        .fence_i(fence_i[0]), .trap(trap)
-`ifdef CORE_OOO
-        // rtl/ooo/core_ooo.v has these five ports now too (Phase 13,
-        // Stage 15) - the port list is mandatory even though wiring them
-        // to a real rtl/soc/reservation_monitor.v instance is a later
-        // stage's own job (see the `ifdef CORE_OOO` assign below, still
-        // tying every hart's own slice of the monitor's inputs to 0).
-        // Tied off explicitly here for the same reason rtl/top.v's own
-        // identical fix is: an unconnected Verilog input floats/reads as
-        // X, which would poison every test that instantiates this module.
-        , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
-        .resv_invalidate_ext(1'b0)
-`else
+        .fence_i(fence_i[0]), .trap(trap),
+        // Both cores have these now (Phase 13, Stage 15 gave core_ooo.v
+        // the ports, Stage 16 wires them for real) - unconditional, same
+        // connections regardless of core type.
+        .resv_valid(resv_valid[0]), .resv_addr(resv_addr[31:0]),
+        .store_fire(store_fire[0]), .store_addr(store_addr[31:0]),
+        .resv_invalidate_ext(resv_invalidate[0])
+`ifndef CORE_OOO
         // core_ooo.v has no debug/hart-control ports at all - see the
         // `ifdef CORE_OOO` tie-off below for dbg_halted/dbg_reg_rdata_h/
         // dbg_reg_err_h.
-        , .resv_valid(resv_valid[0]), .resv_addr(resv_addr[31:0]),
-        .store_fire(store_fire[0]), .store_addr(store_addr[31:0]),
-        .resv_invalidate_ext(resv_invalidate[0]),
-        .dbg_haltreq(dbg_haltreq[0]), .dbg_resumereq(dbg_resumereq[0]), .dbg_halted(dbg_halted[0]),
+        , .dbg_haltreq(dbg_haltreq[0]), .dbg_resumereq(dbg_resumereq[0]), .dbg_halted(dbg_halted[0]),
         .dbg_reg_valid(dbg_reg_valid_h[0]), .dbg_reg_we(dbg_reg_we),
         .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
         .dbg_reg_rdata(dbg_reg_rdata_h[0+:32]), .dbg_reg_err(dbg_reg_err_h[0])
@@ -365,18 +357,6 @@ module soc_top #(
     assign dbg_halted    = {NUM_HARTS{1'b0}};
     assign dbg_reg_rdata_h = {(NUM_HARTS*32){1'b0}};
     assign dbg_reg_err_h   = {NUM_HARTS{1'b1}};
-    // Same honesty rule for coherence, still true even though core_ooo.v
-    // has these ports now (Stage 15): they are each tied off directly on
-    // its own instantiation above (matching rtl/top.v's own identical
-    // fix), so every hart reports "no reservation, no write" here rather
-    // than actually driving the monitor - wiring them for real cross-hart
-    // coherence is a later stage's own job. See docs/roadmap.md's Phase 13
-    // entry: CORE=ooo has no cross-hart LR/SC coherence of any kind yet,
-    // same as before this stage.
-    assign resv_valid  = {NUM_HARTS{1'b0}};
-    assign resv_addr   = {(NUM_HARTS*32){1'b0}};
-    assign store_fire  = {NUM_HARTS{1'b0}};
-    assign store_addr  = {(NUM_HARTS*32){1'b0}};
 `endif
 
     cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (
@@ -443,23 +423,18 @@ module soc_top #(
                 .iptw_gnt(iptw_gnt[h]), .iptw_rdata(iptw_rdata[32*h +: 32]),
                 .mtip(mtip[h]), .msip_in(msip[h]), .meip(plic_eip[2*h]), .seip(plic_eip[2*h+1]),
                 .mtime_in(mtime),
-                .fence_i(fence_i[h]), .trap()
-`ifdef CORE_OOO
-                // Same tie-off as hart 0's own instantiation above, and
-                // for the same reason - core_ooo.v has these ports now
-                // (Stage 15) but they are not yet wired to a real
-                // reservation_monitor instance.
-                , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
-                .resv_invalidate_ext(1'b0)
-`else
-                , .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
+                .fence_i(fence_i[h]), .trap(),
+                // Same unconditional wiring as hart 0's own instantiation
+                // above - both cores expose identical ports now.
+                .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
                 .store_fire(store_fire[h]), .store_addr(store_addr[32*h +: 32]),
-                .resv_invalidate_ext(resv_invalidate[h]),
+                .resv_invalidate_ext(resv_invalidate[h])
+`ifndef CORE_OOO
                 // Real per-hart wiring, gated by dm.v's own hartsel through
                 // dbg_reg_valid_h/dbg_reg_rdata_h/dbg_reg_err_h above - this
                 // hart is reachable from the debug path exactly when a host
                 // selects it, the same as hart 0.
-                .dbg_haltreq(dbg_haltreq[h]), .dbg_resumereq(dbg_resumereq[h]),
+                , .dbg_haltreq(dbg_haltreq[h]), .dbg_resumereq(dbg_resumereq[h]),
                 .dbg_halted(dbg_halted[h]),
                 .dbg_reg_valid(dbg_reg_valid_h[h]), .dbg_reg_we(dbg_reg_we),
                 .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),

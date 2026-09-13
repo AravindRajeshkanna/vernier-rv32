@@ -12,13 +12,15 @@
 // sim/jtagram.hex is) - software/soc/bootrom.c does not know a second hart
 // exists yet, so this cannot boot through the real boot ROM.
 //
-// CORE=inorder only, always: rtl/ooo/core_ooo.v was never given the
-// reservation ports Stage 7 gave rtl/cpu_core.v, so under CORE_OOO
-// rtl/soc/soc_top.v ties every hart's resv_valid/store_fire to 0 and this
-// test's own SC-must-fail expectation would just be wrong. The Makefile
-// target builds this DUT with a fixed in-order-only flag/file set, not
-// $(IVFLAGS)/$(SOC_RTL), so it always exercises the in-order core
-// regardless of `make verify_ooo`'s own ambient CORE=ooo.
+// CORE-aware since Stage 16: rtl/ooo/core_ooo.v gained the same
+// reservation ports Stage 7 gave rtl/cpu_core.v (Stage 15), and
+// rtl/soc/soc_top.v now wires either core's own ports into the monitor
+// unconditionally (Stage 16) - so this DUT is whichever core the ambient
+// build selects, the same as every other sim target, and this test
+// exercises core_ooo.v's own cross-hart coherence for the first time
+// when built under `make verify_ooo`'s own ambient CORE=ooo, rather than
+// silently re-testing the in-order core redundantly as it did before
+// Stage 16.
 //
 // Hart 0 makes exactly zero memory writes between its LR and its SC - not
 // stylistic, load-bearing: rtl/cpu_core.v's reservation-clearing logic
@@ -60,8 +62,9 @@
 // hart 1, not hart 0, so it does not touch hart 0's own reservation. This
 // proves the *wiring* between two real cores over the real bus, not the
 // monitor's own logic (already exhaustively proven in isolation by
-// sim/tb_reservation_monitor.v, stage 6) or cpu_core.v's own handling of
-// resv_invalidate_ext (already proven by sim/tb_cpu_resv_ports.v, stage 7).
+// sim/tb_reservation_monitor.v, stage 6) or either core's own handling of
+// resv_invalidate_ext (already proven by sim/tb_cpu_resv_ports.v, stage 7,
+// and sim/tb_ooo_resv_ports.v, stage 15, respectively).
 module tb_soc_2hart_lrsc;
     reg clk = 0;
     reg rst = 1;

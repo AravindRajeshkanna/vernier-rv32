@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0); `rtl/debug/dm.v`'s own `hartsel` now reaches every hart too, not just hart 0 (Stage 14, with a real cross-hart register-isolation proof) - all three proven through the real boot/debug paths rather than a shortcut. Still open: `CORE=ooo` has no *cross-hart* coherence yet - it gained the same reservation ports `cpu_core.v` has, proven in isolation (Stage 15), but they are not yet wired to a real `reservation_monitor` instance - and cannot boot SMP, nor does it have a debug register port on any hart; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0); `rtl/debug/dm.v`'s own `hartsel` now reaches every hart too, not just hart 0 (Stage 14, with a real cross-hart register-isolation proof) - all three proven through the real boot/debug paths rather than a shortcut. `CORE=ooo` now has real cross-hart LR/SC coherence too (Stage 15 gave it the same reservation ports `cpu_core.v` has; Stage 16 wired them to a real `reservation_monitor` instance and proved the same cross-hart hazard `sim/tb_soc_2hart_lrsc.v` already proved for the in-order core). Still open: `CORE=ooo` cannot boot SMP Linux, nor does it have a debug register port on any hart; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -4840,6 +4840,52 @@ being folded into this one. Hart-control/debug register ports for
 `core_ooo.v` remain a separate, still-open gap, untouched by this stage.
 No new formal property was added - matching Stages 6/7/9's own choice to
 prove this exact feature by directed simulation only, on the other core.
+
+**Stage 16: those ports wired for real - `CORE=ooo` has genuine
+cross-hart LR/SC coherence now, the same bar Stage 9 already proved for
+the in-order core.** `rtl/soc/soc_top.v`'s `resv_valid`/`resv_addr`/
+`store_fire`/`store_addr`/`resv_invalidate_ext` connections move from a
+core-specific `` `ifdef CORE_OOO ``/`` `ifndef CORE_OOO `` split (tie off
+for `CORE=ooo`, real wiring for `cpu_core.v` only) to a single,
+unconditional connection - both cores expose identically-shaped ports
+now (Stage 15), so neither needs special-casing here any more than
+`NUM_HARTS` itself does. `dbg_*` (hart control) stays split by core
+type, untouched - that remains a separate, still-open gap.
+
+`sim/tb_soc_2hart_lrsc.v` - Stage 9's own directed cross-hart hazard
+test - gains real CORE=ooo coverage the same way: its Makefile rule
+moves from a hardcoded, always-in-order `$(SOC_RTL_BASE)`/`-g2012` build
+(deliberately bypassing the ambient `CORE=` variable, since there was
+nothing for it to test before this stage) to the ordinary
+`$(SOC_RTL)`/`$(IVFLAGS)` every other sim target already uses - a strict
+no-op under the default `CORE=inorder` (confirmed: both variables are
+empty there, so the generated build command is byte-for-byte the same),
+and for the first time a genuine test of `core_ooo.v`'s own cross-hart
+coherence under `make verify_ooo`'s own ambient `CORE=ooo`, rather than
+silently re-testing the in-order core redundantly as it did before this
+stage. The test's own hand-assembled program needed no changes: hart 0's
+SC has always been gated behind polling a flag hart 1 sets only after
+its own foreign write, so correctness never depended on the delay loop's
+exact length, and the existing cycle budget passed on its first run
+against `CORE=ooo` with no adjustment needed - measured, not assumed.
+
+**Confirmed non-vacuous the same way Stage 9 confirmed it for the other
+core, run again here specifically for `CORE=ooo`:** forcing hart 0's own
+`resv_invalidate_ext` connection to a constant 0 in a scratch copy of
+`soc_top.v` (simulating a disconnected monitor) made the test fail
+exactly as it should - hart 0's SC wrongly succeeded (`rd=0` instead of
+`1`), and its own now-successful write overwrote the shared address with
+its own data, changing what the "foreign write landed" check itself saw
+too. Reverted and reconfirmed passing before this was written down.
+
+**What this stage deliberately does not do:** `CORE=ooo` still cannot
+boot SMP Linux (untouched by this stage - `software/soc/bootrom.c` and
+`dts/soc.dts` still don't know a second hart exists, for either core),
+and still has no debug register port on any hart, regardless of which
+core. No board build has ever asked for `NUM_HARTS>1` on either core.
+Those remain the genuinely open items - this stage closes the coherence
+gap specifically, not the rest of what a second hart would need to be
+useful outside simulation.
 
 ---
 
