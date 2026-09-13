@@ -1569,19 +1569,18 @@ sim/soc2hart_lrsc.hex: Makefile
 	];\
 	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
 
-# CORE=inorder only, same reasoning as sim_cpu_halt/sim_cpu_resv_ports:
-# rtl/ooo/core_ooo.v has no reservation ports (Phase 13 stage 7 gave those
-# to rtl/cpu_core.v only), so under CORE_OOO rtl/soc/soc_top.v ties every
-# hart's resv_valid/store_fire to 0 - the monitor never fires and this
-# test's own SC-must-fail expectation would be simply wrong, not a build
-# failure to catch. `-g2012` (not $(IVFLAGS)) and $(SOC_RTL_BASE) (not
-# $(SOC_RTL)) deliberately bypass $(CORE_DEFINES)/$(CORE_RTL) so this
-# target always builds and tests the in-order core's own cross-hart
-# coherence, regardless of `make verify_ooo`'s ambient CORE=ooo - the same
-# thing soc_top.v's own `ifdef CORE_OOO` would otherwise silently switch
-# out from under it.
-sim/sim_soc_2hart_lrsc.out: sim/tb_soc_2hart_lrsc.v $(SOC_RTL_BASE)
-	$(IVERILOG) -g2012 -o $@ sim/tb_soc_2hart_lrsc.v $(SOC_RTL_BASE)
+# CORE-aware since Phase 13 stage 16: rtl/ooo/core_ooo.v gained the same
+# reservation ports rtl/cpu_core.v has (stage 15) and rtl/soc/soc_top.v now
+# wires either core's own ports into the monitor unconditionally, so this
+# target follows the ambient $(CORE) like every other sim target - under
+# the default CORE=inorder this is $(SOC_RTL)==$(SOC_RTL_BASE) and
+# $(IVFLAGS)=="-g2012" bit-for-bit (both $(CORE_RTL)/$(CORE_DEFINES) are
+# empty there), so this is a strict no-op for the in-order build; under
+# `make verify_ooo`'s own ambient CORE=ooo, this now genuinely tests
+# core_ooo.v's own cross-hart coherence instead of silently re-testing
+# the in-order core redundantly, as it did before stage 16.
+sim/sim_soc_2hart_lrsc.out: sim/tb_soc_2hart_lrsc.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_lrsc.v $(SOC_RTL)
 
 sim_soc_2hart_lrsc: sim/soc2hart_lrsc.hex sim/sim_soc_2hart_lrsc.out
 	cd sim && $(VVP) sim_soc_2hart_lrsc.out $(VVP_DUMP) | tee soc_2hart_lrsc.log
