@@ -145,6 +145,36 @@ module core_ooo #(
     input  wire [63:0]  mtime_in,
 
     output wire         fence_i,
+
+    // ---- LR/SC reservation: exposed for cross-hart snooping ----
+    // Same contract rtl/cpu_core.v's own identically-named ports already
+    // have (Phase 13, docs/roadmap.md) - `reservation_valid`/
+    // `reservation_addr` themselves are unchanged, so every existing
+    // single-hart instantiation keeps today's behavior exactly by tying
+    // `resv_invalidate_ext` to 0 and ignoring the three outputs.
+    output wire         resv_valid,     // this hart currently holds a reservation
+    output wire [31:0]  resv_addr,      // ...on this address
+    // Pulses the cycle a write by *this* hart completes. Not simply this
+    // core's own internal `any_successful_write` re-exported: that signal
+    // stays high for every cycle of a multi-cycle AMO write wait, and
+    // separately never sees a plain store's own completion once it has
+    // drained into the one-entry store buffer and `rob_head` has already
+    // moved on (see `store_fire`'s own assignment below for both fixes).
+    output wire         store_fire,
+    // The address of the write `store_fire` is reporting - not simply
+    // `head_mem_phys_addr`: by the time a *buffered* store's own write
+    // finally lands, the ROB head has already advanced to a different,
+    // younger instruction, so this must come from the store buffer's own
+    // address register for that case instead (see the assignment below).
+    output wire [31:0]  store_addr,
+    // Level, not a pulse: driven by another hart's reservation_monitor for
+    // as long as its own snoop condition holds. OR'd into this hart's
+    // existing reservation-clearing condition, ahead of the stall-hold
+    // branch - the same ordering rtl/cpu_core.v already uses and justifies
+    // (a genuine external invalidation must win even while this hart's own
+    // SC is mid-transaction, unlike a self-inflicted same-cycle race).
+    input  wire         resv_invalidate_ext,
+
     output wire         trap
 );
 
@@ -1790,6 +1820,16 @@ module core_ooo #(
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             reservation_valid <= 1'b0; reservation_addr <= 32'b0;
+        end else if (resv_invalidate_ext) begin
+            // A different hart's write landed on this reservation - see
+            // rtl/soc/reservation_monitor.v. Checked ahead of every branch
+            // below, deliberately: `head_dbus_stall` protects this hart's
+            // own in-flight SC read-then-clear ordering from a same-cycle
+            // write by *this* hart - a self-inflicted race. A genuine
+            // external invalidation is not that race and must not be held
+            // back by it (rtl/cpu_core.v uses the identical ordering, for
+            // the identical reason).
+            reservation_valid <= 1'b0;
         end else if (sb_write_completing) begin
             reservation_valid <= 1'b0;
         end else if (head_dbus_stall) begin
@@ -1803,6 +1843,37 @@ module core_ooo #(
             reservation_valid <= 1'b0;
         end
     end
+
+    // Cross-hart snoop ports (see the port list's own comments above).
+    // `amo_write_completing`/`direct_store_completing` are deliberately NOT
+    // `any_successful_write` re-exported: that signal's own `dmem_we_amo`
+    // term stays high for every cycle of a multi-cycle AMO write wait, not
+    // just the completing one, and its `head_plain_store_now` term never
+    // sees a *buffered* store's own completion at all (see
+    // `sb_write_completing`'s own comment above - by the time that write
+    // lands, `rob_head` has moved on). `amo_done` already means "this
+    // phase's own transaction just acked," for any wait-state count, so
+    // `dmem_we_amo && amo_done` is the one-cycle pulse this port needs.
+    // `head_store_owns_port` is the exact term `dmem_we`'s own write mux
+    // keys its real store strobe off (unlike `any_successful_write`'s own
+    // `head_plain_store_now && !sb_valid && !dbus_wait`, which omits the
+    // `!port_taken_by_load` exclusion - harmless internally only because
+    // `head_dbus_stall` already holds whenever that would matter, a
+    // protection a raw exported port does not get for free).
+    wire amo_write_completing    = dmem_we_amo && amo_done;
+    wire direct_store_completing = head_store_owns_port && !dbus_wait;
+
+    assign resv_valid  = reservation_valid;
+    assign resv_addr   = reservation_addr;
+    // The three disjuncts are mutually exclusive (the ROB head is either a
+    // store or an AMO at any given time; `amo_active` already excludes
+    // `port_taken_by_store`), so `store_addr`'s two-arm mux covers every
+    // case `store_fire` can be true for: `sb_addr` for a buffered store
+    // draining after `rob_head` has already moved on, `head_mem_phys_addr`
+    // for a direct store or AMO write landing while it is still the head.
+    assign store_fire  = sb_write_completing || direct_store_completing ||
+                          amo_write_completing;
+    assign store_addr  = sb_write_completing ? sb_addr : head_mem_phys_addr;
 
     // The PLIC's claim/complete register has a read side effect (each read
     // claims the next pending source), which is what made the extra cycle

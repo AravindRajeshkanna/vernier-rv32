@@ -1470,6 +1470,24 @@ sim_cpu_resv_ports: sim/sim_cpu_resv_ports.out
 	@grep -aq "CPU-RESV-PORTS-TEST: PASS" sim/cpu_resv_ports.log && echo "CPU RESERVATION PORTS OK" || \
 	    { echo "FAILED: cpu_core.v's reservation-exposure ports"; exit 1; }
 
+# The out-of-order analog, always against rtl/ooo/core_ooo.v directly -
+# independent of $(CORE_RTL)/ambient CORE=, the opposite reason
+# sim_cpu_resv_ports above is always cpu_core.v: this one exists
+# specifically to prove core_ooo.v's own identically-shaped ports, so it
+# runs the same regardless of which core the rest of the ambient build is
+# testing. See sim/tb_ooo_resv_ports.v's own header for what this proves
+# and why - in particular the store-buffer-drain address case
+# sim/tb_cpu_resv_ports.v has no equivalent of at all.
+sim/sim_ooo_resv_ports.out: sim/tb_ooo_resv_ports.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v \
+                       rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/imem.v rtl/dmem.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ooo_resv_ports.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v \
+	    rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/imem.v rtl/dmem.v
+
+sim_ooo_resv_ports: sim/sim_ooo_resv_ports.out
+	cd sim && $(VVP) sim_ooo_resv_ports.out $(VVP_DUMP) | tee ooo_resv_ports.log
+	@grep -aq "OOO-RESV-PORTS-TEST: PASS" sim/ooo_resv_ports.log && echo "OOO RESERVATION PORTS OK" || \
+	    { echo "FAILED: rtl/ooo/core_ooo.v's reservation-exposure ports"; exit 1; }
+
 # ---- Phase 13 stage 8: rtl/soc/soc_top.v's NUM_HARTS=2, a real second
 # hart's hardware ----
 #
@@ -1864,6 +1882,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
         sim_cpu_resv_ports \
+        sim_ooo_resv_ports \
         sim_soc_2hart \
         sim_soc_2hart_lrsc \
         sim_ooo_csr_hazard \
