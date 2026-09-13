@@ -39,6 +39,7 @@ GPRs
 GTKWave
 Gowin
 IMMU
+IPIs
 Intergalaktik
 JTAG
 Kbit
