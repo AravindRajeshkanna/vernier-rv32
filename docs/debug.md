@@ -88,9 +88,11 @@ simulation only) — over Abstract Command, the real DMI wire, not a
 simulation shortcut — but deliberately skip the RISC-V debug spec's full
 debug ROM/Program Buffer model, which is what a real debugger needs and
 what would land on the fetch and writeback paths of a design with almost
-no timing margin. `CORE=ooo` has none of this yet, System Bus Access
-only. `rtl/debug/README.md` has the full account of what exists and why
-the harder half was scoped out.
+no timing margin. `CORE=ooo` has the same mechanism now too, proven in
+isolation (`sim/tb_ooo_halt.v`) - but not yet reachable over the real DMI
+wire the way `CORE=inorder`'s already is, so through the real debug path
+it is still System Bus Access only, honestly reported. `rtl/debug/README.md`
+has the full account of what exists and why the harder half was scoped out.
 
 `make sim_jtag` drives the four pins the way an adapter does and is gated in
 `make verify`.

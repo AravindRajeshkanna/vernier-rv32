@@ -74,12 +74,15 @@ bit now) just tells the resume logic to arm that block immediately instead
 of leaving it open. Same reasoning as halt/resume: nothing added is on the
 fetch-redirect mux.
 
-`CORE=ooo` has none of this wired up. `dmstatus` says so honestly —
-`haltreq` is accepted and ignored, `allrunning` stays 1 — and an Abstract
-Command gets `cmderr` = halt/resume-required, the same as a real host would
-see against any hart it can't stop. A debugger gets a hart that never halts
-and a register access that never lies about succeeding, rather than either
-one silently doing nothing.
+`CORE=ooo` has the same ports now too (Phase 13, Stage 18), including
+single-step - proven in isolation by `sim/tb_ooo_halt.v` - but they are not
+yet wired to a real `rtl/debug/dm.v` (a later stage's own job). Until then,
+`dmstatus` still says so honestly - `haltreq` is accepted and ignored,
+`allrunning` stays 1 - and an Abstract Command gets `cmderr` =
+halt/resume-required, the same as a real host would see against any hart it
+can't stop. A debugger gets a hart that never halts and a register access
+that never lies about succeeding, rather than either one silently doing
+nothing.
 
 ## Three things worth knowing if you change it
 

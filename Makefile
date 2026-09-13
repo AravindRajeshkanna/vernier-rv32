@@ -1495,6 +1495,23 @@ sim_ooo_resv_ports: sim/sim_ooo_resv_ports.out
 	@grep -aq "OOO-RESV-PORTS-TEST: PASS" sim/ooo_resv_ports.log && echo "OOO RESERVATION PORTS OK" || \
 	    { echo "FAILED: rtl/ooo/core_ooo.v's reservation-exposure ports"; exit 1; }
 
+# Hart control for rtl/ooo/core_ooo.v (Phase 13, stage 18) - the same
+# out-of-order analog rtl/ooo/regfile_phys.v's own reservation-ports target
+# above is, always against core_ooo.v directly regardless of ambient CORE=.
+# See sim/tb_ooo_halt.v's own header for what this proves and why - in
+# particular the store-buffer-drain quiescence case (check 0) neither
+# sim/tb_cpu_halt.v nor its own harder-earned test design has an equivalent
+# of at all.
+sim/sim_ooo_halt.out: sim/tb_ooo_halt.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v \
+                       rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/imem.v rtl/dmem.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ooo_halt.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v \
+	    rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/imem.v rtl/dmem.v
+
+sim_ooo_halt: sim/sim_ooo_halt.out
+	cd sim && $(VVP) sim_ooo_halt.out $(VVP_DUMP) | tee ooo_halt.log
+	@grep -aq "OOO-HALT-TEST: PASS" sim/ooo_halt.log && echo "OOO HALT/RESUME OK" || \
+	    { echo "FAILED: rtl/ooo/core_ooo.v's hart control (halt/resume/register access)"; exit 1; }
+
 # ---- Phase 13 stage 8: rtl/soc/soc_top.v's NUM_HARTS=2, a real second
 # hart's hardware ----
 #
@@ -1889,6 +1906,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_cpu_halt \
         sim_cpu_resv_ports \
         sim_ooo_resv_ports \
+        sim_ooo_halt \
         sim_soc_2hart \
         sim_soc_2hart_lrsc \
         sim_ooo_csr_hazard \

@@ -105,7 +105,15 @@ module tb_ooo_resv_ports;
         .fence_i(), .trap(trap),
         .resv_valid(resv_valid), .resv_addr(resv_addr),
         .store_fire(store_fire), .store_addr(store_addr),
-        .resv_invalidate_ext(resv_invalidate_ext)
+        .resv_invalidate_ext(resv_invalidate_ext),
+        // This test is about the reservation ports only - hart control is
+        // sim/tb_ooo_halt.v's own job. Tied off explicitly, not omitted,
+        // for the same X-poisoning reason every other tie-off in this tree
+        // is (an omitted input floats/reads as X in Icarus/Verilator).
+        .dbg_haltreq(1'b0), .dbg_resumereq(1'b0), .dbg_halted(),
+        .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
+        .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
+        .dbg_reg_rdata(), .dbg_reg_err()
     );
 
     imem #(.MEM_WORDS(64)) IMEM (.addr(imem_addr), .rdata(imem_rdata));

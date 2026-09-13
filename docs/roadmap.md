@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0); `rtl/debug/dm.v`'s own `hartsel` now reaches every hart too, not just hart 0 (Stage 14, with a real cross-hart register-isolation proof) - all three proven through the real boot/debug paths rather than a shortcut. `CORE=ooo` now has real cross-hart LR/SC coherence too (Stage 15 gave it the same reservation ports `cpu_core.v` has; Stage 16 wired them to a real `reservation_monitor` instance and proved the same cross-hart hazard `sim/tb_soc_2hart_lrsc.v` already proved for the in-order core) and boots the same `CONFIG_SMP=y` Linux to userspace on both harts too (Stage 17, `sim_linux_2hart CORE=ooo`, first attempt, no new coherence bug found). Still open: `CORE=ooo` has no debug register port on any hart, and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0); `rtl/debug/dm.v`'s own `hartsel` now reaches every hart too, not just hart 0 (Stage 14, with a real cross-hart register-isolation proof) - all three proven through the real boot/debug paths rather than a shortcut. `CORE=ooo` now has real cross-hart LR/SC coherence too (Stage 15 gave it the same reservation ports `cpu_core.v` has; Stage 16 wired them to a real `reservation_monitor` instance and proved the same cross-hart hazard `sim/tb_soc_2hart_lrsc.v` already proved for the in-order core) and boots the same `CONFIG_SMP=y` Linux to userspace on both harts too (Stage 17, `sim_linux_2hart CORE=ooo`, first attempt, no new coherence bug found). `CORE=ooo` also gained the same halt/resume/single-step/register-access ports `cpu_core.v` has, proven in isolation (Stage 18), but not yet wired to a real `rtl/debug/dm.v`. Still open: no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -4945,6 +4945,142 @@ not a gated regression, matching every other Linux/OpenSBI target in
 this file. `CORE=ooo` still has no debug register port on any hart, and
 no board build has ever asked for `NUM_HARTS>1` on either core - those
 remain the genuinely open items.
+
+**Stage 18: `rtl/ooo/core_ooo.v` gains the same halt/resume/single-step/
+register-access ports `cpu_core.v` has had since Phase 6 - proven in
+isolation, not yet wired for real use, mirroring the exact "ports first,
+wiring later" sequencing Stages 15 -> 16 already used for cross-hart
+coherence on this same core.** `CORE=ooo` has had zero hart-control story
+of any kind since Phase 6 - `dbg_haltreq`/`dbg_resumereq`/`dbg_halted`/
+`dbg_reg_*` simply did not exist on this core, and `rtl/soc/soc_top.v`'s
+own tie-off reported every hart as permanently running, every Abstract
+Command as `CMDERR_HALTRESUME`, honestly rather than silently. This stage
+adds them, identically named and shaped to `cpu_core.v`'s own, so
+`rtl/debug/dm.v` can eventually reach either core's hart-control ports
+without any change of its own - confirmed by direct read that `dm.v`
+already forwards `cmd_regno` completely generically and gates only on
+`sel_halted`, with zero GPR/dcsr/dpc-specific logic anywhere in it.
+
+**The one place a literal port of `cpu_core.v`'s own design would have
+been wrong, found before writing a line of RTL:** this core has a
+4-deep fetch buffer (FB) between IF and dispatch, and fetch/PC
+advancement is completely independent of dispatch admission -
+`dispatch_can_go` (the natural, `cpu_core.v`-mirroring hook point) has no
+fetch term at all, and the `pc` register only freezes once the FB itself
+stops filling. Gating dispatch alone would have let `pc` and the FB run
+up to four words ahead of whatever the ROB had actually drained -
+`rob_empty` would hold with no single unambiguous resume address. The
+correct hook is `fb_push` (the FB's own fill condition), not
+`dispatch_can_go`: block only new fetch admission; leave dispatch,
+execute, retire, and recovery completely untouched, so everything
+already in flight drains through the pipeline exactly the way
+`cpu_core.v`'s own "halting drains the pipeline instead of killing it"
+already works, just anchored one stage earlier. Once `fb_push` is
+blocked, the FB drains to empty for free as dispatch keeps popping it;
+once the FB and the ROB are both empty, `pc` has been frozen since the
+halt request and is the single, unambiguous resume address.
+
+**A second, genuinely OOO-specific quiescence term, found by tracing the
+store-buffer mechanism the LR/SC coherence work (Stage 15) already
+named:** a plain store retires from the ROB the instant it hands off to
+the one-entry store buffer, before its write actually reaches the bus.
+`rob_empty` can therefore be true while a write this hart already
+reported as retired is still physically draining - `cpu_core.v` never
+needed a separate term for this because its own quiescence check already
+holds a store for its whole in-flight duration instead of retiring it
+early. `core_ooo.v`'s own quiescence needs an explicit `!sb_valid` term
+`cpu_core.v` never needed; AMOs and out-of-order loads need no
+equivalent (both already complete their register/bus effect no later
+than retirement).
+
+**GPR access, verified safe once quiescent, and one genuine design
+divergence from `cpu_core.v`'s own single-array mux:** `rtl/ooo/
+regfile_phys.v` is addressed by *physical* register number; the live
+architectural-to-physical mapping is `rat[]` in `core_ooo.v`, not a
+second architectural register file. `rat[]`'s only two writers -
+dispatch and the mispredict/exception recovery walk - are both provably
+inert for the entire halted window (dispatch requires the fetch buffer
+non-empty, which stays blocked; recovery requires a non-empty ROB).
+Every physical-register write from every completion class was traced
+and lands no later than the cycle its own ROB entry stops being
+counted, so `rob_empty` is sufficient proof every GPR write has already
+landed. A debug read/write goes through `rat[dbg_gpr_idx]`, not the raw
+regno directly - `regfile_phys.v` gained one new combinational read port
+(`dbg_rs_a`/`dbg_rdata_a`, mirroring `rtl/regfile.v`'s own `dbg_rs`/
+`dbg_rdata`) for reads, and debug writes reuse the existing Class-S
+write port via a priority mux at the `core_ooo.v` instantiation boundary
+- safe because that port's own real driver (`cdbS_valid`) is provably 0
+whenever the core is genuinely halted.
+
+Proven by a new standalone test, `sim/tb_ooo_halt.v` (`sim_ooo_halt`,
+unconditionally in `make verify`'s dependency list - it always exercises
+`core_ooo.v` regardless of ambient `CORE=`), modeled on `sim/
+tb_cpu_halt.v`'s own 2-instruction increment-loop program and its full
+check list (freeze, dcsr/dpc read, unrecognized-regno error, debug
+write/read-back, resume-and-continue, and single-step - two full
+stepped iterations, confirmed to retire exactly one instruction each),
+plus one check neither `cpu_core.v` nor its own test has an equivalent
+of: halt requested while a store is still draining must not take effect
+until the store buffer clears.
+
+**A real, non-vacuous test bug caught by the mutation itself, not by
+inspection - worth recording as plainly as any RTL bug this file
+records.** The first version of the store-buffer check reused the
+shared increment-loop program, waited for the store to begin its bus
+request, then polled once for the ROB/fetch-buffer to both drain before
+checking `dbg_halted`. It passed - including against a deliberately
+mutated `dbg_pipeline_quiescent` with `!sb_valid` removed, which should
+have failed and did not. Tracing why: fetch and dispatch race far ahead
+of a store's own bus completion (confirmed by a direct signal trace, not
+assumed) - by the time the shared loop's own store even reached the bus,
+several loop iterations were already dispatched, so the ROB/fetch buffer
+never actually drained close to empty until long after the store buffer
+had already cleared on its own, making the check vacuous regardless of
+the RTL's own correctness. Fixed two ways: check 0 now runs its own
+small, isolated program (one store followed immediately by a self-jump,
+so nothing further is ever admitted once fetch is blocked), and the
+check itself polls continuously for as long as the store buffer holds -
+not a single check at the instant quiescence is first observed, which
+would pass regardless of the mutation for an unrelated reason (a
+registered output always lags the condition that sets it by at least
+one cycle; only continuous polling can distinguish "one cycle of the
+usual registered lag" from "several cycles because `sb_valid` is
+genuinely part of the gate"). Confirmed non-vacuous afterward, the same
+mutation now caught, and reconfirmed passing before this was written
+down.
+
+Six further mutations, one per remaining check, each confirmed to fail
+only the check meant to catch it: dropping the fetch-admission gate
+entirely (freeze), swapping the two `dcsr.cause` literals, forcing every
+regno to appear valid, dropping the debug-write arms from the register
+mux, using the raw regno instead of `rat[dbg_gpr_idx]` (the RAT-
+indirection bug - caught specifically by "the value was genuinely
+executed from," not by the read-back check alone, since a debug read of
+the same wrong mapping is internally consistent), and re-blocking
+single-step admission off `dispatch_can_go` instead of `fb_push` (a
+real, demonstrable bug: a one-cycle window where `fb_count` has already
+reflected a push but the step-admitted latch has not yet caught up,
+letting a second, unwanted instruction through). `rtl/top.v`'s tie-off
+was made unconditional (mirroring Stage 15's identical fix to this same
+file), and `rtl/soc/soc_top.v`'s two `core_ooo` instantiation sites were
+given explicit, still-inert tie-offs for the same reason Stage 15
+needed them - confirmed via `make verilator_sdramboot CORE=ooo`
+directly, not assumed, since this is exactly the class of regression
+that stage already hit once. Both `make verify` and `make verify_ooo`
+are fully green on the final tree.
+
+**What this stage deliberately does not do:** wire these ports into a
+real `rtl/debug/dm.v` - every `CORE=ooo` build still ties every new port
+off exactly as before this stage, so `CORE=ooo` still has no *reachable*
+hart-control story through the real DMI path yet. That is deliberately a
+separate stage (mirroring Stage 16's own split from Stage 15), since it
+carries its own real risk - `sim/tb_jtag.v`'s own cross-hart isolation
+and Abstract Command assertions running against a real second core, not
+an isolated port - and deserves its own gate and its own proof rather
+than being folded into this one. No new formal property was added -
+matching every hart-control and coherence stage before it on this
+project's own choice to prove this exact class of feature by directed
+simulation only.
 
 ---
 

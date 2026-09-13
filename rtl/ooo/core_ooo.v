@@ -175,6 +175,27 @@ module core_ooo #(
     // SC is mid-transaction, unlike a self-inflicted same-cycle race).
     input  wire         resv_invalidate_ext,
 
+    // ---- hart control: halt/resume/register access (Phase 13) ----
+    // Same contract and same names rtl/cpu_core.v's own hart-control ports
+    // already have - "freeze pipeline admission in place," not the RISC-V
+    // debug spec's full model (no debug mode, no debug ROM, no `dret`).
+    // The one place this core's own version genuinely differs: admission
+    // is blocked at `fb_push` (the fetch buffer's own fill condition), not
+    // at dispatch - `pc`/fetch here run independently of dispatch
+    // admission (a 4-deep fetch buffer decouples them), so gating dispatch
+    // alone would leave `pc` several words ahead of whatever the ROB has
+    // actually drained, with no single unambiguous resume address. See the
+    // halt FSM's own comments near `dbg_pipeline_quiescent` below.
+    output wire         dbg_halted,
+    input  wire         dbg_haltreq,
+    input  wire         dbg_resumereq,
+    input  wire         dbg_reg_valid,
+    input  wire         dbg_reg_we,
+    input  wire [15:0]  dbg_reg_num,
+    input  wire [31:0]  dbg_reg_wdata,
+    output wire [31:0]  dbg_reg_rdata,
+    output wire         dbg_reg_err,
+
     output wire         trap
 );
 
@@ -204,6 +225,17 @@ module core_ooo #(
     wire [31:0] btb_train_pc, btb_train_target;
     wire        btb_train_taken;
     wire        recovery_fire, recovery_keep_culprit;
+
+    // ---- hart control: halt/resume/step state ----
+    // Forward-declared for the same reason as the block above: the
+    // halt-admission wire (feeding `fb_push`, declared later) needs to
+    // reference these before the always-block that drives them appears.
+    reg        dbg_halted_r, dbg_halt_pending;
+    reg        dbg_stepping_r, dbg_step_admitted_r;
+    reg [31:0] dpc_r;
+    reg [2:0]  dcsr_cause_r;
+    reg [1:0]  dcsr_prv_r;
+    reg        dcsr_step_r;
 
     localparam OPC_LOAD    = 7'b0000011;
     localparam OPC_MISCMEM = 7'b0001111;
@@ -745,13 +777,88 @@ module core_ooo #(
     // function - see the note above) each exclude their own bus for this
     // reason.
 
+    // ---- hart control: dcsr/dpc, and the debug register-access mux ----
+    //
+    // Same regno space and same reasoning rtl/cpu_core.v's own hart-control
+    // comment gives (dcsr/dpc kept out of csr_file.v's ordinary CSR path -
+    // no debug-mode instruction stream exists to reach them, and dcsr's own
+    // address 0x7b0 aliases M-mode's privilege encoding in the ordinary CSR
+    // privilege check). The one genuine difference: rtl/ooo/regfile_phys.v
+    // is addressed by *physical* register number - there is no second,
+    // architectural register file the way rtl/cpu_core.v's rtl/regfile.v
+    // is one. `rat[dbg_gpr_idx]` is the live physical register backing
+    // architectural register `dbg_gpr_idx`, and it is safe to consult here
+    // (and stays stable for the whole halted window) because
+    // `dbg_reg_valid` is only ever asserted while `dbg_halted` is high
+    // (dm.v's own contract), which per `dbg_pipeline_quiescent` above only
+    // happens while `rob_empty` holds continuously - `rat[]`'s only two
+    // writers, dispatch and the recovery walk, are both structurally idle
+    // throughout (dispatch requires the fetch buffer non-empty, which stays
+    // blocked; recovery requires `!rob_empty`).
+    wire [31:0] dcsr_r = {4'd4,              // [31:28] xdebugver = 4 (0.13/1.0 shape)
+                          12'b0,              // [27:16] reserved
+                          1'b0,               // [15] ebreakm - no-op: no ebreak-in-debug-config exists
+                          1'b0,               // [14] ebreaks - same
+                          1'b0,               // [13] ebreaku - same
+                          1'b0,               // [12] reserved
+                          1'b0,               // [11] stepie - no-op: no debug-mode instruction
+                                              //   stream to have an interrupt-enable policy for
+                          1'b0,               // [10] stopcount - no-op: counters aren't paused here
+                          1'b0,               // [9]  stoptime - same
+                          dcsr_cause_r,       // [8:6]
+                          1'b0,               // [5] reserved
+                          1'b0,               // [4] mprven - no-op: no debug-mode memory access path
+                          1'b0,               // [3] nmip - no NMI source in this core
+                          dcsr_step_r,        // [2] step - real now; see the halt FSM above
+                          dcsr_prv_r};        // [1:0]
+
+    // 0x1000-0x101f, RISC-V debug spec's Abstract-Command GPR regno range -
+    // same layout and same verified-against-a-real-test convention
+    // rtl/cpu_core.v's own identical decode already uses.
+    wire        is_gpr_regno  = (dbg_reg_num[15:5] == 11'h080);
+    wire [4:0]  dbg_gpr_idx   = dbg_reg_num[4:0];
+    wire        is_dcsr_regno = (dbg_reg_num == 16'h07B0);
+    wire        is_dpc_regno  = (dbg_reg_num == 16'h07B1);
+    wire        dbg_reg_ok    = is_gpr_regno || is_dcsr_regno || is_dpc_regno;
+    assign      dbg_reg_err   = dbg_reg_valid && !dbg_reg_ok;
+    wire        dbg_gpr_write = dbg_reg_valid && dbg_reg_ok && dbg_reg_we && is_gpr_regno;
+    wire [PW-1:0] dbg_gpr_preg = rat[dbg_gpr_idx];   // architectural -> physical, via the RAT
+    wire [31:0] dbg_gpr_rdata;
+
+    // dcsr/dpc writes land in the halt FSM above (near dbg_halted_r), not a
+    // new always block of their own - dpc_r already has one driver there
+    // (the halt-entry capture) and Verilog does not allow a second
+    // procedural block to also drive it.
+    wire        dbg_dcsr_write = dbg_reg_valid && dbg_reg_we && is_dcsr_regno;
+    wire        dbg_dpc_write  = dbg_reg_valid && dbg_reg_we && is_dpc_regno;
+
+    assign dbg_reg_rdata = is_gpr_regno  ? dbg_gpr_rdata :
+                           is_dcsr_regno ? dcsr_r :
+                           is_dpc_regno  ? dpc_r  : 32'b0;
+
+    // Reuses regfile_phys's port 0 (the Class-S/cdbS port) via a priority
+    // mux, mirroring rtl/cpu_core.v's own rf_we/rf_rd/rf_wdata mux exactly.
+    // Safe as a plain priority mux, never a real two-driver race:
+    // `dbg_gpr_write` can only be 1 while `dbg_reg_valid` is, which per
+    // dm.v's contract only happens while `dbg_halted` is high - and
+    // `cdbS_valid` is provably 0 whenever `rob_empty` holds (`headS_valid`
+    // itself requires `!rob_empty`), which is exactly the condition the
+    // whole halted window guarantees. `rd0 != 0` inside regfile_phys.v
+    // already makes a debug write to architectural x0 (`rat[0]` is always
+    // physical register 0, by construction) a correct no-op for free, the
+    // same way it already is for cdbS/cdbB/cdbL.
+    wire          rf0_we    = dbg_gpr_write ? 1'b1         : cdbS_valid;
+    wire [PW-1:0] rf0_rd    = dbg_gpr_write ? dbg_gpr_preg : cdbS_preg;
+    wire [31:0]   rf0_wdata = dbg_gpr_write ? dbg_reg_wdata : cdbS_val;
+
     regfile_phys #(.PREGS(PREGS), .PW(PW)) RF (
         .clk(clk),
         .rs1_a(rs1_preg), .rs2_a(rs2_preg),
         .rdata1_a(rf_rdata1), .rdata2_a(rf_rdata2),
-        .we0(cdbS_valid), .rd0(cdbS_preg), .wdata0(cdbS_val),
+        .we0(rf0_we), .rd0(rf0_rd), .wdata0(rf0_wdata),
         .we1(cdbB_valid), .rd1(cdbB_preg), .wdata1(cdbB_val),
-        .we2(cdbL_valid), .rd2(cdbL_preg), .wdata2(cdbL_val)
+        .we2(cdbL_valid), .rd2(cdbL_preg), .wdata2(cdbL_val),
+        .dbg_rs_a(dbg_gpr_preg), .dbg_rdata_a(dbg_gpr_rdata)
     );
 
     // =======================================================================
@@ -2078,7 +2185,15 @@ module core_ooo #(
     wire fb_dispatch_fire = dispatch_can_go;
     wire fb_pop  = fb_dispatch_fire;
     wire if_stall = itlb_wait_stall || ibus_wait;
-    wire fb_push = !recovery_fire && !sfence_en && !if_stall && (fb_count < FB_DEPTH[FB_AW:0]);
+    // dbg_halt_admit_block is the ONLY halt-related change to admission -
+    // dispatch_can_go/retire_fire/recovery_fire are untouched, so anything
+    // already in the fetch buffer or ROB drains through the pipeline
+    // normally once this blocks new fetches. See dbg_pipeline_quiescent
+    // below for why this is the correct hook point (not dispatch_can_go).
+    wire dbg_halt_admit_block = dbg_haltreq || dbg_halt_pending || dbg_halted_r ||
+                                 (dbg_stepping_r && dbg_step_admitted_r);
+    wire fb_push = !recovery_fire && !sfence_en && !if_stall &&
+                   (fb_count < FB_DEPTH[FB_AW:0]) && !dbg_halt_admit_block;
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -2119,6 +2234,71 @@ module core_ooo #(
             fb_count <= fb_count + {{FB_AW{1'b0}}, fb_push} - {{FB_AW{1'b0}}, fb_pop};
         end
     end
+
+    // ---- hart control: halted detection ----
+    //
+    // fb_empty && rob_empty mirrors rtl/cpu_core.v's own if_id/id_ex/ex_mem
+    // quiescence check, one stage earlier (fetch, not decode) - blocking
+    // only new *fetch* admission (fb_push, above) is enough to let
+    // dispatch/execute/retire/recovery drain everything already in flight
+    // unmodified, the same "halting drains the pipeline instead of killing
+    // it" property that check already has there.
+    //
+    // `!sb_valid` has no rtl/cpu_core.v analog by name, because that core's
+    // own quiescence gets the equivalent property for free: its dbus_wait
+    // stall holds `ex_mem_valid` for a store's whole in-flight duration
+    // instead of retiring it early. This core retires a plain store into a
+    // one-entry store buffer before its write reaches the bus (`sb_valid`,
+    // see its own declaration/comment above), so `rob_empty` alone can be
+    // true while a write this hart already reported as retired is still
+    // draining - a debugger's own memory access could otherwise race it.
+    // `!sb_valid` closes that gap. AMOs and out-of-order loads need no
+    // equivalent term: both already complete their register/bus effect no
+    // later than the cycle they retire.
+    wire dbg_pipeline_quiescent = fb_empty && rob_empty && !sb_valid;
+    wire dbg_step_done = dbg_stepping_r && dbg_step_admitted_r;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            dbg_halted_r        <= 1'b0;
+            dbg_halt_pending    <= 1'b0;
+            dbg_stepping_r      <= 1'b0;
+            dbg_step_admitted_r <= 1'b0;
+            dcsr_step_r         <= 1'b0;
+        end else if (dbg_halted_r) begin
+            if (dbg_dpc_write)  dpc_r <= dbg_reg_wdata;
+            if (dbg_dcsr_write) dcsr_step_r <= dbg_reg_wdata[2];
+            if (dbg_resumereq) begin
+                dbg_halted_r        <= 1'b0;
+                dbg_halt_pending    <= 1'b0;
+                dbg_stepping_r      <= dcsr_step_r;
+                dbg_step_admitted_r <= 1'b0;
+            end
+        end else begin
+            if (dbg_haltreq) dbg_halt_pending <= 1'b1;
+            // Re-block trigger MUST be fb_push itself, not dispatch_can_go:
+            // dispatch_can_go depends on if_id_valid (= !fb_empty), which
+            // is derived from fb_count - a register that only reflects a
+            // push one cycle after fb_push actually fired. Latching the
+            // reblock off dispatch_can_go instead would leave a one-cycle
+            // window where fb_count has already become nonzero but
+            // dbg_step_admitted_r has not yet latched, during which
+            // fb_push's own formula (still gated on the not-yet-updated
+            // dbg_halt_admit_block) would evaluate true again and admit a
+            // second, unwanted instruction before reblocking engages.
+            if (fb_push && dbg_stepping_r && !dbg_step_admitted_r)
+                dbg_step_admitted_r <= 1'b1;
+            if ((dbg_halt_pending || dbg_step_done) && dbg_pipeline_quiescent) begin
+                dbg_halted_r     <= 1'b1;
+                dbg_halt_pending <= 1'b0;
+                dbg_stepping_r   <= 1'b0;
+                dpc_r            <= pc;   // frozen since the halt request - see fb_push above
+                dcsr_cause_r     <= dbg_step_done ? 3'd4 : 3'd3;  // step : haltreq
+                dcsr_prv_r       <= current_priv;
+            end
+        end
+    end
+    assign dbg_halted = dbg_halted_r;
 
     // =======================================================================
     // RAT / ROB / free-list: dispatch, issue-completion latching, retire,

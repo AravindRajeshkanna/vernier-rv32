@@ -62,7 +62,16 @@ module regfile_phys #(
     // Write port 2: the out-of-order load port (Class B2).
     input  wire          we2,
     input  wire [PW-1:0] rd2,
-    input  wire [31:0]   wdata2
+    input  wire [31:0]   wdata2,
+
+    // Debug read port (rtl/debug/dm.v, via core_ooo.v's dbg_reg_* mux and
+    // its own rat[] lookup - this module has no notion of an architectural
+    // register number itself). Combinational and unbypassed, for the same
+    // reason rtl/regfile.v's own dbg_rdata is: only ever meaningful while
+    // the core is genuinely halted, so there is nothing in flight to race
+    // and no same-cycle write to bypass around.
+    input  wire [PW-1:0] dbg_rs_a,
+    output wire [31:0]   dbg_rdata_a
 );
     reg [31:0] regs [0:PREGS-1];
     integer i;
@@ -78,6 +87,7 @@ module regfile_phys #(
 
     assign rdata1_a = (rs1_a == {PW{1'b0}}) ? 32'b0 : regs[rs1_a];
     assign rdata2_a = (rs2_a == {PW{1'b0}}) ? 32'b0 : regs[rs2_a];
+    assign dbg_rdata_a = (dbg_rs_a == {PW{1'b0}}) ? 32'b0 : regs[dbg_rs_a];
 
     always @(posedge clk) begin
         if (w0) regs[rd0] <= wdata0;
