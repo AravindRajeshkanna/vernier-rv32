@@ -334,7 +334,21 @@ module soc_top #(
         .resv_valid(resv_valid[0]), .resv_addr(resv_addr[31:0]),
         .store_fire(store_fire[0]), .store_addr(store_addr[31:0]),
         .resv_invalidate_ext(resv_invalidate[0])
-`ifndef CORE_OOO
+`ifdef CORE_OOO
+        // core_ooo.v has these nine ports now too (Phase 13, Stage 18) -
+        // the port list is mandatory even though wiring them to a real
+        // rtl/debug/dm.v is a later stage's own job (see the `ifdef
+        // CORE_OOO` assign below, still tying every hart's own dbg_halted/
+        // dbg_reg_rdata_h/dbg_reg_err_h to "never halted, every access
+        // errors"). Tied off explicitly here for the same reason
+        // rtl/top.v's own identical fix is: an unconnected Verilog input
+        // floats/reads as X, which would poison every test that
+        // instantiates this module.
+        , .dbg_haltreq(1'b0), .dbg_resumereq(1'b0), .dbg_halted(),
+        .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
+        .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
+        .dbg_reg_rdata(), .dbg_reg_err()
+`else
         // core_ooo.v has no debug/hart-control ports at all - see the
         // `ifdef CORE_OOO` tie-off below for dbg_halted/dbg_reg_rdata_h/
         // dbg_reg_err_h.
@@ -345,15 +359,15 @@ module soc_top #(
 `endif
     );
 `ifdef CORE_OOO
-    // core_ooo.v has no hart-control ports at all (see the comment above) -
-    // report honestly rather than silently claiming a halt or a successful
-    // register access that can never happen, the same rule dm.v's own
-    // dmstatus already follows for System Bus Access (rtl/debug/README.md).
-    // dm.v itself also refuses any command while !halted (cmderr =
-    // halt/resume required), so dbg_reg_err here is a backstop, not the
-    // only thing standing between a host and a fabricated register value.
-    // Every hart, not just hart 0 - core_ooo.v never gets a debug register
-    // port regardless of which hart a host selects.
+    // core_ooo.v has these ports now too (Stage 18, see the tie-off
+    // above), but wiring them to a real rtl/debug/dm.v is a later stage's
+    // own job - this build still reports honestly rather than silently
+    // claiming a halt or a successful register access that can never
+    // happen, the same rule dm.v's own dmstatus already follows for
+    // System Bus Access (rtl/debug/README.md). dm.v itself also refuses
+    // any command while !halted (cmderr = halt/resume required), so
+    // dbg_reg_err here is a backstop, not the only thing standing between
+    // a host and a fabricated register value. Every hart, not just hart 0.
     assign dbg_halted    = {NUM_HARTS{1'b0}};
     assign dbg_reg_rdata_h = {(NUM_HARTS*32){1'b0}};
     assign dbg_reg_err_h   = {NUM_HARTS{1'b1}};
@@ -429,7 +443,15 @@ module soc_top #(
                 .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
                 .store_fire(store_fire[h]), .store_addr(store_addr[32*h +: 32]),
                 .resv_invalidate_ext(resv_invalidate[h])
-`ifndef CORE_OOO
+`ifdef CORE_OOO
+                // Same tie-off as hart 0's own instantiation above, and for
+                // the same reason - core_ooo.v has these ports now (Stage
+                // 18) but they are not yet wired to a real rtl/debug/dm.v.
+                , .dbg_haltreq(1'b0), .dbg_resumereq(1'b0), .dbg_halted(),
+                .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
+                .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
+                .dbg_reg_rdata(), .dbg_reg_err()
+`else
                 // Real per-hart wiring, gated by dm.v's own hartsel through
                 // dbg_reg_valid_h/dbg_reg_rdata_h/dbg_reg_err_h above - this
                 // hart is reachable from the debug path exactly when a host

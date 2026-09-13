@@ -27,6 +27,7 @@ ECALL
 EEMBC
 EEPROMs
 Endianness
+FB's
 FFs
 FIFOs
 FPGAs
@@ -253,6 +254,7 @@ rearchitecture
 reframed
 reframes
 reframing
+regno
 reimplements
 reindexed
 repo
