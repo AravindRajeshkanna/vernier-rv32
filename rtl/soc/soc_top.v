@@ -224,7 +224,9 @@ module soc_top #(
     // it has no "other hart" to ever report, so resv_invalidate[0] is
     // always 0 by construction, not by a special case. CORE_OOO ties these
     // to 0 directly (see the `ifdef CORE_OOO` assign below): core_ooo.v
-    // has no resv_valid/store_fire outputs of its own to drive them with.
+    // has these same ports now (Stage 15), but wiring them for real
+    // cross-hart coherence is a later stage's own job - this build still
+    // ties them off exactly as before that stage.
     wire [NUM_HARTS-1:0]    resv_valid, store_fire, resv_invalidate;
     wire [NUM_HARTS*32-1:0] resv_addr, store_addr;
 
@@ -326,10 +328,21 @@ module soc_top #(
         .mtip(mtip[0]), .msip_in(msip[0]), .meip(plic_eip[0]), .seip(plic_eip[1]),
         .mtime_in(mtime),
         .fence_i(fence_i[0]), .trap(trap)
-`ifndef CORE_OOO
-        // core_ooo.v has no reservation-monitor ports yet - see the
-        // `ifdef CORE_OOO` assign below, which ties this hart's own slice
-        // of the monitor's inputs to 0 in that build instead.
+`ifdef CORE_OOO
+        // rtl/ooo/core_ooo.v has these five ports now too (Phase 13,
+        // Stage 15) - the port list is mandatory even though wiring them
+        // to a real rtl/soc/reservation_monitor.v instance is a later
+        // stage's own job (see the `ifdef CORE_OOO` assign below, still
+        // tying every hart's own slice of the monitor's inputs to 0).
+        // Tied off explicitly here for the same reason rtl/top.v's own
+        // identical fix is: an unconnected Verilog input floats/reads as
+        // X, which would poison every test that instantiates this module.
+        , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
+        .resv_invalidate_ext(1'b0)
+`else
+        // core_ooo.v has no debug/hart-control ports at all - see the
+        // `ifdef CORE_OOO` tie-off below for dbg_halted/dbg_reg_rdata_h/
+        // dbg_reg_err_h.
         , .resv_valid(resv_valid[0]), .resv_addr(resv_addr[31:0]),
         .store_fire(store_fire[0]), .store_addr(store_addr[31:0]),
         .resv_invalidate_ext(resv_invalidate[0]),
@@ -352,14 +365,14 @@ module soc_top #(
     assign dbg_halted    = {NUM_HARTS{1'b0}};
     assign dbg_reg_rdata_h = {(NUM_HARTS*32){1'b0}};
     assign dbg_reg_err_h   = {NUM_HARTS{1'b1}};
-    // Same honesty rule for coherence: core_ooo.v has no resv_valid/
-    // store_fire outputs to drive the monitor with, so every hart reports
-    // "no reservation, no write" rather than leaving these floating.
-    // rtl/soc/reservation_monitor.v's own resv_invalidate output is simply
-    // unread on this build - there is no resv_invalidate_ext input to feed
-    // it into. See docs/roadmap.md's Phase 13 entry: CORE=ooo has no
-    // cross-hart LR/SC coherence of any kind yet, same as before this
-    // stage, since the gap was cpu_core.v-only from Stage 7 onward.
+    // Same honesty rule for coherence, still true even though core_ooo.v
+    // has these ports now (Stage 15): they are each tied off directly on
+    // its own instantiation above (matching rtl/top.v's own identical
+    // fix), so every hart reports "no reservation, no write" here rather
+    // than actually driving the monitor - wiring them for real cross-hart
+    // coherence is a later stage's own job. See docs/roadmap.md's Phase 13
+    // entry: CORE=ooo has no cross-hart LR/SC coherence of any kind yet,
+    // same as before this stage.
     assign resv_valid  = {NUM_HARTS{1'b0}};
     assign resv_addr   = {(NUM_HARTS*32){1'b0}};
     assign store_fire  = {NUM_HARTS{1'b0}};
@@ -431,7 +444,14 @@ module soc_top #(
                 .mtip(mtip[h]), .msip_in(msip[h]), .meip(plic_eip[2*h]), .seip(plic_eip[2*h+1]),
                 .mtime_in(mtime),
                 .fence_i(fence_i[h]), .trap()
-`ifndef CORE_OOO
+`ifdef CORE_OOO
+                // Same tie-off as hart 0's own instantiation above, and
+                // for the same reason - core_ooo.v has these ports now
+                // (Stage 15) but they are not yet wired to a real
+                // reservation_monitor instance.
+                , .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
+                .resv_invalidate_ext(1'b0)
+`else
                 , .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
                 .store_fire(store_fire[h]), .store_addr(store_addr[32*h +: 32]),
                 .resv_invalidate_ext(resv_invalidate[h]),

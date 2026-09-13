@@ -338,9 +338,18 @@ these are no longer just scaffolding on `CORE=inorder`:
 `rtl/soc/soc_top.v` wires every hart's own ports to a real
 `rtl/soc/reservation_monitor.v` instance, so a foreign hart's write
 genuinely clears this hart's reservation over the real bus, proven by a
-directed test at `NUM_HARTS=2`. `CORE=ooo` is unaffected either way -
-`rtl/ooo/core_ooo.v` has none of these ports, so it still has no
-cross-hart LR/SC story at all, coherent or otherwise.
+directed test at `NUM_HARTS=2`. `rtl/ooo/core_ooo.v` also has these same
+ports now (Phase 13, Stage 15), proven in isolation the same way Stage 7's
+own `sim/tb_cpu_resv_ports.v` did for `cpu_core.v` - plus one case that test
+has no equivalent of at all: `core_ooo.v`'s own single-entry store buffer
+can retire a plain store into the bus before `rob_head` has moved on to a
+different instruction, so `store_addr` has to come from the store buffer's
+own address register for that case, not wherever the ROB head happens to be
+by the time the write actually lands. Wiring these into a real
+`reservation_monitor` instance - actual cross-hart coherence for
+`CORE=ooo` - is a later stage's own job; until it lands, every `CORE=ooo`
+build still ties `resv_invalidate_ext` to 0 and ignores the three outputs,
+exactly as before.
 The read-modify-write mechanics live in MEM
 (section 2e); decode and hazard handling treat AMO/LR like a load with a
 possible conditional write, described in 2b/2c.

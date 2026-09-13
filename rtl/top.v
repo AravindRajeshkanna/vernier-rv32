@@ -93,7 +93,16 @@ module top #(
         .mtip(mtip), .msip_in(msip), .meip(plic_eip[0]), .seip(plic_eip[1]),
         .mtime_in(mtime),
         .fence_i(), // no instruction buffer on this top level - nothing to flush
-        .trap(trap)
+        .trap(trap),
+        // Both cores expose these now (Phase 13, docs/roadmap.md): no
+        // second hart's rtl/soc/reservation_monitor.v exists to wire this
+        // to, and `resv_invalidate_ext` is an input - tied low explicitly
+        // rather than omitted, for the same X-poisoning reason the dbg_*
+        // tie-off below explains. Unconditional (not core-specific), since
+        // both `cpu_core.v` and `rtl/ooo/core_ooo.v` have identical ports
+        // here.
+        .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
+        .resv_invalidate_ext(1'b0)
 `ifndef CORE_OOO
         // Hart control (rtl/debug/dm.v) is not wired to this flat testbench
         // harness at all - it exists to exercise the CPU/memory path
@@ -102,18 +111,13 @@ module top #(
         // constants, not omitted: an omitted input floats/reads as X in
         // Icarus/Verilator, and dbg_haltreq feeds pc_freeze and the regfile
         // write mux directly - an X there would poison every test that
-        // instantiates this module, which is most of `make verify`.
+        // instantiates this module, which is most of `make verify`. Still
+        // core-specific: `rtl/ooo/core_ooo.v` has no debug/hart-control
+        // ports at all, unlike the reservation ports above.
         , .dbg_haltreq(1'b0), .dbg_resumereq(1'b0),
         .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
         .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
-        .dbg_halted(), .dbg_reg_rdata(), .dbg_reg_err(),
-        // Same discipline as the debug ports above: no second hart's
-        // rtl/soc/reservation_monitor.v exists to wire this to, and
-        // `resv_invalidate_ext` is an input - tied low explicitly rather
-        // than omitted, for the same X-poisoning reason. See
-        // docs/roadmap.md's Phase 13 entry.
-        .resv_valid(), .resv_addr(), .store_fire(), .store_addr(),
-        .resv_invalidate_ext(1'b0)
+        .dbg_halted(), .dbg_reg_rdata(), .dbg_reg_err()
 `endif
     );
 

@@ -1867,7 +1867,7 @@ just be a worse copy:**
 | U-Boot | — | Deliberately skipped: `fw_jump` already knows where `mkimage.py` packed the kernel, so there is nothing for U-Boot to do |
 | Linux kernel, to a login shell | Phase 5 / Phase 7 | **Partial, and this is the one line in the table worth reading twice.** Both cores now reach `/init` and print a static userspace banner — `software/linux/initramfs/init.c` is 193 lines with no `fork`/`exec`/`wait` in it, because there is no rv32 Linux libc on the build machine to link a real shell against. `CORE=ooo` did not reach userspace at all for most of this investigation; "Stage 1d was built anyway"'s Update 15 has the fix |
 | fork/memory-pressure/context-switch stress | — | Not attempted, and cannot be until the row above moves — nothing to stress-test without a second process |
-| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0); `rtl/debug/dm.v`'s own `hartsel` now reaches every hart too, not just hart 0 (Stage 14, with a real cross-hart register-isolation proof) - all three proven through the real boot/debug paths rather than a shortcut. Still open: `CORE=ooo` has no coherence story at all (`rtl/ooo/core_ooo.v` never got the reservation ports) and cannot boot SMP, nor does it have a debug register port on any hart; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
+| Multi-core / SMP | Phase 13 — "Multi-core: both cores, one SoC" | **Every "Done when" clause closed, for the in-order core, in simulation.** `rtl/soc/soc_top.v` genuinely builds and runs two harts (`NUM_HARTS=2`); cross-hart LR/SC is coherent (`rtl/soc/reservation_monitor.v` wired to both, a directed test proves a real hazard); `dts/soc.dts` declares both harts and OpenSBI detects them (`Platform HART Count : 2`); and `CONFIG_SMP=y` Linux boots both harts to userspace (`smp: Brought up 1 node, 2 CPUs`, `/proc/cpuinfo` shows harts 0 and 1). `software/soc/bootrom.c` also gained a real mailbox (`crt0_rom.S` parks every non-zero hart, hart 0 releases them with a correct `mhartid` in `a0`) and, separately, a real device tree in `a1` (Stage 13: `dts/soc.dtb` embedded in ROM, `a1` no longer a literal 0); `rtl/debug/dm.v`'s own `hartsel` now reaches every hart too, not just hart 0 (Stage 14, with a real cross-hart register-isolation proof) - all three proven through the real boot/debug paths rather than a shortcut. Still open: `CORE=ooo` has no *cross-hart* coherence yet - it gained the same reservation ports `cpu_core.v` has, proven in isolation (Stage 15), but they are not yet wired to a real `reservation_monitor` instance - and cannot boot SMP, nor does it have a debug register port on any hart; and no board build has ever asked for `NUM_HARTS>1` - nothing outside simulation can reach a second hart yet — Phase 13 has the full account |
 | Performance counters | `rtl/csr_file.v` | Only the RISC-V-mandated minimum: `mcycle`/`minstret`(+high halves)/`cycle`/`instret`/`time`. No `mhpmcounter3-31` — cosim's own Spike invocation excludes `zihpm` because this core does not implement it |
 
 **One item from the generic plan's "Key Risks" section is worth quoting
@@ -4722,6 +4722,124 @@ bootrom.c` and `dts/soc.dts` still do not know a second hart exists.
 `CORE=ooo` coherence and an actual board build with `NUM_HARTS>1`
 remain open, closing out every item Phase 13 itself ever named as
 still open except those two.
+
+**Stage 15: `rtl/ooo/core_ooo.v` gains the same reservation ports
+`cpu_core.v` has had since Stage 7 - proven in isolation, not yet wired
+for real cross-hart use, the same "ports first, wiring later" sequencing
+Stage 7 → Stage 9 already used once for the in-order core.** `CORE=ooo`
+has had zero cross-hart LR/SC coherence story of any kind since Phase 13
+began - `resv_valid`/`resv_addr`/`store_fire`/`store_addr`/
+`resv_invalidate_ext` simply did not exist on this core. This stage adds
+them, identically named and shaped to `cpu_core.v`'s own, so
+`rtl/soc/soc_top.v` can eventually wire either core into the same
+`rtl/soc/reservation_monitor.v` instance without special-casing either
+one. `resv_valid`/`resv_addr` are a direct passthrough of the private
+`reservation_valid`/`reservation_addr` registers this core has always
+had. The new reservation-clearing branch (`resv_invalidate_ext`, checked
+ahead of every existing branch, mirroring `cpu_core.v`'s own justified
+ordering) is provably inert everywhere today: every existing build ties
+the input to 0, so this stage changes no currently-passing test's own
+functional outcome - confirmed by running the same directed cosim/formal
+suite unchanged. It does, as the next two sections cover, require
+explicitly tying off the new ports wherever `core_ooo.v` was already
+instantiated without them - a mandatory Verilog port is not optional
+regardless of whether anything is wired to it yet.
+
+**Why this was safe to add without touching the pipeline's own
+speculative machinery:** AMO/LR/SC get an ordinary ROB entry at dispatch
+like any other instruction, but execute only once genuinely at the ROB
+head - architecturally impossible for a speculative or since-flushed
+instruction to ever touch the reservation. Neither a trap, an interrupt,
+nor a mispredict-driven recovery can preempt an in-flight AMO's own bus
+transaction (a previously-fixed real bug in exactly this area already
+guarantees it). This extension is additive wiring plus two new signals,
+not a rearchitecture.
+
+**The one genuinely OOO-specific piece: `store_fire`/`store_addr` are not
+simply `cpu_core.v`'s own terms re-exported.** This core has a
+single-entry store buffer a plain store retires into *before* its write
+actually reaches the bus - by the time that buffered write lands,
+`rob_head` has already advanced to a different, younger instruction, so
+`store_addr` must come from the store buffer's own address register for
+that case (`sb_addr`), not wherever the ROB head is sitting on by then
+(`head_mem_phys_addr`, used for the direct-store/AMO case instead).
+Separately, this core's own internal `dmem_we_amo` stays asserted for
+every cycle of a multi-cycle AMO write wait, not just the completing one
+- a raw port built from it would pulse "landed" once per wait cycle
+rather than once per write; `amo_done` already means "this phase's own
+transaction just acked," so `dmem_we_amo && amo_done` is the correct
+one-cycle pulse.
+
+`rtl/top.v` - the flat, zero-latency harness `make verify`'s base gate
+already builds - needed the identical fix Stage 7 made to this same file
+for the identical reason: an explicit tie-off for the new ports (an
+unconnected Verilog input floats/reads as X, which would poison every
+test that instantiates this module), applied to both core types now
+rather than only `cpu_core.v`.
+
+**A second, real instance of the same gap, caught only by running the
+actual gate rather than by inspection.** `rtl/soc/soc_top.v`'s own
+`` `ifdef CORE_OOO `` instantiation of `core_ooo` (hart 0 and the
+harts-1..N-1 generate loop) was deliberately left unwired this stage -
+the plan for this work explicitly scoped real cross-hart wiring to a
+later stage. What that plan missed: Verilog ports are not optional
+regardless of whether anything meaningful is connected to them, and
+Icarus (`make verify`) tolerates an unconnected port silently enough
+that the omission built and passed clean - but Verilator's own build
+(`make verilator_sdramboot`, part of `make verify_ooo`) reports a missing
+pin connection as a fatal error, not a warning, and failed outright.
+Fixed the same way `rtl/top.v` was: an explicit tie-off
+(`.resv_valid()`, `.resv_addr()`, `.store_fire()`, `.store_addr()`,
+`.resv_invalidate_ext(1'b0)`) on both `core_ooo` instantiations, leaving
+the real per-hart wiring in the `` `else `` branch (still `cpu_core.v`
+only) completely unchanged. Confirmed by rebuilding
+`make verilator_sdramboot` for both `CORE=inorder` and `CORE=ooo`
+directly before re-running the full gates.
+
+Proven by a new standalone test, `sim/tb_ooo_resv_ports.v`
+(`sim_ooo_resv_ports`, unconditionally in `make verify`'s dependency
+list - it always exercises `core_ooo.v` regardless of ambient `CORE=`),
+modeled directly on Stage 7's own `sim/tb_cpu_resv_ports.v` with one
+addition that test's own zero-latency memory model structurally cannot
+make: a small, self-contained wait-state injector (the same "prove the
+hard piece in isolation" role `sim/tb_reservation_monitor.v` already
+plays), needed because a plain store is only ever absorbed into the
+store buffer when its own write has to wait. Three checks: (1) the same
+baseline Stage 7 already proves - LR.W/SC.W with no interference, SC
+succeeds, exactly one `store_fire` pulse at the right address; (2) the
+same external-invalidation case - a foreign invalidation pulsed
+mid-window clears the reservation and makes SC fail; (3) new - a plain
+store to a *different* address than the held reservation, followed by
+filler ALU instructions so `rob_head` genuinely advances past it before
+the buffered write drains, checking `store_fire` pulses once with
+`store_addr` reporting the store's *own* address, not the reservation's
+and not wherever the ROB head has moved on to.
+
+Confirmed non-vacuous three separate ways, one mutation per check,
+matching this project's own per-assertion "make it fail first"
+discipline: disabling the `resv_invalidate_ext` branch made check 2 wrongly
+report success (3 failures, cascading correctly into the aggregate pulse
+count too); dropping the `sb_addr` mux (using `head_mem_phys_addr`
+unconditionally - what a naive port of `cpu_core.v`'s own single-arm
+`store_addr` would look like) made check 3 report the wrong address, and
+only that check; replacing the qualified `amo_write_completing` with the
+raw, multi-cycle-high `dmem_we_amo` made check 1's pulse count exceed one
+for a single write. All three mutations were reverted and the test
+reconfirmed passing before this was written down. Both `make verify` and
+`make verify_ooo` are fully green on the final tree.
+
+**What this stage deliberately does not do:** wire these ports into
+`rtl/soc/soc_top.v`'s own `reservation_monitor` instance - every
+`CORE=ooo` build today still ties `resv_invalidate_ext` to 0 and ignores
+the three outputs, exactly as before this stage, so `CORE=ooo` still has
+no *cross-hart* coherence of any kind yet. That is deliberately a
+separate stage (mirroring Stage 9's own split from Stage 7), since it
+carries its own real risk - a live two-hart hazard, not an isolated
+port - and deserves its own gate and its own directed proof rather than
+being folded into this one. Hart-control/debug register ports for
+`core_ooo.v` remain a separate, still-open gap, untouched by this stage.
+No new formal property was added - matching Stages 6/7/9's own choice to
+prove this exact feature by directed simulation only, on the other core.
 
 ---
 

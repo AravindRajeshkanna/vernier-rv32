@@ -228,6 +228,7 @@ ns
 openFPGALoader
 overclaimed
 parameterizes
+passthrough
 pid
 pinout
 pipelined
@@ -247,6 +248,7 @@ raiseable
 rasterization
 rasterizer
 reachability
+rearchitecture
 reframed
 reframes
 reframing
@@ -312,6 +314,7 @@ unstalls
 unticked
 untruncated
 unwindowed
+unwired
 userspace
 vendored
 verify_ooo
