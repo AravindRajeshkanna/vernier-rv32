@@ -196,7 +196,8 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-c lint-py code-quality
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-c lint-py code-quality \
+        verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
 
@@ -366,6 +367,94 @@ verilator_check: sim_sdramboot $(VERILATOR_BIN)
 	@grep -aq "dropped by the transmitter" sim/verilator_soc.log && \
 	    { echo "FAILED: the UART did not send a byte software wrote to it"; \
 	      exit 1; } || true
+
+# =====================================================================
+# RTL coverage (Verilator line + toggle), report-only
+# =====================================================================
+#
+# Two separate binaries, not one --coverage build: verilator_coverage's
+# own --filter-type flag - the documented way to split a single combined
+# .dat by point type - does not exist on Verilator 5.020, the version
+# CI's own apt package resolves to (docs/toolchain.md), only on newer
+# ones (confirmed directly: `verilator_coverage --help` on 5.020 lists
+# --annotate/--write-info/--rank/--unlink and nothing else). Building
+# --coverage-line and --coverage-toggle separately instead means each
+# resulting .dat is already type-pure - `verilator_coverage --write-info`
+# needs no flag this project can't rely on to split it. This also
+# surfaced a real, measured cost difference worth knowing before reading
+# a "coverage takes N minutes" number: on the sdramboot image, the
+# line-only build runs at roughly 1.2M cycles/s (barely slower than an
+# uninstrumented build), while the toggle-only build runs at roughly 35K
+# cycles/s - toggle instrumentation is where nearly all of this stage's
+# own runtime actually goes.
+#
+# RTL coverage, not firmware coverage: nearly all C in software/ cross-
+# compiles to RV32 and only runs inside this simulator, never natively -
+# gcov does not apply here without a large new ported-runtime subsystem,
+# out of scope, not attempted. What this measures is which lines/toggles
+# of the *hardware* the one boot below reached, not which lines of C ran.
+VERILATOR_COV_LINE_MDIR   = obj_dir_soc_cov_line_$(CORE)
+VERILATOR_COV_LINE_BIN    = $(VERILATOR_COV_LINE_MDIR)/Vsoc_top
+VERILATOR_COV_TOGGLE_MDIR = obj_dir_soc_cov_toggle_$(CORE)
+VERILATOR_COV_TOGGLE_BIN  = $(VERILATOR_COV_TOGGLE_MDIR)/Vsoc_top
+
+# Mostly the same flags as $(VERILATOR_BIN)'s own rule, with --coverage-
+# line/--coverage-toggle in place of --coverage - keeping Verilator's own
+# -O3 (model-generation optimization; dropping it broke
+# sim/verilator_soc.vlt's public_flat_rd visibility into
+# rtl/mmu.v's internal signals under --coverage-toggle specifically,
+# confirmed by testing with and without it - this flag is not the one
+# that costs memory) but deliberately not -CFLAGS -O2 (the g++
+# optimization level, which is): that one exists on the real build
+# because it has to run a whole boot fast, repeatedly, in CI. This one
+# runs sdramboot exactly once per category and is never in anyone's
+# inner loop, so paying g++ for aggressive optimization buys nothing
+# here - and toggle instrumentation in particular generates large enough
+# functions that -O2 genuinely ran the compiler out of memory (a real,
+# measured OOM kill on cc1plus, not a theoretical concern), confirmed to
+# go away at -O0 with nothing else changed. -O0 explicitly, not simply
+# omitted: `-CFLAGS ""` on its own (empty string, CORE=inorder's
+# $(CORE_DEFINES)) is a real Verilator argument-parsing bug on its own -
+# it swallows the next command-line token instead of being treated as a
+# no-op, which is exactly why $(VERILATOR_BIN)'s own rule never hit
+# this: -O2 always kept that string non-empty. -O0 keeps it non-empty
+# here too.
+$(VERILATOR_COV_LINE_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
+	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O0 $(CORE_DEFINES)" \
+	    --top-module soc_top --coverage-line $(VERILATOR_LINT_FLAGS) \
+	    $(CORE_DEFINES) $(VERILATOR_PARAMS) --Mdir $(VERILATOR_COV_LINE_MDIR) \
+	    $(SOC_RTL) sim/verilator_soc.vlt sim/verilator_soc.cpp
+
+$(VERILATOR_COV_TOGGLE_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
+	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O0 $(CORE_DEFINES)" \
+	    --top-module soc_top --coverage-toggle $(VERILATOR_LINT_FLAGS) \
+	    $(CORE_DEFINES) $(VERILATOR_PARAMS) --Mdir $(VERILATOR_COV_TOGGLE_MDIR) \
+	    $(SOC_RTL) sim/verilator_soc.vlt sim/verilator_soc.cpp
+
+verilator_coverage_build: $(VERILATOR_COV_LINE_BIN) $(VERILATOR_COV_TOGGLE_BIN)
+
+# The same firmware verilator_sdramboot already proves in CI on both
+# cores, reused rather than a purpose-built coverage corpus. Does NOT
+# cover riscv-tests, cosim, the MMU/PLIC/UART peripheral suites, OpenSBI
+# or Linux - none of those run here, so "X% covered" answers only "how
+# much RTL did this one boot path reach," not "how tested is this SoC."
+# docs/toolchain.md and CONTRIBUTING.md say so explicitly.
+#
+# Per-CORE, per-category .dat, matching $(VERILATOR_MDIR)'s own per-core
+# reasoning: neither cores' nor categories' data may overwrite each other
+# when run back to back on one machine.
+verilator_coverage: sim/sdramimage.hex verilator_coverage_build
+	cd sim && ../$(VERILATOR_COV_LINE_BIN) +sdram=sdramimage.hex \
+	    +coverage=../coverage_line_$(CORE).dat
+	cd sim && ../$(VERILATOR_COV_TOGGLE_BIN) +sdram=sdramimage.hex \
+	    +coverage=../coverage_toggle_$(CORE).dat
+
+verilator_coverage_report: verilator_coverage
+	verilator_coverage --write-info coverage_line_$(CORE).info coverage_line_$(CORE).dat
+	verilator_coverage --write-info coverage_toggle_$(CORE).info coverage_toggle_$(CORE).dat
+	python3 sim/coverage_summary.py \
+	    coverage_line_$(CORE).info coverage_toggle_$(CORE).info \
+	    | tee coverage_summary_$(CORE).txt
 
 software: sim/firmware_imem.hex sim/firmware_dmem.hex
 

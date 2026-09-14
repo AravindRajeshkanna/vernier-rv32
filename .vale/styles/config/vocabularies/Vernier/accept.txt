@@ -196,6 +196,7 @@ manycore
 markdownlint
 maskable
 matcher's
+matrixed
 matrixes
 megapage
 megapages
