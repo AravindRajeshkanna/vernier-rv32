@@ -247,7 +247,7 @@ module soc_top #(
     wire [NUM_SLAVES*32-1:0] s_dat_r;
     wire [NUM_SLAVES-1:0]    s_ack;
 
-    // ---- hart control (rtl/debug/dm.v <-> CPU), in-order-core only ----
+    // ---- hart control (rtl/debug/dm.v <-> CPU), both cores now ----
     //
     // dbg_haltreq/dbg_resumereq/dbg_halted are NUM_HARTS wide, one bit per
     // hart, straight from/to dm.v - it already produces/consumes them that
@@ -257,8 +257,12 @@ module soc_top #(
     // dbg_reg_valid_h/dbg_reg_rdata_h/dbg_reg_err_h below are this file's
     // own per-hart fan-out/mux around that scalar port, gated and selected
     // by dm.v's own `hartsel` output - Phase 13's hart-control-past-hart-0
-    // gap this closes. Tied inert for CORE_OOO below (core_ooo.v has no
-    // debug register port at all, on any hart).
+    // gap this closes. `rtl/ooo/core_ooo.v` has these same ports now too
+    // (Stage 18) and is wired the same as `cpu_core.v` here (Stage 19) -
+    // `dm.v` itself has no core-specific logic to begin with (confirmed by
+    // direct read: it only ever forwards `cmd_regno` generically and gates
+    // on `sel_halted`), so this wiring needed no change of its own to
+    // reach either core.
     wire [NUM_HARTS-1:0] dbg_haltreq, dbg_resumereq, dbg_halted;
     wire        dbg_reg_valid, dbg_reg_we, dbg_reg_err;
     wire [15:0] dbg_reg_num;
@@ -333,45 +337,16 @@ module soc_top #(
         // connections regardless of core type.
         .resv_valid(resv_valid[0]), .resv_addr(resv_addr[31:0]),
         .store_fire(store_fire[0]), .store_addr(store_addr[31:0]),
-        .resv_invalidate_ext(resv_invalidate[0])
-`ifdef CORE_OOO
-        // core_ooo.v has these nine ports now too (Phase 13, Stage 18) -
-        // the port list is mandatory even though wiring them to a real
-        // rtl/debug/dm.v is a later stage's own job (see the `ifdef
-        // CORE_OOO` assign below, still tying every hart's own dbg_halted/
-        // dbg_reg_rdata_h/dbg_reg_err_h to "never halted, every access
-        // errors"). Tied off explicitly here for the same reason
-        // rtl/top.v's own identical fix is: an unconnected Verilog input
-        // floats/reads as X, which would poison every test that
-        // instantiates this module.
-        , .dbg_haltreq(1'b0), .dbg_resumereq(1'b0), .dbg_halted(),
-        .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
-        .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
-        .dbg_reg_rdata(), .dbg_reg_err()
-`else
-        // core_ooo.v has no debug/hart-control ports at all - see the
-        // `ifdef CORE_OOO` tie-off below for dbg_halted/dbg_reg_rdata_h/
-        // dbg_reg_err_h.
-        , .dbg_haltreq(dbg_haltreq[0]), .dbg_resumereq(dbg_resumereq[0]), .dbg_halted(dbg_halted[0]),
+        .resv_invalidate_ext(resv_invalidate[0]),
+        // Both cores have these now too (Phase 13, Stage 18 gave
+        // core_ooo.v the ports, Stage 19 wires them for real) -
+        // unconditional, same connections regardless of core type, the
+        // same move Stage 16 already made for the reservation ports above.
+        .dbg_haltreq(dbg_haltreq[0]), .dbg_resumereq(dbg_resumereq[0]), .dbg_halted(dbg_halted[0]),
         .dbg_reg_valid(dbg_reg_valid_h[0]), .dbg_reg_we(dbg_reg_we),
         .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
         .dbg_reg_rdata(dbg_reg_rdata_h[0+:32]), .dbg_reg_err(dbg_reg_err_h[0])
-`endif
     );
-`ifdef CORE_OOO
-    // core_ooo.v has these ports now too (Stage 18, see the tie-off
-    // above), but wiring them to a real rtl/debug/dm.v is a later stage's
-    // own job - this build still reports honestly rather than silently
-    // claiming a halt or a successful register access that can never
-    // happen, the same rule dm.v's own dmstatus already follows for
-    // System Bus Access (rtl/debug/README.md). dm.v itself also refuses
-    // any command while !halted (cmderr = halt/resume required), so
-    // dbg_reg_err here is a backstop, not the only thing standing between
-    // a host and a fabricated register value. Every hart, not just hart 0.
-    assign dbg_halted    = {NUM_HARTS{1'b0}};
-    assign dbg_reg_rdata_h = {(NUM_HARTS*32){1'b0}};
-    assign dbg_reg_err_h   = {NUM_HARTS{1'b1}};
-`endif
 
     cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (
         .clk(clk), .rst(rst_soc),
@@ -442,26 +417,18 @@ module soc_top #(
                 // above - both cores expose identical ports now.
                 .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
                 .store_fire(store_fire[h]), .store_addr(store_addr[32*h +: 32]),
-                .resv_invalidate_ext(resv_invalidate[h])
-`ifdef CORE_OOO
-                // Same tie-off as hart 0's own instantiation above, and for
-                // the same reason - core_ooo.v has these ports now (Stage
-                // 18) but they are not yet wired to a real rtl/debug/dm.v.
-                , .dbg_haltreq(1'b0), .dbg_resumereq(1'b0), .dbg_halted(),
-                .dbg_reg_valid(1'b0), .dbg_reg_we(1'b0),
-                .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
-                .dbg_reg_rdata(), .dbg_reg_err()
-`else
+                .resv_invalidate_ext(resv_invalidate[h]),
+                // Same unconditional wiring as hart 0's own instantiation
+                // above - both cores expose identical ports now (Stage 19).
                 // Real per-hart wiring, gated by dm.v's own hartsel through
                 // dbg_reg_valid_h/dbg_reg_rdata_h/dbg_reg_err_h above - this
                 // hart is reachable from the debug path exactly when a host
                 // selects it, the same as hart 0.
-                , .dbg_haltreq(dbg_haltreq[h]), .dbg_resumereq(dbg_resumereq[h]),
+                .dbg_haltreq(dbg_haltreq[h]), .dbg_resumereq(dbg_resumereq[h]),
                 .dbg_halted(dbg_halted[h]),
                 .dbg_reg_valid(dbg_reg_valid_h[h]), .dbg_reg_we(dbg_reg_we),
                 .dbg_reg_num(dbg_reg_num), .dbg_reg_wdata(dbg_reg_wdata),
                 .dbg_reg_rdata(dbg_reg_rdata_h[32*h +: 32]), .dbg_reg_err(dbg_reg_err_h[h])
-`endif
             );
 
             cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (

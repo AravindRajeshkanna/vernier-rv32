@@ -70,7 +70,7 @@ week. There is no bounty.
 undiscovered:
 
 - The JTAG TAP / Debug Module has no authentication of any kind — anyone who
-  can reach the JTAG pins has full System Bus Access and (`CORE=inorder`,
+  can reach the JTAG pins has full System Bus Access and (both cores,
   simulation builds only) halt/resume/register access. `docs/debug.md` has
   the current state.
 - Timing side channels. The core has a variable-latency divider and a

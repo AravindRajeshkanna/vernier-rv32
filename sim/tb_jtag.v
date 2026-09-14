@@ -482,34 +482,19 @@ module tb_jtag;
 
         // ---- 8. hart control: halt/resume, over the real DMI protocol ----
         //
-        // Register access (sim/tb_cpu_halt.v's job, driven directly against
-        // rtl/cpu_core.v) isn't implemented in dm.v yet, so this only proves
-        // the dmcontrol/dmstatus half. `allhalted`/`allrunning` are this
+        // Register access (sim/tb_cpu_halt.v's/sim/tb_ooo_halt.v's own job,
+        // driven directly against each core) proves the mechanism itself in
+        // isolation; this proves the dmcontrol/dmstatus half reached
+        // through the real DMI protocol. `allhalted`/`allrunning` are this
         // Debug Module's only externally-visible signal for "is anything
         // actually still executing," so that is what is polled, against the
         // exact same illegal-instruction-trap-forever CPU every SBA check
         // above has been racing.
         //
-        // Split by core, because the correct answer genuinely differs:
-        // `CORE=inorder` really halts and resumes; `CORE=ooo` has no
-        // hart-control ports at all (rtl/soc/soc_top.v ties its `halted`
-        // input to 0 - docs/roadmap.md Phase 6) and dmstatus must keep
-        // reporting the hart as running, honestly, rather than accept
-        // haltreq and silently do nothing - this branch is what proves that
-        // honesty rather than assuming it.
-`ifdef CORE_OOO
-        dmi_read(A_DMSTATUS, v);
-        check("dmstatus says running before any haltreq (CORE=ooo)",
-              v[11:10] === 2'b11 && v[9:8] === 2'b00);
-
-        dmi_write(A_DMCONTROL, 32'h8000_0001);  // haltreq=1, dmactive=1
-        idle_cycles(30);
-        dmi_read(A_DMSTATUS, v);
-        check("CORE=ooo: haltreq is accepted but ignored - still running",
-              v[11:10] === 2'b11 && v[9:8] === 2'b00);
-
-        dmi_write(A_DMCONTROL, 32'h0000_0001);  // haltreq=0, dmactive=1
-`else
+        // No longer split by core (Stage 19): both `cpu_core.v` (Phase 6)
+        // and `rtl/ooo/core_ooo.v` (Stage 18) have the same hart-control
+        // ports now, wired the same way here, so the same real halt/resume
+        // assertions below apply to either.
         dmi_read(A_DMSTATUS, v);
         check("dmstatus says running before any haltreq",
               v[11:10] === 2'b11 && v[9:8] === 2'b00);
@@ -546,7 +531,6 @@ module tb_jtag;
         end
         dmi_read(A_DMSTATUS, v);
         check("dmstatus says nothing is halted after resume", v[9:8] === 2'b00);
-`endif
 
         // SBA still has to work after a halt/resume cycle - proves the two
         // paths (System Bus Access, hart control) genuinely don't interfere
@@ -563,16 +547,6 @@ module tb_jtag;
         //
         // The hart is running again after stage 8's resume - which is
         // exactly the state a register access has to be refused from.
-`ifdef CORE_OOO
-        // CORE=ooo has no hart-control ports at all, so `halted` is tied to
-        // 0 permanently (rtl/soc/soc_top.v) - dm.v refuses every command
-        // with cmderr=haltresume, honestly, rather than fabricating a
-        // register value for a hart it was never wired to touch.
-        ac_read_reg(REGNO_X5, v, cerr);
-        check("CORE=ooo: Abstract Command refused - cmderr=haltresume",
-              cerr === CMDERR_HALTRESUME);
-        ac_clear_cmderr;
-`else
         ac_read_reg(REGNO_X5, v, cerr);
         check("register access refused while running - cmderr=haltresume",
               cerr === CMDERR_HALTRESUME);
@@ -767,7 +741,6 @@ module tb_jtag;
         // ending the test with either one wedged halted, the same way
         // stage 8 and sim/tb_cpu_halt.v's own final dbg_resume do.
         dmi_write(A_DMCONTROL, 32'h4000_0001);
-`endif
 
         $display("");
         if (failures == 0) $display("JTAG TEST PASSED");
