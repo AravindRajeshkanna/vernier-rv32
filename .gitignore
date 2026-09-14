@@ -20,8 +20,18 @@ sim/*.elf
 
 # Build artifacts
 obj_dir/
-# Verilator's SoC harness, one directory per core (see VERILATOR_MDIR)
+# Verilator's SoC harness, one directory per core (see VERILATOR_MDIR) -
+# obj_dir_soc_cov_line_*/obj_dir_soc_cov_toggle_* (VERILATOR_COV_*_MDIR)
+# already match this same pattern.
 obj_dir_soc_*/
+
+# RTL coverage (Verilator --coverage-line/--coverage-toggle,
+# verilator_coverage) - land in the repo root, not sim/, since
+# `verilator_coverage`'s own recipe writes them there. CI uploads these
+# as artifacts; see sim/coverage_summary.py.
+/coverage_*.dat
+/coverage_*.info
+/coverage_summary_*.txt
 software/firmware.elf
 software/firmware_text.bin
 software/firmware_data.bin

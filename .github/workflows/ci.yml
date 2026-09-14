@@ -644,3 +644,85 @@ jobs:
           echo "/tmp/ruff-bin" >> "$GITHUB_PATH"
       - name: ruff
         run: make lint-py
+
+  # ---------------------------------------------------------------------
+  # RTL code coverage: line and toggle, from Verilator-instrumented builds
+  # of soc_top.v running the same sdramboot image `verilator_sdramboot`
+  # already proves in the `firmware` job. Report only - no threshold,
+  # nothing here fails a PR on the number itself: this is RTL coverage,
+  # not firmware coverage, and it answers "did this one boot path reach
+  # this line/toggle," not "is this SoC adequately tested" - verify, isa
+  # and cosim are what answer that.
+  #
+  # Two separate Verilator builds per core (--coverage-line only,
+  # --coverage-toggle only), not one combined --coverage build: see the
+  # Makefile's own verilator_coverage section for why (verilator_coverage
+  # --filter-type, the newer way to split one combined .dat by point
+  # type, does not exist on Verilator 5.020 - this job's own apt-resolved
+  # version).
+  #
+  # This stage does NOT run riscv-tests, cosim, the MMU/PLIC/UART
+  # peripheral suites, OpenSBI, or Linux - only sdramboot's own image, on
+  # both cores. A "low" percentage here does not mean those paths are
+  # untested; it means this one boot did not reach them.
+  #
+  # Matrixed over both cores, matching firmware/isa/coremark. No iverilog,
+  # no dtc: this job never cross-checks against Icarus and never builds a
+  # device tree, only sim/sdramimage.hex.
+  #
+  # timeout-minutes: measured locally (Homebrew Verilator 5.050, Apple
+  # Silicon), not on this job's own apt Verilator 5.020/GitHub runner -
+  # CORE=inorder's full build+run+report took ~3 min, CORE=ooo ~4.3 min.
+  # 30 pads generously for a slower CI runner and toolchain-install
+  # overhead, following roughly double a real number rather than
+  # guessing one from nothing - recalibrate from this job's own first
+  # real run once it exists, the same way firmware's own 90 was derived.
+  # ---------------------------------------------------------------------
+  coverage:
+    name: Code Coverage (line + toggle, sdramboot, ${{ matrix.core }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [inorder, ooo]
+    env:
+      CORE: ${{ matrix.core }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/verilator
+      - uses: ./.github/actions/riscv-toolchain
+
+      - name: Build the SDRAM boot image
+        run: make sdramimage
+
+      - name: Coverage-instrumented Verilator builds (line, toggle)
+        run: make verilator_coverage_build
+
+      # A functional smoke check, not the coverage gate: confirms both
+      # coverage-instrumented binaries (line-only, then toggle-only) still
+      # run the program correctly, a different question from how much RTL
+      # either one reached. Two runs, so two PASSED lines expected.
+      - name: Run sdramboot under coverage instrumentation
+        run: make verilator_coverage | tee coverage_run.log
+      - name: Check both runs still passed
+        run: |
+          n=$(grep -c "VERILATOR SOC TEST PASSED" coverage_run.log || true)
+          if [ "$n" != "2" ]; then
+            echo "::error::expected 2 passing runs (line, toggle), got $n"
+            exit 1
+          fi
+
+      - name: Line and toggle coverage summary
+        run: make verilator_coverage_report
+
+      - name: Upload coverage data and summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.core }}
+          path: |
+            coverage_line_${{ matrix.core }}.dat
+            coverage_toggle_${{ matrix.core }}.dat
+            coverage_line_${{ matrix.core }}.info
+            coverage_toggle_${{ matrix.core }}.info
+            coverage_summary_${{ matrix.core }}.txt

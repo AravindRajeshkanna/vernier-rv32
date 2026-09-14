@@ -191,6 +191,7 @@ targets (`&:`) — none of which 3.81 has.
 | `wave`, `wave_soc` | **Surfer** (`VIEWER=` overrides) |
 | `dtb` | `dtc` |
 | `code-quality`, `lint-rtl`, `lint-c`, `lint-py` | Verilator (`--lint-only`) + **cppcheck** + **ruff** |
+| `verilator_coverage_build`, `verilator_coverage`, `verilator_coverage_report` | Verilator (`--coverage-line`/`--coverage-toggle`) + `verilator_coverage` + Python (`sim/coverage_summary.py`) |
 | *(script)* `fpga/synth/synth_ecp5.sh` | oss-cad-suite Yosys + nextpnr-ecp5 + ecppack |
 | *(script)* `software/opensbi/build-opensbi.sh` | riscv64-unknown-elf-* + GNU Make |
 

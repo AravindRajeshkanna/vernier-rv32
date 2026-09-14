@@ -85,6 +85,16 @@ finding gets fixed at the root or waived with a comment next to the
 waiver, the same discipline `rtl/ooo/core_ooo.v`'s own `WIDTHTRUNC`
 pragma already sets - never a blanket rule disable.
 
+**Neither `verify` nor `code-quality` measures RTL coverage.**
+`make verilator_coverage_report` (CI's own `Code Coverage` job, matrixed
+over both cores) runs `sim_sdramboot`'s own image through
+`--coverage-line`/`--coverage-toggle`-instrumented Verilator builds and
+prints a per-file line and toggle coverage percentage. It is report-only:
+a change is never blocked on the number, and the number is not a
+substitute for `verify`/`isa`/`cosim` actually exercising the RTL it
+reports on - it also does not cover riscv-tests, Spike co-simulation,
+OpenSBI, or Linux, none of which run in this stage.
+
 A green `verify` is the baseline, not the bar. The bar is:
 
 1. **A new test that fails without your change.** If you fixed something, show

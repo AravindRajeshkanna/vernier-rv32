@@ -216,6 +216,9 @@
 #if VM_TRACE
 # include "verilated_vcd_c.h"
 #endif
+#if VM_COVERAGE
+# include "verilated_cov.h"
+#endif
 
 // ---------------------------------------------------------------------------
 // Clock
@@ -825,6 +828,7 @@ int main(int argc, char **argv) {
     const char *rom_img   = plusarg(argc, argv, "rom");
     const char *ram_img   = plusarg(argc, argv, "ram");
     const char *dump      = plusarg(argc, argv, "dump");
+    const char *coverage_out = plusarg(argc, argv, "coverage");
     const bool  quiet     = plusarg(argc, argv, "quiet") != nullptr;
 
     // 4 MB of modelled storage by default, matching sim/tb_sdramboot.v: the
@@ -864,6 +868,13 @@ int main(int argc, char **argv) {
 #else
     if (dump) {
         fprintf(stderr, "+dump needs a build with tracing: make verilator_soc VTRACE=1\n");
+        exit(1);
+    }
+#endif
+#if !VM_COVERAGE
+    if (coverage_out) {
+        fprintf(stderr, "+coverage needs a build with --coverage: "
+                "make verilator_coverage_build CORE=inorder (or CORE=ooo)\n");
         exit(1);
     }
 #endif
@@ -1697,6 +1708,14 @@ int main(int argc, char **argv) {
                "caller's gate decides)\n");
     else printf("VERILATOR SOC TEST FAILED (timed out after %ld cycles)\n", cycles);
     printf("---------------------------------------------\n");
+
+#if VM_COVERAGE
+    // Unconditional, not gated on a passing result: a run that stopped
+    // early should still report truthfully how far it got, matching this
+    // stage's own report-only framing (docs/toolchain.md) - nothing here
+    // is a pass/fail gate on the coverage number itself.
+    VerilatedCov::write(coverage_out ? coverage_out : "coverage.dat");
+#endif
 
     delete top;
     return (result == RESULT_PASS) ? 0 : 1;
