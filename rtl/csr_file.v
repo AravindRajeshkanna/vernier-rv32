@@ -195,6 +195,23 @@ module csr_file #(
     // of the readback; reading back all-ones (G=0) is the "trivially
     // passes" case the test itself names, and skips the elaborate
     // G-1-bit-reads-as-zero-in-OFF-mode behavior entirely.
+    // A specific front-end's own version (5.020, Debian/Ubuntu's apt
+    // package per docs/toolchain.md - Homebrew's 5.050 does not do this)
+    // misattributes these three functions' own local scratch variables
+    // (word/b0-b3/this_cfg/next_cfg) to the clocked always block that calls
+    // them, and flags their necessarily-blocking `=` assignments as BLKSEQ
+    // - a false positive, not a real defect: every assignment inside a
+    // Verilog `function` body is blocking by the language's own
+    // definition, there is no non-blocking form to suggest instead.
+    // Confirmed by the pattern itself: the same tool never flags the
+    // parallel return-name assignments a few lines below each one
+    // (`pmp_cfg_byte = ...`, `pmpcfg_write = ...`, `pmpaddr_locked = ...`),
+    // which are the exact same kind of blocking assignment, in the exact
+    // same functions, called from the exact same place - only a function's
+    // own local temporaries trip it, which is specific to how this older
+    // front-end inlines a function call into its caller's scope, not to
+    // anything about this code.
+    /* verilator lint_off BLKSEQ */
     function [7:0] pmp_cfg_byte;
         input [3:0] idx;
         reg [31:0] word;
@@ -240,6 +257,7 @@ module csr_file #(
                              ((idx != 4'd15) && next_cfg[7] && (next_cfg[4:3] == 2'b01));
         end
     endfunction
+    /* verilator lint_on BLKSEQ */
 
     wire        is_pmpaddr_addr = (addr[11:4] == 8'h3B);
     wire [3:0]  pmpaddr_idx     = addr[3:0];
