@@ -1118,7 +1118,9 @@ module cpu_core #(
         // mmu.v snapshots it for exactly that reason - so the data side has
         // no use for this. Named rather than left off, so the port is
         // accounted for.
+        /* verilator lint_off PINCONNECTEMPTY */
         .pa_va(),
+        /* verilator lint_on PINCONNECTEMPTY */
         .busy(mmu_busy),
         .ptw_req(ptw_req), .ptw_addr(ptw_addr),
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata)

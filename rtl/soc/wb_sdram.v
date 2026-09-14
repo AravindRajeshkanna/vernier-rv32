@@ -193,8 +193,7 @@ module wb_sdram #(
                      S_WRITE_LO  = 4'd9,
                      S_WRITE_HI  = 4'd10,
                      S_PRECHARGE = 4'd11,
-                     S_REFRESH   = 4'd12,
-                     S_ACK       = 4'd13;
+                     S_REFRESH   = 4'd12;
 
     reg [3:0]          state;
     reg [CNT_BITS-1:0] tmr;          // cycles left before the state may act
@@ -264,10 +263,11 @@ module wb_sdram #(
     wire refresh_taken = (state == S_REFRESH) && (tmr == 0);
 
     generate
-        if (ROW_BITS > COL_BITS + 1)
+        if (ROW_BITS > COL_BITS + 1) begin : gen_col_a_wide
             assign col_a_of_req = {{(ROW_BITS-COL_BITS-1){1'b0}}, 1'b0, req_col};
-        else
+        end else begin : gen_col_a_narrow
             assign col_a_of_req = req_col[ROW_BITS-1:0];
+        end
     endgenerate
 
     always @(posedge clk or posedge rst) begin

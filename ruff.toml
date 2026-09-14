@@ -1,0 +1,14 @@
+# Ruff configuration for `make lint-py`.
+#
+# Pinning the version (see the Makefile's lint-py comment and
+# docs/toolchain.md) isn't enough alone: Ruff 0.16.0 changed what its own
+# *default* rule selection means (59 rules -> 413), so an unpinned
+# `select` is exactly as fragile as an unpinned binary, on a different
+# axis. This pins the selection to Ruff's own pre-0.16 default (E4/E7/E9:
+# a narrow pycodestyle subset that doesn't fight a formatter; F: pyflakes
+# - undefined names, unused imports, the genuine-bug category) rather than
+# trusting whatever "ruff check" currently defaults to - the same
+# reasoning .vale.ini gives for using only Vale's own narrow bundled style
+# instead of a third-party pack calibrated against different prose.
+[lint]
+select = ["E4", "E7", "E9", "F"]

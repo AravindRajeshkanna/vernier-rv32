@@ -91,7 +91,7 @@ lines.append(f"static const int16_t fir_workload_coef[{N_TAPS}] = {{")
 lines.append("    " + ", ".join(str(c) for c in coef))
 lines.append("};")
 lines.append("")
-lines.append(f"static const int16_t fir_workload_input[FIR_WORKLOAD_LEN] = {{")
+lines.append("static const int16_t fir_workload_input[FIR_WORKLOAD_LEN] = {")
 for i in range(0, WORKLOAD_LEN, 8):
     lines.append("    " + ", ".join(str(s) for s in samples[i:i+8]) + ",")
 lines.append("};")

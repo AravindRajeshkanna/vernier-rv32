@@ -137,10 +137,15 @@ module mmu (
     //    code executable at supervisor privilege.
     //  - MXR widens a load (not a fetch) to accept an execute-only page.
     function perm_ok;
-        input pu, pr, pw, px, pa, pd;   // the PTE's permission bits
+        // p_a is the PTE's own Accessed bit, not this module's `pa` output
+        // port (the resolved physical address) - Verilator's VARHIDDEN
+        // flags the shadowing correctly even though the scoping is safe;
+        // renamed rather than waived, since the two meanings really are
+        // easy to confuse at a glance.
+        input pu, pr, pw, px, p_a, pd;   // the PTE's permission bits
         input fetch, store, user, sum_b, mxr_b;
         begin
-            if (!pa)                                   perm_ok = 1'b0; // no hardware A/D update
+            if (!p_a)                                  perm_ok = 1'b0; // no hardware A/D update
             else if (user && !pu)                      perm_ok = 1'b0;
             else if (!user && pu && (fetch || !sum_b)) perm_ok = 1'b0;
             else if (fetch)                            perm_ok = px;

@@ -16,7 +16,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "bom"))
 
-import gen_sbom  # noqa: E402
 import gen_hbom  # noqa: E402
 
 failures = []

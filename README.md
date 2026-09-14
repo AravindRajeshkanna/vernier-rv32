@@ -707,6 +707,7 @@ three rules in `docs/practices.md` exist because of them.
 
 **CI.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the RTL
 regression, the SoC on both boot paths, the reset-and-rerun test, the trap
-handler calibration, the architectural suite and formal on every push. Spike
-co-simulation and FPGA place-and-route are local gates — they are too slow for
-CI, and `fpga/README.md` records the timing numbers from real runs by hand.
+handler calibration, the architectural suite and formal on every push, plus
+static analysis of the RTL, C and Python trees. Spike co-simulation and FPGA
+place-and-route are local gates — they are too slow for CI, and
+`fpga/README.md` records the timing numbers from real runs by hand.

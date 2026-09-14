@@ -133,6 +133,7 @@ conv
 coreplex
 cosim
 cosimulation
+cppcheck
 cs_n
 csrc
 dataflow
@@ -236,6 +237,7 @@ pinout
 pipelined
 plictest
 plusarg
+pragma
 precharge
 precompiled
 preemptable

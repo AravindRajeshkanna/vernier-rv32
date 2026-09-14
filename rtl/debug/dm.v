@@ -189,9 +189,18 @@ module dm #(
     // and duplicating a shifter to debug the shifter is the wrong direction.
     // sbaccess8/16 read back as unsupported and a host asking for one gets
     // sberror = 4, which is the spec's "requested size not supported".
+    // SBERR_TIMEOUT/SBERR_BADADDR are named for spec completeness (the
+    // debug spec's own sberror enum) even though this implementation never
+    // produces either: the interconnect this bus master sits on has no
+    // notion of a bus timeout, and every address it can present already
+    // decodes to something - only SBERR_NONE and SBERR_BADSIZE (the
+    // access-size case named above) are ever actually assigned to
+    // `sberror`.
+    /* verilator lint_off UNUSEDPARAM */
     localparam [2:0] SBERR_NONE    = 3'd0,
                      SBERR_TIMEOUT = 3'd1,
                      SBERR_BADADDR = 3'd2,
+    /* verilator lint_on UNUSEDPARAM */
                      SBERR_BADSIZE = 3'd4;
 
     reg [2:0] sberror;
@@ -374,8 +383,14 @@ module dm #(
     // No Program Buffer exists, so `postexec` is always not-supported.
     // `transfer=0` is a legal no-op per spec (nothing requested to move)
     // and completes without ever touching cpu_core.v's debug port.
+    // CMDERR_BUSY is named for spec completeness too: every abstract
+    // command here completes same-cycle (see the "single-cycle turnaround"
+    // note above), so there is no in-progress state for a second command
+    // to arrive during and no path that would ever assign this one.
+    /* verilator lint_off UNUSEDPARAM */
     localparam [2:0] CMDERR_NONE       = 3'd0,
                      CMDERR_BUSY       = 3'd1,
+    /* verilator lint_on UNUSEDPARAM */
                      CMDERR_NOTSUP     = 3'd2,
                      CMDERR_HALTRESUME = 3'd4;
 

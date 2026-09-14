@@ -75,6 +75,16 @@ toolchain/fetched-source version, a board part number, or anything else
 correctness and everything to do with the BOM not quietly drifting from
 what it describes.
 
+**Neither `verify` nor `lint` covers static analysis of RTL, C or
+Python.** `make code-quality` (CI's own `Code Quality` job) runs
+Verilator in `--lint-only -Wall` mode against both `rtl/top.v` and
+`soc_top.v`, on both cores, plus cppcheck over every tracked `.c`/`.h`
+file and ruff over every tracked `.py` file - run it if your change
+touches any RTL, `software/`, `bom/*.py`, `sim/*.py`, or `tests/*.py`. A
+finding gets fixed at the root or waived with a comment next to the
+waiver, the same discipline `rtl/ooo/core_ooo.v`'s own `WIDTHTRUNC`
+pragma already sets - never a blanket rule disable.
+
 A green `verify` is the baseline, not the bar. The bar is:
 
 1. **A new test that fails without your change.** If you fixed something, show

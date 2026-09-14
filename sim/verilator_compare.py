@@ -69,8 +69,8 @@ def body(path):
     """The UART stream the firmware produced, with the harness chatter cut off."""
     lines = open(path).read().splitlines()
     try:
-        first = next(i for i, l in enumerate(lines) if BODY_START in l)
-        last = next(i for i, l in enumerate(lines) if BODY_END in l)
+        first = next(i for i, line in enumerate(lines) if BODY_START in line)
+        last = next(i for i, line in enumerate(lines) if BODY_END in line)
     except StopIteration:
         sys.exit(f"{path}: no program output between "
                  f"'{BODY_START}' and '{BODY_END}'")
