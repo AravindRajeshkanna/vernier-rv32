@@ -670,18 +670,17 @@ jobs:
   # no dtc: this job never cross-checks against Icarus and never builds a
   # device tree, only sim/sdramimage.hex.
   #
-  # timeout-minutes: measured locally (Homebrew Verilator 5.050, Apple
-  # Silicon), not on this job's own apt Verilator 5.020/GitHub runner -
-  # CORE=inorder's full build+run+report took ~3 min, CORE=ooo ~4.3 min.
-  # 30 pads generously for a slower CI runner and toolchain-install
-  # overhead, following roughly double a real number rather than
-  # guessing one from nothing - recalibrate from this job's own first
-  # real run once it exists, the same way firmware's own 90 was derived.
+  # timeout-minutes: recalibrated from this job's own first real CI run
+  # (this PR, both legs green) rather than the local-machine estimate
+  # that preceded it - CORE=inorder took ~14 min end to end,
+  # CORE=ooo ~23 min, both on this job's own apt Verilator 5.020, the
+  # runner that actually matters. 45 pads the slower (ooo) leg by
+  # roughly double, the same margin firmware's own 90 was set from.
   # ---------------------------------------------------------------------
   coverage:
     name: Code Coverage (line + toggle, sdramboot, ${{ matrix.core }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
