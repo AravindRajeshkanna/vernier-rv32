@@ -16,7 +16,7 @@ gn[5] TDO ─┘   (TCK domain)   (the one      (system
 |---|---|
 | `jtag_tap.v` | IEEE 1149.1 TAP: the sixteen-state machine, IR, and the DRs the RISC-V debug spec defines — `IDCODE`, `BYPASS`, `dtmcs`, `dmi` |
 | `dmi_cdc.v` | The single crossing between TCK and the system clock |
-| `dm.v` | Debug Module: DMI registers, System Bus Access as a fourth Wishbone master, halt/resume, single-step and Abstract Command register access (`CORE=inorder`, simulation only) |
+| `dm.v` | Debug Module: DMI registers, System Bus Access as a fourth Wishbone master, halt/resume, single-step and Abstract Command register access (both cores, simulation only) |
 
 ## What it does, and what it deliberately does not
 
@@ -113,10 +113,9 @@ It checks IDCODE, BYPASS (one bit of delay, which is what proves the IR
 selects anything at all), `dtmcs`, the DMI round trip through the crossing,
 then SBA reads, writes, autoincrement and a distant address, then
 halt/resume and Abstract Command register access over the real `dmcontrol`/
-`dmstatus`/`abstractcs`/`command`/`data0` DMI registers — core-aware
-throughout, since the correct answer genuinely differs between
-`CORE=inorder` (a real halt/resume/register cycle) and `CORE=ooo`
-(`cmderr`/`dmstatus` report honestly that neither is possible). For most of
+`dmstatus`/`abstractcs`/`command`/`data0` DMI registers — the same real
+halt/resume/register cycle regardless of which core the ambient build
+selects (Phase 13, Stage 19), no longer a core-specific split. For most of
 the file, `RESET_PC` points into a pattern that makes the CPU take an
 illegal instruction and trap forever, so **every SBA access in the test is
 arbitrating against a CPU hammering the bus**, which is the condition a

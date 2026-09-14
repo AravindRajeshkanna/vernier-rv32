@@ -638,7 +638,7 @@ The short version:
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | ✅ I-cache **1.79×** and D-cache **1.11×** on CoreMark, interrupt-driven UART done, both in the bus adapter and shared by both cores. Hardware PTE A/D auto-update and multi-word cache lines remain |
 | 4 | Video out | ✅ **encoder, PLL, serializer and real GPDI pin wiring all done**, gated in `make verify`, opt-in on hardware (`BOARD=ulx3s85-video`) since it costs this board's thin timing margin. Only a real monitor hasn't confirmed it yet |
 | 5 | Run software this project did not write — OpenSBI, a kernel | ✅ **done** — OpenSBI boots and hands off, and **Linux 6.18.45 reaches userspace**, on both cores in simulation and for real on an LFE5U-85F. `make sim_opensbi` / `make sim_linux` |
-| 6 | Debug infrastructure — JTAG, a Debug Module | ✅ System Bus Access, plus halt/resume/single-step/register access (`CORE=inorder`, simulation-only). No board has a debug adapter connected, and a real `openocd`+`gdb` attach needs the full debug-spec model this deliberately doesn't have |
+| 6 | Debug infrastructure — JTAG, a Debug Module | ✅ System Bus Access, plus halt/resume/single-step/register access, on both cores now (Phase 13, Stage 19), simulation-only. No board has a debug adapter connected, and a real `openocd`+`gdb` attach needs the full debug-spec model this deliberately doesn't have |
 | 7 | Close the boot path — the SD card | the only untested link in the boot chain — a 64 GB SDXC card never answers CMD0; untested below 32 GB |
 | 8 | PCIe | blocked on a board with a PCIe connector and SerDes — this project's current board has neither |
 | 9 | DDR | blocked on a board with DDR (this project's board is SDR-only) |
