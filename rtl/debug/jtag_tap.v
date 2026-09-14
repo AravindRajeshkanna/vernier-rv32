@@ -130,7 +130,14 @@ module jtag_tap #(
     always @(posedge tck) state <= next;
 
     // ---- instruction register ----
+    // IR_BYPASS is named for spec reference (IEEE 1149.1's reserved
+    // all-ones BYPASS code) even though nothing below compares against it
+    // by name - every `case (ir)` reaching BYPASS behavior does so through
+    // its own `default:` arm, since any unrecognized IR (not just 5'h1F)
+    // must fall back to BYPASS per the standard.
+    /* verilator lint_off UNUSEDPARAM */
     localparam [4:0] IR_BYPASS = 5'h1F,
+    /* verilator lint_on UNUSEDPARAM */
                      IR_IDCODE = 5'h01,
                      IR_DTMCS  = 5'h10,
                      IR_DMI    = 5'h11;

@@ -135,6 +135,8 @@ routing-dominated shape every measurement of this design has had.
 | **GNU Make** | 3.81 | macOS system |
 | **git** | 2.54.0 | — |
 | **oss-cad-suite** | `20260821` | YosysHQ prebuilt bundle |
+| **cppcheck** | 2.13.0-2ubuntu3 | apt, `ubuntu-24.04` (CI pins the runner OS, not the package - see `.github/workflows/ci.yml`'s `code-quality` job) |
+| **ruff** | 0.16.6 | pinned binary download from ruff's own GitHub releases (CI only; not a runtime dependency of any script here) |
 
 ### Two Yosys installations, and why it matters
 
@@ -188,6 +190,7 @@ targets (`&:`) — none of which 3.81 has.
 | `verilator_check` | both simulators at once: iverilog + vvp **and** Verilator |
 | `wave`, `wave_soc` | **Surfer** (`VIEWER=` overrides) |
 | `dtb` | `dtc` |
+| `code-quality`, `lint-rtl`, `lint-c`, `lint-py` | Verilator (`--lint-only`) + **cppcheck** + **ruff** |
 | *(script)* `fpga/synth/synth_ecp5.sh` | oss-cad-suite Yosys + nextpnr-ecp5 + ecppack |
 | *(script)* `software/opensbi/build-opensbi.sh` | riscv64-unknown-elf-* + GNU Make |
 
@@ -264,7 +267,10 @@ within `DEPTH` (default 12) cycles. `SOLVER=` and `DEPTH=` override.
 Version 3.12.12, and the scripts (`tests/cosim.py`, `software/bin2hex.py`,
 `software/soc/mkcard.py`) import **only the standard library** — `argparse`,
 `os`, `re`, `struct`, `subprocess`, `sys`. There is no `requirements.txt`,
-no virtualenv, and nothing to install. Any Python 3.8+ should do.
+no virtualenv, and nothing to install. Any Python 3.8+ should do. `make
+lint-py` is the one exception - it needs `ruff` installed (pinned, see
+the table above), but only for that gate; the scripts themselves still
+import nothing beyond the standard library.
 
 ## 5. Compiler flags that are load-bearing
 

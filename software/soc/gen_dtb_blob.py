@@ -14,7 +14,6 @@ booted, not a second, separate device-tree blob, and the boot ROM's own
 16 KB budget has ample room (dts/soc.dtb is ~3 KB) to carry its own copy
 in .rodata instead of inventing a second loading mechanism just for it.
 """
-import sys
 
 DTB_PATH = "dts/soc.dtb"
 

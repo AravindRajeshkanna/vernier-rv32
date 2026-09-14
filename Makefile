@@ -195,7 +195,8 @@ SD_BLOCKS = 128
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
-        lint lint-markdown lint-vale bom sbom hbom
+        lint lint-markdown lint-vale bom sbom hbom \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-c lint-py code-quality
 
 all: sim
 
@@ -766,6 +767,136 @@ lint-vale:
 	vale $$(git ls-files '*.md')
 
 lint: lint-markdown lint-vale
+
+# ---- RTL/C/Python static analysis (Verilator lint-only + cppcheck + ruff) ----
+#
+# One job in CI (`Code Quality`), three ecosystems, each its own step and
+# its own Makefile target - the same "one job, several tools, so a failure
+# names which one" shape `lint` above already uses for markdownlint + Vale.
+#
+# `--lint-only` does exactly what the flag says: full elaboration and every
+# warning Verilator would otherwise report as a side effect of `--cc --exe
+# --build`, with no C++ compile and no testbench needed. `-Wall`
+# additionally turns on Verilator's *style* category (DECLFILENAME,
+# UNUSEDSIGNAL, VARHIDDEN, PINCONNECTEMPTY, and friends), off by default
+# and never enabled by any real build target here - it had only ever been
+# run ad hoc, by hand, against individual files during specific stages
+# (docs/roadmap.md's work on cpu_core.v and plic.v, both resolved by fixing
+# the RTL, not waiving). This was the first time it ran against the whole
+# $(RTL)/$(SOC_RTL) file lists in one pass, and it found something real:
+# rtl/top.v had a genuinely unconnected `itlb_wait_stall` output (harmless
+# here - only rtl/soc/cpu_wb.v's bus adapter reads it - but previously
+# implicit rather than the explicit, commented tie-off every sibling port
+# already got) and rtl/mmu.v's `perm_ok` had a function-local `pa` (the
+# PTE's Accessed bit) shadowing the module's own `pa` output (the resolved
+# physical address) - safe by Verilog's own scoping rules, but a real
+# legibility hazard, so renamed rather than waived. Both fixed at the root.
+#
+# `-Wno-UNUSEDSIGNAL` is a real, measured, blanket exception to that "fix
+# or waive individually" rule - not an oversight. A single build already
+# produced 39 UNUSEDSIGNAL findings, and every one was the same shape: a
+# bus/register field this project deliberately keeps at a round width
+# (32-bit address/data buses even where a specific peripheral only decodes
+# a narrow window, WARL-reserved CSR bits) for uniformity across the whole
+# interconnect, not a signal nothing uses. Waiving 39+ individually, per
+# build, per core, would bury the rare real finding in noise rather than
+# surface it - the opposite of what `-Wall` is for here. Every other
+# category `-Wall` adds stays on.
+#
+# Remaining PINCONNECTEMPTY findings (11, both cores) were all already
+# intentional, commented tie-offs (rtl/top.v's own resv_*/dbg_* ports, the
+# same class of "explicit rather than omitted" decision docs/roadmap.md's
+# Phase 13 stages document at length) - each now has its own scoped
+# `lint_off`/`lint_on PINCONNECTEMPTY` bracket right at the site, matching
+# WIDTHTRUNC/BLKSEQ's own precedent, rather than a second blanket flag.
+#
+# CORE-aware for the same reason every build target is: core_ooo.v's own
+# structural UNOPTFLAT cycle is reachable from both top-level files, so
+# $(VERILATOR_LINT_FLAGS) rides along here exactly as the real builds do -
+# including on the flat rtl/top.v side, which had never been built under
+# CORE=ooo in CI before.
+lint-rtl-flat:
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL $(CORE_DEFINES) $(VERILATOR_LINT_FLAGS) \
+	    --top-module top $(RTL)
+
+# sim/verilator_soc.vlt included for the same reason the real SoC build
+# includes it (its file-scoped UNOPTFLAT waivers), and $(VERILATOR_PARAMS)
+# so this lints the exact RAM_BYTES/RESET_PC the real build elaborates
+# against, not Verilator's own defaults.
+#
+# -Wno-SYNCASYNCNET is a second real, measured, blanket exception, this one
+# SoC-specific: cpu_core.v resets every pipeline register asynchronously
+# (`posedge clk or posedge rst`, for fast recovery regardless of clock
+# activity) while several bus-adapter/peripheral registers - e.g.
+# rtl/soc/wb_periph_bridge.v's own ack_r - reset synchronously
+# (`posedge clk` only, simpler timing, no need for the async guarantee on
+# a plain handshake register). Both styles share the same `rst`/`rst_soc`
+# net by construction, which is exactly what SYNCASYNCNET is built to
+# flag - correctly, but as a description of a deliberate, project-wide
+# split by register role, not a defect. Confirmed by checking multiple
+# independent sites (cpu_core.v, cpu_wb.v, wb_periph_bridge.v) rather than
+# assumed from the one pair Verilator happened to name first.
+lint-rtl-soc:
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL -Wno-SYNCASYNCNET \
+	    $(CORE_DEFINES) $(VERILATOR_LINT_FLAGS) \
+	    --top-module soc_top $(VERILATOR_PARAMS) \
+	    $(SOC_RTL) sim/verilator_soc.vlt
+
+lint-rtl: lint-rtl-flat lint-rtl-soc
+
+# git ls-files rather than a glob, for the identical reason lint-markdown
+# gives: software/bench/coremark/ is a fetched, .gitignore'd tree with its
+# own C sources, and nowhere else in this project's tooling reaches into a
+# fetched tree's own files.
+#
+# --error-exitcode=1 is load-bearing: cppcheck's own default is to exit 0
+# regardless of findings, which is exactly the "test that cannot fail"
+# CONTRIBUTING.md's own "what gets pushed back on" section names first.
+# --enable is deliberately not "all"/"style" on a corpus that's never seen
+# this tool before - the same reasoning .vale.ini gives for not using
+# Vale's third-party style packs against different prose. Version: apt on
+# a pinned runner OS (ubuntu-24.04), not a source build - see the Code
+# Quality job's own "Install cppcheck" step for why, and how CI still
+# catches an unnoticed version drift despite not pinning the package
+# itself.
+#
+# -D'__asm__(x)=' -D'asm(x)=' are load-bearing, not decoration: cppcheck's
+# own C parser cannot handle GCC's named-register-variable extension
+# (`register long a7 __asm__("a7") = n;`, used throughout
+# software/linux/initramfs/init.c's syscall wrappers and
+# software/soc/pmptest.c's own register-poison check) and gives up on the
+# whole file at the first one, silently skipping everything after it -
+# confirmed by running with and without these defines and seeing
+# real (non-parse-error) findings only appear once the file parses past
+# that point. Defining the macro away for cppcheck's own preprocessing
+# pass turns `register long a7 __asm__("a7") = n;` into the plain
+# `register long a7 = n;` it can already parse - it does not touch a real
+# inline-asm block (`__asm__ volatile (...)`, with a keyword between the
+# name and the parenthesis), only the exact register-binding form that
+# was breaking the parse.
+lint-c:
+	cppcheck --enable=warning,performance,portability --inline-suppr \
+	    --error-exitcode=1 --suppress=missingIncludeSystem \
+	    -Isoftware -Isoftware/soc \
+	    -D'__asm__(x)=' -D'asm(x)=' \
+	    $$(git ls-files '*.c' '*.h')
+
+# Pinned by version (docs/toolchain.md) AND by rule selection, in
+# ruff.toml: Ruff 0.16.0 (2026-07-23) expanded its own *default* enabled
+# rule set from 59 rules to 413 overnight - the unpinned-tool risk this
+# project's own lint job header warns about generically has already
+# happened to this exact tool. Pinning only the version isn't enough on
+# its own for a tool whose defaults themselves aren't stable.
+lint-py:
+	ruff check $$(git ls-files '*.py')
+
+# Mirrors `bom: sbom hbom` above. Recursive $(MAKE) for CORE, the same
+# shape verify_ooo already uses to re-run verify under CORE=ooo - lint-rtl
+# needs it said explicitly here since nothing else drives both cores in
+# one target.
+code-quality: lint-c lint-py
+	$(MAKE) lint-rtl CORE=inorder
+	$(MAKE) lint-rtl CORE=ooo
 
 # ---- Bill of materials (SBOM + HBOM), CycloneDX 1.5 JSON ----
 #

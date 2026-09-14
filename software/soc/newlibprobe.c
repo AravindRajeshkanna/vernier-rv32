@@ -176,6 +176,16 @@ int main(void) {
         const volatile uint32_t *img =
             (const volatile uint32_t *)(uintptr_t)PROGRAM_LOAD_ADDR;
         uint32_t words = ((uint32_t)(uintptr_t)_eidata - PROGRAM_LOAD_ADDR) / 4u;
+        // _sdata/_edata are the linker's own .data start/end symbols, not
+        // two unrelated arrays - subtracting them to get the section's own
+        // byte count is the standard idiom. cppcheck has no way to know
+        // they mark one region rather than being two genuinely distinct
+        // objects - flagged as `comparePointers` on 2.13.0 (this project's
+        // own CI pin, see docs/toolchain.md) and renamed to
+        // `subtractPointers` by 2.21.0, so both are suppressed here rather
+        // than whichever one happened to be on hand locally.
+        // cppcheck-suppress comparePointers
+        // cppcheck-suppress subtractPointers
         uint32_t dwords = (uint32_t)(_edata - _sdata) / 4u;
         uint32_t sum = 0, i;
         int copied = 1;

@@ -412,7 +412,15 @@ module soc_top #(
                 .iptw_gnt(iptw_gnt[h]), .iptw_rdata(iptw_rdata[32*h +: 32]),
                 .mtip(mtip[h]), .msip_in(msip[h]), .meip(plic_eip[2*h]), .seip(plic_eip[2*h+1]),
                 .mtime_in(mtime),
+                // `trap` is a scalar, single-hart-era output (hart 0's own
+                // is wired below to soc_top's own `trap` port) that was
+                // never widened to per-hart when NUM_HARTS became a real
+                // parameter - nothing at this level needs per-hart trap
+                // visibility, since every trap CSR/the tracer already
+                // track it per-hart internally.
+                /* verilator lint_off PINCONNECTEMPTY */
                 .fence_i(fence_i[h]), .trap(),
+                /* verilator lint_on PINCONNECTEMPTY */
                 // Same unconditional wiring as hart 0's own instantiation
                 // above - both cores expose identical ports now.
                 .resv_valid(resv_valid[h]), .resv_addr(resv_addr[32*h +: 32]),
@@ -544,7 +552,12 @@ module soc_top #(
         .wb_cyc(dbg_cyc), .wb_stb(dbg_stb), .wb_we(dbg_we),
         .wb_adr(dbg_adr), .wb_dat_w(dbg_dat_w), .wb_sel(dbg_sel),
         .wb_dat_r(dbg_dat_r), .wb_ack(dbg_ack),
+        // `dmactive` is dmstatus's own liveness bit, read by a host over
+        // DMI (dm.v's own dmi_rdata path) - nothing inside this SoC needs
+        // to consume it locally.
+        /* verilator lint_off PINCONNECTEMPTY */
         .ndmreset(dbg_ndmreset), .dmactive(),
+        /* verilator lint_on PINCONNECTEMPTY */
         .haltreq(dbg_haltreq), .resumereq(dbg_resumereq), .halted(dbg_halted),
         .hartsel(hartsel),
         .dbg_reg_valid(dbg_reg_valid), .dbg_reg_we(dbg_reg_we),
@@ -611,7 +624,14 @@ module soc_top #(
         .sdram_a(sdram_a), .sdram_ba(sdram_ba), .sdram_dqm(sdram_dqm),
         .sdram_dq_o(sdram_dq_o), .sdram_dq_oe(sdram_dq_oe),
         .sdram_dq_i(sdram_dq_i),
+        // Diagnostic-only: the controller's own wb_cyc/wb_stb/wb_ack
+        // handshake already holds a request until it is genuinely ready
+        // internally, so nothing here needs a separate ready flag to stay
+        // correct - fpga/ulx3s_sdram.v's own bring-up probe is what reads
+        // the equivalent signal, by hierarchical reference, not this path.
+        /* verilator lint_off PINCONNECTEMPTY */
         .sdram_ready()
+        /* verilator lint_on PINCONNECTEMPTY */
     );
 
     // ---- CLINT behind a bridge ----

@@ -564,3 +564,83 @@ jobs:
 
       - name: Vale
         run: make lint-vale
+
+  # ---------------------------------------------------------------------
+  # Code quality: static analysis across all three languages this repo
+  # has - RTL, C, Python - one job, three tools, each its own step so a
+  # failure names which one, the same shape `lint` above uses for
+  # markdownlint + Vale. No RISC-V toolchain: none of these three
+  # compiles anything.
+  #
+  # ubuntu-24.04, pinned for a different reason than firmware/isa/coremark
+  # pin it: those need the runner to match a prebuilt toolchain asset;
+  # this pins it so cppcheck's apt-resolved version stays fixed rather
+  # than moving whenever GitHub advances the ubuntu-latest label.
+  # ---------------------------------------------------------------------
+  code-quality:
+    name: Code Quality (Verilator lint + cppcheck + ruff)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/verilator
+
+      - name: Verilator lint, rtl/top.v (in-order core)
+        run: make lint-rtl-flat CORE=inorder
+      - name: Verilator lint, rtl/top.v (wide core)
+        run: make lint-rtl-flat CORE=ooo
+      - name: Verilator lint, soc_top.v (in-order core)
+        run: make lint-rtl-soc CORE=inorder
+      - name: Verilator lint, soc_top.v (wide core)
+        run: make lint-rtl-soc CORE=ooo
+
+      # apt rather than a curl+tarball+cache build from a pinned source
+      # tag (the riscv-toolchain/oss-cad-suite treatment): unlike those
+      # two, nothing this project publishes depends on cppcheck's exact
+      # version, and building from source costs real minutes for a tool
+      # that isn't the system under test. What actually matters - a
+      # future apt bump silently changing what "clean" means - is caught
+      # by asserting the version below, the same "fail loud" shape every
+      # apt action here already uses for a down mirror.
+      - name: Install cppcheck
+        run: |
+          set -euo pipefail
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends cppcheck
+          got="$(cppcheck --version | awk '{print $2}')"
+          want="2.13.0"
+          if [ "$got" != "$want" ]; then
+            echo "::error::cppcheck resolved to $got, expected $want (docs/toolchain.md)."
+            echo "::error::ubuntu-24.04's apt cppcheck moved - update the pin in"
+            echo "::error::docs/toolchain.md and this check once you've looked at what changed."
+            exit 1
+          fi
+      - name: cppcheck
+        run: make lint-c
+
+      # A pinned, single static binary from ruff's own GitHub releases -
+      # the same pattern the `lint` job's own Vale install already uses,
+      # not pip: ubuntu-24.04's system Python is a PEP 668 "externally
+      # managed environment" and refuses a bare `pip install` outside a
+      # venv, and a direct release download needs no venv/pipx workaround
+      # at all. See ruff.toml for why pinning the version isn't enough on
+      # its own for this particular tool.
+      - name: Install ruff
+        env:
+          RUFF_VERSION: 0.16.6
+        run: |
+          set -euo pipefail
+          URL="https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz"
+          echo "Fetching $URL"
+          if ! curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/ruff.tar.gz; then
+            echo "::error::Could not download ruff ${RUFF_VERSION}."
+            echo "::error::Check the release still carries that asset:"
+            echo "::error::  https://github.com/astral-sh/ruff/releases/tag/${RUFF_VERSION}"
+            exit 1
+          fi
+          mkdir -p /tmp/ruff-bin
+          tar xzf /tmp/ruff.tar.gz -C /tmp/ruff-bin --strip-components=1
+          rm -f /tmp/ruff.tar.gz
+          echo "/tmp/ruff-bin" >> "$GITHUB_PATH"
+      - name: ruff
+        run: make lint-py

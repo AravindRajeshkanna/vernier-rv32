@@ -1339,7 +1339,13 @@ module core_ooo #(
         .sum(csr_mstatus_sum), .mxr(csr_mstatus_mxr),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(head_mmu_resolved), .fault(head_mmu_fault), .pa(head_mmu_pa),
+        // Same reasoning as cpu_core.v's own identical tie-off: the data
+        // address cannot move under a stall the way the PC can, so the
+        // data side has no use for mmu.v's speculative-va output. Named
+        // rather than left off, so the port is accounted for.
+        /* verilator lint_off PINCONNECTEMPTY */
         .pa_va(),
+        /* verilator lint_on PINCONNECTEMPTY */
         .busy(head_mmu_busy),
         .ptw_req(ptw_req), .ptw_addr(ptw_addr),
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata)
@@ -2344,6 +2350,15 @@ module core_ooo #(
             // in the squashed range, the *oldest* squashed rename's
             // restore is the one left standing - exactly the mapping
             // that held right before the squashed range began.
+            // free_push_n/rb_idx are both blocking (`=`) on purpose: each is
+            // a same-cycle running value (a count, a loop index) recomputed
+            // fresh every iteration and read back later in this same clock
+            // edge's evaluation (the free_tail/free_count updates below,
+            // and rob_valid[rb_idx] within this loop itself) - `<=` would
+            // read last cycle's stale value across iterations instead of
+            // this cycle's running one. Same reasoning as this block's own
+            // WIDTHTRUNC-waived free_list reset loop above.
+            /* verilator lint_off BLKSEQ */
             free_push_n = 0;
             for (fk = 0; fk < ROB_DEPTH; fk = fk + 1) begin
                 rb_idx = rob_tail - 1 - fk[ROB_AW-1:0];
@@ -2379,6 +2394,7 @@ module core_ooo #(
                 free_push_n = free_push_n + 1;
                 preg_busy[rob_new_preg[rob_head]] <= 1'b0;
             end
+            /* verilator lint_on BLKSEQ */
             if (recovery_keep_culprit) rob_valid[rob_head] <= 1'b0;
             free_tail  <= free_tail + free_push_n[FREE_AW-1:0];
             free_count <= free_count + free_push_n[FREE_AW:0];

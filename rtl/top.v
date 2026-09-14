@@ -70,6 +70,13 @@ module top #(
     // section 1 in its purest form. It is also the only testbench here with a
     // zero-latency memory, and therefore the only place the fetch port is not
     // the constraint, which makes it the one worth having.
+    // This instantiation ties off several output ports this flat harness
+    // has no consumer for (a bus adapter's own signals, hart-control/
+    // coherence ports with no second hart or debug master here) - each
+    // one commented at the point it's tied, below. Verilator's own
+    // PINCONNECTEMPTY is right that these are empty on purpose; the
+    // bracket says so once rather than once per pin.
+    /* verilator lint_off PINCONNECTEMPTY */
 `ifdef CORE_OOO
     core_ooo CPU (
 `else
@@ -80,6 +87,11 @@ module top #(
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),
         .dmem_is_amo(), // only a bus adapter needs this (see rtl/soc/cpu_wb.v)
+        // Same reasoning as dmem_is_amo() just above: only rtl/soc/cpu_wb.v's
+        // own I-fetch gating (fetch_hit/iwb_cyc) reads this - a real,
+        // previously-unconnected port this flat harness never needed,
+        // caught by Verilator's PINMISSING rather than left implicit.
+        .itlb_wait_stall(),
         // This top level's memories are zero-latency, so the core never waits
         // and the read data is valid in the cycle the address is presented.
         // An AMO still takes two MEM cycles here (read, then write) - see
@@ -118,6 +130,7 @@ module top #(
         .dbg_reg_num(16'b0), .dbg_reg_wdata(32'b0),
         .dbg_halted(), .dbg_reg_rdata(), .dbg_reg_err()
     );
+    /* verilator lint_on PINCONNECTEMPTY */
 
     imem #(.MEM_WORDS(IMEM_WORDS), .INIT_FILE(INIT_FILE)) IMEM (
         .addr(imem_addr), .rdata(imem_rdata)
@@ -157,6 +170,8 @@ module top #(
         // interrupt in without changing what that port means to every
         // testbench that drives it. rtl/soc/soc_top.v wires it to PLIC
         // source 1, which is where it is exercised.
+        /* verilator lint_off PINCONNECTEMPTY */
         .irq()
+        /* verilator lint_on PINCONNECTEMPTY */
     );
 endmodule
