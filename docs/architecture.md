@@ -1218,7 +1218,7 @@ is correctly still a read, which is also how Spike models it.
   DRAM controller (`wb_ram.v`'s header marks the seam where one would go),
   no Ethernet. `docs/debug.md` sets out exactly how far the JTAG debug
   module goes (System Bus Access always; halt/resume/register access on
-  `CORE=inorder`, simulation-only) and what is still missing. The design
+  either core, simulation-only) and what is still missing. The design
   builds to a **bitstream** on an
   ULX3S, closes timing at 25 MHz against that board's real pinout —
   30.77 MHz measured post-route on an LFE5U-85F, 28.78 MHz on a 45F — and

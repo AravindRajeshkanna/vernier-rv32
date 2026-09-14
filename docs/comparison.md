@@ -59,7 +59,7 @@ rather than the only build possible.
 
 | | Interconnect | Interrupts | Debug / JTAG | Reference peripherals | Boot chain |
 |---|---|---|---|---|---|
-| **Vernier-RV32** | Wishbone B4, priority-arbitrated, `NUM_HARTS`-parameterized (a fetch/data/page-table-walk master triple per hart, defaulting to one hart - Phase 13) plus a shared debug master and the NPU's own DMA master (Phase 14), 12-slave crossbar (`rtl/soc/wb_interconnect.v`) | CLINT (mtime/mtimecmp/msip) + a real PLIC, delivered to both M- and S-mode | a JTAG TAP + Debug Module, gated in `make verify` (`make sim_jtag`) - System Bus Access, plus halt/resume/single-step/register access (`CORE=inorder`, simulation-only, no real `openocd`+`gdb` attach yet - `docs/debug.md`) | UART (interrupt-driven TX), GPIO with per-pin interrupts, an SPI master driving SD-card boot, an SDR SDRAM controller (32 MB external), a general-purpose timer/PWM, a quantized-inference MAC engine (Phase 14), and a streaming FIR filter coprocessor (Phase 11) | boot ROM → SPI/SD first-stage loader → OpenSBI → kernel |
+| **Vernier-RV32** | Wishbone B4, priority-arbitrated, `NUM_HARTS`-parameterized (a fetch/data/page-table-walk master triple per hart, defaulting to one hart - Phase 13) plus a shared debug master and the NPU's own DMA master (Phase 14), 12-slave crossbar (`rtl/soc/wb_interconnect.v`) | CLINT (mtime/mtimecmp/msip) + a real PLIC, delivered to both M- and S-mode | a JTAG TAP + Debug Module, gated in `make verify` (`make sim_jtag`) - System Bus Access, plus halt/resume/single-step/register access (both cores, simulation-only, no real `openocd`+`gdb` attach yet - `docs/debug.md`) | UART (interrupt-driven TX), GPIO with per-pin interrupts, an SPI master driving SD-card boot, an SDR SDRAM controller (32 MB external), a general-purpose timer/PWM, a quantized-inference MAC engine (Phase 14), and a streaming FIR filter coprocessor (Phase 11) | boot ROM → SPI/SD first-stage loader → OpenSBI → kernel |
 | SERV | none of its own - the core is bus-agnostic; its reference integration, "SERVANT," supplies whatever its FuseSoC target needs | none bundled in the core | not part of SERV/SERVANT | SERVANT: memory, GPIO, UART, FuseSoC-managed and board-parameterized | SERVANT boots Zephyr, not Linux |
 | PicoRV32 | PicoSoC's own simple memory-mapped bus, not a named standard interconnect | none - no PLIC/CLINT; a custom, non-standard fast-IRQ mechanism (`getq`/`setq`/`retirq`/`maskirq` over four q-registers) is a core feature instead | none | a UART with a baud-rate divider, and memory-mapped SPI flash used for execute-in-place | no separate boot-ROM stage - fetches its first instructions directly out of SPI flash |
 | Ibex | TileLink Uncached Lite (TL-UL) crossbar, in the separate `ibex-demo-system` repo | `irq_fast` inputs built into the core, hardware-prioritized but explicitly not RISC-V PLIC-spec-compliant per lowRISC's own sources; OpenTitan pairs Ibex with its own separate `rv_plic` peripheral for standard external sources | an integrated, PULP-derived Debug Module (RISC-V debug spec 0.13); the demo system debugs over OpenOCD/GDB via USB on an Arty A7, no external probe needed | GPIO, PWM, UART, an SPI host | target-dependent - simulated flash in simulation, SPI flash on the FPGA target |
@@ -79,8 +79,9 @@ the opposite direction: peripherals, bootloader and debugger all ship
 SDK than a CPU repository. Debug is the one row where "does it have JTAG"
 undersells the gap: Vernier-RV32's Debug Module is real and gated in CI,
 and does more than System Bus Access now - halt, resume, single-step and
-register access all work (`CORE=inorder`, simulation-only, `docs/debug.md`)
-- but a real `openocd`+`gdb` attach is still the piece NEORV32, Ibex and
+register access all work, on both the in-order and out-of-order cores
+(simulation-only, `docs/debug.md`) - but a real `openocd`+`gdb` attach is
+still the piece NEORV32, Ibex and
 VexRiscv (with its debug plugin) all document and this project does not:
 that needs the RISC-V debug spec's own debug ROM/Program Buffer model,
 deliberately skipped here to avoid reaching into the timing-critical fetch
@@ -154,12 +155,12 @@ declaring a winner.
   `openocd`+`gdb` compatibility.** The JTAG TAP and Debug Module do System
   Bus Access (read/write memory without stopping the hart, gated in
   `make verify`) and, separately, halt/resume/single-step/register access
-  (`CORE=inorder`, simulation-only - `docs/debug.md`) - but the latter skips
+  (both cores, simulation-only - `docs/debug.md`) - but the latter skips
   the RISC-V debug spec's debug ROM/Program Buffer model deliberately, to
-  avoid reaching into `cpu_core.v`'s pipeline-control logic on a design with
-  little timing margin to spare, which is also why a real `openocd`+`gdb`
-  cannot attach to it. NEORV32, Ibex and VexRiscv's debug plugin all have
-  that working today.
+  avoid reaching into the pipeline-control logic of either core on a
+  design with little timing margin to spare, which is also why a real
+  `openocd`+`gdb` cannot attach to it. NEORV32, Ibex and VexRiscv's debug
+  plugin all have that working today.
 - **One proven FPGA target.** The ULX3S/ECP5-85F is the only board this
   project has actually run on; VexRiscv (via LiteX) and Rocket/CVA6 (via
   their respective ecosystems) both span many more boards and, for the
