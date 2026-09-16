@@ -28,6 +28,14 @@
 // works. Hart 1 needs no wait of its own: by the time it is released, hart
 // 0 has already finished its entire boot-ROM sequence (that is what
 // releasing it means), so there is nothing left for hart 1 to race.
+//
+// CORE-aware since Phase 15, stage 3: bootrom.c/crt0_rom.S are plain C/asm
+// with no per-hart-type behavior, so the same payload and the same mailbox
+// also prove the real boot-ROM path under CORE=hetero - hart 0 (cpu_core.v)
+// running the ROM, loading the preloaded payload and releasing hart 1
+// (core_ooo.v) to it, the first time this exact mechanism has been
+// exercised with the parked hart a genuinely different microarchitecture
+// from the one that parked and released it.
 `ifndef RAM_IMAGE
 `define RAM_IMAGE "ramimage2hart.hex"
 `endif
@@ -154,6 +162,19 @@ module tb_ramboot_2hart;
         check("hart 0's sentinel at 0x8000_0100", DUT.RAM.mem[64],  32'h000000A0);
         check("hart 1's sentinel at 0x8000_0104", DUT.RAM.mem[65],  32'h000000A1);
         check("result word", result_word, RESULT_PASS);
+
+`ifdef CORE_HETERO
+        // Phase 15, stage 3: this is the first test to exercise the real
+        // boot-ROM mailbox (software/soc/crt0_rom.S's park_hart,
+        // software/soc/bootrom.c's hart_release_addr) with the parked hart
+        // (hart 1) a genuinely different microarchitecture from the one
+        // that released it (hart 0). Same rob_count-based proof
+        // sim/tb_soc_2hart.v's own stage 1 check introduced: a hard
+        // Icarus compile error against the wrong module if the generate
+        // loop's own CORE_HETERO arm ever mis-selected, not a silent pass.
+        check("hart 1 is genuinely core_ooo.v - its own rob_count resolves and is defined",
+              {31'b0, ^DUT.g_hart[1].CPU.rob_count !== 1'bx}, 32'b1);
+`endif
 
         if (failures == 0) $display("RAMBOOT-2HART TEST PASSED");
         else                $display("RAMBOOT-2HART TEST FAILED (%0d)", failures);

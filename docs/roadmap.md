@@ -5623,17 +5623,20 @@ like.
 
 ## Phase 15 — Heterogeneous multi-core: both core types, at once, in one SoC
 
-**Stages 0 through 2 done; everything from Stage 3 onward is still a
-plan, not an account.** This phase was written down as a pure
-design-space discussion first, the same reasoning that put one in
-Phases 8-11 before any of them had a line of RTL - but unlike those, the
-first three stages shipped in quick succession, the mechanism (Stages
-0-1) and its own highest-risk correctness question (Stage 2, cross-hart
-coherence) both turning out more tractable than the original plan below
-assumed. The "Stage N:" entries for 0 through 2 are real completed
+**Stages 0 through 2 done, plus half of Stage 3; the other half of Stage
+3 and everything from Stage 4 onward is still a plan, not an account.**
+This phase was written down as a pure design-space discussion first, the
+same reasoning that put one in Phases 8-11 before any of them had a line
+of RTL - but unlike those, the first stages shipped in quick succession,
+the mechanism (Stages 0-1) and its own highest-risk correctness question
+(Stage 2, cross-hart coherence) both turning out more tractable than the
+original plan below assumed, while Stage 3's own two halves turned out to
+need genuinely different amounts of work - see that stage's own account
+for why. The "Stage N:" entries for 0 through 2, and the boot-ROM-mailbox
+half of Stage 3, are real completed
 accounts, exactly like every other phase in this file; the bullet list
-further down for Stage 3 onward is still a plan, and is marked as such
-at its own header.
+further down for the rest of Stage 3 and Stage 4 onward is still a plan,
+and is marked as such at its own header.
 
 **This is not a new idea - Phase 13 named it and set it aside on purpose.**
 Stage 6's own account of building `rtl/soc/reservation_monitor.v` says so
@@ -5832,14 +5835,78 @@ incidentally by both new tests' own foreign-write step, but nothing
 here specifically stresses concurrent, unsynchronized ordinary traffic
 the way the LR/SC hazard stresses atomics - that remains open too.
 
-**Stage 3 onward - still a plan, none of it started:**
+**Stage 3, first half: the real boot-ROM mailbox, under real asymmetry.**
+`sim/tb_ramboot_2hart.v` (Phase 13 Stage 12's own directed test, the first
+one to boot two harts through the *actual* boot ROM - `software/soc/
+crt0_rom.S`'s `park_hart` and `software/soc/bootrom.c`'s
+`hart_release_addr` mailbox - rather than every other multi-hart test's
+own RESET_PC-into-RAM shortcut) needed zero changes to prove the mailbox
+holds when the parked hart is a genuinely different microarchitecture
+from the one that released it: `bootrom.c`/`crt0_rom.S` are plain C/asm
+with no per-hart-type behavior, so the existing payload already proves
+hart 0 (`cpu_core.v`) running the real ROM boot sequence and releasing
+hart 1 (`core_ooo.v`) to it, the same reuse Stages 1 and 2 both found for
+their own testbenches. The new `sim_ramboot_2hart_hetero` target hardcodes
+its own file list and `-DCORE_HETERO`, the same pattern every other
+`_hetero` target in this phase uses, and is gated in `verify`'s own
+dependency list unconditionally. The same `rob_count`-based module-identity
+check Stage 1 introduced was added directly to `sim/tb_ramboot_2hart.v`,
+confirmed non-vacuous the same way: temporarily breaking the generate
+loop's own `CORE_HETERO` arm produced the expected hard Icarus compile
+error (`Unable to bind wire/reg/memory 'DUT.g_hart['sd1].CPU.rob_count'`),
+reverted and reconfirmed clean before this was written down. Passed on the
+first attempt. `make verify` and `make verify_ooo` both green (Linux boot
+passed, formal 6/6 proved, riscv-tests 82 passed/2 xfail, cosim 84/84
+traces match), zero regression on any existing configuration.
 
-- **Boot firmware, device tree, OpenSBI.** `dts/soc.dts`'s `cpu@` nodes
-  and the boot ROM's mailbox already generalize past two identical harts;
-  this stage is confirming that holds when the parked hart is the
-  opposite type from the one that parked it, and giving each `cpu@` node
-  a `compatible` string that actually names which microarchitecture it
-  is, rather than the same string repeated per hart.
+**Stage 3, second half: the device-tree `compatible` strings turned out to
+need more than two lines, and shipping the two-line version would have
+been a live correctness trap, not a shortcut.** The plan below assumed
+this was a small fix - give `cpu0`/`cpu1` a `compatible` string that
+actually names which microarchitecture each hart is, instead of the
+identical `"riscv"` both nodes carry today. Mechanically this works:
+`cc -E -x assembler-with-cpp` (the same mode the Linux kernel's own
+`arch/riscv/boot/dts` tree relies on, specifically because it passes a
+`#foo = <...>;` device-tree property through unrecognized while still
+treating `#ifdef`/`#else`/`#endif` as real conditionals) can drive
+per-`$(CORE)` compatible strings through `dtc` cleanly - confirmed against
+the real `dts/soc.dts` file under all three of `$(CORE_DEFINES)`'s values
+with zero new warnings before any RTL or Makefile change was made. What
+stopped this from shipping is what `dts/soc.dtb` actually feeds: it
+compiles into `software/soc/dtb_blob.h`, embedded unconditionally into
+`software/soc/bootrom.elf` - not gated on `$(CORE)` at all today, because
+its content has never depended on `$(CORE)` before - and `bootrom.elf` is
+what nearly every boot-ROM test in `verify`/`verify_ooo` links against
+(`sim_ramboot`, `sim_probe`, `sim_rerun`, `trapcheck`, `sim_uart16550`,
+`sim_plic`, `sim_pmptest`, `sim_uartirq`, `sim_div64test`,
+`sim_mmusdram`, `sim_sdramcheck`, `sim_uartload`, and now this stage's own
+`sim_ramboot_2hart_hetero`). Making `dts/soc.dtb`'s own content vary with
+`$(CORE)` without also making that whole chain `$(CORE)`-suffixed (the way
+every other CORE-dependent artifact in this Makefile already is -
+`obj_dir_soc_$(CORE)`, `sim/coverage_$(CORE).dat`, and so on) means Make's
+own mtime-based dependency tracking has no way to notice the *variable*
+changed between two manual invocations: running `make verify` and then
+`make verify_ooo` in the same tree - exactly how this project's own gate
+discipline runs them - would silently leave the first run's compatible
+strings baked into `bootrom.elf` for the second, a stale, wrong answer
+embedded across every single boot-ROM test transitively, not confined to
+the two `cpu@` nodes it was meant to fix. That is a bigger, real
+infrastructure change (a `$(CORE)`-suffixed `dtb_blob.h`/`bootrom.elf`
+pipeline) than "rename two strings," and it is exactly the kind of thing
+this project's own practice insists on naming rather than shipping around
+- so it stays open, named precisely, rather than closed with a change that
+would have looked done and instead been a silent trap for the next person
+who ran both gates back to back. Revisiting it alongside Stage 4's own new
+`sim_opensbi_hetero`/`sim_linux_hetero` boot targets (which need a real,
+correctly-scoped answer to the same question anyway) is the planned path,
+not a separate, disconnected fix.
+
+**Stage 3 continued, and Stage 4 onward - still a plan, none of it
+started:**
+
+- **The device-tree `compatible` strings**, per the finding above: a
+  `$(CORE)`-suffixed `dts/soc.dtb` → `dtb_blob.h` → `bootrom.elf` pipeline,
+  built alongside whatever new boot infrastructure Stage 4 needs.
 - **Linux SMP on a genuinely asymmetric pair.** The existing
   `CONFIG_SMP=y` image, unmodified, booting to userspace with
   `/proc/cpuinfo` showing two real harts - then, only once that holds,
@@ -5869,11 +5936,12 @@ matching where Phase 13 itself still stands. And the verification
 surface does genuinely grow by a third configuration on top of the two
 homogeneous ones already gated - Stage 1's own cost turned out to be one
 reused test, not a new one, but Stage 2 added two real new directed
-tests (`sim_soc_2hart_lrsc_hetero`, `sim_soc_2hart_lrsc_swap_hetero`),
-and `make verify_ooo` already exists specifically because a regression
-in one core must not hide behind the other - a third, mixed
-configuration is one more place that could happen, worth stating
-plainly rather than assuming existing CI time absorbs it for free.
+tests (`sim_soc_2hart_lrsc_hetero`, `sim_soc_2hart_lrsc_swap_hetero`) and
+Stage 3's own first half added a third (`sim_ramboot_2hart_hetero`), and
+`make verify_ooo` already exists specifically because a regression in one
+core must not hide behind the other - a third, mixed configuration is one
+more place that could happen, worth stating plainly rather than assuming
+existing CI time absorbs it for free.
 
 **Done when:** one elaboration - simulation first, matching every other
 phase's own bar before a board build is attempted - contains a real

@@ -173,6 +173,7 @@ halfword
 haltreq
 hardcode
 hardcoded
+hardcodes
 hardcoding
 hardwires
 hotpluggable
