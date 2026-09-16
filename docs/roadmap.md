@@ -5621,6 +5621,156 @@ like.
 
 ---
 
+## Phase 15 — Heterogeneous multi-core: both core types, at once, in one SoC
+
+**Not started. Everything below is a plan, not an account - no stage here
+has shipped, and nothing in this section should be read as a completed
+claim the way the "Stage N:" entries in every phase above it are.** It is
+written down now because the shape of the work is already clear enough
+to be useful, the same reasoning that put a design-space discussion in
+Phases 8-11 before any of them had a line of RTL.
+
+**This is not a new idea - Phase 13 named it and set it aside on purpose.**
+Stage 6's own account of building `rtl/soc/reservation_monitor.v` says so
+directly: *"this would be a heterogeneous multi-core system, not the
+usual 'replicate one core N times' shape most SMP designs are... real
+per-hart timing asymmetry... that a kernel built assuming identical cores
+does not usually have to reason about."* Phase 13 then spent nineteen
+stages building the homogeneous case first - two harts of the *same*
+type, proven for both `cpu_core.v` and `rtl/ooo/core_ooo.v`
+independently - which is the right order (prove coherence and SMP boot
+once, on the simpler pairing, before adding a second axis of
+difference) but leaves the harder, originally-named case exactly where
+Stage 6 left it: unstarted.
+
+**What Phase 13 leaves this phase to build on, precisely, not
+assumed:** both cores now share one port list (Stages 15-19 spent
+themselves closing that gap specifically - reservation ports, hart
+control, register access, all identical shapes on both), `rtl/soc/
+wb_interconnect.v` and the CLINT/PLIC already take `NUM_HARTS` as a real
+parameter rather than a hardcoded pair, `rtl/soc/reservation_monitor.v`
+already arbitrates cross-hart LR/SC for any number of masters, the boot
+ROM's mailbox already parks an arbitrary non-zero hart until hart 0
+releases it, and `dts/soc.dts`'s per-hart `cpu@` nodes and OpenSBI's own
+FDT-driven hart detection already scale past two. None of that was
+heterogeneous-aware when it was built - it was built to replicate one
+core type - but nothing about how it was built assumes the two harts run
+the *same* Verilog module, which is what makes this phase "wire existing
+plumbing to a real asymmetry" rather than a second Phase 13 from
+scratch.
+
+**What is genuinely new, and where precisely it lives.** `CORE=inorder`
+versus `CORE=ooo` today is a *global, compile-time* choice, not a
+per-hart one: the Makefile's own `CORE_RTL`/`CORE_DEFINES` (Makefile,
+around line 68) resolve to exactly one core's source file, and `rtl/soc/
+soc_top.v` selects which module to instantiate with a single `` `ifdef
+CORE_OOO ``/`` `else `` that both hart 0's own instantiation (line 316)
+and the `h = 1..NUM_HARTS-1` generate loop's own copy of the same
+`` `ifdef `` (line 397) read identically - every hart in a given build is
+the same type, by construction, not by omission. Making that a per-hart
+choice needs a real per-hart type parameter (an array, or a two-bit field
+per hart, resolved inside the generate loop's own `if` rather than a
+file-scope `` `ifdef ``) - the one piece of this phase with no direct
+precedent anywhere in this codebase to reuse.
+
+**Cache policy is not an open decision here the way it reads in a
+generic multi-core plan - Phase 13 already made it, for a directly
+applicable reason.** `rtl/soc/soc_top.v`'s own `HART_DCACHE_ENABLE`
+localparam (line 313) is `(NUM_HARTS > 1) ? 0 : 1` - **every hart's
+private D-cache is already disabled outright the moment a second hart
+exists**, precisely because two real bus masters sharing memory with no
+snoop path is exactly the hazard a private cache would hide. That
+decision was made for the homogeneous case and needs no new reasoning to
+carry over to the heterogeneous one - the memory-correctness question
+this phase actually opens is narrower than "pick a cache policy": it is
+whether an in-order hart's own store-then-drain ordering and an
+out-of-order hart's store buffer (the same `sb_valid` this project's own
+hart-control work already had to reason about precisely, in Phase 13
+Stage 18) interleave safely at `rtl/soc/reservation_monitor.v`'s
+existing arbitration point, which is a verification question, not a new
+design.
+
+**The plan, stage by stage - none of it started:**
+
+- **A design-lock stage first.** Confirm both cores still pass `make
+  verify`/`make verify_ooo` independently (a regression check, not new
+  work), and settle the one real open topology question before writing
+  RTL: which hart is which type. Hart 0 = `cpu_core.v` (the
+  silicon-proven path, keeping every existing single-hart/homogeneous
+  build's own hart-0 behavior unchanged) and hart 1 = `core_ooo.v` is the
+  natural default, matching this project's own repeated preference
+  elsewhere for keeping the proven path as the fallback and the newer
+  design as the addition - but whether the type is fixed at build time
+  per hart or itself parameterized (`HART0_TYPE`/`HART1_TYPE`) is a real
+  choice worth making deliberately rather than defaulting into.
+- **Dual instantiation.** The per-hart type parameter described above,
+  reaching `rtl/soc/soc_top.v`'s hart-0 block and its generate loop, with
+  `NUM_HARTS=1` and every existing single-type build required to
+  elaborate byte-for-byte unchanged - the same "prove it changes nothing
+  for the paths that already work" bar Phase 13's own Stage 1 set for
+  parameterizing `NUM_HARTS` at all. A directed smoke test - both harts
+  out of reset, distinct `mhartid`, each running a trivial program -
+  proves elaboration and reset before anything cross-hart is attempted.
+- **Coherence and atomics under real asymmetry.** Not a cache-policy
+  decision (already made, above) but a verification one: extend `sim/
+  tb_soc_2hart_lrsc.v`'s own cross-hart hazard - built and proven twice
+  already, once per homogeneous pairing - to a mixed pair, and check
+  what an in-order hart's synchronous stall-and-retry looks like from a
+  speculating, store-buffered neighbor's own point of view at the
+  interconnect, not just at each core's own boundary.
+- **Boot firmware, device tree, OpenSBI.** `dts/soc.dts`'s `cpu@` nodes
+  and the boot ROM's mailbox already generalize past two identical harts;
+  this stage is confirming that holds when the parked hart is the
+  opposite type from the one that parked it, and giving each `cpu@` node
+  a `compatible` string that actually names which microarchitecture it
+  is, rather than the same string repeated per hart.
+- **Linux SMP on a genuinely asymmetric pair.** The existing
+  `CONFIG_SMP=y` image, unmodified, booting to userspace with
+  `/proc/cpuinfo` showing two real harts - then, only once that holds,
+  the actual new question: whether the default scheduler's assumption of
+  interchangeable CPUs causes anything worse than a throughput asymmetry
+  it doesn't know to expect. Homogeneous `NUM_HARTS=2` (both pairings)
+  stays gated exactly as it is today - this stage adds a third
+  configuration, it does not replace either existing one.
+- **Measurement, the way every other phase in this file insists on it.**
+  CoreMark or an equivalent workload, affinitized to the in-order hart
+  alone, the OoO hart alone, and both together, compared against the
+  homogeneous pairs Phase 13 already measured - and, since Phase 1's own
+  entry already found `core_ooo.v` alone "barely faster than the
+  in-order core" on real workloads, a real possibility this phase has to
+  be willing to report plainly is that a mixed pair's own aggregate
+  throughput looks unglamorous too, the same "measured, not estimated"
+  discipline that finding itself came from.
+
+**Named honestly, not folded into the plan above as if already
+mitigated:** `rtl/ooo/core_ooo.v` still has no measurable Fmax at all on
+real hardware (Phase 1's own still-open place-and-route/combinational-
+loop finding) - a heterogeneous board build inherits that exactly as the
+homogeneous OoO-only one already does, and this phase does not change
+it. No board build has ever asked for `NUM_HARTS>1` of any kind yet, so
+"on real hardware" is not a near-term claim for this phase either,
+matching where Phase 13 itself still stands. And the verification
+surface genuinely grows by a third configuration on top of the two
+homogeneous ones already gated - worth stating plainly rather than
+assuming existing CI time absorbs it for free, since `make verify_ooo`
+already exists specifically because a regression in one core must not
+hide behind the other, and a third, mixed configuration is one more
+place that could happen.
+
+**Done when:** one elaboration - simulation first, matching every other
+phase's own bar before a board build is attempted - contains a real
+`cpu_core.v` hart and a real `core_ooo.v` hart at once; cross-hart LR/SC
+and ordinary loads/stores between them are proven correct under the same
+directed-hazard standard `sim/tb_soc_2hart_lrsc.v` already set; OpenSBI
+and a `CONFIG_SMP=y` Linux boot to userspace seeing both; and neither
+existing single-core build nor either existing homogeneous
+`NUM_HARTS=2` pairing regresses - the same "the knob exists so a
+regression in one cannot hide behind the other" standard `make
+verify_ooo`'s own Makefile comment already states for the two cores
+today, extended to the third configuration this phase adds.
+
+---
+
 ## Beyond the phases
 
 **PMP**, which [SECURITY.md](../SECURITY.md) lists as a known gap rather than
