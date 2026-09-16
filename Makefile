@@ -1812,6 +1812,78 @@ sim_soc_2hart_hetero: sim/soc2hart.hex sim/sim_soc_2hart_hetero.out
 	@grep -aq "SOC-2HART-TEST: PASS" sim/soc_2hart_hetero.log && echo "SOC HETEROGENEOUS 2-HART HARDWARE OK" || \
 	    { echo "FAILED: rtl/soc/soc_top.v's CORE=hetero (hart 0 cpu_core.v, hart 1 core_ooo.v)"; exit 1; }
 
+# ---- Phase 15 stage 2: cross-hart LR/SC coherence between the two
+# different hart types, both directions ----
+#
+# Direction 1 reuses sim/tb_soc_2hart_lrsc.v and sim/soc2hart_lrsc.hex
+# completely unchanged (only the testbench's own CORE_HETERO-guarded
+# identity check is new, added directly to that file): hart 0 (always
+# cpu_core.v under CORE=hetero) holds the reservation, hart 1 (always
+# core_ooo.v) makes the foreign write. Hardcoded file list and
+# -DCORE_HETERO for the same reason sim_soc_2hart_hetero above is - this
+# has to build correctly regardless of the ambient $(CORE).
+sim/sim_soc_2hart_lrsc_hetero.out: sim/tb_soc_2hart_lrsc.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -o $@ sim/tb_soc_2hart_lrsc.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_lrsc_hetero: sim/soc2hart_lrsc.hex sim/sim_soc_2hart_lrsc_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_lrsc_hetero.out $(VVP_DUMP) | tee soc_2hart_lrsc_hetero.log
+	@grep -aq "SOC-2HART-LRSC-TEST: PASS" sim/soc_2hart_lrsc_hetero.log && echo "CROSS-HART LR/SC OK (in-order holds, ooo writes)" || \
+	    { echo "FAILED: rtl/soc/reservation_monitor.v under CORE=hetero (in-order LR/SC vs ooo write)"; exit 1; }
+
+# Direction 2 is the mirror image - hart 1 (core_ooo.v) holds the
+# reservation, hart 0 (cpu_core.v) makes the foreign write - genuinely
+# new coverage, not a symmetric re-run: see sim/tb_soc_2hart_lrsc_swap.v's
+# own header for why this direction was never exercised before and what
+# specifically differs from direction 1. soc2hart_lrsc_swap.hex is
+# sim/soc2hart_lrsc.hex's own generator with exactly one word changed -
+# the branch that assigns roles by mhartid is BEQ here, BNE there -
+# everything else, including every address and expected value, is
+# identical, because the addresses involved don't care which hart reaches
+# them, only which role each hart plays.
+sim/soc2hart_lrsc_swap.hex: Makefile
+	@python3 -c "\
+	import sys;\
+	i_type = lambda imm, rs1, f3, rd, op: ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	j_type = lambda imm, rd, op: (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	b_type = lambda imm, rs1, rs2, f3, op: (((imm >> 12) & 1) << 31) | (((imm >> 5) & 0x3F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | (((imm >> 1) & 0xF) << 8) | (((imm >> 11) & 1) << 7) | (op & 0x7F);\
+	u_type = lambda imm20, rd, op: ((imm20 & 0xFFFFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	s_type = lambda imm, rs1, rs2, f3, op: (((imm >> 5) & 0x7F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((imm & 0x1F) << 7) | (op & 0x7F);\
+	r_type = lambda f5, aq, rl, rs2, rs1, f3, rd, op: ((f5 & 0x1F) << 27) | ((aq & 1) << 26) | ((rl & 1) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	words = [\
+	    i_type(0xF14, 0, 0x2, 10, 0x73),\
+	    u_type(0x80000, 1, 0x37),\
+	    b_type(44, 10, 0, 0x0, 0x63),\
+	    i_type(0x200, 1, 0x0, 2, 0x13),\
+	    i_type(0x304, 1, 0x0, 4, 0x13),\
+	    i_type(0x308, 1, 0x0, 5, 0x13),\
+	    r_type(0x02, 0, 0, 0, 2, 0x2, 6, 0x2F),\
+	    i_type(0, 4, 0x2, 8, 0x03),\
+	    b_type(-4, 8, 0, 0x0, 0x63),\
+	    i_type(0xAB, 0, 0x0, 9, 0x13),\
+	    r_type(0x03, 0, 0, 9, 2, 0x2, 11, 0x2F),\
+	    s_type(0, 5, 11, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	    i_type(0x200, 1, 0x0, 2, 0x13),\
+	    i_type(0x304, 1, 0x0, 4, 0x13),\
+	    i_type(200, 0, 0x0, 12, 0x13),\
+	    i_type(-1, 12, 0x0, 12, 0x13),\
+	    b_type(-4, 12, 0, 0x1, 0x63),\
+	    i_type(0xCD, 0, 0x0, 9, 0x13),\
+	    s_type(0, 2, 9, 0x2, 0x23),\
+	    i_type(1, 0, 0x0, 7, 0x13),\
+	    s_type(0, 4, 7, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	];\
+	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
+
+sim/sim_soc_2hart_lrsc_swap_hetero.out: sim/tb_soc_2hart_lrsc_swap.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -o $@ sim/tb_soc_2hart_lrsc_swap.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_lrsc_swap_hetero: sim/soc2hart_lrsc_swap.hex sim/sim_soc_2hart_lrsc_swap_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_lrsc_swap_hetero.out $(VVP_DUMP) | tee soc_2hart_lrsc_swap_hetero.log
+	@grep -aq "SOC-2HART-LRSC-SWAP-TEST: PASS" sim/soc_2hart_lrsc_swap_hetero.log && echo "CROSS-HART LR/SC OK (ooo holds, in-order writes)" || \
+	    { echo "FAILED: rtl/soc/reservation_monitor.v under CORE=hetero (ooo LR/SC vs in-order write)"; exit 1; }
+
 # ---- Phase 13 stage 9: rtl/soc/reservation_monitor.v wired to both harts
 # - cross-hart LR/SC coherence, not just hardware that runs ----
 #
@@ -2171,6 +2243,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart \
         sim_soc_2hart_hetero \
         sim_soc_2hart_lrsc \
+        sim_soc_2hart_lrsc_hetero \
+        sim_soc_2hart_lrsc_swap_hetero \
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \
