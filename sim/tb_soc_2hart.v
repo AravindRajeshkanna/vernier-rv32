@@ -97,6 +97,22 @@ module tb_soc_2hart;
               DUT.RAM.mem[65], 32'hBBBB0000);
         check("hart 0 never trapped", {31'b0, trap}, 32'b0);
 
+`ifdef CORE_HETERO
+        // The two sentinel checks above only prove hart 1 executed the
+        // program correctly - they would pass identically if soc_top.v's
+        // own CORE_HETERO branch had a bug and quietly gave hart 1
+        // another cpu_core.v instead of core_ooo.v, since the program is
+        // plain RV32I and produces the same result either way. This is
+        // the actual proof of module identity: rob_count is core_ooo.v's
+        // own reorder-buffer occupancy counter, with no equivalent
+        // register in cpu_core.v at all - referencing it here is a hard
+        // Icarus compile error, not a silent pass, if hart 1 were ever
+        // the wrong module. A real, defined (non-X) value confirms it
+        // resolved to a real register, not a dangling hierarchical path.
+        check("hart 1 is genuinely core_ooo.v - its own rob_count resolves and is defined",
+              {31'b0, ^DUT.g_hart[1].CPU.rob_count !== 1'bx}, 32'b1);
+`endif
+
         if (failures == 0) $display("\nSOC-2HART-TEST: PASS");
         else                $display("\nSOC-2HART-TEST: FAIL (%0d)", failures);
         $finish;
