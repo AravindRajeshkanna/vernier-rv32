@@ -11,6 +11,7 @@ Bresenham
 Buildroot
 CI
 CLINT
+CPUs
 CRCs
 CSRs
 Chipyard
@@ -99,6 +100,7 @@ ack
 acked
 acking
 acks
+affinitized
 another
 asm
 async
@@ -232,6 +234,7 @@ ns
 openFPGALoader
 overclaimed
 parameterizes
+parameterizing
 passthrough
 pid
 pinout
@@ -317,6 +320,7 @@ unoptimized
 unparked
 unsized
 unstalls
+unstarted
 unticked
 untruncated
 unwindowed
