@@ -168,6 +168,7 @@ fuzzer
 gitignored
 glibc
 globals
+h's
 halfword
 haltreq
 hardcoded

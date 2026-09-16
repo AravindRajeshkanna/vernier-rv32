@@ -43,14 +43,17 @@ module soc_top #(
     // Number of harts sharing this bus. Defaults to 1 - today's exact
     // single-hart shape, and every board/synthesis build's own value.
     // `NUM_HARTS=2` is exercised by sim/tb_soc_2hart.v, sim/tb_soc_2hart_lrsc.v
-    // and sim/tb_jtag.v so far: hart 1's hardware (its own cpu_core/cpu_wb/
+    // and sim/tb_jtag.v so far: hart 1's hardware (its own CPU/cpu_wb/
     // wb_ptw, HARTID=1, its own CLINT timer/PLIC contexts) exists and runs,
     // rtl/soc/reservation_monitor.v is wired to both harts' reservation
-    // ports so cross-hart LR/SC is coherent, and rtl/debug/dm.v's own
-    // hartsel reaches every hart, not just hart 0 (see the mux where hart
-    // control is wired below) - but neither software/soc/bootrom.c nor
-    // dts/soc.dts know a second hart exists yet. See docs/roadmap.md's
-    // Phase 13 entry for what is and is not done here.
+    // ports so cross-hart LR/SC is coherent, software/soc/bootrom.c's own
+    // mailbox parks every non-zero hart until hart 0 releases it, and
+    // dts/soc.dts declares both - all proven for the homogeneous case
+    // (both harts the same core type), see docs/roadmap.md's Phase 13
+    // entry for the full account. `-DCORE_HETERO` (Phase 15) makes the two
+    // harts genuinely different types instead of copies of each other -
+    // hart 0 is always `cpu_core.v` and every hart from 1 upward is
+    // `rtl/ooo/core_ooo.v`, selected in the generate loop below.
     parameter NUM_HARTS       = 1,
     parameter ROM_WORDS       = 4096,      // 16 KB boot ROM
     parameter RAM_BYTES       = 262144,    // 256 KB main RAM
@@ -381,20 +384,32 @@ module soc_top #(
     //
     // Each additional hart gets its own CPU, bus adapter and page-table
     // walker - the same three-instance shape hart 0 has just above,
-    // parameterized on `h` instead of hardcoded. CORE=inorder and CORE=ooo
-    // both build this loop (core_ooo.v can be instantiated more than once
-    // with no issue of its own), but `trap` stays hart-0-only regardless (a
-    // single module-level bit - a second hart's own trap is not yet
-    // observable at this module's boundary). Every hart's own reservation
-    // ports, and now hart control too (dm.v's own hartsel, wired below),
-    // DO connect for every hart - Phase 13 stages 9 and, for hart control,
-    // the device-tree-hand-off stage's own follow-on. See docs/roadmap.md's
-    // Phase 13 entry for what still isn't done (CORE_OOO's own coherence
-    // and hart-control gaps).
+    // parameterized on `h` instead of hardcoded. `trap` stays hart-0-only
+    // regardless (a single module-level bit - a second hart's own trap is
+    // not yet observable at this module's boundary). Every hart's own
+    // reservation ports and hart control (dm.v's own hartsel, wired below)
+    // DO connect for every hart, and cross-hart LR/SC coherence is real
+    // (rtl/soc/reservation_monitor.v, Phase 13) - see docs/roadmap.md's
+    // Phase 13 entry for the full account of what closed there.
+    //
+    // Which module each hart gets: CORE=inorder builds every hart as
+    // `cpu_core.v`, CORE=ooo builds every hart as `core_ooo.v` - both
+    // homogeneous, one type per build. CORE=hetero (Phase 15) is the one
+    // place hart 0's own choice above and this loop's choice genuinely
+    // differ on purpose: hart 0 stays `cpu_core.v` (CORE_OOO is not
+    // defined under CORE_HETERO, so hart 0's own `ifdef` two hundred
+    // lines up already falls through to its `else` branch, unchanged),
+    // while every hart from 1 upward is `core_ooo.v` instead of a second
+    // copy of hart 0's own type. Nothing else in this loop - the bus
+    // adapter, the page-table walker, the reservation/hart-control wiring
+    // - needs to know which module `CPU` resolved to; all of it already
+    // treats "hart h's own CPU" generically.
     genvar h;
     generate
         for (h = 1; h < NUM_HARTS; h = h + 1) begin : g_hart
-`ifdef CORE_OOO
+`ifdef CORE_HETERO
+            core_ooo #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (
+`elsif CORE_OOO
             core_ooo #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (
 `else
             cpu_core #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (

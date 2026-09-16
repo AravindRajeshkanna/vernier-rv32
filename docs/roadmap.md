@@ -5623,12 +5623,15 @@ like.
 
 ## Phase 15 — Heterogeneous multi-core: both core types, at once, in one SoC
 
-**Not started. Everything below is a plan, not an account - no stage here
-has shipped, and nothing in this section should be read as a completed
-claim the way the "Stage N:" entries in every phase above it are.** It is
-written down now because the shape of the work is already clear enough
-to be useful, the same reasoning that put a design-space discussion in
-Phases 8-11 before any of them had a line of RTL.
+**Stages 0 and 1 done; everything from Stage 2 onward is still a plan,
+not an account.** This phase was written down as a pure design-space
+discussion first, the same reasoning that put one in Phases 8-11 before
+any of them had a line of RTL - but unlike those, the first two stages
+shipped almost immediately, because both turned out to need less new
+work than the original plan below assumed. The "Stage N:" entries for 0
+and 1 are real completed accounts, exactly like every other phase in
+this file; the bullet list further down for Stage 2 onward is still a
+plan, and is marked as such at its own header.
 
 **This is not a new idea - Phase 13 named it and set it aside on purpose.**
 Stage 6's own account of building `rtl/soc/reservation_monitor.v` says so
@@ -5659,19 +5662,20 @@ the *same* Verilog module, which is what makes this phase "wire existing
 plumbing to a real asymmetry" rather than a second Phase 13 from
 scratch.
 
-**What is genuinely new, and where precisely it lives.** `CORE=inorder`
-versus `CORE=ooo` today is a *global, compile-time* choice, not a
-per-hart one: the Makefile's own `CORE_RTL`/`CORE_DEFINES` (Makefile,
-around line 68) resolve to exactly one core's source file, and `rtl/soc/
-soc_top.v` selects which module to instantiate with a single `` `ifdef
-CORE_OOO ``/`` `else `` that both hart 0's own instantiation (line 316)
+**What was genuinely new turned out smaller than it first looked - a
+third value, not a general per-hart array.** `CORE=inorder` versus
+`CORE=ooo` was a *global, compile-time* choice, not a per-hart one:
+`rtl/soc/soc_top.v` selected which module to instantiate with a single
+`` `ifdef CORE_OOO ``/`` `else `` that both hart 0's own instantiation
 and the `h = 1..NUM_HARTS-1` generate loop's own copy of the same
-`` `ifdef `` (line 397) read identically - every hart in a given build is
-the same type, by construction, not by omission. Making that a per-hart
-choice needs a real per-hart type parameter (an array, or a two-bit field
-per hart, resolved inside the generate loop's own `if` rather than a
-file-scope `` `ifdef ``) - the one piece of this phase with no direct
-precedent anywhere in this codebase to reuse.
+`` `ifdef `` read identically - every hart in a given build was the same
+type, by construction. The plan below originally assumed closing that
+gap needed a real per-hart type parameter (an array, or a two-bit field
+per hart). Stage 1 found a narrower fix sufficient for the one topology
+Stage 0 actually locked (hart 0 fixed, every hart from 1 upward fixed) -
+see that stage's own account below for what shipped instead, and why a
+general per-hart array remains real, unclaimed future work rather than
+something this stage quietly did anyway.
 
 **Cache policy is not an open decision here the way it reads in a
 generic multi-core plan - Phase 13 already made it, for a directly
@@ -5690,27 +5694,80 @@ Stage 18) interleave safely at `rtl/soc/reservation_monitor.v`'s
 existing arbitration point, which is a verification question, not a new
 design.
 
-**The plan, stage by stage - none of it started:**
+**Stage 0: the design lock.** Both cores still passed `make verify`/
+`make verify_ooo` independently before anything else started - a
+regression check, not new work, and confirmed rather than assumed given
+how much of this file's own Phase 13 material this phase leans on. The
+one real open topology question was settled the way the original plan
+named as the natural default: hart 0 = `cpu_core.v` (the silicon-proven
+path, keeping every existing single-hart/homogeneous build's own hart-0
+behavior unchanged) and every hart from 1 upward = `rtl/ooo/core_ooo.v`.
+Fixed at build time, not itself parameterized (no `HART0_TYPE`/
+`HART1_TYPE`) - Stage 1 found this was enough to prove the mechanism
+without inventing a configuration space nothing has asked for yet; a
+fully general per-hart type array stays real, named future work (Stage 6
+in the original plan, still there, still unstarted).
 
-- **A design-lock stage first.** Confirm both cores still pass `make
-  verify`/`make verify_ooo` independently (a regression check, not new
-  work), and settle the one real open topology question before writing
-  RTL: which hart is which type. Hart 0 = `cpu_core.v` (the
-  silicon-proven path, keeping every existing single-hart/homogeneous
-  build's own hart-0 behavior unchanged) and hart 1 = `core_ooo.v` is the
-  natural default, matching this project's own repeated preference
-  elsewhere for keeping the proven path as the fallback and the newer
-  design as the addition - but whether the type is fixed at build time
-  per hart or itself parameterized (`HART0_TYPE`/`HART1_TYPE`) is a real
-  choice worth making deliberately rather than defaulting into.
-- **Dual instantiation.** The per-hart type parameter described above,
-  reaching `rtl/soc/soc_top.v`'s hart-0 block and its generate loop, with
-  `NUM_HARTS=1` and every existing single-type build required to
-  elaborate byte-for-byte unchanged - the same "prove it changes nothing
-  for the paths that already work" bar Phase 13's own Stage 1 set for
-  parameterizing `NUM_HARTS` at all. A directed smoke test - both harts
-  out of reset, distinct `mhartid`, each running a trivial program -
-  proves elaboration and reset before anything cross-hart is attempted.
+**Stage 1: dual instantiation - a new `CORE=hetero` build, not a new
+parameter.** `rtl/soc/soc_top.v`'s hart-0 instantiation needed no change
+at all: it already reads `` `ifdef CORE_OOO ``/`` `else ``, and the new
+`-DCORE_HETERO` define is a *different* macro, so hart 0 falls through
+to its existing `` `else `` (`cpu_core.v`) automatically. Only the
+`h = 1..NUM_HARTS-1` generate loop's own copy of that `ifdef` gained a
+third arm - `` `ifdef CORE_HETERO `` (→ `core_ooo.v`) `` `elsif CORE_OOO ``
+(→ `core_ooo.v`, the existing homogeneous case) `` `else `` (→
+`cpu_core.v`) - so every hart from 1 upward is the wide core under
+`CORE=hetero` while hart 0 stays the proven one, and nothing about the
+bus adapter, page-table walker, reservation ports, or hart-control wiring
+in that same loop needed to know which module `CPU` resolved to - all of
+it already treated "hart h's own CPU" generically. The Makefile's own
+`CORE` variable gained a third branch alongside `inorder`/`ooo`, reusing
+`CORE=ooo`'s exact `CORE_RTL`/`VERILATOR_LINT_FLAGS` values (both harts'
+`core_ooo.v` instances need the same UNOPTFLAT waiver the homogeneous
+wide-core build already carries) with a distinct `CORE_DEFINES`.
+
+**Verified two ways, not just "it built."** `sim/tb_soc_2hart.v`'s
+existing smoke test (the same one Phase 13's Stage 8 already proved for the
+homogeneous pairing) needed zero changes to prove hart 0 and hart 1 each
+run a trivial program and reach the bus - it only ever reads `mhartid`
+and writes a hart-specific sentinel, which is core-agnostic by
+construction, so it already proved elaboration and reset under
+`CORE=hetero` the first time it was pointed at that build. But that
+same test would pass identically if `CORE_HETERO`'s own generate-loop
+selection had a bug and quietly gave hart 1 a second `cpu_core.v`
+instead - the sentinel values look the same either way. A second,
+`` `ifdef CORE_HETERO ``-guarded check closes that gap: hart 1's own
+`rob_count` (`core_ooo.v`'s reorder-buffer occupancy register, with no
+equivalent anywhere in `cpu_core.v`) is read hierarchically and checked
+for a defined, non-X value - a real proof of module identity, since
+referencing it against the wrong module is a hard Icarus compile error,
+not a silent pass. Confirmed non-vacuous by mutation: temporarily
+pointing `CORE_HETERO`'s own generate-loop arm at `cpu_core.v` instead
+produced exactly that - `error: Unable to bind wire/reg/memory
+'DUT.g_hart['sd1].CPU.rob_count'` - reverted and reconfirmed clean
+before this was written down.
+
+**`make verify` and `make verify_ooo` both green on the resulting tree**
+(Linux boot passed, formal 6/6 proved, riscv-tests 82 passed/2 xfail,
+cosim 84/84 traces match) - the new `sim_soc_2hart_hetero` target is
+gated in `verify`'s own dependency list unconditionally, so it runs
+under both existing `CORE` values too, and neither existing single-core
+build nor either existing homogeneous `NUM_HARTS=2` pairing changed at
+all. The "verification surface genuinely grows" cost this phase's own
+plan named below as worth stating honestly turned out to be one reused
+test, not a new one - real cost, but smaller than a first reading of
+that caution might suggest.
+
+**What Stage 1 deliberately does not do:** cross-hart coherence between
+the two hart types (the next stage, below), boot firmware/device-tree/
+OpenSBI awareness of a mixed pair, Linux SMP on one, or any measurement
+at all - this stage proves the mechanism elaborates, resets, and runs
+independent code on both hart types at once, the same "prove the
+mechanism first" role every multi-stage feature in this file plays for
+its own first stage.
+
+**Stage 2 onward - still a plan, none of it started:**
+
 - **Coherence and atomics under real asymmetry.** Not a cache-policy
   decision (already made, above) but a verification one: extend `sim/
   tb_soc_2hart_lrsc.v`'s own cross-hart hazard - built and proven twice
@@ -5750,12 +5807,14 @@ homogeneous OoO-only one already does, and this phase does not change
 it. No board build has ever asked for `NUM_HARTS>1` of any kind yet, so
 "on real hardware" is not a near-term claim for this phase either,
 matching where Phase 13 itself still stands. And the verification
-surface genuinely grows by a third configuration on top of the two
-homogeneous ones already gated - worth stating plainly rather than
-assuming existing CI time absorbs it for free, since `make verify_ooo`
-already exists specifically because a regression in one core must not
-hide behind the other, and a third, mixed configuration is one more
-place that could happen.
+surface does genuinely grow by a third configuration on top of the two
+homogeneous ones already gated - Stage 1's own cost turned out to be one
+reused test, not a new one, but Stage 2 onward will add real new
+directed tests of their own, and `make verify_ooo` already exists
+specifically because a regression in one core must not hide behind the
+other - a third, mixed configuration is one more place that could
+happen, worth stating plainly rather than assuming existing CI time
+absorbs it for free.
 
 **Done when:** one elaboration - simulation first, matching every other
 phase's own bar before a board build is attempted - contains a real

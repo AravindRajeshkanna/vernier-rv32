@@ -65,6 +65,20 @@ IVERILOG      = iverilog
 #   make verify_ooo        the same suites against the wide core
 #
 # The knob exists so a regression in one cannot hide behind the other.
+#
+# `hetero` (Phase 15, Stage 1) is a third value, not a blend of the other
+# two: rtl/soc/soc_top.v's own hart-0 instantiation and its NUM_HARTS
+# generate loop each read a *different* one of CORE_HETERO/CORE_OOO, so
+# hart 0 stays cpu_core.v while every hart from 1 upward becomes
+# core_ooo.v instead of a second copy of hart 0's own type - see that
+# file's own comments at both instantiation sites for the exact
+# reasoning. It needs both cores' own source files present in the same
+# build, which is already true of a plain CORE=ooo build today
+# (SOC_RTL_BASE below already carries rtl/cpu_core.v unconditionally, for
+# the same "iverilog has to resolve every module cpu_core.v references"
+# reason rtl/pmp.v is unconditional too) - CORE_RTL/VERILATOR_LINT_FLAGS
+# are identical to CORE=ooo's own values for exactly that reason, only
+# CORE_DEFINES differs.
 CORE         ?= inorder
 ifeq ($(CORE),ooo)
 # regfile_phys.v is only in this list, never the in-order one: rtl/regfile.v
@@ -90,6 +104,12 @@ CORE_DEFINES  = -DCORE_OOO
 # rather than only inside core_ooo.v, because the wide core's bypass reaches
 # through the shared bus adapter too. CORE=ooo only: cpu_core.v's build
 # stays held to the stricter default, since none of this exists there.
+VERILATOR_LINT_FLAGS = -Wno-UNOPTFLAT
+else ifeq ($(CORE),hetero)
+CORE_RTL      = rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+CORE_DEFINES  = -DCORE_HETERO
+# core_ooo.v instances 1..NUM_HARTS-1 carry the same CDB-bypass structure
+# CORE=ooo's own waiver above exists for, regardless of what hart 0 is.
 VERILATOR_LINT_FLAGS = -Wno-UNOPTFLAT
 else
 CORE_RTL      =
@@ -1771,6 +1791,27 @@ sim_soc_2hart: sim/soc2hart.hex sim/sim_soc_2hart.out
 	@grep -aq "SOC-2HART-TEST: PASS" sim/soc_2hart.log && echo "SOC 2-HART HARDWARE OK" || \
 	    { echo "FAILED: rtl/soc/soc_top.v's NUM_HARTS=2"; exit 1; }
 
+# ---- Phase 15 stage 1: hart 0 = cpu_core.v, hart 1 = core_ooo.v, at once -
+# a real heterogeneous elaboration, not just two of the same core ----
+#
+# Reuses sim/tb_soc_2hart.v and sim/soc2hart.hex completely unchanged: that
+# testbench only ever reads mhartid, branches on it, and writes a hart-
+# specific sentinel - nothing about it assumes both harts share a module,
+# so the exact same program and the exact same checks already prove what
+# this stage needs once soc_top.v's own CORE_HETERO branch (see that
+# file's generate-loop comment) picks a different module per hart. This
+# target hardcodes its own file list and `-DCORE_HETERO` rather than
+# going through $(SOC_RTL)/$(CORE_DEFINES), so it builds correctly - and
+# unconditionally - regardless of whether the surrounding `make verify`/
+# `make verify_ooo` invocation has $(CORE) set to `inorder` or `ooo`.
+sim/sim_soc_2hart_hetero.out: sim/tb_soc_2hart.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -o $@ sim/tb_soc_2hart.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_hetero: sim/soc2hart.hex sim/sim_soc_2hart_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_hetero.out $(VVP_DUMP) | tee soc_2hart_hetero.log
+	@grep -aq "SOC-2HART-TEST: PASS" sim/soc_2hart_hetero.log && echo "SOC HETEROGENEOUS 2-HART HARDWARE OK" || \
+	    { echo "FAILED: rtl/soc/soc_top.v's CORE=hetero (hart 0 cpu_core.v, hart 1 core_ooo.v)"; exit 1; }
+
 # ---- Phase 13 stage 9: rtl/soc/reservation_monitor.v wired to both harts
 # - cross-hart LR/SC coherence, not just hardware that runs ----
 #
@@ -2128,6 +2169,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_ooo_resv_ports \
         sim_ooo_halt \
         sim_soc_2hart \
+        sim_soc_2hart_hetero \
         sim_soc_2hart_lrsc \
         sim_ooo_csr_hazard \
         sim_pmp \
