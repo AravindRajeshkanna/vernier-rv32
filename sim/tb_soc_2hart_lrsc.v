@@ -124,6 +124,19 @@ module tb_soc_2hart_lrsc;
               DUT.RAM.mem[194], 32'd1);
         check("hart 0 never trapped", {31'b0, trap}, 32'b0);
 
+`ifdef CORE_HETERO
+        // Phase 15, stage 2: under CORE=hetero this is the "an in-order
+        // hart's own reservation invalidated by an out-of-order hart's
+        // write" direction - real only if hart 1 genuinely is
+        // core_ooo.v, not a second cpu_core.v the generate loop's own
+        // CORE_HETERO arm quietly picked by mistake. Same rob_count-based
+        // proof sim/tb_soc_2hart.v's own stage 1 check uses: a hard
+        // Icarus compile error against the wrong module, not a silent
+        // pass, since cpu_core.v has no equivalent register at all.
+        check("hart 1 is genuinely core_ooo.v - its own rob_count resolves and is defined",
+              {31'b0, ^DUT.g_hart[1].CPU.rob_count !== 1'bx}, 32'b1);
+`endif
+
         if (failures == 0) $display("\nSOC-2HART-LRSC-TEST: PASS");
         else                $display("\nSOC-2HART-LRSC-TEST: FAIL (%0d)", failures);
         $finish;

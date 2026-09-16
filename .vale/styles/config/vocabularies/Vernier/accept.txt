@@ -171,6 +171,7 @@ globals
 h's
 halfword
 haltreq
+hardcode
 hardcoded
 hardcoding
 hardwires
@@ -322,6 +323,7 @@ unparked
 unsized
 unstalls
 unstarted
+unsynchronized
 unticked
 untruncated
 unwindowed
@@ -329,6 +331,7 @@ unwired
 userspace
 vendored
 verify_ooo
+verilates
 viewport
 virt
 virtualenv

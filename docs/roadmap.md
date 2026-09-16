@@ -5623,15 +5623,17 @@ like.
 
 ## Phase 15 — Heterogeneous multi-core: both core types, at once, in one SoC
 
-**Stages 0 and 1 done; everything from Stage 2 onward is still a plan,
-not an account.** This phase was written down as a pure design-space
-discussion first, the same reasoning that put one in Phases 8-11 before
-any of them had a line of RTL - but unlike those, the first two stages
-shipped almost immediately, because both turned out to need less new
-work than the original plan below assumed. The "Stage N:" entries for 0
-and 1 are real completed accounts, exactly like every other phase in
-this file; the bullet list further down for Stage 2 onward is still a
-plan, and is marked as such at its own header.
+**Stages 0 through 2 done; everything from Stage 3 onward is still a
+plan, not an account.** This phase was written down as a pure
+design-space discussion first, the same reasoning that put one in
+Phases 8-11 before any of them had a line of RTL - but unlike those, the
+first three stages shipped in quick succession, the mechanism (Stages
+0-1) and its own highest-risk correctness question (Stage 2, cross-hart
+coherence) both turning out more tractable than the original plan below
+assumed. The "Stage N:" entries for 0 through 2 are real completed
+accounts, exactly like every other phase in this file; the bullet list
+further down for Stage 3 onward is still a plan, and is marked as such
+at its own header.
 
 **This is not a new idea - Phase 13 named it and set it aside on purpose.**
 Stage 6's own account of building `rtl/soc/reservation_monitor.v` says so
@@ -5766,15 +5768,72 @@ independent code on both hart types at once, the same "prove the
 mechanism first" role every multi-stage feature in this file plays for
 its own first stage.
 
-**Stage 2 onward - still a plan, none of it started:**
+**Stage 2: coherence and atomics under real asymmetry - both
+directions, not one.** `sim/tb_soc_2hart_lrsc.v` (Phase 13 Stage 9's own
+cross-hart hazard, already proven twice for the two homogeneous
+pairings) needed zero changes to prove one real asymmetric direction the
+moment it was built against `CORE=hetero`: hart 0 (`cpu_core.v`) holds
+an LR reservation, hart 1 (`core_ooo.v`) makes the foreign write that
+has to invalidate it. That test's own program is plain RV32IA and its
+checks only read RAM, so it was already core-agnostic by construction -
+the same reuse Stage 1 found for `sim/tb_soc_2hart.v`.
 
-- **Coherence and atomics under real asymmetry.** Not a cache-policy
-  decision (already made, above) but a verification one: extend `sim/
-  tb_soc_2hart_lrsc.v`'s own cross-hart hazard - built and proven twice
-  already, once per homogeneous pairing - to a mixed pair, and check
-  what an in-order hart's synchronous stall-and-retry looks like from a
-  speculating, store-buffered neighbor's own point of view at the
-  interconnect, not just at each core's own boundary.
+**The other direction needed a genuinely new test, not a symmetric
+re-run.** An out-of-order hart holding the reservation while an
+in-order hart writes is not the mirror image of the case above in any
+sense that matters here - `core_ooo.v`'s own `resv_invalidate_ext`
+handling had only ever been proven in isolation (`sim/
+tb_ooo_resv_ports.v`, Stage 15) and against another `core_ooo.v` hart
+(Stage 16), never against a plain, synchronous in-order writer
+specifically. `sim/tb_soc_2hart_lrsc_swap.v` is the existing program
+with exactly one word changed - the branch that assigns roles by
+`mhartid` is `BEQ` there instead of `BNE`, so hart 0 now takes the
+delay-then-write path and hart 1 takes the LR/SC path - every address
+and expected value stays identical, since neither cares which hart
+reaches it, only which role each hart plays. **Both directions passed
+on the first attempt - no new coherence bug found**, matching Stage 17's
+own first-attempt SMP boot and Stage 19's own first-attempt real DMI
+path, a pattern worth naming rather than assuming was guaranteed each
+time.
+
+**Verified as real proofs, not test-shaped decorations.** Both new
+tests gained the same `rob_count`-based module-identity check Stage 1's
+own `sim/tb_soc_2hart.v` check introduced, confirming hart 1 is
+genuinely `core_ooo.v` and not a `cpu_core.v` the generate loop's own
+`CORE_HETERO` arm quietly mis-selected. The swap direction's own
+*coherence* claim was checked separately from that identity claim, by a
+second, targeted mutation: forcing hart 1's own `resv_invalidate_ext`
+input to a constant 0 in `rtl/soc/soc_top.v` (simulating a disconnected
+monitor for that one hart) made the swap test fail with a real cascading
+result - the SC succeeded when it should not have, and its own store
+overwrote the foreign-write sentinel already sitting at the same
+address - while the original (non-swapped) direction's own test stayed
+completely unaffected, confirming the mutation's scope was correctly
+isolated to hart 1's own reception path rather than something broader.
+Reverted and reconfirmed clean before this was written down.
+
+**`make verify` and `make verify_ooo` both green** (Linux boot passed,
+formal 6/6 proved, riscv-tests 82 passed/2 xfail, cosim 84/84 traces
+match) - both new targets (`sim_soc_2hart_lrsc_hetero`,
+`sim_soc_2hart_lrsc_swap_hetero`) hardcode their own file list and
+`-DCORE_HETERO`, the same pattern Stage 1 established, and are gated in
+`verify`'s own dependency list unconditionally. A local, non-CI-gated
+check also confirmed `CORE=hetero` still verilates clean under
+`--lint-only -Wall` (the same checks `make code-quality` already runs
+for `CORE=inorder`/`CORE=ooo`) - not wired into that job as a third
+permanent configuration in this PR, left as a scoped, named follow-up
+rather than conflated with Phase 15's own work here.
+
+**What Stage 2 deliberately does not do:** boot firmware/device-tree/
+OpenSBI awareness of a mixed pair, Linux SMP on one, or any measurement
+- all still Stage 3 onward, below. Ordinary (non-atomic) cross-hart
+loads/stores between the two hart types were already exercised
+incidentally by both new tests' own foreign-write step, but nothing
+here specifically stresses concurrent, unsynchronized ordinary traffic
+the way the LR/SC hazard stresses atomics - that remains open too.
+
+**Stage 3 onward - still a plan, none of it started:**
+
 - **Boot firmware, device tree, OpenSBI.** `dts/soc.dts`'s `cpu@` nodes
   and the boot ROM's mailbox already generalize past two identical harts;
   this stage is confirming that holds when the parked hart is the
@@ -5809,12 +5868,12 @@ it. No board build has ever asked for `NUM_HARTS>1` of any kind yet, so
 matching where Phase 13 itself still stands. And the verification
 surface does genuinely grow by a third configuration on top of the two
 homogeneous ones already gated - Stage 1's own cost turned out to be one
-reused test, not a new one, but Stage 2 onward will add real new
-directed tests of their own, and `make verify_ooo` already exists
-specifically because a regression in one core must not hide behind the
-other - a third, mixed configuration is one more place that could
-happen, worth stating plainly rather than assuming existing CI time
-absorbs it for free.
+reused test, not a new one, but Stage 2 added two real new directed
+tests (`sim_soc_2hart_lrsc_hetero`, `sim_soc_2hart_lrsc_swap_hetero`),
+and `make verify_ooo` already exists specifically because a regression
+in one core must not hide behind the other - a third, mixed
+configuration is one more place that could happen, worth stating
+plainly rather than assuming existing CI time absorbs it for free.
 
 **Done when:** one elaboration - simulation first, matching every other
 phase's own bar before a board build is attempted - contains a real
