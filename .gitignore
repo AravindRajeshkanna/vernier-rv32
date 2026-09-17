@@ -77,6 +77,12 @@ tests/build/
 software/bench/coremark/
 software/bench/coremark.elf
 software/bench/coremark.bin
+software/bench/coremark_hart0.elf
+software/bench/coremark_hart0.bin
+software/bench/coremark_hart1.elf
+software/bench/coremark_hart1.bin
+software/bench/coremark_dispatch.elf
+software/bench/coremark_dispatch.bin
 formal/build/
 
 # FPGA build products (bitstream, PnR logs, synthesis JSON)
