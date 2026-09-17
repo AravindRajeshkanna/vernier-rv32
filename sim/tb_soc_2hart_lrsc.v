@@ -9,8 +9,10 @@
 //
 // RESET_PC points straight into RAM, preloaded with a hand-assembled
 // program (sim/soc2hart_lrsc.hex, generated the same field-packing way
-// sim/jtagram.hex is) - software/soc/bootrom.c does not know a second hart
-// exists yet, so this cannot boot through the real boot ROM.
+// sim/jtagram.hex is), the same reason sim/tb_soc_2hart.v's own header
+// gives: this test's job needs neither the boot ROM's loader nor its
+// mailbox, not that the ROM lacks either (it has had a real mailbox since
+// Stage 12; sim/tb_ramboot_2hart.v is what exercises it with two harts).
 //
 // CORE-aware since Stage 16: rtl/ooo/core_ooo.v gained the same
 // reservation ports Stage 7 gave rtl/cpu_core.v (Stage 15), and

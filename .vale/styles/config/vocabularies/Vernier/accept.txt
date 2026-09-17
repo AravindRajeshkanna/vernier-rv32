@@ -236,6 +236,7 @@ nextpnr
 ns
 openFPGALoader
 overclaimed
+pairing's
 parameterizes
 parameterizing
 passthrough

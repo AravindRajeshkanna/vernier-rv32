@@ -5623,20 +5623,21 @@ like.
 
 ## Phase 15 — Heterogeneous multi-core: both core types, at once, in one SoC
 
-**Stages 0 through 2 done, plus half of Stage 3; the other half of Stage
-3 and everything from Stage 4 onward is still a plan, not an account.**
+**Stages 0 through 2 and Stage 4 done, plus half of Stage 3; the other
+half of Stage 3 and Stage 5 onward is still a plan, not an account.**
 This phase was written down as a pure design-space discussion first, the
 same reasoning that put one in Phases 8-11 before any of them had a line
 of RTL - but unlike those, the first stages shipped in quick succession,
 the mechanism (Stages 0-1) and its own highest-risk correctness question
 (Stage 2, cross-hart coherence) both turning out more tractable than the
-original plan below assumed, while Stage 3's own two halves turned out to
-need genuinely different amounts of work - see that stage's own account
-for why. The "Stage N:" entries for 0 through 2, and the boot-ROM-mailbox
-half of Stage 3, are real completed
-accounts, exactly like every other phase in this file; the bullet list
-further down for the rest of Stage 3 and Stage 4 onward is still a plan,
-and is marked as such at its own header.
+original plan below assumed, Stage 3's own two halves needing genuinely
+different amounts of work (see that stage's own account for why), and
+Stage 4 needing no code change at all - the existing multi-hart boot
+infrastructure was already general enough. The "Stage N:" entries for 0
+through 2, the boot-ROM-mailbox half of Stage 3, and Stage 4 are real
+completed accounts, exactly like every other phase in this file; the
+bullet list further down for the rest of Stage 3 and Stage 5 onward is
+still a plan, and is marked as such at its own header.
 
 **This is not a new idea - Phase 13 named it and set it aside on purpose.**
 Stage 6's own account of building `rtl/soc/reservation_monitor.v` says so
@@ -5901,20 +5902,60 @@ who ran both gates back to back. Revisiting it alongside Stage 4's own new
 correctly-scoped answer to the same question anyway) is the planned path,
 not a separate, disconnected fix.
 
-**Stage 3 continued, and Stage 4 onward - still a plan, none of it
+**Stage 4: Linux SMP on a genuinely asymmetric pair - and no code change
+at all.** `sim_opensbi_2hart` and `sim_linux_2hart` were already
+`$(CORE)`-generic, not hardcoded, since Phase 13 Stage 17 gave them that
+shape specifically so `CORE=ooo`'s own homogeneous wide-core pair could
+reuse them without a separate target - `$(VERILATOR_2HART_BIN)`'s own
+`$(SOC_RTL)`/`$(CORE_DEFINES)` already read whatever `$(CORE)` the
+invocation sets, and its own `$(VERILATOR_2HART_MDIR) =
+obj_dir_soc_2hart_$(CORE)` already keeps every core's build in its own
+output directory. Running `make sim_opensbi_2hart CORE=hetero` and
+`make sim_linux_2hart CORE=hetero` directly - no new Makefile target,
+no `_hetero` suffix, no hardcoded file list, unlike every prior Phase 15
+stage's own tests - proved both questions at once: OpenSBI's own FDT-
+driven platform detection (`Platform HART Count : 2`, `Boot HART Base
+ISA : rv32ima`) and the existing `CONFIG_SMP=y` kernel image, completely
+unmodified, booting both harts to userspace (`smp: Brought up 1 node,
+2 CPUs`, `/proc/cpuinfo` showing `processor 0` and `processor 1`, one
+`cpu_core.v` and one `core_ooo.v` underneath). Neither test needed
+hardening the way earlier stages' own hardcoded-file-list pattern did,
+because neither is gated inside `verify`'s own unconditional dependency
+list in the first place - both are already stand-alone, hand-run targets
+(the same reason `sim_opensbi`/`sim_linux` themselves are not in
+`verify`), so there is no ambient-`$(CORE)` ambiguity to guard against;
+whoever runs the command chooses `$(CORE)` explicitly every time.
+
+Passed on the first attempt, both boots - no scheduler warning, no RCU
+stall, no soft lockup, no divergence from the homogeneous baseline's own
+UART/trap accounting beyond ordinary cycle-count noise (289,104,077
+cycles to the completion marker here versus the homogeneous pairing's
+own documented 286,259,012 - a 1% difference, not a symptom of anything).
+That answers this stage's own two questions plainly: the mailbox and the
+device-tree both already generalized past the homogeneous case (Stage 3
+proved the mailbox half of that; this stage is the device-tree half,
+proved by using it rather than a new statement about it), and the
+default scheduler's assumption of interchangeable CPUs did not surface
+anything worse than the throughput asymmetry this phase's own plan
+already expected - though a *quantified* answer to how large that
+asymmetry actually is remains Stage 5's own job, not this one's: nothing
+here ran a sustained workload, only a boot sequence.
+
+**What Stage 4 deliberately does not do:** measure anything. This stage
+answers "does it boot, and does anything break" - both yes/no questions
+- not "how much slower/faster." Stage 5, below, is where a real workload
+gets affinitized and timed.
+
+**Stage 3 continued, and Stage 5 onward - still a plan, none of it
 started:**
 
-- **The device-tree `compatible` strings**, per the finding above: a
-  `$(CORE)`-suffixed `dts/soc.dtb` → `dtb_blob.h` → `bootrom.elf` pipeline,
-  built alongside whatever new boot infrastructure Stage 4 needs.
-- **Linux SMP on a genuinely asymmetric pair.** The existing
-  `CONFIG_SMP=y` image, unmodified, booting to userspace with
-  `/proc/cpuinfo` showing two real harts - then, only once that holds,
-  the actual new question: whether the default scheduler's assumption of
-  interchangeable CPUs causes anything worse than a throughput asymmetry
-  it doesn't know to expect. Homogeneous `NUM_HARTS=2` (both pairings)
-  stays gated exactly as it is today - this stage adds a third
-  configuration, it does not replace either existing one.
+- **The device-tree `compatible` strings**, per Stage 3's own finding: a
+  `$(CORE)`-suffixed `dts/soc.dtb` → `dtb_blob.h` → `bootrom.elf`
+  pipeline. Stage 4 did not need it (`sim_opensbi_2hart`/
+  `sim_linux_2hart` read `dts/soc.dtb` directly, not through that
+  pipeline, and the file's own unconditional `"riscv"` compatible string
+  was never wrong, only imprecise) - this stays real, unclaimed future
+  work, not something Stage 4 quietly closed by not needing it.
 - **Measurement, the way every other phase in this file insists on it.**
   CoreMark or an equivalent workload, affinitized to the in-order hart
   alone, the OoO hart alone, and both together, compared against the
@@ -5941,7 +5982,11 @@ Stage 3's own first half added a third (`sim_ramboot_2hart_hetero`), and
 `make verify_ooo` already exists specifically because a regression in one
 core must not hide behind the other - a third, mixed configuration is one
 more place that could happen, worth stating plainly rather than assuming
-existing CI time absorbs it for free.
+existing CI time absorbs it for free. Stage 4 is the exception, not a
+change to that pattern: it added no new gated test at all, since
+`sim_opensbi_2hart`/`sim_linux_2hart` already run by hand, on demand,
+against whichever `$(CORE)` the person running them picks - the same
+reason they were never in `verify` to begin with.
 
 **Done when:** one elaboration - simulation first, matching every other
 phase's own bar before a board build is attempted - contains a real
