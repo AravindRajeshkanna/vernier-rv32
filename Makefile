@@ -1884,6 +1884,29 @@ sim_soc_2hart_lrsc_swap_hetero: sim/soc2hart_lrsc_swap.hex sim/sim_soc_2hart_lrs
 	@grep -aq "SOC-2HART-LRSC-SWAP-TEST: PASS" sim/soc_2hart_lrsc_swap_hetero.log && echo "CROSS-HART LR/SC OK (ooo holds, in-order writes)" || \
 	    { echo "FAILED: rtl/soc/reservation_monitor.v under CORE=hetero (ooo LR/SC vs in-order write)"; exit 1; }
 
+# ---- Phase 15 stage 3: the real boot-ROM mailbox, not the RESET_PC-into-
+# RAM shortcut every other Phase 15 test above uses ----
+#
+# Reuses sim/tb_ramboot_2hart.v and sim/ramimage2hart.hex completely
+# unchanged (only the testbench's own CORE_HETERO-guarded identity check is
+# new, added directly to that file, mirroring every other Phase 15 stage):
+# software/soc/crt0_rom.S's park_hart and software/soc/bootrom.c's
+# hart_release_addr are plain C/asm with no per-hart-type behavior, so the
+# same payload already proves the real mailbox handoff the moment it is
+# built against CORE=hetero - hart 0 (cpu_core.v) runs the actual boot ROM
+# and releases hart 1 (core_ooo.v) to the preloaded payload, rather than
+# either hart resetting straight into RAM. Hardcoded file list and
+# -DCORE_HETERO for the same reason every other _hetero target above is -
+# this has to build correctly regardless of the ambient $(CORE).
+sim/sim_ramboot_2hart_hetero.out: sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -DRAM_IMAGE='"ramimage2hart.hex"' \
+	    -o $@ sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_ramboot_2hart_hetero: sim/bootrom.hex sim/ramimage2hart.hex sim/sim_ramboot_2hart_hetero.out
+	@cd sim && $(VVP) sim_ramboot_2hart_hetero.out $(VVP_DUMP) 2>&1 | tee ramboot_2hart_hetero.log
+	@grep -q "RAMBOOT-2HART TEST PASSED" sim/ramboot_2hart_hetero.log || \
+	    { echo "FAILED: the real boot-ROM mailbox under CORE=hetero (hart 0 cpu_core.v releases hart 1 core_ooo.v)"; exit 1; }
+
 # ---- Phase 13 stage 9: rtl/soc/reservation_monitor.v wired to both harts
 # - cross-hart LR/SC coherence, not just hardware that runs ----
 #
@@ -2245,6 +2268,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_lrsc \
         sim_soc_2hart_lrsc_hetero \
         sim_soc_2hart_lrsc_swap_hetero \
+        sim_ramboot_2hart_hetero \
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \
