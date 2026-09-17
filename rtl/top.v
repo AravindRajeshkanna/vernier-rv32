@@ -87,6 +87,9 @@ module top #(
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we), .dmem_re(dmem_re), .dmem_size(dmem_size), .dmem_rdata(dmem_rdata),
         .dmem_is_amo(), // only a bus adapter needs this (see rtl/soc/cpu_wb.v)
+        .dmem_amo_wrphase(), // only rtl/soc/wb_interconnect.v needs this -
+                              // no interconnect, so no second data master to
+                              // ever race, on this flat harness
         // Same reasoning as dmem_is_amo() just above: only rtl/soc/cpu_wb.v's
         // own I-fetch gating (fetch_hit/iwb_cyc) reads this - a real,
         // previously-unconnected port this flat harness never needed,

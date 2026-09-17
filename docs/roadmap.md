@@ -3847,6 +3847,67 @@ finding - this closes the AMO-atomicity gap specifically, which turned
 out to be provable and closeable on its own, independent of picking a
 cache-coherence approach for the other half.
 
+**Update: it wasn't actually fixed, and the formal proof above, while
+true, was proving the wrong thing.** Phase 15's own Stage 5 (concurrent
+dual-hart CoreMark) needed a console lock between two harts and built one
+out of `amoswap.w` - the first time anything in this project put two
+harts in real, sustained contention on a *plain* AMO rather than LR/SC.
+It deadlocked permanently, reproducibly, within a handful of exchanges,
+specifically under `CORE=ooo`. Traced with a cycle-accurate hand-built
+repro (two harts hammering `amoswap.w` on one shared word) down to the
+exact mechanism: this stage's own `d_continuing` detects "my own ack
+fired last cycle, and I am still asking this cycle," and that condition
+was **never once true** against real hardware timing, single hart or
+many - confirmed by a full cycle trace over the repro, including several
+completely uncontested single-hart exchanges. The paragraph above got
+one specific thing wrong: `cpu_core.v` holding `dmem_is_amo` continuously
+does *not* mean the interconnect's own `d_cyc` input stays continuous,
+because `rtl/soc/cpu_wb.v` sits in between the two and was never part of
+this stage's own model. `cpu_wb.v`'s own one-cycle decode bubble
+(`dc_pending`, its own comment: "1 from the cycle *after* a fresh access
+starts") drops the bus-level `d_cyc` for exactly one cycle at an AMO's
+own read-to-write transition, every time, regardless of what the core's
+own signal does underneath it. `formal/fv_interconnect.v`'s own property
+10 proved this file correctly re-grants a master whose `d_cyc` genuinely
+never drops - a true statement, checked against an unconstrained `d_cyc`
+input that this stage's own reasoning assumed would match real hardware,
+never against `cpu_wb.v`'s actual output. It didn't, and nothing caught
+the gap between "proven in isolation" and "true of the assembled system"
+until a real end-to-end test existed to notice.
+
+Replaced with an explicit signal instead of a second, better-tuned
+inference: each core now exports `dmem_amo_wrphase` (a direct copy of its
+own `amo_wr_phase` register, wired straight from the core, bypassing
+`cpu_wb.v` entirely), and the interconnect masks every other tier - every
+other hart's own data master, walker, fetch, even the debug module - out
+of the data tier for as long as any hart's own `d_amo_wrphase` is up.
+`d_continuing`/`d_acked_prev`/`continuing_win` are gone; `formal/
+fv_interconnect.v`'s own property 10 is rewritten around the new signal
+(property 4d now), and properties 3 and 6 gained a stated exception for
+the same reason property 4z already had one - a hart's own in-flight AMO
+write phase can legitimately delay an unrelated request by the same
+bounded few cycles, never an unbounded hang. All six formal modules
+PROVE at depth 12 again, `fv_interconnect` included. A new permanent
+regression test (`sim/tb_soc_2hart_amoswap.v`, all three of `CORE=inorder`/
+`CORE=ooo`/`CORE=hetero`) puts two harts through exactly the scenario that
+broke, checking a shared counter's own read-modify-store comes out at
+*exactly* twice the iteration count - a number that can only ever be
+*at or below* that if mutual exclusion genuinely failed, never above,
+which is what makes "exactly" a real proof rather than a plausible-looking
+one. Confirmed non-vacuous the hard way twice: once by disabling the fix
+entirely (the new SoC-level test failed with a real lost update, not a
+hang, this time), and once by discovering the *first* attempt at fixing
+`sim/tb_interconnect_multihart.v`'s own existing directed test still
+passed with the fix disabled - protected by an unrelated, pre-existing
+one-cycle lag in the ordinary multi-cycle-transfer lock, not by anything
+new - and rebuilding that test's own timing until it genuinely depended
+on the new mechanism instead.
+
+`LR`/`SC` was never affected by any of this - its own correctness comes
+from `rtl/soc/reservation_monitor.v` invalidating a stale reservation,
+not from bus-level exclusivity, and that mechanism is unrelated to
+`d_continuing`/`d_amo_wrphase` either way.
+
 **Stage 2: two of the four enumerated plumbing items, parameterized and
 proven in isolation, with every real build still defaulting to exactly
 today's single-hart behavior.** `rtl/clint.v` gained a `NUM_HARTS`

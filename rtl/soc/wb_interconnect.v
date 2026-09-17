@@ -99,23 +99,37 @@
 //    would be delivered along with that other master's data. Silent
 //    corruption, not a hang.
 //
-// **Atomics** are safe because a data master's own lock stays held across
-// an AMO's two phases, not because priority happens to re-win it. Each
-// hart's core holds its own `dmem_is_amo` (and so `cyc`) for an AMO's
-// entire read-then-write duration, one instruction the whole way through;
-// on that master's own ack, this file re-locks to it rather than
-// releasing, whenever `cyc` is still up for *that specific hart* (see
-// `d_continuing`, below - specific to each hart's own data master,
-// deliberately not a general "whoever still wants it keeps it" rule, and
-// deliberately per-hart rather than "any data master" so hart A's
-// follow-up phase cannot be satisfied by hart B happening to also be
-// asking). Priority alone used to be given as the reason this was safe
-// with a single data master ("master 1 immediately wins re-arbitration for
-// the write phase"), which was true only as long as nothing else with
-// equal-or-higher priority could also want the bus that same cycle - the
-// debug module always could, rarely enough in practice not to matter, but
-// a second *data* master would not be rare. Re-locking closes both cases
-// the same way, without needing to reason about who else might be asking.
+// **Atomics** are safe because each hart's own `d_amo_wrphase` input holds
+// the data tier for it explicitly, not because of anything inferred from
+// `cyc`/ack timing. A hart's core asserts `d_amo_wrphase` for an AMO's
+// whole read-modify-write duration and this file masks every other tier -
+// every other hart's own data master, the walker/fetch tiers, even the
+// debug module - out of the data tier for as long as *any* hart's own
+// `d_amo_wrphase` is up (`any_amo_wrphase`/`amo_wrphase_win`, below;
+// per-hart, deliberately, so hart A's own follow-up phase cannot be
+// satisfied by hart B happening to also be asking).
+//
+// This used to be inferred instead of asserted: a hart's own `dmem_is_amo`
+// (and so `cyc`, the reasoning went) stays up continuously across an AMO's
+// two phases, so a data master whose own ack fired last cycle and is still
+// asking this cycle (`d_continuing`, in an earlier version of this file)
+// must be that same follow-up phase, not a new access - detectable from
+// bus-level timing alone, no core-side signal needed. That reasoning was
+// formally proven correct about *this file*, in isolation, against an
+// unconstrained `d_cyc` input (`formal/fv_interconnect.v`'s own property
+// 10) - and false about the real system, because `rtl/soc/cpu_wb.v` sits
+// between every core and this file. `cpu_wb.v`'s own one-cycle decode
+// bubble (`dc_pending`, its own comment: "1 from the cycle *after* a fresh
+// access starts") drops the bus-level `d_cyc` for exactly one cycle at the
+// AMO's own read-to-write transition, every time, regardless of how
+// continuously the core's own `dmem_is_amo` stays asserted underneath it -
+// so `d_continuing` never once fired against real hardware timing, single
+// hart or many, confirmed by a cycle-accurate trace once a real two-hart
+// AMO-contention test finally existed to notice. `d_amo_wrphase` (a direct
+// copy of each core's own `amo_wr_phase` register) sidesteps the whole
+// question: it is true for exactly the window that needs protecting,
+// regardless of what `cpu_wb.v` does to `cyc` in between, because it never
+// routes through `cpu_wb.v` at all.
 //
 // **Every master must tie `stb` to `cyc`.** Arbitration grants on `cyc`
 // alone, so a master that asserted `cyc` without `stb` - legal Wishbone, a
@@ -154,6 +168,13 @@ module wb_interconnect #(
     input  wire [NUM_HARTS*4-1:0]    d_sel,
     output wire [NUM_HARTS*32-1:0]   d_dat_r,
     output wire [NUM_HARTS-1:0]      d_ack,
+    // High for as long as hart h has completed a plain AMO's (or SC's) read
+    // phase and is still trying to perform its write phase - a direct copy
+    // of that hart's own core-internal `amo_wr_phase` register, wired
+    // straight from the core rather than through rtl/soc/cpu_wb.v. See this
+    // file's own "Atomics" header paragraph for why it has to bypass
+    // cpu_wb.v to mean anything.
+    input  wire [NUM_HARTS-1:0]      d_amo_wrphase,
 
     // ---- per-hart page-table-walk masters (read-only) ----
     input  wire [NUM_HARTS-1:0]      w_cyc,
@@ -229,43 +250,24 @@ module wb_interconnect #(
     // formal/fv_interconnect.v for why debug must never assert this).
     output wire                      s_data_master
 );
-    // ---- per-hart AMO-follow-up detection, generalized from stage 1 ----
+    // ---- per-hart AMO write-phase exclusivity ----
     //
-    // Registered: did hart h's own data master ack *last* cycle, checked
-    // against *this* cycle's d_cyc[h] - not the same-cycle d_ack[h], which
-    // is trivially true for every transaction the instant it completes
-    // (Wishbone cyc does not drop until the master reacts to seeing the
-    // ack, one cycle later, so it is high at the ack cycle for an ordinary
-    // access exactly as much as for an AMO) and so cannot tell a genuine
-    // follow-up phase from an unrelated one just starting. This can: only a
-    // master that immediately re-asserts cyc with nothing in between looks
-    // like this, which is exactly what an AMO's read phase immediately
-    // followed by its write phase does.
-    reg  [NUM_HARTS-1:0] d_acked_prev;
-    always @(posedge clk or posedge rst) begin
-        if (rst) d_acked_prev <= {NUM_HARTS{1'b0}};
-        else     d_acked_prev <= d_ack;
-    end
+    // d_amo_wrphase[h] is asserted directly by hart h's own core (a copy of
+    // its internal amo_wr_phase register) for as long as it has completed a
+    // plain AMO's (or SC's) read phase and is still trying to perform its
+    // write phase - see this file's own "Atomics" header paragraph for why
+    // this has to be an explicit, core-driven signal rather than something
+    // inferred from d_cyc/d_ack timing (an earlier version of this file
+    // tried the latter; it was provably never true against real hardware).
+    wire                 any_amo_wrphase = |d_amo_wrphase;
 
-    // Per-hart, deliberately: hart A's follow-up phase must not be
-    // satisfiable by hart B merely also asking. Each hart's own immediate
-    // follow-up wins arbitration unconditionally, ahead of even the debug
-    // module - deliberately narrow (one cycle, specific to that hart's data
-    // master), not a general "whoever still wants the bus keeps it" rule;
-    // see this signal's own use below for why applying it to fetch or the
-    // walker would be actively wrong (both can hold cyc continuously across
-    // their own back-to-back but *unrelated* transactions, where losing
-    // arbitration between them is correct, not a bug).
-    wire [NUM_HARTS-1:0] d_continuing = d_acked_prev & d_cyc;
-    wire                 any_continuing = |d_continuing;
-
-    // At most one hart can be "continuing" in any reachable cycle (only the
-    // hart that was actually granted the bus last cycle could have just
-    // acked), but arbitration still needs a defined single winner for the
-    // solver to reason about every input combination, reachable or not -
-    // lowest hart index wins, same tie-break as every other tier below.
-    wire [NUM_HARTS-1:0] continuing_win = d_continuing &
-                                          ~(d_continuing - 1'b1);
+    // At most one hart can genuinely be mid-write-phase at a time (the bus
+    // is shared), but arbitration still needs a defined single winner for
+    // the solver to reason about every input combination, reachable or
+    // not - lowest hart index wins, same tie-break as every other tier
+    // below.
+    wire [NUM_HARTS-1:0] amo_wrphase_win = d_amo_wrphase &
+                                           ~(d_amo_wrphase - 1'b1);
 
     // ---- per-tier "lowest asking hart wins" priority encode ----
     //
@@ -281,19 +283,19 @@ module wb_interconnect #(
     wire any_d_asking = |d_cyc;
 
     // ---- top-level tiers, in fixed priority order ----
-    wire        want_dbg = dbg_cyc && !any_continuing;
+    wire        want_dbg = dbg_cyc && !any_amo_wrphase;
     wire [NUM_HARTS-1:0] want_d = want_d_tier &
-                                  {NUM_HARTS{!any_continuing && !dbg_cyc}};
+                                  {NUM_HARTS{!any_amo_wrphase && !dbg_cyc}};
     wire [NUM_HARTS-1:0] want_w = want_w_tier &
-                                  {NUM_HARTS{!any_continuing && !dbg_cyc &&
+                                  {NUM_HARTS{!any_amo_wrphase && !dbg_cyc &&
                                               !any_d_asking}};
     wire [NUM_HARTS-1:0] want_f = want_f_tier &
-                                  {NUM_HARTS{!any_continuing && !dbg_cyc &&
+                                  {NUM_HARTS{!any_amo_wrphase && !dbg_cyc &&
                                               !any_d_asking && !(|w_cyc)}};
     // Lowest of all: wins only when literally nothing else - debug, any
     // hart's data/walker/fetch master - wants the bus this cycle.
     wire        want_n = n_cyc &&
-                         !any_continuing && !dbg_cyc && !any_d_asking &&
+                         !any_amo_wrphase && !dbg_cyc && !any_d_asking &&
                          !(|w_cyc) && !(|f_cyc);
 
     reg        lock;
@@ -303,18 +305,18 @@ module wb_interconnect #(
 
     // Only lock_d/lock_w/lock_f/lock_dbg/lock_n need to survive into the
     // lock - the mux below only ever asks "which master is selected", never
-    // "was this cycle's selection the continuing override or the ordinary
+    // "was this cycle's selection the amo_wrphase override or the ordinary
     // tier-2 winner", so that distinction does not need its own storage.
     wire        sel_dbg        = lock ? lock_dbg        : want_dbg;
-    wire [NUM_HARTS-1:0] sel_d = lock ? lock_d : (any_continuing ? continuing_win : want_d);
+    wire [NUM_HARTS-1:0] sel_d = lock ? lock_d : (any_amo_wrphase ? amo_wrphase_win : want_d);
     wire [NUM_HARTS-1:0] sel_w = lock ? lock_w : want_w;
     wire [NUM_HARTS-1:0] sel_f = lock ? lock_f : want_f;
     wire        sel_n          = lock ? lock_n          : want_n;
 
     // A data master is selected either because it is genuinely the winning
-    // tier-2 request, or because it is the one continuing a locked-in AMO -
-    // `sel_d` already covers both (the ternary above), so this is just "any
-    // hart's data master is the granted master."
+    // tier-2 request, or because it is the one holding an in-flight AMO's
+    // write phase - `sel_d` already covers both (the ternary above), so
+    // this is just "any hart's data master is the granted master."
     wire any_d_sel = |sel_d;
 
     assign s_data_master = any_d_sel;
@@ -415,14 +417,14 @@ module wb_interconnect #(
     // complete in its first cycle, so zero-wait-state slaves (the peripheral
     // bridges, and an unmapped address) behave exactly as they did before
     // this existed and never touch the lock at all. This mechanism is
-    // unchanged by the continuing-override above - that one protects the
-    // one-cycle *gap* between an ack and a possible same-hart follow-up,
-    // entirely through the want_*/sel_* computation; this one protects an
-    // already-granted multi-cycle transfer from being preempted mid-wait, a
-    // different moment for a different reason. They compose rather than
-    // interact: whichever master is decided by combinational priority (now
-    // including the continuing override) is what gets locked in here if its
-    // own transfer takes more than one cycle.
+    // unchanged by the amo_wrphase override above - that one protects an
+    // in-flight AMO's own read-to-write *gap*, entirely through the
+    // want_*/sel_* computation; this one protects an already-granted
+    // multi-cycle transfer from being preempted mid-wait, a different
+    // moment for a different reason. They compose rather than interact:
+    // whichever master is decided by combinational priority (now including
+    // the amo_wrphase override) is what gets locked in here if its own
+    // transfer takes more than one cycle.
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             lock     <= 1'b0;

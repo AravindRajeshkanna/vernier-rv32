@@ -10,14 +10,30 @@
 // NUM_HARTS-many (fetch, data, walker) triples plus one shared debug master,
 // and the whole point of proving it here, before a second hart exists to
 // wire in for real, is to prove the *general* case - the same "verify the
-// hard piece in isolation" sequencing stage 1's AMO-atomicity fix and
-// rtl/pmp.v itself both used. NUM_HARTS=1, the shape every real
+// hard piece in isolation" sequencing stage 1's original AMO-atomicity fix
+// and rtl/pmp.v itself both used. NUM_HARTS=1, the shape every real
 // instantiation in this tree still builds, is covered instead by the full
 // simulation regression (make verify/make verify_ooo) that already exercises
 // rtl/soc/soc_top.v's real single-hart instantiation end to end - formally
 // re-proving that exact case here would be strictly weaker than what those
 // gates already establish, where NUM_HARTS=2 is not exercised by anything
 // else in the tree yet.
+//
+// Stage 1's own original fix (an inferred `d_continuing` heuristic: "hart
+// k's own ack fired last cycle, and it is still asking this cycle") proved
+// correct here, against this file's own unconstrained `d_cyc` input - and
+// was still wrong about the real system once a genuine two-hart AMO
+// contention test finally existed to check it (docs/roadmap.md's Phase 13
+// Stage 1 account has the full correction): `rtl/soc/cpu_wb.v` sits between
+// every core and this file, and its own one-cycle decode bubble drops the
+// real, bus-level `d_cyc` for exactly one cycle at an AMO's read-to-write
+// transition, every time - so the condition this file's old property 10
+// existed to prove was formally true and never actually reachable. Replaced
+// with an explicit `d_amo_wrphase` port, a direct copy of each core's own
+// `amo_wr_phase` register, driven straight from the core rather than through
+// `cpu_wb.v` - and, being a real port rather than DUT-internal state,
+// provable directly rather than needing to be re-derived from other ports
+// the way `d_continuing` did.
 //
 // The NPU's own DMA master (rtl/soc/wb_npu.v, Phase 14) was added later, as
 // a sixth kind of contender rather than a seventh per-hart one - it exists
@@ -47,6 +63,7 @@ module fv_interconnect #(
     input wire [NUM_HARTS-1:0]      d_cyc, d_stb, d_we,
     input wire [NUM_HARTS*32-1:0]   d_adr, d_dat_w,
     input wire [NUM_HARTS*4-1:0]    d_sel,
+    input wire [NUM_HARTS-1:0]      d_amo_wrphase,
 
     input wire [NUM_HARTS-1:0]      w_cyc, w_stb,
     input wire [NUM_HARTS*32-1:0]   w_adr,
@@ -105,6 +122,7 @@ module fv_interconnect #(
         .d_cyc(d_cyc), .d_stb(d_stb), .d_we(d_we), .d_adr(d_adr),
         .d_dat_w(d_dat_w), .d_sel(d_sel),
         .d_dat_r(d_dat_r), .d_ack(d_ack),
+        .d_amo_wrphase(d_amo_wrphase),
         .w_cyc(w_cyc), .w_stb(w_stb), .w_adr(w_adr),
         .w_dat_r(w_dat_r), .w_ack(w_ack),
         .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),
@@ -198,14 +216,13 @@ module fv_interconnect #(
                       (dbg_cyc && dbg_stb);
     wire any_ack   = (|f_ack) || (|d_ack) || (|w_ack) || dbg_ack || n_ack;
 
-    reg                  p_any_req, p_any_ack, p_dm, p_rst;
-    reg [NUM_HARTS-1:0]  p_d_ack;
+    reg                  p_any_req, p_any_ack, p_dm, p_rst, p_any_amo_wrphase;
     always @(posedge clk) begin
-        p_any_req <= any_req;
-        p_any_ack <= any_ack;
-        p_dm      <= s_data_master;
-        p_rst     <= rst;
-        p_d_ack   <= d_ack;
+        p_any_req          <= any_req;
+        p_any_ack          <= any_ack;
+        p_dm               <= s_data_master;
+        p_rst              <= rst;
+        p_any_amo_wrphase  <= any_amo_wrphase;
     end
 
     // True exactly when a transfer started earlier and has not completed, so
@@ -233,13 +250,16 @@ module fv_interconnect #(
         ack_count = ack_count + {3'b0, dbg_ack} + {3'b0, n_ack};
     end
 
-    // A hart's own data master immediately re-asking the cycle right after
-    // its own ack - the AMO-follow-up signature stage 1 introduced,
-    // generalized per hart and derived from ports only, matching the DUT's
-    // own internal `d_continuing` (which this file cannot reference
-    // directly - see the header note above).
-    wire [NUM_HARTS-1:0] p_d_continuing = p_d_ack & d_cyc;
-    wire                 any_p_d_continuing = |p_d_continuing;
+    // Unlike the old `d_continuing` heuristic this replaced (see the header
+    // note above), `d_amo_wrphase` is a real port - free to reference
+    // directly here, no port-only re-derivation needed.
+    wire any_amo_wrphase = |d_amo_wrphase;
+    // Same priority-encode idiom as want_d_tier/want_w_tier/want_f_tier
+    // below - the DUT's own tie-break for which hart wins when more than
+    // one raises d_amo_wrphase in the same cycle (see property 4d's own
+    // comment for why this file, unlike the DUT, must consider that case).
+    wire [NUM_HARTS-1:0] amo_wrphase_win = d_amo_wrphase &
+                                           ~(d_amo_wrphase - 1'b1);
 
     always @(*) if (!rst) begin
         // 1. At most one slave is ever strobed. Two slaves answering in the
@@ -256,8 +276,16 @@ module fv_interconnect #(
                         (s_base[8*j +: 8] & s_mask[8*j +: 8]));
 
         // 3. The bus is only claimed as a data access when some hart's data
-        //    master is actually asking for it.
-        if (s_data_master) assert (any_d_req);
+        //    master is actually asking for it, or is mid-AMO and about to -
+        //    property 4d's own "phantom grant" cycle (the holding hart is
+        //    selected before its own `d_cyc` catches back up, so nothing
+        //    else can sneak in during the gap `rtl/soc/wb_interconnect.v`'s
+        //    own header describes) is a real, intentional case where
+        //    `s_data_master` is asserted with no live `d_cyc` yet. It stays
+        //    harmless specifically because `s_stb` is all zero on that same
+        //    cycle (property 4d does not assert `cur_stb`), so no peripheral
+        //    ever sees the read-side-effect gate this port exists for.
+        if (s_data_master) assert (any_d_req || any_amo_wrphase);
 
         // 3b. `s_data_master` is what gates read side effects - the PLIC's
         //     claim register, the UART's RBR. The debug module must never
@@ -279,12 +307,10 @@ module fv_interconnect #(
         if (any_d_req && !in_flight) assert (!(|w_ack) && !(|f_ack));
 
         // 4z. Debug outranks everything, whenever arbitration is open -
-        //     except any hart's own data master's immediate follow-up phase
-        //     (`any_p_d_continuing`, derived here from ports rather than
-        //     peeked at directly, matching this file's own "expressed over
-        //     ports only" rule). That exception is deliberate and is what
-        //     property 10 below exists to prove.
-        if (dbg_cyc && !in_flight && !any_p_d_continuing) begin
+        //     except a hart's own in-flight AMO write phase
+        //     (`any_amo_wrphase`). That exception is deliberate and is what
+        //     property 4d below exists to prove.
+        if (dbg_cyc && !in_flight && !any_amo_wrphase) begin
             assert (!(|f_ack));
             assert (!(|d_ack));
             assert (!(|w_ack));
@@ -312,6 +338,44 @@ module fv_interconnect #(
         if ((dbg_cyc || any_d_req || any_w_req || any_f_req) && !in_flight)
             assert (!n_ack);
 
+        // 4d. A hart's own in-flight AMO write phase holds the data tier
+        //     exclusively against everything else - the property that
+        //     replaced property 10's old `d_continuing`-based version (see
+        //     the header note on why that one never actually engaged).
+        //     `d_amo_wrphase[k]` is asserted by hart k's own core for the
+        //     AMO's whole read-to-write gap and write phase, independently
+        //     of whether hart k's own `d_cyc[k]` happens to be up this exact
+        //     cycle (rtl/soc/wb_interconnect.v's own header explains why it
+        //     cannot be, some cycles, through no fault of the core) - so
+        //     this asserts two distinct things: nobody else is ever granted
+        //     while it holds, and whenever hart k itself is genuinely
+        //     asking, it is hart k's own address that reaches the bus.
+        //
+        //     Gated on `amo_wrphase_win[k]`, not the raw `d_amo_wrphase[k]`,
+        //     for the same reason `want_d_tier`'s own priority encode exists
+        //     at all: this is a free, unconstrained input, so the solver is
+        //     free to raise more than one hart's own flag in the same
+        //     cycle - real hardware only ever has one hart's own AMO
+        //     genuinely mid-write-phase against a given slave at a time, but
+        //     the DUT itself only ever grants the lowest-indexed one
+        //     (`amo_wrphase_win`), and this property has to describe that
+        //     same winner, not assert exclusivity for every hart that merely
+        //     raised the bit.
+        for (k = 0; k < NUM_HARTS; k = k + 1)
+            if (amo_wrphase_win[k] && !in_flight) begin
+                assert (!dbg_ack);
+                for (j = 0; j < NUM_HARTS; j = j + 1)
+                    if (j != k) begin
+                        assert (!d_ack[j]);
+                        assert (!w_ack[j]);
+                        assert (!f_ack[j]);
+                    end
+                if (d_cyc[k] && d_stb[k]) begin
+                    assert (s_data_master);
+                    assert (s_adr == d_adr[32*k +: 32]);
+                end
+            end
+
         // 5. Acks go to the master that made the request, and only to one -
         //    across every hart and every role, not just within one.
         for (k = 0; k < NUM_HARTS; k = k + 1) begin
@@ -334,19 +398,22 @@ module fv_interconnect #(
         //    page table names unmapped ones. wb_ptw.v's own handling of a
         //    same-cycle ack is what turns that into a page fault rather than
         //    a re-issued read forever.
-        if (any_d_req && !dbg_cyc && !in_flight && (s_stb == {NUM_SLAVES{1'b0}}))
+        // Each of the four exemptions below is the same one: a different
+        // hart's own in-flight AMO write phase can legitimately delay this
+        // access by the same bounded few cycles property 4d itself bounds -
+        // never an unbounded hang, just not *this* cycle.
+        if (any_d_req && !dbg_cyc && !in_flight && !any_amo_wrphase &&
+            (s_stb == {NUM_SLAVES{1'b0}}))
             assert (|d_ack);
         // The debug master needs it most: a host can ask for any address at
         // all, including ones that decode to nothing, and a debug read that
         // hangs the bus would take the machine down rather than report a
-        // hole. Same exemption as property 4z, for the same reason: some
-        // hart's data master's own immediate follow-up phase wins this cycle
-        // instead.
+        // hole.
         if (dbg_cyc && dbg_stb && !in_flight && (s_stb == {NUM_SLAVES{1'b0}}) &&
-            !any_p_d_continuing)
+            !any_amo_wrphase)
             assert (dbg_ack);
         if (any_w_req && !any_d_req && !dbg_cyc && !in_flight &&
-            (s_stb == {NUM_SLAVES{1'b0}}))
+            !any_amo_wrphase && (s_stb == {NUM_SLAVES{1'b0}}))
             assert (|w_ack);
         // The NPU DMA master gets the same treatment, least likely of all
         // to matter in practice (software controls both A_ADDR/W_ADDR and
@@ -354,7 +421,7 @@ module fv_interconnect #(
         // walker's PTE-named one) but proven anyway rather than assumed
         // safe by construction.
         if (any_n_req && !dbg_cyc && !any_d_req && !any_w_req && !any_f_req &&
-            !in_flight && (s_stb == {NUM_SLAVES{1'b0}}))
+            !in_flight && !any_amo_wrphase && (s_stb == {NUM_SLAVES{1'b0}}))
             assert (n_ack);
 
         // 7. The broadcast address belongs to the granted master.
@@ -392,40 +459,21 @@ module fv_interconnect #(
         //    the wrong master along with the wrong data. Silent corruption,
         //    not a hang, which is why it is worth proving rather than hoping
         //    a test trips over it.
-        if (in_flight) assert (s_data_master == p_dm);
-
-        // 10. A hart's own data master keeps the bus across its own
-        //     multi-phase sequence, not just across one transfer - and,
-        //     generalized from a single data master to NUM_HARTS of them,
-        //     specifically *that hart's own* access, not merely "some data
-        //     access." `in_flight` (property 9) goes false the instant an
-        //     ack fires - by design, that is the one cycle arbitration is
-        //     genuinely open - so this is a different claim: if hart k's own
-        //     ack fired last cycle and hart k is *still asking* this cycle
-        //     (an AMO's write phase immediately following its read phase,
-        //     driven by the same instruction the whole way through), nobody
-        //     else - not debug, and not another hart's own data, walker, or
-        //     fetch master - may have won that gap cycle instead. Without
-        //     the re-lock this proves, debug's absolute priority (property
-        //     4z) could interpose here - rare enough in practice not to
-        //     matter with one data master, not rare enough once a second one
-        //     exists. This is what makes that eventually safe, proved here
-        //     with two harts before either is actually wired in for real.
         //
-        //     Checked the same way the original, single-master version of
-        //     this property was: against `s_data_master` and the broadcast
-        //     bus address, not against `d_ack[k]` - a slave's own ack can
-        //     legitimately lag the grant by a wait state or more (block RAMs
-        //     have one), so "hart k *acks* this cycle" is not what stage 1's
-        //     re-lock actually guarantees. "Hart k's own address is what
-        //     went out on the bus" is: it is combinational, derived from the
-        //     same `sel_d` the grant itself is, and it is what would be
-        //     wrong if a different master's address reached the slave
-        //     instead.
-        for (k = 0; k < NUM_HARTS; k = k + 1)
-            if (p_d_continuing[k]) begin
-                assert (s_data_master);
-                assert (s_adr == d_adr[32*k +: 32]);
-            end
+        //    Exempts the cycle a hart's own `d_amo_wrphase` hold just
+        //    released (`p_any_amo_wrphase`, last cycle's value): a
+        //    different master can have been legitimately asking and
+        //    unacknowledged the whole time the hold was up (correctly
+        //    blocked, per property 4d, never actually granted a real
+        //    slave transaction) and is now free to win the instant the
+        //    hold releases - a real grant handoff, not the mid-transfer
+        //    reassignment this property exists to catch. That is a
+        //    different moment from an already-*granted* multi-cycle
+        //    transfer (still fully covered, unexempted, by `in_flight`
+        //    itself) - the two do not overlap, since `d_amo_wrphase`'s own
+        //    masking prevents anyone but the holder from ever being
+        //    granted while it is up.
+        if (in_flight && !p_any_amo_wrphase) assert (s_data_master == p_dm);
+
     end
 endmodule
