@@ -79,10 +79,17 @@ isa             : rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc
 Reaches the marker at cycle 286,259,012 - real overhead on top of the
 single-hart figure above, from bringing a genuine second hart through SBI
 HSM and the kernel's own secondary-CPU bring-up, not noise. `NUM_HARTS=2`
-is simulation-only: no board build has ever asked for it, and the boot ROM
-(below) still has no idea a second hart could exist. `docs/roadmap.md`'s
-Phase 13 entry has the full account, including what closing this specific
-gap deliberately did not also close.
+is simulation-only: no board build has ever asked for it. The boot ROM
+(below) does know a second hart can exist - it has a real mailbox
+(`software/soc/crt0_rom.S`'s `park_hart`, since Phase 13 Stage 12) - but
+this specific boot never goes through it: `make sim_linux_2hart` resets
+straight into `software/opensbi/sbi_stub.S` at `0x9000_0000`, the same
+boot-ROM bypass every `sim_opensbi`/`sim_linux` target uses, single-hart
+or not. `docs/roadmap.md`'s Phase 13 entry has the full account of the
+mailbox, including what closing that specific gap deliberately did not
+also close; its Phase 15 entry proves the same mailbox holds when the
+parked hart is a genuinely different microarchitecture from the one
+that released it.
 
 | | |
 |---|---|
