@@ -124,6 +124,10 @@ module core_ooo #(
     input  wire [31:0] dmem_rdata,
     input  wire         dmem_rvalid,
     output wire         dmem_is_amo,
+    // A direct copy of `amo_wr_phase` below - see rtl/cpu_core.v's own copy
+    // of this same port for the full account of why rtl/soc/wb_interconnect.v
+    // needs it and `dmem_is_amo`/`cyc` alone isn't enough.
+    output wire         dmem_amo_wrphase,
 
     input  wire         ibus_wait,
     input  wire         dbus_wait,
@@ -1850,6 +1854,7 @@ module core_ooo #(
     // the same time would tell the bus adapter to treat a plain store's
     // single-phase write as part of an RMW sequence.
     assign dmem_is_amo = amo_active && !sb_valid;
+    assign dmem_amo_wrphase = amo_wr_phase;
 
     // The head's store/AMO must wait, not just for the bus to acknowledge,
     // but for the bus to be its own to ask in the first place - a load or

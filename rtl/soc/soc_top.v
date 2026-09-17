@@ -202,6 +202,10 @@ module soc_top #(
     wire [NUM_HARTS*32-1:0] imem_addr, imem_rdata;
     wire [NUM_HARTS*32-1:0] dmem_addr, dmem_wdata, dmem_rdata;
     wire [NUM_HARTS-1:0]    dmem_we, dmem_re, dmem_is_amo, dmem_rvalid;
+    // This hart has finished an AMO's read phase and is now trying to write
+    // - see rtl/soc/wb_interconnect.v's own header for why `dmem_is_amo`
+    // alone does not tell it that continuously enough to matter.
+    wire [NUM_HARTS-1:0]    dmem_amo_wrphase;
     wire [NUM_HARTS*2-1:0]  dmem_size;
     wire [NUM_HARTS-1:0]    ibus_wait, dbus_wait;
     wire [NUM_HARTS-1:0]    itlb_wait_stall;
@@ -327,6 +331,7 @@ module soc_top #(
         .dmem_addr(dmem_addr[31:0]), .dmem_wdata(dmem_wdata[31:0]),
         .dmem_we(dmem_we[0]), .dmem_re(dmem_re[0]), .dmem_size(dmem_size[1:0]),
         .dmem_rdata(dmem_rdata[31:0]), .dmem_rvalid(dmem_rvalid[0]), .dmem_is_amo(dmem_is_amo[0]),
+        .dmem_amo_wrphase(dmem_amo_wrphase[0]),
         .ibus_wait(ibus_wait[0]), .dbus_wait(dbus_wait[0]),
         .ptw_req(ptw_req[0]), .ptw_addr(ptw_addr[31:0]),
         .ptw_gnt(ptw_gnt[0]), .ptw_rdata(ptw_rdata[31:0]),
@@ -420,6 +425,7 @@ module soc_top #(
                 .dmem_addr(dmem_addr[32*h +: 32]), .dmem_wdata(dmem_wdata[32*h +: 32]),
                 .dmem_we(dmem_we[h]), .dmem_re(dmem_re[h]), .dmem_size(dmem_size[2*h +: 2]),
                 .dmem_rdata(dmem_rdata[32*h +: 32]), .dmem_rvalid(dmem_rvalid[h]), .dmem_is_amo(dmem_is_amo[h]),
+                .dmem_amo_wrphase(dmem_amo_wrphase[h]),
                 .ibus_wait(ibus_wait[h]), .dbus_wait(dbus_wait[h]),
                 .ptw_req(ptw_req[h]), .ptw_addr(ptw_addr[32*h +: 32]),
                 .ptw_gnt(ptw_gnt[h]), .ptw_rdata(ptw_rdata[32*h +: 32]),
@@ -593,6 +599,10 @@ module soc_top #(
         .d_cyc(dwb_cyc), .d_stb(dwb_stb), .d_we(dwb_we), .d_adr(dwb_adr),
         .d_dat_w(dwb_dat_w), .d_sel(dwb_sel),
         .d_dat_r(dwb_dat_r), .d_ack(dwb_ack),
+        // Straight from each hart's own core, not through rtl/soc/cpu_wb.v -
+        // see that file's own dc_pending/access_start comment for why a
+        // signal routed through it cannot be the one this needs.
+        .d_amo_wrphase(dmem_amo_wrphase),
         .w_cyc(pwb_cyc), .w_stb(pwb_stb), .w_adr(pwb_adr),
         .w_dat_r(pwb_dat_r), .w_ack(pwb_ack),
         .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),

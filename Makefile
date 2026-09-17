@@ -1967,6 +1967,79 @@ sim_soc_2hart_lrsc: sim/soc2hart_lrsc.hex sim/sim_soc_2hart_lrsc.out
 	@grep -aq "SOC-2HART-LRSC-TEST: PASS" sim/soc_2hart_lrsc.log && echo "CROSS-HART LR/SC OK" || \
 	    { echo "FAILED: rtl/soc/reservation_monitor.v wired to soc_top.v"; exit 1; }
 
+# ---- rtl/soc/wb_interconnect.v's own plain-AMO cross-hart atomicity fix ----
+#
+# LR/SC gets cross-hart coherence from rtl/soc/reservation_monitor.v; plain
+# AMOs (amoswap.w, amoadd.w, ...) never go through it at all - their own
+# atomicity depends entirely on rtl/soc/wb_interconnect.v holding the data
+# bus exclusively across an AMO's read and write phases, a claim that
+# stood, formally proved, for a whole phase before anything actually put two
+# harts in real contention on one to check it. sim/tb_soc_2hart_amoswap.v's
+# own header has the full account of what that check found and what closes
+# it. Both harts run the identical program (sim/soc2hart_amoswap.hex, same
+# field-packing generator style as sim/soc2hart_lrsc.hex).
+sim/soc2hart_amoswap.hex: Makefile
+	@python3 -c "\
+	import sys;\
+	i_type = lambda imm, rs1, f3, rd, op: ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	j_type = lambda imm, rd, op: (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	b_type = lambda imm, rs1, rs2, f3, op: (((imm >> 12) & 1) << 31) | (((imm >> 5) & 0x3F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | (((imm >> 1) & 0xF) << 8) | (((imm >> 11) & 1) << 7) | (op & 0x7F);\
+	u_type = lambda imm20, rd, op: ((imm20 & 0xFFFFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	s_type = lambda imm, rs1, rs2, f3, op: (((imm >> 5) & 0x7F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((imm & 0x1F) << 7) | (op & 0x7F);\
+	r_type = lambda f5, aq, rl, rs2, rs1, f3, rd, op: ((f5 & 0x1F) << 27) | ((aq & 1) << 26) | ((rl & 1) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	words = [\
+	    i_type(0xF14, 0, 0x2, 1, 0x73),\
+	    u_type(0x80000, 2, 0x37),\
+	    i_type(0x200, 2, 0x0, 2, 0x13),\
+	    i_type(100, 0, 0x0, 7, 0x13),\
+	    i_type(0, 0, 0x0, 5, 0x13),\
+	    b_type(40, 5, 7, 0x0, 0x63),\
+	    i_type(1, 0, 0x0, 8, 0x13),\
+	    r_type(0x01, 0, 0, 8, 2, 0x2, 6, 0x2F),\
+	    b_type(-8, 6, 0, 0x1, 0x63),\
+	    i_type(4, 2, 0x2, 9, 0x03),\
+	    i_type(1, 9, 0x0, 9, 0x13),\
+	    s_type(4, 2, 9, 0x2, 0x23),\
+	    s_type(0, 2, 0, 0x2, 0x23),\
+	    i_type(1, 5, 0x0, 5, 0x13),\
+	    j_type(-36, 0, 0x6F),\
+	    i_type(1, 0, 0x0, 11, 0x13),\
+	    b_type(12, 1, 0, 0x1, 0x63),\
+	    s_type(8, 2, 11, 0x2, 0x23),\
+	    j_type(8, 0, 0x6F),\
+	    s_type(12, 2, 11, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	];\
+	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
+
+# CORE-aware the same way sim_soc_2hart_lrsc is (Phase 13 stage 16's own
+# unification of both cores' reservation ports doesn't matter here at all -
+# plain AMOs never touch reservation_monitor.v - but both cores' AMO
+# read-modify-write shape is identical enough that this needs no
+# core-specific handling either): a strict no-op under the default
+# CORE=inorder, and under `make verify_ooo`'s own ambient CORE=ooo this
+# tests core_ooo.v's own AMO retirement against real cross-hart contention
+# for the first time.
+sim/sim_soc_2hart_amoswap.out: sim/tb_soc_2hart_amoswap.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_amoswap.v $(SOC_RTL)
+
+sim_soc_2hart_amoswap: sim/soc2hart_amoswap.hex sim/sim_soc_2hart_amoswap.out
+	cd sim && $(VVP) sim_soc_2hart_amoswap.out $(VVP_DUMP) | tee soc_2hart_amoswap.log
+	@grep -aq "SOC-2HART-AMOSWAP-TEST: PASS" sim/soc_2hart_amoswap.log && echo "CROSS-HART AMO ATOMICITY OK" || \
+	    { echo "FAILED: rtl/soc/wb_interconnect.v's own cross-hart AMO atomicity"; exit 1; }
+
+# The mixed pair specifically - hardcoded file list and -DCORE_HETERO, the
+# same pattern every other Phase 15 _hetero target uses, since this is
+# gated in verify's own dependency list unconditionally and has to build
+# correctly regardless of the ambient $(CORE).
+sim/sim_soc_2hart_amoswap_hetero.out: sim/tb_soc_2hart_amoswap.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -o $@ sim/tb_soc_2hart_amoswap.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_amoswap_hetero: sim/soc2hart_amoswap.hex sim/sim_soc_2hart_amoswap_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_amoswap_hetero.out $(VVP_DUMP) | tee soc_2hart_amoswap_hetero.log
+	@grep -aq "SOC-2HART-AMOSWAP-TEST: PASS" sim/soc_2hart_amoswap_hetero.log && echo "CROSS-HART AMO ATOMICITY OK (hetero)" || \
+	    { echo "FAILED: rtl/soc/wb_interconnect.v's own cross-hart AMO atomicity under CORE=hetero"; exit 1; }
+
 # ---- OOO CSR-write-timing hazard ----
 #
 # CORE_OOO hardcoded, not $(CORE_DEFINES)/$(CORE_RTL): this is specifically
@@ -2269,6 +2342,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_lrsc_hetero \
         sim_soc_2hart_lrsc_swap_hetero \
         sim_ramboot_2hart_hetero \
+        sim_soc_2hart_amoswap \
+        sim_soc_2hart_amoswap_hetero \
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \

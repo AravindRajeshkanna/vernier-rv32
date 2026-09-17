@@ -107,6 +107,18 @@ module cpu_core #(
                                       // adapter needs to know, since an AMO is a
                                       // read-modify-write that takes two bus
                                       // phases (see rtl/soc/cpu_wb.v)
+    // A direct copy of `amo_wr_phase` below: this hart has already read an
+    // AMO's old value and is now trying to write the new one, for however
+    // long that takes. rtl/soc/wb_interconnect.v uses this to hold the data
+    // bus exclusively for this hart across that gap - `dmem_is_amo`/`cyc`
+    // alone doesn't do it, because rtl/soc/cpu_wb.v's own one-cycle decode
+    // bubble (`dc_pending`, its own comment: "1 from the cycle *after* a
+    // fresh access starts") drops `cyc` for exactly one cycle between the
+    // read's own ack and the write's own request, even though this signal
+    // and `dmem_is_amo` both stay high the whole time from this core's own
+    // side. See wb_interconnect.v's own header for the full account of why
+    // that gap is real and what closes it.
+    output wire         dmem_amo_wrphase,
 
     // ---- LR/SC reservation: exposed for cross-hart snooping ----
     // `reservation_valid`/`reservation_addr` themselves are unchanged -
@@ -1539,6 +1551,7 @@ module cpu_core #(
     assign dmem_re    = ex_mem_valid && ex_mem_is_load;
     assign dmem_size  = ex_mem_mem_size;
     assign dmem_is_amo = ex_mem_valid && ex_mem_is_amo;
+    assign dmem_amo_wrphase = amo_wr_phase;
 
     // ---- LR/SC reservation - MEM stage only ----
     // Required, not stylistic: for back-to-back LR;SC, SC reaches EX the
