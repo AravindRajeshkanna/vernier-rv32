@@ -22,7 +22,19 @@
  */
 #include <stdint.h>
 #include "soc.h"
-#include "dtb_blob.h"
+
+/* The Makefile always passes -DDTB_BLOB_HEADER='"dtb_blob_$(CORE).h"' -
+ * the header's own filename is $(CORE)-suffixed because its content (the
+ * embedded device tree's two cpu `compatible` strings) is too, and a fixed
+ * "dtb_blob.h" name would let Make's own mtime-based rebuild tracking miss a
+ * $(CORE) switch between two manual invocations (see dts/soc.dts's header
+ * and docs/roadmap.md's Phase 15 entry, Stage 3). The literal default below
+ * is only for a manual, no-Makefile compile against a hand-generated flat
+ * dtb_blob.h, matching gen_dtb_blob.py's own default argument. */
+#ifndef DTB_BLOB_HEADER
+#define DTB_BLOB_HEADER "dtb_blob.h"
+#endif
+#include DTB_BLOB_HEADER
 
 /* Phase 13: the mailbox software/soc/crt0_rom.S's park_hart spins on. Every
  * non-zero hart parks there before touching anything C-visible; this hart

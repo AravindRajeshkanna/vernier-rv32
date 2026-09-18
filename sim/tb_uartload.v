@@ -13,6 +13,14 @@
 // over the payload, and waits for an acknowledgement after every chunk -
 // which is what lets it run at four clocks per bit without outrunning a
 // receiver that also has to compute that CRC. See soc.h.
+
+// $(CORE)-suffixed by the Makefile - see sim/tb_ramboot.v's own comment for
+// why a fixed "bootrom.hex" name is no longer safe now that the boot ROM's
+// embedded device tree varies with $(CORE).
+`ifndef ROM_IMAGE
+`define ROM_IMAGE "bootrom.hex"
+`endif
+
 module tb_uartload;
     localparam CLK_PERIOD   = 40;              // 25 MHz, matching CLK_HZ
     localparam CLKS_PER_BIT = 4;               // must match soc_top's divisor
@@ -57,7 +65,7 @@ module tb_uartload;
     soc_top #(
         .ROM_WORDS(4096),
         .RAM_BYTES(65536),                      // the board's block RAM
-        .ROM_INIT_FILE("bootrom.hex"),
+        .ROM_INIT_FILE(`ROM_IMAGE),
         .RAM_INIT_FILE(""),                     // nothing preloaded anywhere
         .UART_CLKS_PER_BIT(CLKS_PER_BIT),
         .GPIO_WIDTH(16),

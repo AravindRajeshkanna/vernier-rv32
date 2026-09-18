@@ -56,8 +56,9 @@ software/soc/npu_layer_data.h
 software/soc/fir_workload_data.h
 
 # Same reasoning, for software/soc/gen_dtb_blob.py (regenerated from
-# dts/soc.dtb, itself generated from dts/soc.dts).
-software/soc/dtb_blob.h
+# dts/soc_$(CORE).dtb, itself generated from dts/soc.dts). $(CORE)-suffixed
+# since Phase 15 Stage 3's second half - see dts/soc.dts's own header.
+software/soc/dtb_blob_*.h
 
 # Same reasoning, for software/soc/gen_npu_dma_workload.py.
 software/soc/npu_dma_workload_data.h

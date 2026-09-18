@@ -529,21 +529,32 @@ sim_software: software
 # =====================================================================
 # SoC build
 # =====================================================================
-soc: sim/bootrom.hex sim/card.hex
+soc: sim/bootrom_$(CORE).hex sim/card.hex
 
 # Embeds this project's own real device tree into the boot ROM image - see
 # the generator script's own header for why (the boot ROM hands its address
 # onward as a1, the real RISC-V firmware entry convention).
-software/soc/dtb_blob.h: dts/soc.dtb software/soc/gen_dtb_blob.py
-	python3 software/soc/gen_dtb_blob.py > $@
+#
+# $(CORE)-suffixed, all the way down to sim/bootrom_$(CORE).hex below: the
+# two cpu nodes' own `compatible` strings vary with $(CORE) now (dts/soc.dts's
+# own header, Phase 15 Stage 3's second half), so a single shared
+# dtb_blob.h/bootrom.elf/bootrom.hex would let Make's own mtime-based rebuild
+# tracking miss a $(CORE) switch between two manual invocations - exactly how
+# `make verify` then `make verify_ooo` runs in this same tree, back to back,
+# every time. docs/roadmap.md's Phase 15 entry has the full account of why
+# this was deferred rather than shipped as a two-line rename the first time
+# it came up.
+software/soc/dtb_blob_$(CORE).h: dts/soc_$(CORE).dtb software/soc/gen_dtb_blob.py
+	python3 software/soc/gen_dtb_blob.py dts/soc_$(CORE).dtb > $@
 
-software/soc/bootrom.elf: $(BOOTROM_SRCS) software/soc/link_rom.ld software/soc/soc.h \
-                          software/soc/dtb_blob.h
-	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_rom.ld -o $@ $(BOOTROM_SRCS)
+software/soc/bootrom_$(CORE).elf: $(BOOTROM_SRCS) software/soc/link_rom.ld software/soc/soc.h \
+                                   software/soc/dtb_blob_$(CORE).h
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -DDTB_BLOB_HEADER='"dtb_blob_$(CORE).h"' \
+	    -T software/soc/link_rom.ld -o $@ $(BOOTROM_SRCS)
 
-sim/bootrom.hex: software/soc/bootrom.elf software/bin2hex.py Makefile
-	$(RISCV_OBJCOPY) -O binary software/soc/bootrom.elf software/soc/bootrom.bin
-	python3 software/bin2hex.py --word-size=4 software/soc/bootrom.bin > $@
+sim/bootrom_$(CORE).hex: software/soc/bootrom_$(CORE).elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/bootrom_$(CORE).elf software/soc/bootrom_$(CORE).bin
+	python3 software/bin2hex.py --word-size=4 software/soc/bootrom_$(CORE).bin > $@
 
 # Generated, not hand-edited - see the script's own header for why the
 # specific values don't matter and what does (mixed sign, no collisions).
@@ -627,7 +638,7 @@ sim/probeimage.hex: software/soc/newlibprobe.elf software/bin2hex.py Makefile
 	    software/soc/newlibprobe.bin > $@
 
 sim_soc: soc
-	$(IVERILOG) $(IVFLAGS) -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DROM_IMAGE='"bootrom_$(CORE).hex"' -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
 	cd sim && $(VVP) sim_soc.out $(VVP_DUMP)
 
 # ---- the preloaded-RAM boot path, in simulation ----
@@ -637,9 +648,10 @@ sim_soc: soc
 # between "passes in simulation" and "dies on hardware", and until now nothing
 # simulated them - so this testbench is that path, at that size.
 sim/sim_ramboot.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_ramboot: sim/bootrom.hex sim/ramimage.hex sim/sim_ramboot.out
+sim_ramboot: sim/bootrom_$(CORE).hex sim/ramimage.hex sim/sim_ramboot.out
 	@cd sim && $(VVP) sim_ramboot.out $(VVP_DUMP) 2>&1 | tee ramboot.log
 	@grep -q "RAMBOOT TEST PASSED" sim/ramboot.log || \
 	    { echo "sim_ramboot FAILED"; exit 1; }
@@ -686,17 +698,19 @@ sim/ramimage2hart.hex: Makefile
 	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
 
 sim/sim_ramboot_2hart.out: sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage2hart.hex"' -o $@ sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage2hart.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL)
 
-sim_ramboot_2hart: sim/bootrom.hex sim/ramimage2hart.hex sim/sim_ramboot_2hart.out
+sim_ramboot_2hart: sim/bootrom_$(CORE).hex sim/ramimage2hart.hex sim/sim_ramboot_2hart.out
 	@cd sim && $(VVP) sim_ramboot_2hart.out $(VVP_DUMP) 2>&1 | tee ramboot_2hart.log
 	@grep -q "RAMBOOT-2HART TEST PASSED" sim/ramboot_2hart.log || \
 	    { echo "sim_ramboot_2hart FAILED"; exit 1; }
 
 sim/sim_probe.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
+sim_probe: sim/bootrom_$(CORE).hex sim/probeimage.hex sim/sim_probe.out
 	@cd sim && $(VVP) sim_probe.out $(VVP_DUMP) 2>&1 | tee probe.log
 	@grep -q "RAMBOOT TEST PASSED" sim/probe.log || \
 	    { echo "sim_probe FAILED"; exit 1; }
@@ -718,10 +732,10 @@ sim_probe: sim/bootrom.hex sim/probeimage.hex sim/sim_probe.out
 # keeps its state in .bss, which _start has always zeroed, so it passes twice
 # either way and would not have caught this.
 sim/sim_rerun.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -DRERUN \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' -DRERUN \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_rerun: sim/bootrom.hex sim/probeimage.hex sim/sim_rerun.out
+sim_rerun: sim/bootrom_$(CORE).hex sim/probeimage.hex sim/sim_rerun.out
 	@cd sim && $(VVP) sim_rerun.out $(VVP_DUMP) 2>&1 | tee rerun.log
 	@grep -q "RERUN TEST PASSED" sim/rerun.log || \
 	    { echo "sim_rerun FAILED: the program does not survive a reset"; exit 1; }
@@ -737,9 +751,10 @@ sim/trapimage.hex: software/soc/trapcheck.elf software/bin2hex.py Makefile
 	    software/soc/trapcheck.bin > $@
 
 sim/sim_trap.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"trapimage.hex"' -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"trapimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-trapcheck: sim/bootrom.hex sim/sim_trap.out
+trapcheck: sim/bootrom_$(CORE).hex sim/sim_trap.out
 	./sim/trapcheck.sh
 
 # ---- video ----
@@ -798,10 +813,18 @@ sim_ulx3s_video: soc
 # =====================================================================
 # Device tree
 # =====================================================================
-dtb: dts/soc.dtb
+dtb: dts/soc_$(CORE).dtb
 
-dts/soc.dtb: dts/soc.dts
-	dtc -I dts -O dtb -o $@ $<
+# $(CORE)-suffixed - see dts/soc.dts's own header comment for why the two cpu
+# nodes' `compatible` strings, and so the compiled .dtb itself, vary with
+# $(CORE) now. Preprocessed with the C preprocessor first, the same
+# `-x assembler-with-cpp` mode the Linux kernel's own arch/riscv/boot/dts
+# tree relies on for exactly this reason: it passes a `#foo = <...>;`
+# device-tree property through unrecognized while still treating
+# `#ifdef`/`#else`/`#endif` as real conditionals. `-P` drops the `# <line> "file"`
+# markers cpp would otherwise emit, which dtc's own parser does not expect.
+dts/soc_$(CORE).dtb: dts/soc.dts
+	cc -E -x assembler-with-cpp -P $(CORE_DEFINES) dts/soc.dts | dtc -I dts -O dtb -o $@
 	@echo "--- round-tripping back to source as a sanity check ---"
 	@dtc -I dtb -O dts $@ > /dev/null && echo "device tree OK"
 
@@ -1246,7 +1269,7 @@ verilator_sdramfull: sim/sdramfullimage.hex $(VERILATOR_RAMBOOT_BIN)
 #   make sbiimage      -> pack stub + device tree + OpenSBI into an SDRAM image
 #   make sim_opensbi   -> boot it, and check the banner and platform detection
 #   cd sim && ../obj_dir_soc_inorder/Vsoc_top \
-#            +sdram=sbiimage.hex +uart_clks=208 +maxcycles=8000000
+#            +sdram=sbiimage_inorder.hex +uart_clks=208 +maxcycles=8000000
 #
 # `+uart_clks=208` is not arbitrary: OpenSBI reads `clock-frequency` from
 # dts/soc.dts and programs the ns16550 divisor to 25e6/(16*115200) = 13, so
@@ -1261,16 +1284,32 @@ software/opensbi/build/sbi_stub.bin: software/opensbi/sbi_stub.S
 	    -Wl,-Ttext=0x90000000 -o software/opensbi/build/sbi_stub.elf $<
 	$(RISCV_OBJCOPY) -O binary software/opensbi/build/sbi_stub.elf $@
 
-sim/sbiimage.hex: software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+# dts/soc_$(CORE).dtb, not a fixed dts/soc.dtb - the two cpu nodes'
+# `compatible` strings vary with $(CORE) now (dts/soc.dts's own header).
+#
+# $(CORE)-suffixed too, all the way to sim/sbiimage_$(CORE).hex below - a
+# first attempt at this fix left this one (and linuximage.hex below) as a
+# single shared filename, reasoning that neither OpenSBI nor Linux keys real
+# *behavior* off the vendor-specific half of the compatible string, so a
+# stale one would be cosmetic rather than functional. That reasoning missed
+# that "cosmetic" is not "harmless": a real `make verify` (CORE=inorder) then
+# `make verify_ooo` in one tree left a Linux boot's own `/proc/cpuinfo`
+# printing `uarch : riscv-fpga-cpu,cpu-inorder` while running on a genuinely
+# `core_ooo.v`-built hart 0 - Make's own mtime tracking correctly saw this
+# fixed-name file newer than its own dts/soc_ooo.dtb prerequisite (built
+# minutes earlier, by hand, before either gate ran) and skipped rebuilding
+# it, exactly the staleness class this whole stage exists to close, just
+# found in the two files this account first argued were exempt from it.
+sim/sbiimage_$(CORE).hex: software/opensbi/build/sbi_stub.bin dts/soc_$(CORE).dtb \
                    software/opensbi/mkimage.py Makefile
 	@test -f $(OPENSBI_FW) || { \
 	    echo "$(OPENSBI_FW) is missing - run ./software/opensbi/build-opensbi.sh first"; \
 	    exit 1; }
 	python3 software/opensbi/mkimage.py --nm=$(RISCV_NM) \
-	    software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+	    software/opensbi/build/sbi_stub.bin dts/soc_$(CORE).dtb \
 	    $(OPENSBI_FW) $(OPENSBI_ELF) > $@
 
-sbiimage: sim/sbiimage.hex
+sbiimage: sim/sbiimage_$(CORE).hex
 
 # Boot it. Not part of `verify` for the same reason `sbiimage` is not: it
 # needs OpenSBI's cloned source tree.
@@ -1288,8 +1327,8 @@ sbiimage: sim/sbiimage.hex
 # because arch/riscv drops every memory range below the kernel and a device
 # tree underneath it is in memory Linux has decided does not exist. See
 # software/opensbi/build-opensbi.sh.
-sim_opensbi: sim/sbiimage.hex $(VERILATOR_BIN)
-	@cd sim && ../$(VERILATOR_BIN) +sdram=sbiimage.hex +uart_clks=224 \
+sim_opensbi: sim/sbiimage_$(CORE).hex $(VERILATOR_BIN)
+	@cd sim && ../$(VERILATOR_BIN) +sdram=sbiimage_$(CORE).hex +uart_clks=224 \
 	    +maxcycles=40000000 +sdram_words=16777216 | tee opensbi.log
 	@grep -q "Boot HART Base ISA          : rv32ima" sim/opensbi.log && \
 	    grep -q "Platform Console Device     : uart8250" sim/opensbi.log && \
@@ -1299,8 +1338,8 @@ sim_opensbi: sim/sbiimage.hex $(VERILATOR_BIN)
 
 # ---- OpenSBI, with a second hart (Phase 13, Stage 10) ----
 #
-# Same sbiimage.hex, same OpenSBI binary, same dts/soc.dtb (now with a
-# cpu@1 node) - the only difference is the soc_top build underneath it,
+# Same sbiimage_$(CORE).hex, same OpenSBI binary, same dts/soc_$(CORE).dtb
+# (now with a cpu@1 node) - the only difference is the soc_top build underneath it,
 # at NUM_HARTS=2 instead of the default 1. Not part of `verify`, for the
 # same reason `sim_opensbi` is not (needs OpenSBI's cloned source tree);
 # run it by hand the same way. $(VERILATOR_2HART_BIN) (below) is CORE-aware
@@ -1333,8 +1372,8 @@ $(VERILATOR_2HART_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt M
 	    --Mdir $(VERILATOR_2HART_MDIR) \
 	    $(SOC_RTL) sim/verilator_soc.vlt sim/verilator_soc.cpp
 
-sim_opensbi_2hart: sim/sbiimage.hex $(VERILATOR_2HART_BIN)
-	@cd sim && ../$(VERILATOR_2HART_BIN) +sdram=sbiimage.hex +uart_clks=224 \
+sim_opensbi_2hart: sim/sbiimage_$(CORE).hex $(VERILATOR_2HART_BIN)
+	@cd sim && ../$(VERILATOR_2HART_BIN) +sdram=sbiimage_$(CORE).hex +uart_clks=224 \
 	    +maxcycles=150000000 +sdram_words=16777216 | tee opensbi_2hart.log
 	@grep -q "Platform HART Count         : 2" sim/opensbi_2hart.log && \
 	    grep -q "Boot HART Base ISA          : rv32ima" sim/opensbi_2hart.log && \
@@ -1362,7 +1401,20 @@ LINUX_IMAGE = software/linux/build/Image
 # kernel has not been built, so the `test -f` below gets to say which script to
 # run instead of make saying "no rule to make target" - and to the path once it
 # exists, so rebuilding the kernel repacks the image.
-sim/linuximage.hex: software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+# dts/soc_$(CORE).dtb, not a fixed dts/soc.dtb - and $(CORE)-suffixed all the
+# way to sim/linuximage_$(CORE).hex below, the same correction sbiimage's own
+# rule above explains in full (a real staleness bug, not a hypothetical one,
+# found by testing this stage's own first attempt).
+#
+# software/linux/build/sdram.bin (the flat-binary twin `linuxpayload` below
+# reports) stays a fixed name, deliberately not $(CORE)-suffixed like the
+# .hex above it: it is a real-hardware flashing artifact, and no board build
+# has ever asked for anything but CORE=inorder (rtl/ooo/core_ooo.v has no
+# measurable Fmax on real hardware at all, Phase 1's own still-open
+# finding), so there is no second $(CORE) value it could ever silently go
+# stale against in practice, unlike the simulation-only .hex this rule also
+# produces.
+sim/linuximage_$(CORE).hex: software/opensbi/build/sbi_stub.bin dts/soc_$(CORE).dtb \
                      software/opensbi/mkimage.py Makefile \
                      $(wildcard $(LINUX_IMAGE))
 	@test -f $(OPENSBI_FW) || { \
@@ -1373,12 +1425,12 @@ sim/linuximage.hex: software/opensbi/build/sbi_stub.bin dts/soc.dtb \
 	    exit 1; }
 	python3 software/opensbi/mkimage.py --nm=$(RISCV_NM) \
 	    --kernel=$(LINUX_IMAGE) --bin=software/linux/build/sdram.bin \
-	    software/opensbi/build/sbi_stub.bin dts/soc.dtb \
+	    software/opensbi/build/sbi_stub.bin dts/soc_$(CORE).dtb \
 	    $(OPENSBI_FW) $(OPENSBI_ELF) > $@
 
-linuximage: sim/linuximage.hex
+linuximage: sim/linuximage_$(CORE).hex
 
-linuxpayload: sim/linuximage.hex
+linuxpayload: sim/linuximage_$(CORE).hex
 	@ls -la software/linux/build/sdram.bin | \
 	    awk '{printf "  %s  %.1f KB\n", $$9, $$5/1024}'
 	@echo "  send with: ./software/soc/uartload.py /dev/cu.usbserial-XXXX \\"
@@ -1416,20 +1468,32 @@ LINUX_MARKER = VERNIER-RV32-LINUX-BOOT-OK
 #
 # Not in `verify` for the same reason `sim_linux` is not: it needs a kernel
 # off the network.
-linux_trapdiff: sim/linuximage.hex
-	@$(MAKE) -s $(VERILATOR_MDIR)/Vsoc_top CORE=inorder
+#
+# Always the CORE=inorder-flavored image specifically, regardless of ambient
+# $(CORE) - the same reasoning `sim_ramboot_2hart_hetero` above already has
+# for its own recursive `$(MAKE) ... CORE=hetero` sub-build: sim/
+# linuximage_$(CORE).hex is a static rule keyed off whatever $(CORE) means
+# for the whole outer invocation, not a real per-target parameter. Which
+# $(CORE) built the one shared image is an arbitrary, deterministic choice
+# here specifically because it does not matter to what this tool checks: the
+# two Vsoc_top binaries below are what differs (one inorder, one ooo), and
+# the whole point is comparing trap behavior of the *same* compiled kernel
+# image against both - the embedded compatible string plays no role in
+# that comparison either way.
+linux_trapdiff: sim/linuximage_inorder.hex
+	@$(MAKE) -s obj_dir_soc_inorder/Vsoc_top CORE=inorder
 	@$(MAKE) -s obj_dir_soc_ooo/Vsoc_top CORE=ooo
-	@cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage.hex \
+	@cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage_inorder.hex \
 	    +uart_clks=224 +sdram_words=16777216 +maxcycles=400000000 +quiet \
 	    +stopon=$(LINUX_MARKER) +traptrace=trap_inorder.txt > /dev/null || true
-	@cd sim && ../obj_dir_soc_ooo/Vsoc_top +sdram=linuximage.hex \
+	@cd sim && ../obj_dir_soc_ooo/Vsoc_top +sdram=linuximage_inorder.hex \
 	    +uart_clks=224 +sdram_words=16777216 +maxcycles=400000000 +quiet \
 	    +stopon=$(LINUX_MARKER) +traptrace=trap_ooo.txt > /dev/null || true
 	python3 tests/traptrace.py sim/trap_inorder.txt sim/trap_ooo.txt \
 	    --map software/linux/build/System.map
 
-sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
-	@cd sim && ../$(VERILATOR_BIN) +sdram=linuximage.hex +uart_clks=224 \
+sim_linux: sim/linuximage_$(CORE).hex $(VERILATOR_BIN)
+	@cd sim && ../$(VERILATOR_BIN) +sdram=linuximage_$(CORE).hex +uart_clks=224 \
 	    +sdram_words=16777216 +maxcycles=400000000 +checkuart \
 	    +stopon=$(LINUX_MARKER) | tee linux.log
 # The `===` are load-bearing and this gate was wrong without them. The
@@ -1462,8 +1526,8 @@ sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
 
 # ---- Linux, with a second hart (Phase 13, Stage 11) ----
 #
-# The same sim/linuximage.hex sim_linux already builds - same OpenSBI, same
-# stub, same dts/soc.dtb (both cpu@0 and cpu@1), same kernel Image, built
+# The same sim/linuximage_$(CORE).hex sim_linux already builds - same
+# OpenSBI, same stub, same dts/soc_$(CORE).dtb (both cpu@0 and cpu@1), same kernel Image, built
 # with CONFIG_SMP=y (software/linux/vernier_rv32.config) - only the soc_top
 # build parameter differs, exactly like sim_opensbi_2hart. Not part of
 # `verify`, for the same reason `sim_linux` itself is not: it needs a kernel
@@ -1481,8 +1545,8 @@ sim_linux: sim/linuximage.hex $(VERILATOR_BIN)
 # RCU lean on working atomics constantly during SMP bring-up, and a broken
 # reservation_monitor.v connection would much more plausibly hang or corrupt
 # state here than pass quietly.
-sim_linux_2hart: sim/linuximage.hex $(VERILATOR_2HART_BIN)
-	@cd sim && ../$(VERILATOR_2HART_BIN) +sdram=linuximage.hex +uart_clks=224 \
+sim_linux_2hart: sim/linuximage_$(CORE).hex $(VERILATOR_2HART_BIN)
+	@cd sim && ../$(VERILATOR_2HART_BIN) +sdram=linuximage_$(CORE).hex +uart_clks=224 \
 	    +sdram_words=16777216 +maxcycles=400000000 +checkuart \
 	    +stopon=$(LINUX_MARKER) | tee linux_2hart.log
 	@grep -aq "dropped by the transmitter" sim/linux_2hart.log && \
@@ -1511,10 +1575,10 @@ sim/uart16550image.hex: software/soc/uarttest.elf software/bin2hex.py Makefile
 	    software/soc/uarttest.bin > $@
 
 sim/sim_uart16550.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uart16550image.hex"' \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uart16550image.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_uart16550: sim/bootrom.hex sim/uart16550image.hex sim/sim_uart16550.out
+sim_uart16550: sim/bootrom_$(CORE).hex sim/uart16550image.hex sim/sim_uart16550.out
 	@cd sim && $(VVP) sim_uart16550.out $(VVP_DUMP) 2>&1 | tee uart16550.log
 	@grep -q "RAMBOOT TEST PASSED" sim/uart16550.log || \
 	    { echo "sim_uart16550 FAILED"; exit 1; }
@@ -1537,10 +1601,10 @@ sim/plicimage.hex: software/soc/plictest.elf software/bin2hex.py Makefile
 	    software/soc/plictest.bin > $@
 
 sim/sim_plic.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"plicimage.hex"' \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"plicimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_plic: sim/bootrom.hex sim/plicimage.hex sim/sim_plic.out
+sim_plic: sim/bootrom_$(CORE).hex sim/plicimage.hex sim/sim_plic.out
 	@cd sim && $(VVP) sim_plic.out $(VVP_DUMP) 2>&1 | tee plic.log
 	@grep -q "RAMBOOT TEST PASSED" sim/plic.log || \
 	    { echo "sim_plic FAILED"; exit 1; }
@@ -1588,10 +1652,10 @@ sim/pmptestimage.hex: software/soc/pmptest.elf software/bin2hex.py Makefile
 	    software/soc/pmptest.bin > $@
 
 sim/sim_pmptest.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"pmptestimage.hex"' \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"pmptestimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_pmptest: sim/bootrom.hex sim/pmptestimage.hex sim/sim_pmptest.out
+sim_pmptest: sim/bootrom_$(CORE).hex sim/pmptestimage.hex sim/sim_pmptest.out
 	@cd sim && $(VVP) sim_pmptest.out $(VVP_DUMP) 2>&1 | tee pmptest.log
 	@grep -q "RAMBOOT TEST PASSED" sim/pmptest.log || \
 	    { echo "sim_pmptest FAILED"; exit 1; }
@@ -1615,10 +1679,10 @@ sim/uartirqimage.hex: software/soc/uartirq.elf software/bin2hex.py Makefile
 	    software/soc/uartirq.bin > $@
 
 sim/sim_uartirq.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uartirqimage.hex"' \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uartirqimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_uartirq: sim/bootrom.hex sim/uartirqimage.hex sim/sim_uartirq.out
+sim_uartirq: sim/bootrom_$(CORE).hex sim/uartirqimage.hex sim/sim_uartirq.out
 	@cd sim && $(VVP) sim_uartirq.out $(VVP_DUMP) 2>&1 | tee uartirq.log
 	@grep -q "RAMBOOT TEST PASSED" sim/uartirq.log || \
 	    { echo "sim_uartirq FAILED"; exit 1; }
@@ -1643,10 +1707,10 @@ sim/div64testimage.hex: software/soc/div64test.elf software/bin2hex.py Makefile
 	    software/soc/div64test.bin > $@
 
 sim/sim_div64test.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"div64testimage.hex"' \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"div64testimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_div64test: sim/bootrom.hex sim/div64testimage.hex sim/sim_div64test.out
+sim_div64test: sim/bootrom_$(CORE).hex sim/div64testimage.hex sim/sim_div64test.out
 	@cd sim && $(VVP) sim_div64test.out $(VVP_DUMP) 2>&1 | tee div64test.log
 	@grep -q "RAMBOOT TEST PASSED" sim/div64test.log || \
 	    { echo "sim_div64test FAILED"; exit 1; }
@@ -1680,11 +1744,11 @@ sim/mmuimage.hex: software/soc/mmutest.elf software/bin2hex.py Makefile
 	    software/soc/mmutest.bin > $@
 
 sim/sim_mmusdram.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"mmuimage.hex"' \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"mmuimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -DSDRAM_WORDS='((1<<23)+(1<<16))' \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_mmusdram: sim/bootrom.hex sim/mmuimage.hex sim/sim_mmusdram.out
+sim_mmusdram: sim/bootrom_$(CORE).hex sim/mmuimage.hex sim/sim_mmusdram.out
 	@cd sim && $(VVP) sim_mmusdram.out $(VVP_DUMP) 2>&1 | tee mmusdram.log
 	@grep -q "RAMBOOT TEST PASSED" sim/mmusdram.log || \
 	    { echo "sim_mmusdram FAILED"; exit 1; }
@@ -1697,11 +1761,11 @@ sim_mmusdram: sim/bootrom.hex sim/mmuimage.hex sim/sim_mmusdram.out
 # memory in the simulator and nothing in time, because the sparse test does
 # 16,384 accesses however big the array is.
 sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"sdramcheckimage.hex"' \
+	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"sdramcheckimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -DSDRAM_WORDS=16777216 \
 	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
 
-sim_sdramcheck: sim/bootrom.hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
+sim_sdramcheck: sim/bootrom_$(CORE).hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
 	@cd sim && $(VVP) sim_sdramcheck.out $(VVP_DUMP) 2>&1 | tee sdramcheck.log
 	@grep -q "RAMBOOT TEST PASSED" sim/sdramcheck.log || \
 	    { echo "sim_sdramcheck FAILED"; exit 1; }
@@ -1961,11 +2025,28 @@ sim_soc_2hart_lrsc_swap_hetero: sim/soc2hart_lrsc_swap.hex sim/sim_soc_2hart_lrs
 # either hart resetting straight into RAM. Hardcoded file list and
 # -DCORE_HETERO for the same reason every other _hetero target above is -
 # this has to build correctly regardless of the ambient $(CORE).
+#
+# The boot ROM it loads must be the hetero-flavored one specifically
+# (sim/bootrom_hetero.hex, with cpu1's own device-tree `compatible` string
+# actually saying core_ooo.v), never whatever sim/bootrom_$(CORE).hex the
+# ambient $(CORE) happens to mean here - the same reason -DCORE_HETERO above
+# is hardcoded rather than $(CORE_DEFINES). Unlike every other file in this
+# target's own dependency chain, sim/bootrom_hetero.hex is a *static* pattern
+# parameterized by whatever $(CORE) equals for this whole `make` invocation,
+# not a real per-target parameter - so a plain prerequisite would silently
+# resolve to sim/bootrom_$(CORE).hex's own build rule, never actually
+# producing a file named "bootrom_hetero.hex" unless the ambient $(CORE)
+# already happened to equal hetero. A recursive sub-make with CORE=hetero
+# bound just for this one file, the same "$(MAKE) ... CORE=..." pattern
+# `verify_ooo` above already uses for its own reason, sidesteps that: Make's
+# own normal dependency-freshness logic still applies inside the sub-make, so
+# this only rebuilds what is actually stale.
 sim/sim_ramboot_2hart_hetero.out: sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
-	$(IVERILOG) -g2012 -DCORE_HETERO -DRAM_IMAGE='"ramimage2hart.hex"' \
+	$(IVERILOG) -g2012 -DCORE_HETERO -DRAM_IMAGE='"ramimage2hart.hex"' -DROM_IMAGE='"bootrom_hetero.hex"' \
 	    -o $@ sim/tb_ramboot_2hart.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
 
-sim_ramboot_2hart_hetero: sim/bootrom.hex sim/ramimage2hart.hex sim/sim_ramboot_2hart_hetero.out
+sim_ramboot_2hart_hetero: sim/ramimage2hart.hex sim/sim_ramboot_2hart_hetero.out
+	$(MAKE) sim/bootrom_hetero.hex CORE=hetero
 	@cd sim && $(VVP) sim_ramboot_2hart_hetero.out $(VVP_DUMP) 2>&1 | tee ramboot_2hart_hetero.log
 	@grep -q "RAMBOOT-2HART TEST PASSED" sim/ramboot_2hart_hetero.log || \
 	    { echo "FAILED: the real boot-ROM mailbox under CORE=hetero (hart 0 cpu_core.v releases hart 1 core_ooo.v)"; exit 1; }
@@ -2327,7 +2408,7 @@ sim/uartimage.hex: software/soc/uartprog.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=1 software/soc/uartprog.bin > $@
 
 sim/sim_uartload.out: sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DROM_IMAGE='"bootrom_$(CORE).hex"' -o $@ sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
 
 # The *host* half of the same protocol, against a fake board on a pty. No
 # board, no toolchain, no simulator - the fastest thing here that can catch a
@@ -2336,7 +2417,7 @@ sim/sim_uartload.out: sim/tb_uartload.v sim/sdram_model.v $(SOC_RTL)
 uartload-host:
 	python3 tests/uartload_host.py
 
-sim_uartload: sim/bootrom.hex sim/uartimage.hex sim/sim_uartload.out
+sim_uartload: sim/bootrom_$(CORE).hex sim/uartimage.hex sim/sim_uartload.out
 	@cd sim && $(VVP) sim_uartload.out $(VVP_DUMP) 2>&1 | tee uartload.log
 	@grep -q "UARTLOAD TEST PASSED" sim/uartload.log || \
 	    { echo "sim_uartload FAILED"; exit 1; }
@@ -2457,7 +2538,8 @@ clean:
 	       sim/sdramboot.log sim/verilator_soc.log \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \
 	       software/firmware.elf software/firmware_text.bin software/firmware_data.bin \
-	       sim/sim_soc.out sim/wave_soc.vcd sim/bootrom.hex sim/card.hex \
+	       sim/sim_soc.out sim/wave_soc.vcd sim/card.hex \
+	       sim/bootrom_inorder.hex sim/bootrom_ooo.hex sim/bootrom_hetero.hex \
 	       sim/sim_ramboot.out sim/sim_probe.out sim/sim_rerun.out \
 	       sim/program.rebuilt.hex sim/program.rebuilt.elf sim/program.rebuilt.bin \
 	       sim/wave_ramboot.vcd sim/rerun.log \
@@ -2472,7 +2554,10 @@ clean:
 	       sim/sim_uart16550.out sim/uart16550image.hex \
 	       sim/sim_uartirq.out sim/uartirqimage.hex \
 	       sim/sim_jtag.out sim/jtagram.hex sim/jtag.log \
-	       sim/sbiimage.hex sim/opensbi.log sim/linuximage.hex sim/linux.log \
+	       sim/sbiimage_inorder.hex sim/sbiimage_ooo.hex sim/sbiimage_hetero.hex \
+	       sim/opensbi.log \
+	       sim/linuximage_inorder.hex sim/linuximage_ooo.hex sim/linuximage_hetero.hex \
+	       sim/linux.log \
 	       software/linux/build/sdram.bin \
 	       software/opensbi/build/sbi_stub.elf \
 	       software/opensbi/build/sbi_stub.bin \
@@ -2486,15 +2571,18 @@ clean:
 	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \
-	       software/soc/bootrom.elf software/soc/bootrom.bin \
+	       software/soc/bootrom_inorder.elf software/soc/bootrom_inorder.bin \
+	       software/soc/bootrom_ooo.elf software/soc/bootrom_ooo.bin \
+	       software/soc/bootrom_hetero.elf software/soc/bootrom_hetero.bin \
 	       software/soc/socprog.elf software/soc/socprog.bin \
 	       software/soc/npu_layer_data.h \
 	       software/soc/fir_workload_data.h \
 	       software/soc/npu_dma_workload_data.h \
 	       software/soc/npu_trained_layer_data.h \
-	       software/soc/dtb_blob.h \
+	       software/soc/dtb_blob_inorder.h software/soc/dtb_blob_ooo.h \
+	       software/soc/dtb_blob_hetero.h \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
-	       dts/soc.dtb \
+	       dts/soc_inorder.dtb dts/soc_ooo.dtb dts/soc_hetero.dtb \
 	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \
 	       software/bench/coremark.elf software/bench/coremark.bin \
 	       sim/sim_soc_2hart_coremark.out sim/coremark_dispatch.hex \

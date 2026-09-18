@@ -98,7 +98,7 @@ exists and why the harder half was scoped out.
 and prints one line unless something disagrees. Add them to any run:
 
 ```sh
-cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage.hex \
+cd sim && ../obj_dir_soc_inorder/Vsoc_top +sdram=linuximage_inorder.hex \
     +uart_clks=224 +sdram_words=16777216 \
     +checkreads +checkfetch +checkmmu +checkdecode +checkuart
 ```
