@@ -5684,21 +5684,26 @@ like.
 
 ## Phase 15 — Heterogeneous multi-core: both core types, at once, in one SoC
 
-**Stages 0 through 2 and Stage 4 done, plus half of Stage 3; the other
-half of Stage 3 and Stage 5 onward is still a plan, not an account.**
-This phase was written down as a pure design-space discussion first, the
-same reasoning that put one in Phases 8-11 before any of them had a line
-of RTL - but unlike those, the first stages shipped in quick succession,
-the mechanism (Stages 0-1) and its own highest-risk correctness question
-(Stage 2, cross-hart coherence) both turning out more tractable than the
-original plan below assumed, Stage 3's own two halves needing genuinely
-different amounts of work (see that stage's own account for why), and
-Stage 4 needing no code change at all - the existing multi-hart boot
-infrastructure was already general enough. The "Stage N:" entries for 0
-through 2, the boot-ROM-mailbox half of Stage 3, and Stage 4 are real
+**Stages 0 through 2, 4, and 5 done, plus half of Stage 3; only the
+other half of Stage 3, and the extensions Stage 5's own account names,
+remain a plan, not an account.** This phase was written down as a pure
+design-space discussion first, the same reasoning that put one in
+Phases 8-11 before any of them had a line of RTL - but unlike those, the
+first stages shipped in quick succession, the mechanism (Stages 0-1) and
+its own highest-risk correctness question (Stage 2, cross-hart
+coherence) both turning out more tractable than the original plan below
+assumed, Stage 3's own two halves needing genuinely different amounts of
+work (see that stage's own account for why), Stage 4 needing no code
+change at all, and Stage 5 - measurement - surfacing a real,
+previously-undiscovered defect in Phase 13's own cross-hart AMO
+atomicity claim, closed as its own standalone fix rather than folded
+quietly into this phase's own account (see that stage's own entry for
+the full story, and `docs/roadmap.md`'s Phase 13 entry, corrected in
+place, for the fix itself). The "Stage N:" entries for 0 through 2, the
+boot-ROM-mailbox half of Stage 3, Stage 4, and Stage 5 are real
 completed accounts, exactly like every other phase in this file; the
-bullet list further down for the rest of Stage 3 and Stage 5 onward is
-still a plan, and is marked as such at its own header.
+remaining bullets are still a plan, and are marked as such at their own
+header.
 
 **This is not a new idea - Phase 13 named it and set it aside on purpose.**
 Stage 6's own account of building `rtl/soc/reservation_monitor.v` says so
@@ -6007,8 +6012,127 @@ answers "does it boot, and does anything break" - both yes/no questions
 - not "how much slower/faster." Stage 5, below, is where a real workload
 gets affinitized and timed.
 
-**Stage 3 continued, and Stage 5 onward - still a plan, none of it
-started:**
+**Stage 5: measurement - and a real, previously-undiscovered defect
+found on the way to it.** The plan below originally called for CoreMark
+"affinitized to the in-order hart alone, the OoO hart alone, and both
+together, compared against the homogeneous pairs Phase 13 already
+measured" - a premise that turned out false on inspection: Phase 13
+never measured a homogeneous 2-hart CoreMark pairing, only each core
+type alone, single-hart. Closing that gap needed genuinely new
+infrastructure - two harts running CoreMark *concurrently*, not one
+after the other - since this SoC has one UART and CoreMark's own
+`core_main.c` cannot be modified (`software/bench/fetch-coremark.sh`:
+"the benchmark's own five source files are used unmodified").
+
+Building that infrastructure surfaced a real bug before it ever
+produced a number: the natural choice for a cross-hart console lock,
+`amoswap.w`, deadlocked permanently under `CORE=ooo`. That turned out to
+be a genuine, previously-undiscovered gap in this SoC's own plain-AMO
+cross-hart atomicity, unrelated to anything Phase 15 itself built -
+Phase 13's own Stage 1 (`docs/roadmap.md`'s Phase 13 entry, corrected in
+place) had formally proved a mechanism that never actually engaged
+against real hardware timing, because nothing before this had ever put
+two harts in real, sustained contention on a plain AMO to notice. Fixed
+as its own standalone PR, ahead of and independent of this stage, with
+a real regression test of its own (`sim/tb_soc_2hart_amoswap.v`) - see
+that fix's own account for the full story. Named here because Stage 5
+is what found it, not because Phase 15 caused it or fixed it.
+
+**The harness, once the lock actually worked**: `software/bench/
+coremark_dispatch.S` (a five-instruction reset-vector stub, shared by
+both harts, reading `mhartid` to jump each to its own linked image),
+two completely independent links of the same port layer
+(`software/bench/link_bench_hart0.ld`/`link_bench_hart1.ld` - a
+statically-linked binary bakes fixed addresses for every global, so the
+*same* compiled `.text` run by two harts would always reference the
+*same* physical `.bss`/stack regardless of which hart executed it; two
+separate links is what gives each hart's own working state a genuinely
+private address), and a spinlock in `core_portme.c`'s own
+`stop_time()`/`portable_fini()` (acquired only after each hart's own
+timed region has already finished, so the actual measurement stays
+completely lock-free) serializing the one thing that is genuinely
+shared hardware: the UART. `sim/tb_soc_2hart_coremark.v` loads the
+dispatcher and both harts' own images into one RAM array at three
+different offsets (`$readmemh`'s own three-argument form, one call per
+image, no merge step needed) and reads each hart's own raw cycle count
+directly from RAM rather than parsing it out of the UART report text -
+the same RAM-resident-sentinel pattern `sim/tb_ramboot_2hart.v` already
+uses. Not gated in `verify` - the same reasoning the existing single-hart
+`coremark` target already has for its own absence (a real CI job of its
+own, `coremark-2hart`, matrixed over all three `CORE` values, run in
+parallel rather than serialized into `verify`'s own critical path).
+
+**Real numbers, fresh on the current tree, not old ones from Phase 1:**
+
+| Configuration | Hart 0 | Hart 1 | Pair wall-clock | Sum (work done) |
+|---|---|---|---|---|
+| Single-hart baseline, `cpu_core.v` alone (cached) | 419,621 | - | - | - |
+| Single-hart baseline, `core_ooo.v` alone (cached) | 360,481 | - | - | - |
+| `CORE=inorder` (homogeneous in-order pair) | `cpu_core.v`: 502,529 | `cpu_core.v`: 534,774 | 727,564 | 1,037,303 |
+| `CORE=ooo` (homogeneous wide pair) | `core_ooo.v`: 440,467 | `core_ooo.v`: 470,994 | 673,368 | 911,461 |
+| `CORE=hetero` (the mixed pair) | `cpu_core.v`: 508,725 | `core_ooo.v`: 463,080 | 696,894 | 971,805 |
+
+All three configurations validated cleanly on the first attempt - no new
+coherence bug, no CRC mismatch, no trap - matching Stage 2's own
+"passed on the first attempt" precedent and worth naming again rather
+than assuming it was guaranteed.
+
+**Read honestly, not smoothed over:**
+
+- **Concurrent-and-cacheless costs real cycles, and this stage cannot
+  cleanly separate how much of that is contention versus the cache
+  itself.** `HART_DCACHE_ENABLE = (NUM_HARTS > 1) ? 0 : 1` (Phase 13's
+  own decision, unrelated to this stage) turns the D-cache off the
+  moment a second hart exists, so every dual-hart number above is being
+  compared against a single-hart baseline that had a cache Phase 13
+  already decided is unsafe to give a second hart. `cpu_core.v` costs
+  17-21% more running concurrently and cacheless than alone and cached
+  (502,529-508,725 versus 419,621); `core_ooo.v` costs 22-31% more
+  (440,467-470,994 versus 360,481). No configuration exists in this
+  project that isolates the two effects - a fair "contention alone" cost
+  would need a dual-hart run with the cache forced back on, which is not
+  something Phase 13's own coherence reasoning says is safe to build
+  casually. Reported as one combined number because that is what was
+  actually measured, not decomposed into a made-up split.
+- **Bus-priority position gives a real, measurable ~6-7% edge to
+  whichever hart is hart 0 - except when the other hart's own
+  microarchitecture is enough to overcome it.** In both homogeneous
+  pairs, hart 0 (lower index, `rtl/soc/wb_interconnect.v`'s own
+  "lowest asking hart wins" tie-break) finishes 6.4-6.9% ahead of hart 1
+  running the identical program. In the mixed pair, hart 1
+  (`core_ooo.v`, the lower-priority position) finishes *ahead* of hart 0
+  (`cpu_core.v`) anyway - `core_ooo.v`'s own real per-iteration speed
+  advantage (13.7% faster than `cpu_core.v`, single-hart and cached:
+  360,481 vs 419,621) is large enough to overcome a bus-priority
+  disadvantage that cost the *slower* homogeneous hart only ~6-7%.
+- **The wall-clock column is not a pure concurrency measurement - it
+  includes serialized console output by construction.** Both harts'
+  own final CoreMark report (~15 lines of UART text each) is
+  deliberately serialized by this stage's own console lock, acquired
+  only after each hart's own *timed* region ends - so the per-hart
+  cycle counts above are clean, but "pair wall-clock" also counts
+  whichever hart reports second waiting for the first hart's own report
+  to finish transmitting. The per-hart numbers, not the wall-clock
+  column, are this stage's own real measurement.
+- **The mixed pair's own aggregate throughput lands between the two
+  homogeneous pairs, not below both** - a mixed pair doing 971,805
+  cycles of combined work in 696,894 wall-clock cycles is worse than
+  the all-`core_ooo.v` pair (911,461 in 673,368) and better than the
+  all-`cpu_core.v` pair (1,037,303 in 727,564), which is the unsurprising
+  but real answer: mixing one faster core with one slower one lands
+  between running two of each. Reported plainly either way, matching
+  Phase 1's own precedent of reporting an unglamorous result rather than
+  a flattering one.
+
+**What Stage 5 deliberately does not do:** run on real hardware (no
+board build has ever asked for `NUM_HARTS>1`, matching every other
+Phase 15 stage), run more than one CoreMark iteration, separate the
+cache-loss cost from the contention cost (named above as a real,
+unclosed gap), or say anything about fairness in
+`rtl/soc/wb_interconnect.v`'s own fixed-priority arbitration scheme
+beyond measuring its one observed consequence here.
+
+**Stage 3 continued - still a plan, none of it started:**
 
 - **The device-tree `compatible` strings**, per Stage 3's own finding: a
   `$(CORE)`-suffixed `dts/soc.dtb` → `dtb_blob.h` → `bootrom.elf`
@@ -6016,16 +6140,7 @@ started:**
   `sim_linux_2hart` read `dts/soc.dtb` directly, not through that
   pipeline, and the file's own unconditional `"riscv"` compatible string
   was never wrong, only imprecise) - this stays real, unclaimed future
-  work, not something Stage 4 quietly closed by not needing it.
-- **Measurement, the way every other phase in this file insists on it.**
-  CoreMark or an equivalent workload, affinitized to the in-order hart
-  alone, the OoO hart alone, and both together, compared against the
-  homogeneous pairs Phase 13 already measured - and, since Phase 1's own
-  entry already found `core_ooo.v` alone "barely faster than the
-  in-order core" on real workloads, a real possibility this phase has to
-  be willing to report plainly is that a mixed pair's own aggregate
-  throughput looks unglamorous too, the same "measured, not estimated"
-  discipline that finding itself came from.
+  work, not something a later stage quietly closed by not needing it.
 
 **Named honestly, not folded into the plan above as if already
 mitigated:** `rtl/ooo/core_ooo.v` still has no measurable Fmax at all on
@@ -6047,7 +6162,11 @@ existing CI time absorbs it for free. Stage 4 is the exception, not a
 change to that pattern: it added no new gated test at all, since
 `sim_opensbi_2hart`/`sim_linux_2hart` already run by hand, on demand,
 against whichever `$(CORE)` the person running them picks - the same
-reason they were never in `verify` to begin with.
+reason they were never in `verify` to begin with. Stage 5 grew the
+surface again, but outside `verify` entirely - its own `coremark-2hart`
+CI job, matrixed over all three `CORE` values, the same "a real job of
+its own, run in parallel" shape the existing single-hart `coremark` job
+already has, for the same wall-clock-cost reason.
 
 **Done when:** one elaboration - simulation first, matching every other
 phase's own bar before a board build is attempted - contains a real

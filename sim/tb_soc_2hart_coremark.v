@@ -147,7 +147,17 @@ module tb_soc_2hart_coremark;
 
         $display("\n---------------------------------------------");
         $display("total cycles (pair wall-clock, reset to both verdicts, includes startup/console I/O): %0d", cycles);
+        // Hart 0 is core_ooo.v only under a real CORE=ooo build - under
+        // CORE=hetero it stays cpu_core.v (soc_top.v's own hart-0
+        // instantiation reads a *different* macro, CORE_OOO, than the
+        // generate loop's CORE_HETERO), so this needs its own ifdef rather
+        // than assuming "hart 0 is always the in-order one" the way an
+        // earlier version of this file incorrectly did.
+`ifdef CORE_OOO
+        $display("hart 0 (core_ooo.v) - one CoreMark iteration: %0d cycles", result0);
+`else
         $display("hart 0 (cpu_core.v) - one CoreMark iteration: %0d cycles", result0);
+`endif
 `ifdef CORE_HETERO
         $display("hart 1 (core_ooo.v) - one CoreMark iteration: %0d cycles", result1);
 `elsif CORE_OOO

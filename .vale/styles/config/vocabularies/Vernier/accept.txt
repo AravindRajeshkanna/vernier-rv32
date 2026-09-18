@@ -123,6 +123,7 @@ bootrom
 branchily
 breakpoint
 cacheable
+cacheless
 callee
 checkpointed
 checkpointing
@@ -285,6 +286,7 @@ shader
 shaders
 snapshotting
 softmax
+spinlock
 spinlocks
 sret
 stdout
