@@ -1042,12 +1042,18 @@ COREMARK_PORT  = software/bench/crt0_bench.S software/bench/core_portme.c \
                   software/syscalls.c software/uart.c
 # -march must match the rest of software/: rv32im is what has a multilib, and
 # zicsr is needed because core_portme.c reads the `cycle` CSR directly.
-COREMARK_CFLAGS = -march=rv32im_zicsr_zifencei -mabi=ilp32 -specs=nano.specs \
-                   -ffreestanding -O2 -nostartfiles \
-                   -DITERATIONS=$(COREMARK_ITERS) -DPERFORMANCE_RUN=1 \
-                   -DFLAGS_STR='"-O2 -march=rv32im"' \
-                   -I$(COREMARK_DIR) -Isoftware/bench -Isoftware \
-                   -T software/bench/link_bench.ld
+#
+# Split into _COMMON (everything but the linker script) so the dual-hart
+# harness below (Phase 15 Stage 5) can reuse the identical flags with its own
+# -T and -DCOREMARK_DUAL_HART, without duplicating this list a second time
+# and risking the two builds drift apart on anything but the two flags that
+# are supposed to differ.
+COREMARK_CFLAGS_COMMON = -march=rv32im_zicsr_zifencei -mabi=ilp32 \
+                          -specs=nano.specs -ffreestanding -O2 -nostartfiles \
+                          -DITERATIONS=$(COREMARK_ITERS) -DPERFORMANCE_RUN=1 \
+                          -DFLAGS_STR='"-O2 -march=rv32im"' \
+                          -I$(COREMARK_DIR) -Isoftware/bench -Isoftware
+COREMARK_CFLAGS = $(COREMARK_CFLAGS_COMMON) -T software/bench/link_bench.ld
 
 coremark-fetch:
 	./software/bench/fetch-coremark.sh
@@ -1067,6 +1073,63 @@ sim/sim_bench.out: $(BENCH_TB) $(SOC_RTL)
 
 coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
+
+# ---- CoreMark, both harts running it concurrently (Phase 15 Stage 5) ----
+#
+# Two completely independent links of the identical port layer above (see
+# software/bench/link_bench_hart0.ld/link_bench_hart1.ld's own headers for
+# why one shared binary can't work here), plus a tiny shared dispatcher at
+# the common RESET_PC that sends each hart to its own copy by mhartid. See
+# sim/tb_soc_2hart_coremark.v's own header for the full picture and
+# software/bench/core_portme.c's own COREMARK_DUAL_HART block for the
+# console-serialization lock this needs and why.
+#
+# -DCOREMARK_DUAL_HART only ever reaches these three builds, never
+# software/bench/coremark.elf above - the existing single-hart baseline this
+# project has published numbers against (docs/roadmap.md, every phase since
+# Phase 1) stays byte-for-byte unaffected by this stage's own new code.
+MC_CFLAGS = $(COREMARK_CFLAGS_COMMON) -DCOREMARK_DUAL_HART
+
+software/bench/coremark_hart0.elf: $(COREMARK_PORT) software/bench/link_bench_hart0.ld \
+                                    software/bench/core_portme.h
+	@test -f $(COREMARK_DIR)/core_main.c || \
+	    { echo "coremark not fetched - run 'make coremark-fetch'"; exit 1; }
+	$(RISCV_CC) $(MC_CFLAGS) -T software/bench/link_bench_hart0.ld \
+	    -o $@ $(COREMARK_PORT) $(COREMARK_SRCS)
+
+software/bench/coremark_hart1.elf: $(COREMARK_PORT) software/bench/link_bench_hart1.ld \
+                                    software/bench/core_portme.h
+	@test -f $(COREMARK_DIR)/core_main.c || \
+	    { echo "coremark not fetched - run 'make coremark-fetch'"; exit 1; }
+	$(RISCV_CC) $(MC_CFLAGS) -T software/bench/link_bench_hart1.ld \
+	    -o $@ $(COREMARK_PORT) $(COREMARK_SRCS)
+
+software/bench/coremark_dispatch.elf: software/bench/coremark_dispatch.S \
+                                       software/bench/link_coremark_dispatch.ld
+	$(RISCV_CC) -march=rv32im_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_coremark_dispatch.ld \
+	    -o $@ software/bench/coremark_dispatch.S
+
+sim/coremark_hart0.hex: software/bench/coremark_hart0.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/coremark_hart0.elf software/bench/coremark_hart0.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/coremark_hart0.bin > $@
+
+sim/coremark_hart1.hex: software/bench/coremark_hart1.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/coremark_hart1.elf software/bench/coremark_hart1.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/coremark_hart1.bin > $@
+
+sim/coremark_dispatch.hex: software/bench/coremark_dispatch.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/coremark_dispatch.elf software/bench/coremark_dispatch.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/coremark_dispatch.bin > $@
+
+sim/sim_soc_2hart_coremark.out: sim/tb_soc_2hart_coremark.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_coremark.v $(SOC_RTL)
+
+sim_soc_2hart_coremark: sim/coremark_dispatch.hex sim/coremark_hart0.hex sim/coremark_hart1.hex \
+                         sim/sim_soc_2hart_coremark.out
+	cd sim && $(VVP) sim_soc_2hart_coremark.out $(VVP_DUMP) | tee soc_2hart_coremark.log
+	@grep -aq "SOC-2HART-COREMARK: PASS" sim/soc_2hart_coremark.log && echo "DUAL-HART COREMARK OK" || \
+	    { echo "FAILED: concurrent CoreMark on both harts (CORE=$(CORE))"; exit 1; }
 
 # ---- hardware bring-up (docs/roadmap.md Phase 2, on a board) ----
 #
@@ -2434,4 +2497,9 @@ clean:
 	       dts/soc.dtb \
 	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \
 	       software/bench/coremark.elf software/bench/coremark.bin \
+	       sim/sim_soc_2hart_coremark.out sim/coremark_dispatch.hex \
+	       sim/coremark_hart0.hex sim/coremark_hart1.hex \
+	       software/bench/coremark_hart0.elf software/bench/coremark_hart0.bin \
+	       software/bench/coremark_hart1.elf software/bench/coremark_hart1.bin \
+	       software/bench/coremark_dispatch.elf software/bench/coremark_dispatch.bin \
 	       tests/build formal/build

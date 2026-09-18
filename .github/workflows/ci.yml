@@ -457,6 +457,54 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------
+  # Dual-hart CoreMark (Phase 15 Stage 5, docs/roadmap.md): both harts run
+  # CoreMark concurrently, not one after the other, checking a shared
+  # counter's own read-modify-store comes out at exactly 2x the iteration
+  # count - a real cross-hart-atomicity proof (see sim/tb_soc_2hart_coremark.v
+  # and software/bench/core_portme.c's own COREMARK_DUAL_HART block), not
+  # merely a repeat of the single-hart job above.
+  #
+  # A separate job from `coremark` above, not a third leg matrixed into it:
+  # this is genuinely new infrastructure (a shared reset-vector dispatcher,
+  # two independently-linked images, a console lock), heavier than the
+  # single-hart run, and matrixed over all three CORE values including the
+  # mixed pair - the same "a real job of its own, run in parallel rather
+  # than serialized into anything else's critical path" reasoning the
+  # existing `coremark` job already gives for its own separation from `rtl`.
+  # ---------------------------------------------------------------------
+  coremark-2hart:
+    name: Dual-hart CoreMark (concurrent, CORE=${{ matrix.core }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [inorder, ooo, hetero]
+    env:
+      CORE: ${{ matrix.core }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/iverilog
+
+      - uses: ./.github/actions/riscv-toolchain
+
+      - name: Fetch CoreMark (pinned commit)
+        run: make coremark-fetch
+
+      - name: Run concurrent dual-hart CoreMark
+        run: make sim_soc_2hart_coremark | tee soc_2hart_coremark.log
+
+      - name: Check both harts validated their own results
+        run: |
+          grep -q "SOC-2HART-COREMARK: PASS" soc_2hart_coremark.log
+          if grep -q "ERROR!" soc_2hart_coremark.log; then
+            echo "A hart's CoreMark reported a CRC mismatch or wrong-image dispatch:"
+            grep "ERROR!" soc_2hart_coremark.log
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------
   # Formal: bounded model checking. No RISC-V toolchain needed.
   # ---------------------------------------------------------------------
   formal:
