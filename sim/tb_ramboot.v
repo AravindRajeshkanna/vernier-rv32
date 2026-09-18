@@ -36,6 +36,16 @@
 `define RAM_IMAGE "ramimage.hex"
 `endif
 
+// $(CORE)-suffixed by the Makefile (bootrom_$(CORE).hex) - the boot ROM's
+// own embedded device tree varies with $(CORE) now (Phase 15, Stage 3's
+// second half: dts/soc.dts's own header has the reasoning), so the ROM
+// image itself must vary with $(CORE) too, the same "no fixed-name file
+// hides which build produced it" discipline every other CORE-dependent
+// artifact in the Makefile already follows.
+`ifndef ROM_IMAGE
+`define ROM_IMAGE "bootrom.hex"
+`endif
+
 // 16-bit words of modelled SDRAM. 1 M words is 2 MB, which is all the tests
 // that only *touch* SDRAM need. `make sim_mmusdram` overrides it because its
 // whole point is the top half of a 32 MB part: its page table maps addresses
@@ -105,7 +115,7 @@ module tb_ramboot;
 
     soc_top #(
         .RAM_BYTES(RAM_BYTES),
-        .ROM_INIT_FILE("bootrom.hex"),
+        .ROM_INIT_FILE(`ROM_IMAGE),
         .RAM_INIT_FILE(`RAM_IMAGE),
         .UART_CLKS_PER_BIT(CLKS_PER_BIT)
     ) DUT (

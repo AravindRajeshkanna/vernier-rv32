@@ -5,8 +5,14 @@
 # See fpga/README.md.
 #
 # Usage:
-#   make soc                        # produces sim/bootrom.hex (a synthesis input)
+#   make soc                        # produces sim/bootrom_inorder.hex (a synthesis input)
 #   vivado -mode batch -source fpga/synth/vivado.tcl -tclargs xc7a35ticsg324-1L
+#
+# CORE=inorder always - this script's own RTL file list below hardcodes
+# rtl/cpu_core.v unconditionally, never $(CORE_RTL), so the boot ROM image it
+# needs is always the inorder-flavored one (sim/bootrom_inorder.hex,
+# $(CORE)-suffixed since Phase 15 Stage 3's second half: the embedded device
+# tree's `compatible` strings now vary with $(CORE)).
 #
 # Before running, fill in real pins in fpga/constraints/generic.xdc and set
 # CLK_HZ in fpga/soc_fpga.v to your board's oscillator.
@@ -19,14 +25,17 @@ set build [file join $root fpga build]
 file mkdir $build
 cd $build
 
-if {![file exists [file join $root sim bootrom.hex]]} {
-    puts "ERROR: sim/bootrom.hex missing - run 'make soc' first"
+if {![file exists [file join $root sim bootrom_inorder.hex]]} {
+    puts "ERROR: sim/bootrom_inorder.hex missing - run 'make soc' first"
     exit 1
 }
 # wb_rom.v $readmemh's this at elaboration time, relative to the working
 # directory, so it has to be here - it is a synthesis input, not merely a
-# simulation one.
-file copy -force [file join $root sim bootrom.hex] [file join $build bootrom.hex]
+# simulation one. Copied to the fixed name fpga/soc_fpga.v's own
+# .ROM_INIT_FILE("bootrom.hex") expects - safe here since this whole file
+# copy runs unconditionally every invocation, never skipped the way a stale
+# Make rule output could be.
+file copy -force [file join $root sim bootrom_inorder.hex] [file join $build bootrom.hex]
 
 create_project -in_memory -part $part
 

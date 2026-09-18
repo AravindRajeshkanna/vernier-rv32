@@ -96,9 +96,11 @@ program can survive.
 ### `wb_rom` — boot ROM, `0x0000_0000`
 
 16 KB (`ROM_WORDS = 4096`), read-only, one wait state. Loaded at elaboration
-by `$readmemh` from `bootrom.hex`, which makes that file a **synthesis
-input** — the build scripts refuse to start without it, because the failure
-mode otherwise is a board that comes up and does nothing.
+by `$readmemh` from `bootrom_$(CORE).hex` (`$(CORE)`-suffixed since Phase 15
+Stage 3's second half, because the embedded device tree's `compatible`
+strings vary with it), which makes that file a **synthesis input** — the
+build scripts refuse to start without it, because the failure mode otherwise
+is a board that comes up and does nothing.
 
 `RESET_PC` is `0x0000_0000`, so the CPU starts here.
 

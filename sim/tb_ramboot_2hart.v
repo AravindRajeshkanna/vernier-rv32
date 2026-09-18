@@ -40,6 +40,13 @@
 `define RAM_IMAGE "ramimage2hart.hex"
 `endif
 
+// $(CORE)-suffixed by the Makefile - see sim/tb_ramboot.v's own comment for
+// why a fixed "bootrom.hex" name is no longer safe now that the boot ROM's
+// embedded device tree varies with $(CORE).
+`ifndef ROM_IMAGE
+`define ROM_IMAGE "bootrom.hex"
+`endif
+
 `ifndef SDRAM_WORDS
 `define SDRAM_WORDS (1 << 20)
 `endif
@@ -80,7 +87,7 @@ module tb_ramboot_2hart;
     soc_top #(
         .NUM_HARTS(2),
         .RAM_BYTES(RAM_BYTES),
-        .ROM_INIT_FILE("bootrom.hex"),
+        .ROM_INIT_FILE(`ROM_IMAGE),
         .RAM_INIT_FILE(`RAM_IMAGE),
         .UART_CLKS_PER_BIT(CLKS_PER_BIT)
     ) DUT (

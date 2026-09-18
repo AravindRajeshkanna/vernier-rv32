@@ -2201,11 +2201,13 @@ other board:**
 
 Regardless of board:
 
-3. **Run `make soc` first.** `wb_rom.v` pulls `bootrom.hex` in with
-   `$readmemh` at elaboration time, which makes it a *synthesis* input, not
-   just a simulation one. Both scripts check for it and refuse to start
-   without it, because the failure mode otherwise is a board that comes up
-   and does nothing.
+3. **Run `make soc CORE=<the same CORE you synthesize with>` first.**
+   `wb_rom.v` pulls `bootrom_$(CORE).hex` in with `$readmemh` at elaboration
+   time (`$(CORE)`-suffixed since Phase 15 Stage 3's second half, because the
+   embedded device tree's `compatible` strings vary with it), which makes it
+   a *synthesis* input, not just a simulation one. Both scripts check for it
+   and refuse to start without it, because the failure mode otherwise is a
+   board that comes up and does nothing.
 
 ## Timing: measured, and the prediction was wrong
 

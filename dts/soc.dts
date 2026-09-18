@@ -3,18 +3,28 @@
 /*
  * Device tree for the SoC in rtl/soc/soc_top.v.
  *
- * Build it with `make dtb`, which compiles it and then round-trips the
- * result back to source to confirm it decodes.
+ * Build it with `make dtb`, which runs this file through the C preprocessor
+ * first - `cc -E -x assembler-with-cpp`, the same mode the Linux kernel's own
+ * arch/riscv/boot/dts tree relies on, chosen specifically because it passes a
+ * `#foo = <...>;` device-tree property through unrecognized while still
+ * treating `#ifdef`/`#else`/`#endif` as real conditionals - then compiles the
+ * result and round-trips it back to source to confirm it decodes. This is
+ * what lets the two `compatible` strings under cpus/ below vary with
+ * $(CORE_DEFINES): see the comment at each one for why that has to be a real,
+ * $(CORE)-suffixed build product (dts/soc_$(CORE).dtb) rather than a single
+ * shared dts/soc.dtb, and docs/roadmap.md's Phase 15 entry (Stage 3) for the
+ * staleness hazard that made it so.
  *
  * What this is and isn't: it is an accurate description of the hardware in
  * the standard format that RISC-V firmware (OpenSBI, U-Boot, Linux) expects
- * to be handed. It compiles to dts/soc.dtb, which software/opensbi/mkimage.py
- * packs into every image `make sim_opensbi`/`sim_linux` boot and OpenSBI
- * genuinely parses at runtime - this stopped being aspirational once that
- * integration landed (docs/roadmap.md's OpenSBI phase). The boot ROM and
- * software/soc/main.c's own RAM program still have the memory map compiled
- * in via software/soc/soc.h instead of reading this, since both predate the
- * device tree and have no reason to add a parser for one.
+ * to be handed. It compiles to dts/soc_$(CORE).dtb, which
+ * software/opensbi/mkimage.py packs into every image `make sim_opensbi`/
+ * `sim_linux` boot and OpenSBI genuinely parses at runtime - this stopped
+ * being aspirational once that integration landed (docs/roadmap.md's OpenSBI
+ * phase). The boot ROM and software/soc/main.c's own RAM program still have
+ * the memory map compiled in via software/soc/soc.h instead of reading this,
+ * since both predate the device tree and have no reason to add a parser for
+ * one.
  *
  * Anything here that would need to change before real supervisor software
  * could use it is called out in a comment rather than quietly fudged.
@@ -87,7 +97,19 @@
         cpu0: cpu@0 {
             device_type = "cpu";
             reg = <0>;
-            compatible = "riscv";
+            /* Hart 0 is rtl/ooo/core_ooo.v only under CORE=ooo - every other
+             * $(CORE) value (including CORE=hetero, which only changes harts
+             * 1+) keeps it rtl/cpu_core.v - matching rtl/soc/soc_top.v's own
+             * `ifdef CORE_OOO` on hart 0's instantiation exactly, so this can
+             * never say something the RTL underneath it does not also say.
+             * "riscv" stays as the required fallback the RISC-V devicetree
+             * binding specifies; the vendor string in front is strictly more
+             * specific, never a replacement for it. */
+#ifdef CORE_OOO
+            compatible = "riscv-fpga-cpu,cpu-ooo", "riscv";
+#else
+            compatible = "riscv-fpga-cpu,cpu-inorder", "riscv";
+#endif
             /* M and A are implemented in hardware even though software/ is
              * compiled as rv32im - see software/soc/main.c's note on the
              * missing rv32ima multilib. */
@@ -117,7 +139,15 @@
         cpu1: cpu@1 {
             device_type = "cpu";
             reg = <1>;
-            compatible = "riscv";
+            /* Hart 1 is core_ooo.v under CORE=ooo *and* CORE=hetero -
+             * matching rtl/soc/soc_top.v's own generate loop exactly
+             * (`ifdef CORE_HETERO ... `elsif CORE_OOO ... `else cpu_core.v),
+             * unlike hart 0 above, which only changes under CORE=ooo. */
+#if defined(CORE_OOO) || defined(CORE_HETERO)
+            compatible = "riscv-fpga-cpu,cpu-ooo", "riscv";
+#else
+            compatible = "riscv-fpga-cpu,cpu-inorder", "riscv";
+#endif
             riscv,isa = "rv32ima_zicsr_zifencei";
             riscv,isa-base = "rv32i";
             riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei";

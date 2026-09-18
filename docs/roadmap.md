@@ -5684,26 +5684,25 @@ like.
 
 ## Phase 15 — Heterogeneous multi-core: both core types, at once, in one SoC
 
-**Stages 0 through 2, 4, and 5 done, plus half of Stage 3; only the
-other half of Stage 3, and the extensions Stage 5's own account names,
-remain a plan, not an account.** This phase was written down as a pure
-design-space discussion first, the same reasoning that put one in
-Phases 8-11 before any of them had a line of RTL - but unlike those, the
-first stages shipped in quick succession, the mechanism (Stages 0-1) and
-its own highest-risk correctness question (Stage 2, cross-hart
-coherence) both turning out more tractable than the original plan below
-assumed, Stage 3's own two halves needing genuinely different amounts of
-work (see that stage's own account for why), Stage 4 needing no code
-change at all, and Stage 5 - measurement - surfacing a real,
-previously-undiscovered defect in Phase 13's own cross-hart AMO
-atomicity claim, closed as its own standalone fix rather than folded
-quietly into this phase's own account (see that stage's own entry for
-the full story, and `docs/roadmap.md`'s Phase 13 entry, corrected in
-place, for the fix itself). The "Stage N:" entries for 0 through 2, the
-boot-ROM-mailbox half of Stage 3, Stage 4, and Stage 5 are real
+**Stages 0 through 5 are all done now; only the extensions Stage 5's own
+account names remain a plan, not an account.** This phase was written
+down as a pure design-space discussion first, the same reasoning that put
+one in Phases 8-11 before any of them had a line of RTL - but unlike
+those, the first stages shipped in quick succession, the mechanism
+(Stages 0-1) and its own highest-risk correctness question (Stage 2,
+cross-hart coherence) both turning out more tractable than the original
+plan below assumed, Stage 3's own two halves needing genuinely different
+amounts of work and shipping in two separate passes as a result (see that
+stage's own account for why), Stage 4 needing no code change at all, and
+Stage 5 - measurement - surfacing a real, previously-undiscovered defect
+in Phase 13's own cross-hart AMO atomicity claim, closed as its own
+standalone fix rather than folded quietly into this phase's own account
+(see that stage's own entry for the full story, and `docs/roadmap.md`'s
+Phase 13 entry, corrected in place, for the fix itself). The "Stage N:"
+entries for 0 through 5, including both halves of Stage 3, are real
 completed accounts, exactly like every other phase in this file; the
-remaining bullets are still a plan, and are marked as such at their own
-header.
+remaining bullets (Stage 5's own named cache/contention-separation gap)
+are still a plan, and are marked as such at their own header.
 
 **This is not a new idea - Phase 13 named it and set it aside on purpose.**
 Stage 6's own account of building `rtl/soc/reservation_monitor.v` says so
@@ -5968,6 +5967,132 @@ who ran both gates back to back. Revisiting it alongside Stage 4's own new
 correctly-scoped answer to the same question anyway) is the planned path,
 not a separate, disconnected fix.
 
+**Stage 3, third part: the `$(CORE)`-suffixed pipeline, built for real.**
+Once Stage 5 was done, this came back as the next named item. The fix is
+exactly the infrastructure change the second half above said it would have
+to be, not a smaller version of it: `dts/soc.dts` is now piped through
+`cc -E -x assembler-with-cpp -P $(CORE_DEFINES)` before `dtc` ever sees it
+(confirmed byte-identical to the old direct `dtc` compile when no define is
+set, before anything else changed), producing `dts/soc_$(CORE).dtb` -
+`#ifdef CORE_OOO` on `cpu0`'s own `compatible` line (mirroring
+`rtl/soc/soc_top.v`'s own hart-0 `ifdef` exactly: only `CORE=ooo` changes
+it), `#if defined(CORE_OOO) || defined(CORE_HETERO)` on `cpu1`'s (mirroring
+the generate loop's own `` `ifdef CORE_HETERO ... `elsif CORE_OOO ``
+exactly). Both now say `"riscv-fpga-cpu,cpu-inorder", "riscv"` or
+`"riscv-fpga-cpu,cpu-ooo", "riscv"` - the required `"riscv"` fallback stays,
+since the vendor string is strictly additive, never a replacement for what
+the RISC-V device-tree binding actually requires.
+
+Suffixed all the way down, not just at the `.dtb`: `software/soc/
+dtb_blob_$(CORE).h` (the header's own generator, `gen_dtb_blob.py`, now
+takes its source `.dtb` path as an argument instead of a hardcoded
+constant), `software/soc/bootrom_$(CORE).elf` (`bootrom.c`'s own
+`#include "dtb_blob.h"` became `#include DTB_BLOB_HEADER`, a macro the
+Makefile always defines - `-DDTB_BLOB_HEADER='"dtb_blob_$(CORE).h"'` - the
+same "computed, not hardcoded" idiom `$(CORE_DEFINES)` itself already is),
+and `sim/bootrom_$(CORE).hex`. Every one of the fourteen boot-ROM tests the
+second half's own account named by name now depends on
+`sim/bootrom_$(CORE).hex` instead of a shared `sim/bootrom.hex` - a real
+`make verify` then `make verify_ooo` in the same tree now builds and keeps
+*both* `bootrom_inorder.hex` and `bootrom_ooo.hex` side by side, never
+overwriting one with the other's content, closing the exact staleness trap
+this stage's own second half stopped short of shipping around.
+
+The four testbenches that reference the boot ROM's own hex file by name
+(`sim/tb_ramboot.v`, `sim/tb_soc.v`, `sim/tb_ramboot_2hart.v`, `sim/
+tb_uartload.v`) took a `` `define ROM_IMAGE "bootrom.hex" `` default,
+mirroring `RAM_IMAGE`'s own already-established convention in the same
+files exactly, with every Makefile recipe that compiles them now passing
+`-DROM_IMAGE='"bootrom_$(CORE).hex"'`. `sim_ramboot_2hart_hetero` is the
+one target that needs the hetero-flavored ROM specifically, regardless of
+whichever `$(CORE)` its own outer `make verify`/`make verify_ooo`
+invocation is running under (matching its own pre-existing hardcoded
+`-DCORE_HETERO`) - since `sim/bootrom_$(CORE).hex` is a *static* rule
+parameterized by whatever `$(CORE)` means for the whole outer `make`
+invocation, not a real per-target parameter, its own recipe now runs
+`$(MAKE) sim/bootrom_hetero.hex CORE=hetero` first, the same recursive-
+sub-make idiom `verify_ooo` itself already uses for the analogous reason.
+
+**A real staleness bug, found by testing this stage's own first attempt,
+not a hypothetical one.** `sim/sbiimage.hex` and `sim/linuximage.hex`
+(OpenSBI/Linux boot images) were deliberately left as fixed filenames in
+that attempt - reasoning that neither OpenSBI nor Linux keys any real
+*behavior* off the vendor-specific half of the `compatible` string (both
+match the required `"riscv"` fallback that is always still there), so a
+stale one embedded here would be cosmetic, not the kind of silent
+correctness trap the `verify`-gated boot-ROM pipeline above was actually
+about. That reasoning was wrong about what "cosmetic" means in practice:
+a real `make verify` (`CORE=inorder`) followed by `make verify_ooo` in the
+same tree left `sim/linuximage.hex` newer than its own `dts/soc_ooo.dtb`
+prerequisite (rebuilt minutes earlier, by hand, mid-development) - Make's
+own mtime tracking correctly saw no reason to rebuild it, and a live
+`CONFIG_SMP=y` Linux boot under `CORE=ooo` printed `/proc/cpuinfo`'s
+`uarch : riscv-fpga-cpu,cpu-inorder`, a genuinely false claim about which
+hart type was actually running underneath it. The boot itself was never
+in question - OpenSBI and Linux both still worked correctly regardless of
+which compatible string they were handed - but a false line in a real
+kernel's own `/proc/cpuinfo` is exactly the "stale, wrong answer" this
+whole stage exists to close, not an exception to it just because nothing
+downstream acts on the string. Fixed by giving both the same treatment as
+`bootrom_$(CORE).hex`: `sim/sbiimage_$(CORE).hex`, `sim/linuximage_$(CORE)
+.hex`, and every consumer (`sim_opensbi`, `sim_opensbi_2hart`, `sim_linux`,
+`sim_linux_2hart`, `sbiimage`, `linuximage`, `linuxpayload`) updated to
+match. `linux_trapdiff` - which genuinely does need one shared image
+booted on two different core binaries, comparing trap behavior rather
+than device-tree content - now pins that one shared image to
+`sim/linuximage_inorder.hex` explicitly, via the same recursive
+`$(MAKE) ... CORE=inorder` sub-build idiom `sim_ramboot_2hart_hetero`
+already established above, rather than reading whatever the ambient
+`$(CORE)` happens to mean. `software/linux/build/sdram.bin` (the flat
+binary `linuxpayload` reports for a real board flash) stays a fixed name
+on purpose: no board build has ever asked for anything but `CORE=inorder`
+(`rtl/ooo/core_ooo.v` still has no measurable Fmax on real hardware at
+all), so there is no second `$(CORE)` value it could ever go stale
+against outside simulation.
+
+`fpga/synth/synth_ecp5.sh` (which already threads its own `$CORE` through
+to `$(CORE_RTL)`/`$(CORE_DEFINES)` for the RTL file list) now copies
+`sim/bootrom_$CORE.hex` instead of a now-nonexistent `sim/bootrom.hex`;
+`fpga/synth/vivado.tcl` always uses `sim/bootrom_inorder.hex`, since that
+script's own RTL file list hardcodes `rtl/cpu_core.v` unconditionally and
+has never had a `$CORE` of its own to read.
+
+**Verified against the real pass criterion, not just "it compiled" - and
+re-verified after the `sbiimage`/`linuximage` correction above, not just
+before it.** A live `CONFIG_SMP=y` Linux boot's own `/proc/cpuinfo` shows
+`uarch : riscv-fpga-cpu,cpu-inorder` for hart 0 under `CORE=inorder` and
+`uarch : riscv-fpga-cpu,cpu-ooo` under `CORE=ooo` - the compatible string
+reaching all the way from `dts/soc.dts` through the whole rebuilt
+pipeline into a real kernel's own sysfs-adjacent output, correctly
+different between the two, not just decoded back by `dtc` in isolation
+and not just correct by coincidence on whichever one happened to build
+first. `make verify` and `make verify_ooo` both green, run again after
+the correction: formal 6/6 proved, riscv-tests 82 passed/2 xfail, cosim
+84/84 traces match, `sim_ramboot_2hart_hetero`'s own `rob_count` identity
+check still passes, and every boot-ROM test in both gates' dependency
+lists passed with its own `$(CORE)`-correct ROM image.
+
+**A real, previously-unremarked-on mismatch, noticed along the way and
+named rather than fixed here.** `dts/soc.dts`'s own `cpu@1` node has
+always been declared unconditionally, regardless of `NUM_HARTS` - its own
+comment says it "describes hardware that exists under `make sim_opensbi`/
+`sim_linux`," which is imprecise: those are the *single-hart*
+(`NUM_HARTS=1`) targets, and a full `make verify` run with a Linux image
+already built reads `dmesg` printing `CPU1: failed to come online` before
+correctly settling on `smp: Brought up 1 node, 1 CPU` and reaching
+userspace anyway. This predates this stage entirely - nothing here added,
+removed, or gated `cpu@1`'s own presence, only the `compatible` string on
+nodes that already existed either way - so it is unrelated to what this
+stage fixes and not a regression from it, confirmed by the fact that
+`LINUX BOOT PASSED` regardless. It is a real, previously-unnamed instance
+of the same "a lie nothing (yet) acts on is still a lie" pattern this
+file's own `memory@80000000` node comment already calls out for a
+different node, now noticed for `cpu@1` too. Fixing it would need a
+`NUM_HARTS`-aware conditional in the same `dts/soc.dts` pipeline this
+stage just built the mechanism for - real, plausible future work, but a different
+question from the one this stage answers, so it is named here rather than
+folded in.
+
 **Stage 4: Linux SMP on a genuinely asymmetric pair - and no code change
 at all.** `sim_opensbi_2hart` and `sim_linux_2hart` were already
 `$(CORE)`-generic, not hardcoded, since Phase 13 Stage 17 gave them that
@@ -6132,15 +6257,18 @@ unclosed gap), or say anything about fairness in
 `rtl/soc/wb_interconnect.v`'s own fixed-priority arbitration scheme
 beyond measuring its one observed consequence here.
 
-**Stage 3 continued - still a plan, none of it started:**
-
-- **The device-tree `compatible` strings**, per Stage 3's own finding: a
-  `$(CORE)`-suffixed `dts/soc.dtb` → `dtb_blob.h` → `bootrom.elf`
-  pipeline. Stage 4 did not need it (`sim_opensbi_2hart`/
-  `sim_linux_2hart` read `dts/soc.dtb` directly, not through that
-  pipeline, and the file's own unconditional `"riscv"` compatible string
-  was never wrong, only imprecise) - this stays real, unclaimed future
-  work, not something a later stage quietly closed by not needing it.
+**Stage 3 continued - closed.** The device-tree `compatible`-string
+pipeline named here as deferred is done - see "Stage 3, third part" above
+for the full account (the `$(CORE)`-suffixed `dts/soc_$(CORE).dtb` →
+`dtb_blob_$(CORE).h` → `bootrom_$(CORE).elf` → `sim/bootrom_$(CORE).hex`
+chain, `make verify`/`make verify_ooo` both green). No item remains open
+under this heading; the one thing that stage's own account found along
+the way (`dts/soc.dts`'s `cpu@1` node being unconditional regardless of
+`NUM_HARTS`, so a single-hart `sim_linux` boot prints `CPU1: failed to
+come online` before settling on one CPU and reaching userspace anyway) is
+named there, not here - a different, lower-severity question than the one
+this bullet used to describe, and not something this phase's own "Done
+when" bar requires closing.
 
 **Named honestly, not folded into the plan above as if already
 mitigated:** `rtl/ooo/core_ooo.v` still has no measurable Fmax at all on

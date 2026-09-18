@@ -24,9 +24,10 @@
 #   1. Fill in real pins in fpga/constraints/generic.lpf
 #   2. Set DEVICE/PACKAGE below to your board
 #   3. Set CLK_HZ in fpga/soc_fpga.v to your board's oscillator
-#   4. `make soc` at the repo root, so sim/bootrom.hex exists - it is
-#      $readmemh'd into the boot ROM at elaboration time and is therefore a
-#      synthesis input, not just a simulation one
+#   4. `make soc CORE=<this script's own $CORE>` at the repo root, so
+#      sim/bootrom_$CORE.hex exists - it is $readmemh'd into the boot ROM at
+#      elaboration time and is therefore a synthesis input, not just a
+#      simulation one
 set -eu
 
 cd "$(dirname "$0")/../.."
@@ -369,8 +370,13 @@ RTL="rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/plic.v \
      rtl/soc/soc_top.v fpga/soc_fpga.v $BOARD_RTL"
 fi
 
-if [ "$DIAG_ONLY" != "1" ] && [ ! -f sim/bootrom.hex ]; then
-    echo "error: sim/bootrom.hex missing - run 'make soc' first" >&2
+# sim/bootrom_$CORE.hex, not a fixed sim/bootrom.hex: the boot ROM's own
+# embedded device tree varies with $CORE now (dts/soc.dts's own header,
+# Phase 15 Stage 3's second half), so the ROM image itself is $CORE-suffixed
+# on disk too, matching this script's own $CORE-selected $CORE_RTL/
+# $CORE_DEFINES above.
+if [ "$DIAG_ONLY" != "1" ] && [ ! -f "sim/bootrom_$CORE.hex" ]; then
+    echo "error: sim/bootrom_$CORE.hex missing - run 'make soc CORE=$CORE' first" >&2
     exit 1
 fi
 
@@ -404,7 +410,13 @@ mkdir -p "$BUILD"
 # $BUILD where a copy of it lives - and the RTL paths are made absolute
 # rather than counted out in ../.., which is easy to get wrong and silently
 # produces "file not found" from inside a yosys command line.
-[ "$DIAG_ONLY" = "1" ] || cp sim/bootrom.hex "$BUILD/bootrom.hex"
+#
+# Copied to a fixed name ($BUILD/bootrom.hex, matching fpga/soc_fpga.v's own
+# unchanged .ROM_INIT_FILE("bootrom.hex")) from the $CORE-specific source -
+# safe unlike a Make rule with the same fixed name would be, since this is a
+# plain, unconditional `cp` in a linear script, not a rule Make could skip as
+# already up to date against the wrong $CORE's own copy.
+[ "$DIAG_ONLY" = "1" ] || cp "sim/bootrom_$CORE.hex" "$BUILD/bootrom.hex"
 # Always copied to the one name fpga/soc_fpga.v's RAM_INIT knows about, so the
 # RTL needs no per-program conditionals - the board target picks the source.
 [ "$PRELOAD_RAM" = "1" ] && cp "$RAM_IMAGE" "$BUILD/ramimage.hex"

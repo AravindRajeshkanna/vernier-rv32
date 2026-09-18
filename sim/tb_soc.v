@@ -16,6 +16,14 @@
 //
 // GPIO is looped back here - the low 8 pins drive the high 8 - which is what
 // the program's GPIO test checks.
+
+// $(CORE)-suffixed by the Makefile - see sim/tb_ramboot.v's own comment for
+// why a fixed "bootrom.hex" name is no longer safe now that the boot ROM's
+// embedded device tree varies with $(CORE).
+`ifndef ROM_IMAGE
+`define ROM_IMAGE "bootrom.hex"
+`endif
+
 module tb_soc;
     localparam CLKS_PER_BIT = 4;   // must match soc_top's UART_CLKS_PER_BIT
 
@@ -45,7 +53,7 @@ module tb_soc;
     wire [15:0] gpio_in = (gpio_out & gpio_dir) | (16'hxxxx & ~gpio_dir);
 
     soc_top #(
-        .ROM_INIT_FILE("bootrom.hex"),
+        .ROM_INIT_FILE(`ROM_IMAGE),
         .UART_CLKS_PER_BIT(CLKS_PER_BIT)
     ) DUT (
         .clk(clk), .rst(rst),
