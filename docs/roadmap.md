@@ -7433,7 +7433,7 @@ and `regfile_phys.v`, there is no `headS_ready`-shaped registered gate
 visible here, and no second identical check one level up to make it
 redundant - `issL_addr_calc` feeds the actual memory address a load
 issues with, and if `rtl/soc/cpu_wb.v`'s D-cache answers a hit
-combinationally (which the "Phase 4" section above says it does - "one
+combinationally (which the "Phase 3" section above said it does - "one
 word per line, so there is no fill state machine... arrays are read
 asynchronously"), then a load whose base register is a completing
 Class-L result **this same cycle** and whose data comes back **this same
@@ -7479,6 +7479,94 @@ absurdly slow instead, which is a different kind of wrong, not a smaller
 one. This does not change the "not a local patch" conclusion above - if
 anything it reinforces it, since the tool's own escape hatch for this class
 of loop produces garbage rather than an answer.
+
+**Round 5: three more genuinely dead arms removed by the same argument
+that already killed `headS_op1`/`headS_op2`'s - including the exact one
+Round 4 named a real feature, which it was not.** Round 4's own premise
+for `issL_scan_addr`'s bypass ("if `rtl/soc/cpu_wb.v`'s D-cache answers a
+hit combinationally... 'arrays are read asynchronously'") turned out to
+have been accurate when written and stale by the time it was acted on:
+that quote is genuinely about `cpu_wb.v` (Phase 3, not "Phase 4" as Round
+4's own text mislabeled it, corrected here), but PR #97 - "Phase 3: D-cache
+hit pipeline stage - correct, costs 16.6%, doesn't close margin alone" -
+landed two days *after* Round 4, specifically adding the `dc_pending`/
+`dc_hit_latched` registers that make a hit answer one full cycle later,
+never combinationally, for an unrelated reason (`CORE=inorder`'s own Fmax
+margin, not this defect). Nobody revisited Round 4's own conclusion once
+that premise changed underneath it - the same kind of self-correction this
+entry's own "Investigated further" section already had to make once
+before, for the same reason: reasoning about which wires a loop closes
+through, without re-checking the reasoning against the current tree.
+
+Direct reading of `rtl/soc/cpu_wb.v:355-397` confirms `dmem_rvalid` (`=
+hit_deliver || read_ack`) cannot assert the same cycle a request is first
+presented, hit or miss - the same-cycle round-trip Round 4's hypothesis
+needed cannot exist as described. That reopened the question of whether
+`issL_scan_addr`'s bypass is actually reachable at all, checked this time
+with the exact rigor `headS_op1`/`headS_op2`'s own removal already used
+(that argument is preserved as a comment above `headS_op1`'s own
+definition): entry into `issL_scan_addr`'s bypass requires
+`rob_r1_ready[issL_scan_idx]`, and `rob_r1_ready[idx]`/`rob_r1_val[idx]`
+are *always* co-written by the same clocked block (dispatch, or the
+wakeup-snoop) - so `_ready` reading 1 this cycle structurally guarantees
+`_val` already holds whichever CDB produced it, at least one cycle
+earlier. A same-cycle bypass read here can only ever match a value
+`rob_r1_val[issL_scan_idx]` already equals, by construction - unreachable,
+not merely unlikely, the identical shape of argument that already proved
+`headS_op1`/`headS_op2` dead, just not previously checked against this
+specific arm.
+
+The same check, applied for the first time to two more sites this
+investigation had not individually named before, found the identical
+pattern: `issB_a_reg`/`issB_op2` (Class B's own operand read, gated by
+`issB_idx`'s own selection requiring both
+`rob_r1_ready[issB_idx]`/`rob_r2_ready[issB_idx]`) - the very pair
+`docs/roadmap.md`'s own "Investigated further" section named as the
+*other* half of a closing loop, alongside `headS_op1`'s now-removed
+`cdbB` arm; and the out-of-order store address/data computation
+(`sq_addr`/`sq_wdata`, gated by `issST_idx`'s identical
+`rob_r1_ready`/`rob_r2_ready` requirement) - the file's own header comment
+had named this as a CDB-consuming site since the `src_value` inlining
+work, but no round before this one checked it against the reachability
+argument specifically. All three bypass ternaries removed, falling
+through directly to `rob_r1_val`/`rob_r2_val` - Round 3's own shape of
+fix (delete redundant logic), not Round 4's proposed one (add a new
+register): nothing here needed compensating latency, because nothing here
+was ever reachable.
+
+**Non-vacuity, checked per site, not assumed from the argument alone.**
+Mutating each of the three fallback reads in turn (XORing the value with
+a small nonzero constant) and re-running `make cosim CORE=ooo` - the
+suite that compares every retired instruction against Spike, not just a
+final verdict - confirms the suite is genuinely sensitive to each: the
+`issB_a_reg` mutation broke 82 of 84 traces (2/84 pass), the
+`issL_scan_addr` mutation broke 28 of 84 (56/84 pass), and the
+`sq_wdata` mutation sent `rv32ua-p-amomin_w` into a genuine non-terminating
+loop in the test program's own logic (a corrupted store value feeding a
+real control-flow dependency, not a simulator hang) - killed rather than
+waited out, since two clean positive results already existed and a hang
+is, if anything, stronger evidence of sensitivity than a clean mismatch.
+Reverted each in turn and reconfirmed 84/84 clean before moving on. `make
+verify` and `make verify_ooo` both green afterward: formal 6/6, riscv-tests
+82 passed/2 xfail, cosim 84/84 (including `rv32si-p-dirty`'s own
+already-documented, `CORE=ooo`-specific, unrelated divergence, correctly
+still marked expected), Linux boot reached userspace, `sim_ramboot_2hart_
+hetero`'s own `rob_count` identity check unaffected.
+
+**Does not, on its own, close the defect - the same honest framing every
+prior round already used.** This round removed dead code proven dead, the
+same category Round 3's `regfile_phys.v` fix was, kept and shipped
+regardless of whether it closes real synthesis on its own - it has not yet
+been checked against a real `nextpnr-ecp5` run, which needs its own
+separate pass (a real `wb_framebuffer.v` synthesis crash, documented
+immediately below this entry, blocks a full-SoC synthesis attempt today
+independent of anything here, and needs its own narrow workaround before
+that check can even run). What Round 4 still leaves open - whether the
+bus-interconnect/D-cache subgraph Round 3 first flagged is itself part of
+any remaining loop - was not investigated further this round either.
+Whether removing three more redundant arms reduces or closes the loop
+count is Round 6's own first question to answer with real evidence, not
+this round's to assume.
 
 **RESOLVED - Interrupt-driven UART TX (#56) failed on `CORE=ooo`; root-caused
 and fixed. See "Stage 1d was built anyway," Update 9, for the full account

@@ -1040,12 +1040,26 @@ module core_ooo #(
                     !rob_issued[issL_scan_idx] &&
                     rob_r1_ready[issL_scan_idx]) begin
                     issL_scan_tag  = rob_r1_tag[issL_scan_idx];
+                    // No same-cycle cdbS/cdbB/cdbL bypass here, unlike an
+                    // earlier version of this scan - deliberately, and for
+                    // the identical reason headS_op1/headS_op2's own arms
+                    // were already removed (see that wire's own comment,
+                    // above): entry into this `if` already requires
+                    // `rob_r1_ready[issL_scan_idx]`, and `rob_r1_ready[idx]`/
+                    // `rob_r1_val[idx]` are always co-written by the same
+                    // clocked block (dispatch or the wakeup-snoop below) -
+                    // so `_ready` reading 1 this cycle structurally
+                    // guarantees `rob_r1_val[issL_scan_idx]` already holds
+                    // whichever CDB produced it, at least one cycle ago. A
+                    // same-cycle bypass read here could only ever match a
+                    // value `rob_r1_val[issL_scan_idx]` already equals, by
+                    // construction - it was found and removed while
+                    // investigating docs/roadmap.md's "CORE=ooo has no
+                    // Fmax" entry, whose own Round 4 first named this arm a
+                    // real forwarding candidate rather than checking it
+                    // against this same argument.
                     issL_scan_addr =
-                        (issL_scan_tag == {PW{1'b0}})               ? 32'b0 :
-                        (cdbS_valid && (cdbS_preg == issL_scan_tag)) ? cdbS_val :
-                        (cdbB_valid && (cdbB_preg == issL_scan_tag)) ? cdbB_val :
-                        (cdbL_valid && (cdbL_preg == issL_scan_tag)) ? cdbL_val :
-                                                                        rob_r1_val[issL_scan_idx];
+                        (issL_scan_tag == {PW{1'b0}}) ? 32'b0 : rob_r1_val[issL_scan_idx];
                     issL_scan_addr = issL_scan_addr + rob_imm[issL_scan_idx];
                     // `issL_scan_addr[31:24] == 8'h80 || == 8'h00`: mirrors
                     // rtl/soc/cpu_wb.v's `dc_cacheable` exactly (RAM at
@@ -1165,20 +1179,25 @@ module core_ooo #(
         end
     endfunction
 
-    // Inlined, not src_value_ex_b() - see the note by dispatch_r1_val above.
+    // No same-cycle cdbS/cdbL bypass here, unlike an earlier version of
+    // this pair (and unlike issL_scan_addr's own bypass, above) -
+    // deliberately, for the identical headS_op1/headS_op2 argument:
+    // `issB_idx` is only ever selected (above) once both
+    // `rob_r1_ready[issB_idx]`/`rob_r2_ready[issB_idx]` are true, and those
+    // are always co-written with `rob_r1_val`/`rob_r2_val` by the same
+    // clocked block - so a same-cycle bypass read here could only ever
+    // match a value `rob_r1_val[issB_idx]`/`rob_r2_val[issB_idx]` already
+    // equals, by construction. Found and removed the same investigation
+    // that removed issL_scan_addr's own arms - docs/roadmap.md's "CORE=ooo
+    // has no Fmax" entry named this pair as the second half of a closing
+    // loop's own two arms, alongside headS_op1's now-removed cdbB arm.
     wire [31:0] issB_a_reg =
-        (rob_r1_tag[issB_idx] == {PW{1'b0}})                        ? 32'b0 :
-        (cdbS_valid && (cdbS_preg == rob_r1_tag[issB_idx]))         ? cdbS_val :
-        (cdbL_valid && (cdbL_preg == rob_r1_tag[issB_idx]))         ? cdbL_val :
-                                                                       rob_r1_val[issB_idx];
+        (rob_r1_tag[issB_idx] == {PW{1'b0}}) ? 32'b0 : rob_r1_val[issB_idx];
     wire [31:0] issB_op1 = (rob_a_sel[issB_idx] == A_PC)   ? rob_pc[issB_idx] :
                            (rob_a_sel[issB_idx] == A_ZERO) ? 32'b0 :
                                                               issB_a_reg;
     wire [31:0] issB_op2 =
-        (rob_r2_tag[issB_idx] == {PW{1'b0}})                        ? 32'b0 :
-        (cdbS_valid && (cdbS_preg == rob_r2_tag[issB_idx]))         ? cdbS_val :
-        (cdbL_valid && (cdbL_preg == rob_r2_tag[issB_idx]))         ? cdbL_val :
-                                                                       rob_r2_val[issB_idx];
+        (rob_r2_tag[issB_idx] == {PW{1'b0}}) ? 32'b0 : rob_r2_val[issB_idx];
     wire [31:0] classB_b_operand = rob_is_op[issB_idx] ? issB_op2 : rob_imm[issB_idx];
     wire [31:0] classB_result = alu_exec(issB_op1, classB_b_operand, rob_alu_ctrl[issB_idx]);
 
@@ -2471,19 +2490,19 @@ module core_ooo #(
             // `src_value` inlined here too - see the note above its
             // definition and above the load-side scan that replaced its
             // other two call sites.
+            //
+            // No same-cycle cdbS/cdbB/cdbL bypass here either, unlike an
+            // earlier version of this block - the identical
+            // headS_op1/issL_scan_addr/issB_a_reg argument applies: entry
+            // requires `rob_r1_ready[issST_idx]`/`rob_r2_ready[issST_idx]`,
+            // always co-written with `rob_r1_val`/`rob_r2_val` by the same
+            // clocked block, so a same-cycle bypass here could only ever
+            // match a value those already equal.
             if (issST_found) begin
                 rob_issued[issST_idx] <= 1'b1;
-                sq_addr[issST_idx]  <= ((rob_r1_tag[issST_idx] == {PW{1'b0}})                       ? 32'b0 :
-                                        (cdbS_valid && (cdbS_preg == rob_r1_tag[issST_idx])) ? cdbS_val :
-                                        (cdbB_valid && (cdbB_preg == rob_r1_tag[issST_idx])) ? cdbB_val :
-                                        (cdbL_valid && (cdbL_preg == rob_r1_tag[issST_idx])) ? cdbL_val :
-                                                                                                 rob_r1_val[issST_idx])
+                sq_addr[issST_idx]  <= ((rob_r1_tag[issST_idx] == {PW{1'b0}}) ? 32'b0 : rob_r1_val[issST_idx])
                                        + rob_imm[issST_idx];
-                sq_wdata[issST_idx] <= (rob_r2_tag[issST_idx] == {PW{1'b0}})                       ? 32'b0 :
-                                       (cdbS_valid && (cdbS_preg == rob_r2_tag[issST_idx])) ? cdbS_val :
-                                       (cdbB_valid && (cdbB_preg == rob_r2_tag[issST_idx])) ? cdbB_val :
-                                       (cdbL_valid && (cdbL_preg == rob_r2_tag[issST_idx])) ? cdbL_val :
-                                                                                                rob_r2_val[issST_idx];
+                sq_wdata[issST_idx] <= (rob_r2_tag[issST_idx] == {PW{1'b0}}) ? 32'b0 : rob_r2_val[issST_idx];
                 sq_size[issST_idx]  <= rob_mem_size[issST_idx];
             end
 
