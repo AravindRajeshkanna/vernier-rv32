@@ -91,6 +91,7 @@ Verilator
 Verilog
 Vivado
 Von
+XORing
 Xilinx
 Yosys
 Zicsr
@@ -183,6 +184,7 @@ ident
 initramfs
 injective
 inlined
+inlining
 inspectable
 interconnect
 iverilog
@@ -292,6 +294,7 @@ sret
 stdout
 strided
 strobed
+subgraph
 submodule
 subnodes
 subtest
