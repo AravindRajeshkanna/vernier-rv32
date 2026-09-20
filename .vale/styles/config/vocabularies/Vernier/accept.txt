@@ -18,6 +18,7 @@ Chipyard
 Combinational
 Cosimulation
 DDR
+DFFs
 DMA'd
 DRs
 DSPs
@@ -107,6 +108,7 @@ asm
 async
 atomic
 autoincrement
+backgrounded
 backporting
 benchmarked
 bidirectionality
@@ -223,6 +225,7 @@ misprediction
 mispredicts
 mosi
 mtime
+multicycle
 multilib
 musl
 mux
@@ -304,6 +307,8 @@ synthesisable
 synthesizable
 syscall
 sysfs
+techmap
+techmapped
 testbench
 testbenches
 testharness
