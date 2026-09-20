@@ -11,8 +11,9 @@
 // faster than it can settle produces routine setup-time violations, not
 // a working CPU. This PLL derives a clock the design's own measured
 // timing can actually meet, so a real board test is possible before
-// Round 7's own untried SDC-exception idea, or a deeper RTL fix, closes
-// the real 25 MHz gap.
+// Round 7 - an RTL-level fix, the only kind still open now that Round
+// 7's first idea (an SDC timing exception) checked out as not viable in
+// nextpnr-ecp5 today - closes the real 25 MHz gap.
 //
 // ---- Why 5 MHz, and a real caveat about it ----
 //

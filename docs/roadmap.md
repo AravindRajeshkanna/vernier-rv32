@@ -7661,6 +7661,40 @@ fix this investigation has tried so far (all RTL-level), and worth trying
 before reaching for another RTL change, precisely because it might not
 need one at all.
 
+**Update, before Round 7 could start: the SDC-exception idea above is not
+viable in nextpnr-ecp5 today - not untried, dead on arrival.** Checked
+directly against nextpnr's own upstream source
+(`common/kernel/sdc.cc`, `YosysHQ/nextpnr`) before spending another
+multi-hour synthesis+place-and-route cycle on it, the same discipline
+this investigation has held to at every prior round rather than trusting
+a plausible-sounding mechanism. The result: `set_multicycle_path` (and
+`set_max_delay`/`set_min_delay`/`set_clock_groups`) is not implemented at
+all - the SDC command dispatcher (`sdc.cc:216-236`) recognizes exactly
+`get_ports`/`get_cells`/`get_nets`/`get_pins`, `create_clock`, and
+`set_false_path`; anything else hits a hard `log_error` and aborts before
+place-and-route even starts. `set_false_path` itself (`sdc.cc:373-430`)
+parses `-from`/`-to` (a single exact net/pin/port name each - no
+`-through`, no lists, no wildcards) but is documented parse-only
+scaffolding: line 426 unconditionally logs `"set_false_path from: %s, to:
+%s does not do anything(yet)."` and returns without touching the timing
+graph at all, regardless of how correctly it is scoped. The PR that would
+have made this real - #1372, "Add timing exception support" - sat as an
+unmerged draft since September 2024 and was closed as stale, unmerged, on
+2026-09-15, five days before this check. No RTL-level attribute
+alternative exists either: nextpnr's own `docs/constraints.md` lists
+exactly three constraint mechanisms total (IO constraints, absolute
+placement via a `BEL` attribute, and clock constraints via `--freq`/
+`ctx.addClock`) - nothing for timing exceptions. Worth naming the failure
+mode this avoided: a syntax error fails loudly and cheaply, but a
+well-formed, correctly-matching `set_false_path` would have printed one
+easy-to-miss warning and then let the entire build run to completion
+looking exactly like a real, unconstrained result - precisely the kind of
+false positive this investigation has been careful to rule out at every
+round. **The real 25 MHz gap is still open, with no current candidate
+beyond another RTL change** - this correction closes out one specific
+wrong idea about how to attempt Round 7, it does not replace it with a
+new one.
+
 **What this does not yet establish.** Whether 8.68 MHz is representative
 of the *real* 320x240 framebuffer's own build (the diagnostic 8x8
 substitution never appears anywhere in the traced critical path above, so
@@ -7668,9 +7702,9 @@ there is no reason to expect it does, but this was not independently
 re-confirmed at real scale, which itself needs `wb_framebuffer.v`'s own
 crash closed or worked around again first). Whether other, different
 critical paths exist close behind this one - only the single worst path
-was traced. Whether the SDC-exception idea above actually works, once
-tried against nextpnr-ecp5 for real. All real, named, open questions for
-Round 7, not assumed answered here.
+was traced. Whether an RTL-level restructuring of this same path (the
+option the SDC idea was meant to avoid) can close it instead - a real,
+named, open question for Round 7, not assumed answered here.
 
 **A real, timing-closed, flashable bitstream for `CORE=ooo` - the first
 one this core has ever had - by underclocking rather than waiting on
