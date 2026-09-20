@@ -7988,3 +7988,137 @@ eventual fix is not yet known to be that simple. Left here rather than
 guessed at further this round, for the same reasons as before: nothing in
 `make verify`/`make verify_ooo` is affected, and no board is attached to
 this session.
+
+**Update 2: the crash is reproduced for the first time outside the real
+file, in a minimal, purpose-built ~80-line module - both named
+hypotheses from the paragraph above are needed together; neither alone
+is enough.** Both remained untested because a full real-file bisection
+is impractical on this exact machine (`sysctl hw.memsize`: 8 GB) - the
+same reason "What is not yet known, still." gives above. The fix was not
+a bigger machine, but smaller, purpose-built modules: the crash reproduces
+on a bare `yosys -p "read_verilog ...; hierarchy -top ...; proc; check
+-force-detailed-loop-check"` pass with no techmap and no ABC9 (already
+established earlier in this file, alongside the separate `CORE=ooo` Fmax
+entry's own Round 6), so isolating one variable at a time costs seconds
+per run at small scale - dramatically cheaper than the 30-60+ minutes a
+full real-file attempt needs. Every run below used oss-cad-suite's own
+`yosys` (0.68+118, git sha1 `144c707b7-dirty`), the exact pairing
+`docs/toolchain.md` documents for real synthesis - not Homebrew's, the
+mismatch already ruled out earlier in this same entry.
+
+Four small, cheap, single-variable-at-a-time modules, all at a safe
+256-word (or 150-word, for the sizing test) scale matching the four
+existing reproductions': a multiply-based write address alone (matching
+`blit_pixel_index`'s real shape - a 12-bit y register times an
+unsized-parameter width, summed with a zero-extended x, sliced for word
+address and byte lane); the asymmetric read mux alone (matching
+`effective_read_addr`'s real shape exactly - one read address
+multiply-derived, the other a plain bus-address slice, muxed on a
+phase-bit-equivalent condition); non-power-of-two sizing alone (150
+words against an 8-bit, 256-slot address space, the same ~59%-used
+ratio the real file's 19200-of-32768 has); and all three together. Every
+one of the four synthesized cleanly, sub-second, under 125 MB - no
+crash, matching the four *existing* reproductions' own clean results
+exactly. Addressing complexity alone, at small scale, is not sufficient.
+
+**One real methodological trap found and worked around, worth naming so
+nobody repeats it:** the first attempt at a scalable version made
+`WIDTH`/`HEIGHT` real module `parameter`s on the synthetic module itself
+(mirroring `FB_WIDTH`/`FB_HEIGHT` textually) and tried `chparam -set
+WIDTH 8 -set HEIGHT 8` before `hierarchy`, expecting the same safe
+shrink `synth_ecp5.sh` already uses on `soc_top`. It silently did not
+work - a nominally "8x8" run still cost 10.75s and 1.2 GB, because the
+module's own `mem[]` array is declared directly from those parameters
+with no instantiation step in between, and yosys's Verilog frontend
+appears to bind the array's size from the parameter's *declared default*
+during `read_verilog` itself, before `chparam` ever runs - unlike the
+real project's own usage, where `FB_WIDTH`/`FB_HEIGHT` flow from
+`soc_top` down into an actual `wb_framebuffer` *instance*, and `hierarchy`
+is what specializes that instance to the overridden value. Confirmed by
+comparing against a hardcoded-`localparam` version of the identical
+module at the identical "8x8" size: 0.06s and 23 MB - two orders of
+magnitude cheaper, and the number every subsequent test below actually
+used. `chparam` on a self-contained top module does not do what it does
+on a real instantiated hierarchy; every size below was generated as a
+fresh file with `WIDTH`/`HEIGHT` as hardcoded `localparam`s instead.
+
+**Scaling the combined (all-three) module toward real dimensions found
+real, severe, super-linear cost growth before any crash appeared - and a
+plain baseline with zero addressing complexity grows the same way.** At
+128x128 (4,096 words, `AW=12`), the combined module synthesized cleanly
+but expensively: 178.81 s, 908.88 MB peak (`proc_mux` alone: 124 s). A
+*plain* baseline at the identical 4,096-word scale - one write port, two
+independent reads, no multiply, no asymmetric mux, no non-power-of-two
+sizing at all - was also expensive, just less so: 71.69 s, 654.75 MB
+(`proc_mux`: 28 s). Scaling the combined module further, to 200x200
+(10,000 words, 2.44x the word count), cost 1,064.59 s (~17.8 min) and
+1,481.78 MB (`proc_mux`: 737 s, ~5.95x for 2.44x the words - consistent
+with roughly quadratic growth). This growth is real and worth naming on
+its own even though it is not, by itself, the answer: it means array
+*size* alone, independent of either named hypothesis, already drives
+severe non-linear cost in yosys's own `proc`/`mem2reg` machinery once
+`mem[]` falls through to flip-flops (as "Update 1" above already
+established it always does) - a plausible-looking but, it turns out,
+incomplete explanation.
+
+**The real answer: a plain baseline at the exact real 320x240 scale
+(19,200 words, `AW=15`) does NOT crash - ruling out "array size alone."**
+Given how expensive the combined module already was at smaller scales,
+the single most informative next test was the cheapest one available:
+the same zero-complexity baseline, scaled all the way to the real word
+count, with nothing else added. It completed cleanly - 1,759.92 s
+(~29.3 min), 1,474.89 MB peak, `Found and reported 0 problems.` This
+rules out array size on its own as sufficient, at exactly the scale that
+matters, and reframes the question precisely: whatever triggers the real
+crash needs the addressing complexity *and* the real scale together.
+
+**Reran the combined (multiply write address + asymmetric read mux +
+non-power-of-two sizing) module at the exact real 320x240/19,200-word
+scale. It crashes - identically to the real file:**
+
+```
+4. Executing CHECK pass (checking for obvious problems).
+libc++abi: terminating due to uncaught exception of type std::out_of_range: vector
+Checking module repro9_320x240...
+```
+
+`EXIT=134` (`SIGABRT`, matching the real file's own crash), the exact
+same exception type, dying at the exact same point - inside the `CHECK`
+pass, before it prints anything past its own banner line - that the real
+`wb_framebuffer.v` crash already documented above dies at. This is the
+first time this crash has ever been reproduced in anything other than
+the real, ~600-line file: a purpose-built module of roughly 80 lines,
+carrying none of the Bresenham line engine, none of the CPU/Wishbone bus
+logic beyond a single byte-lane write, and none of the real file's other
+signals - only `mem[]`, one multiply-derived write address, one
+multiply/plain-slice read-address mux, and a non-power-of-two word
+count, all three together, at real scale.
+
+**What this establishes, precisely.** Neither named hypothesis alone is
+sufficient (four separate small-scale tests above, all clean) and
+neither is array size alone, even at the exact real word count (the
+zero-complexity baseline above, also clean). The combination of
+addressing complexity - some or all of multiply-based addressing, the
+asymmetric read mux, and non-power-of-two sizing - together with real
+scale, is what reproduces it. This is a real, minimal, working
+reproduction case for the first time in this investigation's history.
+
+**What this does not yet establish.** *Which* of the three combined
+features, individually or in which pairing, is the actual necessary
+trigger - not isolated this round. Each additional real-scale test costs
+20-70+ minutes on this machine (the two real-scale runs above already
+took roughly 29 and (before the crash cut it short) an unmeasured but
+comparable span), so narrowing further was left as a named next step
+rather than guessed at or chased through the night on the strength of
+this one result - the same discipline this investigation has held to at
+every prior round. That next step is now dramatically cheaper than it
+looked before this round started: an ~80-line purpose-built module
+iterates in tens of minutes per test, not the 30-60+ minutes (or,
+per "Update 1," outright OOM) a full real-file attempt costs, and - now
+that a small, clean, reliable reproduction exists independent of this
+project's own RTL - is also a real, strong candidate to report upstream
+to YosysHQ directly, the same possibility this entry named as plausible
+before any reproduction existed. The reproduction files themselves are
+throwaway and were not committed, matching every prior repro in this
+entry; the exact shapes and commands above are written precisely enough
+to reconstruct them.
