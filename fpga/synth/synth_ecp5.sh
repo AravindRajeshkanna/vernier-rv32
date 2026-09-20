@@ -49,6 +49,24 @@ esac
 PACKAGE=${PACKAGE:-CABGA381}
 BUILD=fpga/build
 
+# Diagnostic-only overrides on rtl/soc/soc_top.v's own real parameters -
+# unset by default, so every existing board target's own real,
+# full-scale build is completely unaffected. FB_WIDTH/FB_HEIGHT exist
+# specifically to work around rtl/soc/wb_framebuffer.v's own long-running,
+# separately-tracked yosys CHECK-pass crash at its real 320x240 scale
+# (docs/roadmap.md's own account has the full investigation) - shrinking
+# them lets synthesis proceed past that crash entirely for a build that
+# does not care about the framebuffer's own real behavior, the same
+# substitution that investigation's own "Update 1" already validated as
+# safe (8x8 through 128x128 all reach `CHECK` cleanly). This does **not**
+# fix that crash - it only lets other work (this file's own
+# `ulx3s85-underclock` case among it) reach real synthesis without
+# needing a hand-rolled, one-off invocation outside this script every
+# time, the way an earlier round of the "CORE=ooo has no Fmax"
+# investigation first had to.
+FB_WIDTH=${FB_WIDTH:-}
+FB_HEIGHT=${FB_HEIGHT:-}
+
 # Ways to build this:
 #
 #   ./fpga/synth/synth_ecp5.sh                   board-agnostic, timing only
@@ -308,6 +326,33 @@ case "$BOARD" in
                    fpga/video_pll.v fpga/tmds_serialize.v rtl/soc/tmds_encode.v"
         BOARD_DEFINES="-DWITH_VIDEO"
         ;;
+    ulx3s85-underclock)
+        # Same board and pins as plain ulx3s85, with fpga/underclock_pll.v
+        # wired in to run the SoC itself off a real, derived clock slower
+        # than the board's raw 25 MHz oscillator - not a smaller/different
+        # design, the same one, timed to what it can actually meet.
+        # Exists specifically because docs/roadmap.md's "CORE=ooo has no
+        # Fmax" entry (Round 6) found a real, closed timing report of only
+        # 8.68 MHz for that core - too slow for the board's own 25 MHz
+        # requirement, but real enough to target directly once derived
+        # correctly. See fpga/underclock_pll.v's own header for why 5 MHz
+        # and the real `ecppll` warning that came with it.
+        DEVICE=${DEVICE:-85k}
+        TOP=${TOP:-ulx3s_top}
+        LPF=${LPF:-fpga/constraints/ulx3s.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v fpga/underclock_pll.v"
+        BOARD_DEFINES="-DUNDERCLOCK"
+        # Must match fpga/underclock_pll.v's own real, generated output
+        # frequency exactly - nothing checks that the two agree, the same
+        # "docs/practices.md section 11" duplication risk RAM_BYTES/
+        # FB_WIDTH already carry elsewhere in this codebase. CLK_HZ is a
+        # real, unconditional parameter on both ulx3s_top and soc_fpga
+        # already (drives UART_CLKS_PER_BIT and everything else
+        # timing-derived correctly for whatever it is set to), so this
+        # needs no RTL-side `ifdef of its own - only this override.
+        UNDERCLOCK_HZ=${UNDERCLOCK_HZ:-5000000}
+        ;;
     "")
         # 45k, because 64 KB of on-chip RAM needs 67 block RAMs and a 25F
         # has 56. See fpga/README.md's device table.
@@ -319,8 +364,8 @@ case "$BOARD" in
         ;;
     *)
         echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s85-video," >&2
-        echo "       ulx3s85-ram, ulx3s85-probe, ulx3s85-trapcheck, ulx3s85-sdramcheck," >&2
-        echo "       ulx3s-diag, ulx3s-cmd0, ulx3s-sdram, or unset)" >&2
+        echo "       ulx3s85-underclock, ulx3s85-ram, ulx3s85-probe, ulx3s85-trapcheck," >&2
+        echo "       ulx3s85-sdramcheck, ulx3s-diag, ulx3s-cmd0, ulx3s-sdram, or unset)" >&2
         exit 1
         ;;
 esac
@@ -441,12 +486,29 @@ mkdir -p "$BUILD"
 # rather than the wrong one. A missing file cannot be misread.
 rm -f "$BUILD/$TOP.bit" "$BUILD/$TOP.bit.target" "$BUILD/$TOP.bit.ramimage.hex"
 
+# Parameter overrides on already-elaborated modules, applied between
+# `read_verilog` and `synth_ecp5` - empty (and so silently skipped) unless
+# the corresponding variable is actually set, so every board target that
+# does not ask for one of these is completely unaffected. FB_WIDTH/
+# FB_HEIGHT target `soc_top` (the module that actually declares them,
+# rtl/soc/soc_top.v:80-81); UNDERCLOCK_HZ targets `$TOP` itself
+# (`CLK_HZ`, declared on both fpga/ulx3s_top.v and fpga/soc_fpga.v, with
+# the value flowing down through the existing `.CLK_HZ(CLK_HZ)` port
+# connection unchanged).
+CHPARAM_SOC_TOP=""
+[ -n "$FB_WIDTH" ]  && CHPARAM_SOC_TOP="$CHPARAM_SOC_TOP -set FB_WIDTH $FB_WIDTH"
+[ -n "$FB_HEIGHT" ] && CHPARAM_SOC_TOP="$CHPARAM_SOC_TOP -set FB_HEIGHT $FB_HEIGHT"
+CHPARAM_TOP=""
+[ -n "${UNDERCLOCK_HZ:-}" ] && CHPARAM_TOP="$CHPARAM_TOP -set CLK_HZ $UNDERCLOCK_HZ"
+
 # Stated up front and again at the end: a bitstream is device-specific, and
 # loading one built for the wrong ECP5 fails in ways that look like a broken
 # design rather than a broken command line.
 echo "=== target: ${BOARD:-generic}, LFE5U-${DEVICE%k}F, $PACKAGE ==="
 echo "=== yosys ==="
 ( cd "$BUILD" && yosys -p "read_verilog $YOSYS_DEFINES $(echo "$RTL" | sed "s|[^ ][^ ]*|$ROOT/&|g"); \
+    ${CHPARAM_SOC_TOP:+chparam $CHPARAM_SOC_TOP soc_top;} \
+    ${CHPARAM_TOP:+chparam $CHPARAM_TOP $TOP;} \
     synth_ecp5 -top $TOP -json $TOP.json" )
 
 # ---- place and route, retrying seeds until timing closes ----
