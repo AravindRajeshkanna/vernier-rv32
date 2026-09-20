@@ -166,6 +166,7 @@ fallthrough
 firmwares
 fixmap
 fixup
+flashable
 floorplanning
 framebuffer
 fuzzer
@@ -322,6 +323,8 @@ unbuilt
 uncached
 unconfigured
 undelegated
+underclocked
+underclocking
 undercounted
 underspecified
 undrivable

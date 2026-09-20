@@ -30,7 +30,8 @@ retries seeds and stops at the first close — the normal build closes by seed
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
 | **Fmax with I/O constrained** | ⚠️ **23.18–25.92 MHz** (85F, six placement seeds, with the registered ack) — **4 of 6 land under the board's 25 MHz**. Margin is thin; `synth_ecp5.sh` retries seeds and normally closes by seed 3 (confirmed 2026-08-26: seed 3, 25.96 MHz routed). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
 | **`CORE=ooo` synthesis** | ✅ **runs, real numbers** — 78 DP16KD (37%, essentially unchanged from in-order's 80/38%), 52,042 TRELLIS_COMB (**62%**, ~3x in-order), 12 MULT18X18D. First time this core has been synthesized at all — `synth_ecp5.sh` had no `CORE=` knob before this. |
-| **`CORE=ooo` Fmax** | ❌ **no number exists** — place-and-route's static timing analysis fails outright, deterministically, on all six seeds: `ERROR: Timing analysis failed due to combinational loops`, not a missed frequency. See [Known defects](../docs/roadmap.md#known-defects) and the "Stage 1d was built anyway" section of `docs/roadmap.md` for the full finding — almost certainly the same CDB-bypass cycle `sim/verilator_soc.vlt`'s own `UNOPTFLAT` waiver already names for simulation, but static timing analysis cannot use the runtime reasoning that waiver relies on. |
+| **`CORE=ooo` Fmax** | ⚠️ **8.68 MHz at the board's real 25 MHz target** — place-and-route's static timing analysis used to fail outright, deterministically, with `ERROR: Timing analysis failed due to combinational loops`; that closed (`docs/roadmap.md`'s "CORE=ooo has no Fmax" entry, Round 6), and the real number underneath still falls well short of 25 MHz. Round 7 (an untried SDC multicycle/false-path exception on the traced critical path) is the next named step toward closing the real gap. |
+| **`CORE=ooo`, underclocked, on a board** | ✅ **a real, timing-closed bitstream exists** — `BOARD=ulx3s85-underclock` (`fpga/underclock_pll.v`, an `EHXPLLL` deriving 5 MHz from the board's own 25 MHz oscillator) closes at **10.17 MHz achieved against a 5 MHz target**, first attempt, no seed retries. `fpga/build/ulx3s85-underclock.bit` is real and flashable; not yet loaded onto a board this session. |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
 | Running on a board | ✅ **ULX3S / LFE5U-85F** — boots, runs the acceptance test, `SOC-TEST: PASS` |
@@ -1263,10 +1264,11 @@ that the module vanished.
 
 ## Before you flash: check what the bitstream is
 
-**Six board targets write the same `fpga/build/ulx3s_top.bit`** — `ulx3s85`,
-`-ram`, `-probe`, `-trapcheck`, `-sdramcheck`, `-sdramfull` — carrying six
-different programs, and `openFPGALoader` cannot tell them apart. Every build
-now writes a stamp beside it saying which one it is:
+**Seven board targets write the same `fpga/build/ulx3s_top.bit`** — `ulx3s85`,
+`-ram`, `-probe`, `-trapcheck`, `-sdramcheck`, `-sdramfull`, `-underclock` -
+carrying seven different programs (or, for `-underclock`, the same boot ROM
+at a different clock), and `openFPGALoader` cannot tell them apart. Every
+build now writes a stamp beside it saying which one it is:
 
 ```sh
 $ cat fpga/build/ulx3s_top.bit.target

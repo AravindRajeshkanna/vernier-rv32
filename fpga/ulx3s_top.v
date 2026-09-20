@@ -138,11 +138,29 @@ module ulx3s_top #(
     wire        sdram_dq_oe;
     assign sdram_d = sdram_dq_oe ? sdram_dq_o : 16'bz;
 
+    // ---- the SoC's own clock: the board's raw oscillator, or a real,
+    // derived, slower one - opt-in, see fpga/underclock_pll.v's own
+    // header for why ----
+    //
+    // `soc_clk` feeds *both* the SoC itself and fpga/sdram_clk_out.v
+    // below - fpga/sdram_clk_out.v's own header explains why that pairing
+    // must never drift apart (a probe clocked differently from the SoC
+    // "proves nothing about the SoC"). Whichever clock this is, both
+    // instances see the same one.
+`ifdef UNDERCLOCK
+    wire soc_clk;
+    underclock_pll UNDERCLOCK_PLL (
+        .clk_25mhz(clk_25mhz), .clk_soc(soc_clk), .locked()
+    );
+`else
+    wire soc_clk = clk_25mhz;
+`endif
+
     // The SDRAM clock. **Not** driven straight from the oscillator any more -
     // that is what the board rejected. See fpga/sdram_clk_out.v for the
     // measurement and the reasoning; `SDRAM_CLK=aligned` restores the old
     // behaviour for anyone who wants to reproduce it.
-    sdram_clk_out SDCLK (.clk(clk_25mhz), .sdram_clk(sdram_clk));
+    sdram_clk_out SDCLK (.clk(soc_clk), .sdram_clk(sdram_clk));
 
     // ---- GPIO ----
     // The SoC's 16 bidirectional pins go to the header: gpio[13:0] to
@@ -196,7 +214,7 @@ module ulx3s_top #(
         // nothing checks that the three agree.
         .RAM_BYTES(65536)
     ) SOC (
-        .clk(clk_25mhz),
+        .clk(soc_clk),
         .rst_n(rst_n),
         .uart_tx(ftdi_rxd),     // FPGA transmits into the FTDI's receiver
         .uart_rx(ftdi_txd),

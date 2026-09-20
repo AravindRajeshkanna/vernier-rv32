@@ -2369,6 +2369,23 @@ sim_video_pll: sim/sim_video_pll.out
 	@grep -aq "VIDEO-PLL-TEST: PASS" sim/video_pll.log && echo "VIDEO PLL OK" || \
 	    { echo "FAILED: video PLL"; exit 1; }
 
+# ---- underclock PLL (real ULX3S hardware test for CORE=ooo) ----
+#
+# fpga/underclock_pll.v's EHXPLLL body has no Icarus model, the same
+# situation as fpga/video_pll.v/fpga/sdram_clk_out.v above - a real
+# nextpnr-ecp5 run is what actually confirms it, recorded in
+# docs/roadmap.md's "CORE=ooo has no Fmax" entry, not something
+# `make verify` can gate. This checks the simulation-mode fallback's own
+# divider logic gives the real 5:1 clk_25mhz:clk_soc ratio, and that
+# `locked` behaves like a real PLL's rather than being tied high.
+sim/sim_underclock_pll.out: sim/tb_underclock_pll.v fpga/underclock_pll.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_underclock_pll.v fpga/underclock_pll.v
+
+sim_underclock_pll: sim/sim_underclock_pll.out
+	cd sim && $(VVP) sim_underclock_pll.out $(VVP_DUMP) | tee underclock_pll.log
+	@grep -aq "UNDERCLOCK-PLL-TEST: PASS" sim/underclock_pll.log && echo "UNDERCLOCK PLL OK" || \
+	    { echo "FAILED: underclock PLL"; exit 1; }
+
 # ---- TMDS serializer (Phase 4, stage 3) ----
 #
 # fpga/tmds_serialize.v's ODDRX1F body has no Icarus model, same situation
