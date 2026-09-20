@@ -633,7 +633,7 @@ The short version:
 | Phase | | Status |
 |---|---|---|
 | 0 | Core, SoC and peripherals on silicon | ✅ done — `SOC-TEST: PASS` on an LFE5U-85F |
-| 1 | **Superscalar issue and out-of-order execution** | ✅ **built and measured, all the way through 1d** — `rtl/ooo/core_ooo.v` has register renaming, an 8-entry reorder buffer and general out-of-order issue, `make verify_ooo` green, Linux boots to userspace on it too. CoreMark says the honest thing: barely faster than the in-order core and slower than the narrower design it replaced — the ROI case made *before* 1d was built held up once it was measured. `CORE=ooo` still has no measurable Fmax at all (place-and-route fails outright on a combinational loop, still open after several rounds of investigation). Full accounting in `docs/roadmap.md` |
+| 1 | **Superscalar issue and out-of-order execution** | ✅ **built and measured, all the way through 1d** — `rtl/ooo/core_ooo.v` has register renaming, an 8-entry reorder buffer and general out-of-order issue, `make verify_ooo` green, Linux boots to userspace on it too. CoreMark says the honest thing: barely faster than the in-order core and slower than the narrower design it replaced — the ROI case made *before* 1d was built held up once it was measured. `CORE=ooo`'s own place-and-route now completes and produces a real Fmax number for the first time (Round 6 of six investigation rounds closed the combinational loop that used to make timing analysis fail outright) — 8.68 MHz against the board's 25 MHz requirement, an ordinary timing shortfall now, with a real critical path traced (routing-dominated, running through the debug module's own register-write path) and a candidate fix named but not yet tried. Full accounting in `docs/roadmap.md` |
 | 2 | Break the memory ceiling — external DRAM | ✅ **done, on silicon** — 32 MB of external SDRAM confirmed byte-for-byte, a 99 KB program sent over the serial line and executed from it. 64 KB of block RAM is no longer the ceiling |
 | 3 | Make it fast enough to be interesting — caches, interrupt-driven UART | ✅ I-cache **1.79×** and D-cache **1.11×** on CoreMark, interrupt-driven UART done, both in the bus adapter and shared by both cores. Hardware PTE A/D auto-update and multi-word cache lines remain |
 | 4 | Video out | ✅ **encoder, PLL, serializer and real GPDI pin wiring all done**, gated in `make verify`, opt-in on hardware (`BOARD=ulx3s85-video`) since it costs this board's thin timing margin. Only a real monitor hasn't confirmed it yet |
@@ -669,10 +669,12 @@ and what must not regress while it happens.
 Several known defects are open and unscheduled, written down rather than
 left to be rediscovered — among them the intermittent `ISA-TIMEOUT` under
 `make verify` (still undiagnosed; it self-reports rather than hanging
-silently now, which is not the same as being fixed), and `CORE=ooo` having
-no measurable Fmax at all — place-and-route's static timing analysis fails
-outright on a combinational loop, a different and more significant gap than
-a missed frequency, and still open after several rounds of investigation.
+silently now, which is not the same as being fixed), and `CORE=ooo`'s own
+Fmax — place-and-route's static timing analysis used to fail outright on a
+combinational loop; that closed (Round 6), and the real number it uncovered
+underneath, 8.68 MHz, still fails the board's 25 MHz requirement by a wide
+margin, an ordinary timing shortfall rather than a structural one, with a
+real critical path traced and a candidate fix named but not yet tried.
 `docs/roadmap.md`'s own "Known defects" section has the full, current list.
 
 ---

@@ -6046,9 +6046,10 @@ already established above, rather than reading whatever the ambient
 `$(CORE)` happens to mean. `software/linux/build/sdram.bin` (the flat
 binary `linuxpayload` reports for a real board flash) stays a fixed name
 on purpose: no board build has ever asked for anything but `CORE=inorder`
-(`rtl/ooo/core_ooo.v` still has no measurable Fmax on real hardware at
-all), so there is no second `$(CORE)` value it could ever go stale
-against outside simulation.
+(`rtl/ooo/core_ooo.v`'s own measured Fmax, once one existed to measure -
+see "CORE=ooo has no Fmax," Round 6 - still fails the board's 25 MHz
+requirement by a wide margin), so there is no second `$(CORE)` value it
+could ever go stale against outside simulation.
 
 `fpga/synth/synth_ecp5.sh` (which already threads its own `$CORE` through
 to `$(CORE_RTL)`/`$(CORE_DEFINES)` for the RTL file list) now copies
@@ -6271,11 +6272,14 @@ this bullet used to describe, and not something this phase's own "Done
 when" bar requires closing.
 
 **Named honestly, not folded into the plan above as if already
-mitigated:** `rtl/ooo/core_ooo.v` still has no measurable Fmax at all on
-real hardware (Phase 1's own still-open place-and-route/combinational-
-loop finding) - a heterogeneous board build inherits that exactly as the
-homogeneous OoO-only one already does, and this phase does not change
-it. No board build has ever asked for `NUM_HARTS>1` of any kind yet, so
+mitigated:** `rtl/ooo/core_ooo.v`'s own measured Fmax (Phase 1's own
+place-and-route entry, "CORE=ooo has no Fmax," Round 6: the
+combinational-loop defect closed, but the real number it uncovered - 8.68
+MHz - still fails the board's 25 MHz requirement by a wide margin) is not
+yet a real board configuration - a heterogeneous board build inherits that
+exactly as the homogeneous OoO-only one already does, and this phase does
+not change it. No board build has ever asked for `NUM_HARTS>1` of any kind
+yet, so
 "on real hardware" is not a near-term claim for this phase either,
 matching where Phase 13 itself still stands. And the verification
 surface does genuinely grow by a third configuration on top of the two
@@ -7147,7 +7151,14 @@ holds that, but the labels are named for byte offsets because the original had
 no symbol names to recover. Anyone extending the core regression will be
 working with that.
 
-**`CORE=ooo` has no Fmax: nextpnr's static timing analysis fails outright on
+**Update, Round 6: the combinational loop this entry opens with is closed -
+`CORE=ooo` now has a real, if far too low, measured Fmax (8.68 MHz against
+a 25 MHz target).** The account below, through Round 5, is preserved
+exactly as it was written and is still the real history of how that loop
+was found, chased, and eventually closed - "Round 6," further down this
+same entry, has the real evidence and the current, accurate status.
+
+**`CORE=ooo` had no Fmax: nextpnr's static timing analysis failed outright on
 a combinational loop.** Six placement seeds, `BOARD=ulx3s85`, six identical
 `ERROR: Timing analysis failed due to combinational loops` — not a missed
 frequency, no timing report produced at all. One reported loop (nextpnr's
@@ -7567,6 +7578,99 @@ any remaining loop - was not investigated further this round either.
 Whether removing three more redundant arms reduces or closes the loop
 count is Round 6's own first question to answer with real evidence, not
 this round's to assume.
+
+**Round 6: the combinational loop is gone. `CORE=ooo` has a real,
+measurable Fmax for the first time ever - and it is 8.68 MHz, not 25.**
+Cheap evidence first, matching the sequencing every prior round
+established: a bare `yosys -p "read_verilog ...; hierarchy -top core_ooo;
+proc; check -force-detailed-loop-check"`, scoped to `core_ooo.v` and its
+direct dependencies only (`regfile_phys.v`, `mmu.v`, `pmp.v`, `csr_file.v`,
+`muldiv_div.v`, `btb.v`), found no loop at all - completed in 4 seconds.
+Widening the same bare check to the full SoC (`soc_top.v`, every peripheral,
+`wb_interconnect.v`/`cpu_wb.v` with the D-cache enabled) still found none,
+once `rtl/soc/wb_framebuffer.v`'s own unrelated, already-documented yosys
+crash (below) was worked around the same way its own investigation already
+validated - `chparam -set FB_WIDTH 8 -set FB_HEIGHT 8 soc_top`, a
+diagnostic-only substitution that never touches the framebuffer's own
+logic, applied because that crash reproduces even in this bare `check`
+pass, not only inside `synth_ecp5`'s own later, techmapped one as first
+assumed - completed in 22 seconds. Neither result is the authoritative
+answer (`check`'s own loop detector runs on the pre-technology-mapped,
+pre-ABC9 netlist, a genuinely different graph than what `nextpnr-ecp5`
+statically times after real synthesis), but both pointed the same
+direction strongly enough to justify the real, expensive check next.
+
+**The real check: full `synth_ecp5` synthesis, then a real `nextpnr-ecp5`
+place-and-route, on `BOARD=ulx3s85`, `CORE=ooo`, with the same diagnostic
+framebuffer substitution (never shipped, `fpga/synth/synth_ecp5.sh` itself
+untouched - this ran as a standalone invocation built for this check, since
+the script has no `FB_WIDTH`/`FB_HEIGHT` override of its own).** Real
+runtime, backgrounded and watched rather than guessed at:
+
+| Stage | Wall-clock time |
+|---|---|
+| `yosys synth_ecp5` (full techmap + ABC9) | 7,268.6 s (2h 1m), `abc9_exe` alone: 7,193 s |
+| `nextpnr-ecp5` (place + route, single seed) | 28h 17m 19s (101,365 s user + 474 s system CPU, 99% throughout) |
+| **Total** | **~30h 18m** |
+
+Pre-place utilisation: 74,679/83,640 LUT4s (89%), 16,964/83,640 DFFs (20%).
+Placement itself finished quickly (cooled to `temp = 0.000000` within the
+first ~40 iterations); essentially the entire 28-hour figure is routing on
+an 89%-utilised 85F - real, watched cycle by cycle rather than assumed:
+router iteration count and remaining-arc count were sampled repeatedly
+across the run, arcs falling from 173,000-plus at the start to 0 at
+completion, non-monotonically (real negotiated-congestion oscillation, not
+a stall - confirmed by watching `ps`'s own CPU-time delta stay near 100%
+throughout, including through several individual multi-hundred-second
+batches late in the run).
+
+**No `ERROR: Timing analysis failed due to combinational loops` anywhere.**
+Instead, for the first time in this entire investigation, a real, complete
+static timing report:
+
+```
+Info: Max frequency for clock '$glbnet$clk_25mhz$TRELLIS_IO_IN': 8.68 MHz (FAIL at 25.00 MHz)
+```
+
+`ERROR`, not silence - this still fails the board's own 25 MHz constraint,
+by a wide margin - but it is a *timing* failure now, the same kind every
+other configuration in this project already reports and works against, not
+a structural one nothing could act on. Rounds 1-5's combined effect - two
+proven-dead arms removed by Round 2/3, three more by this same argument in
+Round 5 - closed every combinational cycle nextpnr's static analysis could
+find.
+
+**The real critical path, traced the same way every prior round's loop
+samples were - real signal names from the real report, not inferred:**
+115.17 ns total (23.78 ns logic, 91.39 ns routing - routing dominates,
+which is itself informative), from `core_ooo.v`'s own `rob_r1_tag[7]`
+register, through `rob_a_sel`'s Class-B operand-source mux, into
+`rtl/mmu.v`'s `is_user` privilege check, back through `issL_idx`/
+`rob_funct3` into the out-of-order load-issue PMP check
+(`PMP_ISSL.size`), into `csr_file.v`'s `wdata`, into `rtl/debug/dm.v`'s
+`dbg_reg_wdata`, and finally into `regfile_phys.v`'s own `RF.regs[53]` -
+by way of the same debug-write priority mux (`rf0_we`/`rf0_wdata`)
+`core_ooo.v`'s own header comment already documents. This path has no
+reason to exist on the clock's own critical edge: JTAG debug register
+writes are a rare, host-paced, already-slow operation (the whole halted
+window this mux's own safety argument leans on), not something any real
+workload depends on running at full clock speed. A `--sdc` multicycle or
+false-path exception scoped to exactly this path is a real, cheap,
+untried candidate for Round 7 - genuinely different in kind from every
+fix this investigation has tried so far (all RTL-level), and worth trying
+before reaching for another RTL change, precisely because it might not
+need one at all.
+
+**What this does not yet establish.** Whether 8.68 MHz is representative
+of the *real* 320x240 framebuffer's own build (the diagnostic 8x8
+substitution never appears anywhere in the traced critical path above, so
+there is no reason to expect it does, but this was not independently
+re-confirmed at real scale, which itself needs `wb_framebuffer.v`'s own
+crash closed or worked around again first). Whether other, different
+critical paths exist close behind this one - only the single worst path
+was traced. Whether the SDC-exception idea above actually works, once
+tried against nextpnr-ecp5 for real. All real, named, open questions for
+Round 7, not assumed answered here.
 
 **RESOLVED - Interrupt-driven UART TX (#56) failed on `CORE=ooo`; root-caused
 and fixed. See "Stage 1d was built anyway," Update 9, for the full account
