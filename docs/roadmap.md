@@ -8197,3 +8197,42 @@ question from Update 3 not yet answered. Given how precisely this has
 now narrowed (one multiply, one write, real scale - nothing else), this
 is a strong point to hand off for an upstream YosysHQ report rather than
 keep narrowing operator-by-operator on this machine.
+
+**Update 5: answered the last open question - it is not multiplication
+specifically. Any comparably wide, non-trivial write address triggers
+it.** Replaced Update 3's multiply-based write address with a five-term
+shift/add chain (`{20'd0, cur_y} + {19'd0, cur_x, 1'b0} + {18'd0,
+cur_y, 2'b0} + {17'd0, cur_x, 3'b0} + {16'd0, cur_y, 4'b0}`) - no `*`
+operator anywhere in the design, and deliberately not mathematically
+equal to the original `cur_y*WIDTH+cur_x` (so yosys's own optimizer
+cannot fold it back into an equivalent multiply). Otherwise identical to
+Update 3's own crashing test: same write structure, same real
+320x240/19,200-word scale, feeding only the write path.
+
+It crashes - identically:
+
+```
+4. Executing CHECK pass (checking for obvious problems).
+libc++abi: terminating due to uncaught exception of type std::out_of_range: vector
+Checking module repro12_addchain_write_320x240...
+```
+
+Same `EXIT=134`, same exception, same point in `CHECK`. Multiplication
+is not the operator that matters - a genuinely different arithmetic
+shape (five-term shift/add, no multiply cell possible anywhere in this
+design) reproduces the identical failure.
+
+**The minimal trigger is now fully characterized, across five rounds of
+narrowing (Updates 1-5): a wide, non-trivial, *computed* write address -
+built from more than a simple slice of an existing signal, regardless of
+which arithmetic operator computes it - driving a `mem2reg`'d array at
+real ~19,200-word scale.** Every clean baseline in this investigation
+used a direct slice (`bus_addr[AW-1:0]`) for its write address; every
+crashing case computed the write address from an actual expression
+(multiply, or now, shift/add) wide enough to plausibly produce any value
+across the address's full bit range, not just a value known to fit
+`WORDS`. This is now precise enough, and small enough (an ~85-line
+module, no dependency on this project's own RTL beyond the address
+shape it's modeled on), to be a strong, complete candidate for a direct
+upstream report to YosysHQ - not attempted in this round, left for the
+user's own explicit decision on whether and how to file it.
