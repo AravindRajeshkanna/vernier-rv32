@@ -8236,3 +8236,33 @@ module, no dependency on this project's own RTL beyond the address
 shape it's modeled on), to be a strong, complete candidate for a direct
 upstream report to YosysHQ - not attempted in this round, left for the
 user's own explicit decision on whether and how to file it.
+
+**Update 6: tested a real, concrete candidate fix - registering the
+computed write address one cycle ahead of use - and it does not work.**
+With the trigger now fully characterized as "a computed, not
+directly-sliced, write address," a natural real-world fix suggests
+itself: pipeline the address, so the actual `mem[addr] <= ...` write
+reads a simple registered value rather than a same-cycle wide
+computation. Took Update 5's own crashing shift/add-chain module and
+added exactly that - `eng_word_addr`/`eng_byte_lane` registered one
+cycle ahead, the write using the registered versions, nothing else
+changed. Same real 320x240/19,200-word scale.
+
+It still crashes - identically:
+
+```
+4. Executing CHECK pass (checking for obvious problems).
+libc++abi: terminating due to uncaught exception of type std::out_of_range: vector
+Checking module repro13_registered_addr_320x240...
+```
+
+Same `EXIT=134`, same exception, same point. This rules out a real,
+plausible, commonly-reached-for fix: the crash is not about
+combinational-versus-registered timing at the write port. Whatever
+yosys's own `CHECK` pass is tripping over evidently looks at the write
+address's *provenance* - traceable back to a wide, multi-term
+computation versus a simple slice of an existing signal - regardless of
+whether a register sits between that computation and the write itself.
+A real fix, if this project chases one before an upstream yosys fix
+lands, needs to change what the address is computed *from*, not merely
+when it is computed relative to the clock edge.
