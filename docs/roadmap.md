@@ -8266,3 +8266,36 @@ whether a register sits between that computation and the write itself.
 A real fix, if this project chases one before an upstream yosys fix
 lands, needs to change what the address is computed *from*, not merely
 when it is computed relative to the clock edge.
+
+**Update 7: tested a second real candidate fix - explicitly bounding
+the computed address's range via `% WORDS` - and it also does not
+work.** Every crashing case so far used an `AW`-bit slice of a wide
+computation, technically capable of spanning the full `0..2^AW-1`
+range, wider than `WORDS` itself (Update 1's own finding - 19,200 of
+32,768 possible values). A real fix candidate: force the address
+provably into range with an explicit `% WORDS`, so yosys's own range
+analysis has a mathematical guarantee to work with, not just a wide
+slice. Took Update 5's own crashing module and added exactly that -
+`eng_word_addr = chain_index[AW+1:2] % WORDS` - nothing else changed.
+Same real scale.
+
+It still crashes - identically:
+
+```
+4. Executing CHECK pass (checking for obvious problems).
+libc++abi: terminating due to uncaught exception of type std::out_of_range: vector
+Checking module repro14_bounded_addr_320x240...
+```
+
+Same `EXIT=134`, same exception, same point. Two real, independent fix
+ideas - pipelining the address, and provably bounding its range - have
+now both failed to change the outcome at all. Neither *when* the
+address is computed nor *whether its value is provably in range*
+matters; what triggers this is evidently structural - the write
+address being sourced from any non-trivial computed expression at all,
+rather than a direct signal slice, regardless of that expression's own
+timing or provable bounds. Two failed fix attempts, on top of the full
+characterization Updates 1-5 already established, is a strong signal
+that further guessing at RTL-side fixes has a low hit rate from here;
+the upstream YosysHQ report remains the strongest next-step candidate,
+left for the user's own decision on whether and how to file it.
