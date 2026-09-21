@@ -8299,3 +8299,54 @@ characterization Updates 1-5 already established, is a strong signal
 that further guessing at RTL-side fixes has a low hit rate from here;
 the upstream YosysHQ report remains the strongest next-step candidate,
 left for the user's own decision on whether and how to file it.
+
+**Update 8: a third candidate fix works - splitting the array into
+smaller banks avoids the crash entirely.** Updates 2 and 6-7 already
+established two things that, combined, suggest a real candidate: no
+array at or below ~4,096-8,192 words crashed at any point in this
+investigation, even with full addressing complexity (Update 2's own
+128x128/4,096-word combined-feature test was clean), while the *same*
+crashing computed-address logic against one 19,200-word array always
+crashed. If the array itself, not merely the address expression, is
+part of what triggers this, splitting the same logical 320x240 address
+space into several individually-small arrays - each still reached via a
+genuinely computed sub-address, not a direct slice - should avoid it.
+
+Split the same 19,200-word logical space into 8 independent 2,400-word
+banks (well under the already-safe ~4,096-word scale), decomposing
+Update 5's own crashing write address into `(bank_select, sub_index)`
+via `/`/`%` against the bank count, and routing the write through a
+`case` on `bank_select` into the correct bank. (A first attempt at this
+had a real bug - only byte 0 of each word was ever driven, leaving
+460,800 bits structurally undriven and producing an unrelated flood of
+"used but has no driver" warnings that would have confounded the
+result; fixed by driving full 32-bit words throughout, the same
+correction discipline `docs/practices.md` calls for before trusting a
+result.) Same real logical 320x240 address space, same real oss-cad-suite
+`yosys`.
+
+**It does not crash:**
+
+```
+4. Executing CHECK pass (checking for obvious problems).
+Checking module repro15b_banked_320x240...
+Found and reported 0 problems.
+...
+End of script. ... time: 1113.04s, ... MEM: 1727.53 MB peak
+```
+
+The first successful candidate fix in this investigation, after two
+failed attempts. Worth being precise about what this does and does not
+establish: this is a *different* split strategy from the one Update 1
+already reports as tried directly against the real file and
+unsuccessful there - that earlier attempt split `mem[]` into two arrays
+*by read port* (matching `wb_ram.v`'s own historical fix, each array
+still covering the full word range), aimed at restoring `MEMORY_LIBMAP`
+BRAM mapping specifically. This test splits by *address range* instead
+(several arrays, each covering a disjoint slice of the total space),
+and was only tested for whether it avoids the `CHECK` crash - not
+whether it restores BRAM mapping, which is a related but separate
+question this round did not test. Applying this same address-range
+split to the real `wb_framebuffer.v` file, and confirming whether it
+both avoids the crash *and* produces an efficient netlist there, is real
+follow-up work, not yet attempted.
