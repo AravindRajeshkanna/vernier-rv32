@@ -8122,3 +8122,43 @@ before any reproduction existed. The reproduction files themselves are
 throwaway and were not committed, matching every prior repro in this
 entry; the exact shapes and commands above are written precisely enough
 to reconstruct them.
+
+**Update 3: narrowed further - the asymmetric read mux is not needed at
+all. A single multiply-based WRITE address, alone, at real scale, is
+sufficient.** The next question Update 2 left open was which of its
+three combined features (or which pairing) is the true trigger. The
+cheapest single test to run first: keep the one multiply-based address
+(matching `blit_pixel_index` exactly) feeding only the engine's write
+path, and replace the read side entirely with two independent, both-
+plain reads - no mux, no asymmetry, no second multiply anywhere in the
+design. Otherwise identical scale (19,200 words, `AW=15`) to Update 2's
+own real-scale tests.
+
+It crashes - identically:
+
+```
+4. Executing CHECK pass (checking for obvious problems).
+libc++abi: terminating due to uncaught exception of type std::out_of_range: vector
+Checking module repro10_multiply_only_320x240...
+```
+
+Same `EXIT=134`, same exception type, same point in `CHECK`. This rules
+out the asymmetric read mux as a necessary ingredient - it was present
+in Update 2's reproduction only because it is present in the real file,
+not because it is load-bearing for the crash. The minimal trigger found
+so far is dramatically smaller than Update 2's own three-feature
+combination: **one multiply-derived address, feeding one write path,
+at real 320x240 scale** - nothing else in the design needs to be
+unusual at all.
+
+**What this still does not establish.** Whether multiplication
+specifically is the operator that matters, or whether any comparably
+wide, non-trivial address computation (a long addition/shift chain of
+similar bit width, say) at this same real scale would trigger the same
+exception - not yet tested, and a real, cheap-to-state, precise next
+question for whoever continues this. Also not yet tested: whether the
+multiply needs to feed a *write* specifically, or would trigger the
+same exception feeding only a *read* with an otherwise-trivial write.
+Left here for the same reason as every stopping point in this
+investigation: real, incremental progress recorded precisely, not
+guessed past.
