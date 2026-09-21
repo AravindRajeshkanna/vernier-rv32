@@ -8162,3 +8162,38 @@ same exception feeding only a *read* with an otherwise-trivial write.
 Left here for the same reason as every stopping point in this
 investigation: real, incremental progress recorded precisely, not
 guessed past.
+
+**Update 4: answered one of Update 3's two open questions decisively -
+the multiply must feed a WRITE. Feeding only a read, it is
+indistinguishable from the zero-complexity baseline.** The mirror image
+of Update 3's own test: the same multiply-based address (matching
+`blit_pixel_index` exactly) now feeds only a *read* port, with the write
+path reduced to a single plain, trivial write (no case/byte-lane logic
+at all). Same real 320x240/19,200-word scale.
+
+It does not crash - and costs almost exactly what Update 2's own
+zero-complexity baseline did:
+
+```
+Checking module repro11_multiply_read_only_320x240...
+Found and reported 0 problems.
+...
+End of script. ... time: 1764.55s, ... MEM: 1487.34 MB peak
+```
+
+Compare Update 2's plain baseline at the identical scale: 1,759.92 s,
+1,474.89 MB. Within noise of each other - a multiply-derived address
+feeding a read behaves, for yosys's own cost and correctness purposes,
+exactly like no addressing complexity at all. Paired with Update 3's
+own crashing write-side test, this pins the trigger down precisely:
+**a multiply-derived address must drive a memory WRITE, specifically,
+at real scale - merely existing anywhere in the design, including
+feeding a read, is not enough.**
+
+**What remains open.** Whether multiplication specifically is the
+operator that matters for the write-side trigger, or any comparably
+wide, non-trivial write-address computation would do the same - the one
+question from Update 3 not yet answered. Given how precisely this has
+now narrowed (one multiply, one write, real scale - nothing else), this
+is a strong point to hand off for an upstream YosysHQ report rather than
+keep narrowing operator-by-operator on this machine.
