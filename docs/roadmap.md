@@ -3165,22 +3165,64 @@ on silicon, not asserted from the simulation alone.
 
 ## Phase 9 — DDR
 
-**Also blocked on a board.** The SDRAM this project has (32 MB, confirmed on
-silicon in Phase 2 - every address, bank and byte lane, 4,031 ms measured
-retention, `fpga/README.md`) is single-data-rate. DDR is not that memory
-running faster; it is different memory, on a part that supports it, and the
-ULX3S/85F does not. This phase starts when that board is chosen, same as
-Phase 8, and for the same reason it sits alongside it rather than being
-absent - not last overall; Phases 10 and 11 are a different kind of
-blocked (a decision, not a board) and are listed after it for that reason,
-not because this one has to finish first.
+**Not started. Everything below is a plan, not an account - no stage here
+has shipped, and nothing in this section should be read as a completed
+claim the way the "Stage N:" entries in every phase above it are.** What
+changed since this phase was first written down as "blocked on a board,
+board not chosen" is that a real, evidence-based board candidate now
+exists - `docs/roadmap.md`'s own Phase 8 entry describes the same
+research this section draws on. No hardware has been purchased or
+touched this session; every board-specific claim below is a documented
+spec or an external project's own published result, cited as such, not
+something confirmed on silicon here.
+
+**The board candidate: ECPIX-5 (LambdaConcept), not yet purchased or
+tested.** Lattice ECP5-5G, `LFE5UM5G-45F` or `-85F` - the 85F variant
+matches this project's own current ULX3S board's logic capacity exactly,
+so existing RTL sizing assumptions carry over. 4 Gb (512 MB) DDR3L
+on-board. Confirmed via the FPGA's own real hardware SerDes primitive
+(`DCUA`, a 3-5 Gbps dual-channel SerDes unit) being supported by
+`nextpnr-ecp5` today, not just the plain logic fabric - so this project's
+existing open-source toolchain (`yosys` + `nextpnr-ecp5` + prjtrellis)
+stays exactly what it is; no new synthesis toolchain is needed the way a
+Xilinx board (Phase 8's own AC701/KC705 candidates) would require. €151,
+in stock, not a prototype-only or crowdfunding-pending board the way
+ULX4M-LD currently is (Phase 8's own entry has that comparison).
 
 **A DDR controller is a bigger design than `rtl/soc/wb_sdram.v`, not a
 version of it.** SDR SDRAM's controller is what Phase 2 measured against
 board revisions of a mode register and a refresh counter. DDR needs a
 calibrated PHY - read/write leveling, delay-locked strobes - which has no
-equivalent in this codebase today. Whether that PHY is a vendor hard block or
-a soft one is, again, a question the board answers, not this file.
+equivalent in this codebase today.
+
+**Two real third-party references were evaluated for the PHY, and
+neither was chosen - both are named here because the reasoning matters,
+not because either is being adopted.** LiteDRAM (`enjoy-digital/litedram`)
+has a real, dedicated ECP5 DDR3 PHY and - stronger than any other
+candidate found - ECPIX-5 support has already been added to the
+Linux-on-LiteX-VexRiscv ecosystem, meaning Linux has already been booted
+against LiteDRAM-driven DDR3 on this exact board, under a different
+RISC-V core. It is BSD-2-Clause licensed, compatible with this project's
+own Apache 2.0/Solderpad license. UberDDR3 (`AngeloJacobo/UberDDR3`) has
+real, silicon-proven ECP5 support too (OrangeCrab 85F, calibration and
+BIST passing, through the same open toolchain this project already
+uses) and a Wishbone interface matching this project's own convention -
+but it is GPL-3.0, which would require the combined work to adopt
+GPL-3.0-compatible terms, a real, project-wide licensing decision neither
+this section nor a single peripheral addition should make unilaterally.
+Both are real, working engineering - LiteDRAM's own generated-RTL
+development model (Python/Migen, not hand-written Verilog) is the
+reason it was set aside even before the licensing question for UberDDR3
+came up: every other line of RTL in this project is hand-written and
+understood line-by-line, and adopting a code-generator-produced core
+would be a real, different kind of dependency than anything here today.
+**The decision: a custom, hand-written DDR3 PHY and controller, in this
+project's own established style** - matching every other peripheral in
+this tree, at the real cost of starting without either reference
+project's own silicon-proven precedent on this exact board. Whether that
+PHY ends up built from soft IOSERDES logic (matching UberDDR3's own
+demonstrated approach, without adopting its code) or some other shape is
+Stage 1's own open question, not decided here.
 
 **Bus integration follows the existing pattern**: a Wishbone slave beside
 `wb_sdram.v`, the same way `wb_sdram.v` sits beside `wb_ram.v` - so the
@@ -3191,10 +3233,101 @@ open for the caches - spatial locality, more than one word per transfer -
 mattering more here than it does against the current SDRAM, because DDR's
 burst mode is built for exactly that access pattern.
 
-**Done when:** DDR confirmed on silicon to the standard Phase 2 already set -
-every address, bank and lane checked, a measured retention or timing margin,
-not "it linked and didn't hang" - and something running from it, the way
-`SDRAM-TEST: PASS` runs 99 KB of code out of the current memory today.
+**Stage 0 - board bring-up, no memory controller yet.** A new
+`fpga/ecpix5_top.v` board wrapper and `.lpf` constraints (clocks, LEDs,
+UART, JTAG, reset - the same shape `fpga/ulx3s_top.v` and
+`fpga/constraints/ulx3s.lpf` already are for the current board), and a
+new `BOARD=ecpix5` target in `fpga/synth/synth_ecp5.sh` alongside the
+existing `ulx3s85` case, not replacing it. The system clock and any DDR
+reference clock get identified and documented from the board's own real
+schematic, not guessed at. `docs/practices.md`'s "numbers quoted are
+measured, not estimated" applies here exactly as it does to Fmax: no
+DDR timing number gets written down before it is measured. **Done when:**
+a minimal SoC (boot ROM, UART, on-chip RAM only - no DDR yet) builds,
+loads, and prints a boot banner on real ECPIX-5 hardware, with a real
+measured Fmax and resource count recorded in `fpga/README.md`'s own
+style, and the existing `BOARD=ulx3s85` target still builds identically
+to before - this stage adds a board, it does not touch one.
+
+**Stage 1 - the custom DDR3 PHY/controller, and a simulation model
+trustworthy enough to develop against.** The real design work the
+decision above commits to: a hand-written PHY (soft IOSERDES or
+otherwise, decided here, not above) and controller, plus a DDR3
+behavioral simulation model accurate enough to develop and gate against -
+adopting an existing open behavioral model rather than writing one from
+scratch is a real, separate option worth checking before assuming this
+needs building too. Directed tests exercise init, read, write, and
+refresh independently of the CPU, the same "a testbench that can fail"
+discipline this project already holds every other peripheral to. The
+external memory base address and 512 MB size get decided and written
+down here, not assumed from the current SDRAM's own `0x9000_0000`.
+**Done when:** the controller and its simulation model pass standalone
+read/write/refresh tests under both Icarus and Verilator, with formal or
+property checks where the design actually admits them - not asserted,
+the same bar every other controller in this tree is held to.
+
+**Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
+A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
+`rtl/soc/soc_top.v`'s interconnect as a new address range, not a
+replacement for the SDRAM slave - `wb_sdram.v` stays exactly what it is,
+selectable by board the same way `CORE=` already selects between core
+types. Address decode, `dts/soc.dts`, boot ROM/linker memory-map
+constants, and the Sv32 page-table walker's own range all need to reach
+the new 512 MB span - a real, checkable list, not a vague "update the
+memory map." Caches, atomics, and LR/SC get re-verified against the new
+controller's own latency profile, not assumed unaffected. **Done when:**
+a CPU executes real code out of the new DDR path in simulation - the DDR
+equivalent of what `sim_sdramboot` already proves for the current SDRAM
+controller - and the full existing verification suite (`make verify`,
+`make verify_ooo`) stays green with the new path present but unused by
+default.
+
+**Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
+hardware; DDR initialization/calibration, a full-memory (or large
+representative subset) walking test, a retention/stress pattern, and
+cache/MMU interaction all checked on real hardware, to the same standard
+Phase 2 already set for the current SDRAM (every address, bank, and lane
+- not "it linked and didn't hang"). OpenSBI, the kernel, and an
+initramfs get ported to the new memory size and board. Achievable
+frequency, resource usage, and a real bandwidth/latency comparison
+against the existing SDRAM controller all get measured and written down,
+not estimated. `fpga/README.md` gets updated to the same honesty
+standard the current board's own table already holds itself to -
+including naming what remains unproven, the way that table already does
+for `CORE=ooo`. **Done when:** Linux reaches userspace on ECPIX-5 with
+DDR as main memory, a real console transcript and real timing numbers
+recorded - the same bar Phase 0 set for the pipeline itself and Phase 8
+sets for PCIe: simulated first, then proven on silicon, not asserted
+from simulation alone.
+
+**Stage 4 - making the larger memory actually useful.** Linux's own
+memory configuration and device tree updated for the real 512 MB;
+microSD boot on ECPIX-5 as a natural next step once the current SD-card
+work (Phase 7) has a second board to run on; CoreMark and this project's
+other existing benchmarks re-run and published before/after, the same
+"measured, not estimated" standard as everywhere else in this file; any
+multi-core or heterogeneous configuration (Phase 13/15) re-confirmed
+against the new controller, not assumed to still work. Ethernet/HDMI off
+the same board are real, named, explicitly *not* attempted here -
+separate peripherals for a later phase, not folded into this one.
+**Done when:** a documented, reproducible Linux boot from DDR on ECPIX-5
+exists, with updated, real performance numbers next to the pre-DDR
+baseline.
+
+**Stage 5 - two boards, kept honest.** ULX3S with SDR SDRAM stays a
+fully supported, lighter-weight target - never removed, never demoted to
+an afterthought. Board selection stays as clean as `CORE=`/`BOARD=`
+already are (`BOARD=ulx3s85` vs `BOARD=ecpix5`). A real migration note
+for anyone moving between the two, and a look at whether any of the new
+DDR constraints/wrapper code is worth upstreaming, close out the phase.
+
+**Done when (the phase as a whole):** ECPIX-5 is a real, supported
+`BOARD=` target; 512 MB of DDR3 is usable as main memory from both
+simulation and real hardware; Linux boots to userspace on ECPIX-5 using
+it; the ULX3S/SDR-SDRAM path remains fully functional and unregressed;
+and every claim along the way follows this file's own existing
+measurement and documentation standard - the same bar, not a relaxed one
+for being a bigger phase.
 
 ---
 
