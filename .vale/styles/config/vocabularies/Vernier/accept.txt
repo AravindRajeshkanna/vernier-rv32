@@ -267,6 +267,7 @@ raiseable
 rasterization
 rasterizer
 reachability
+readback
 rearchitecture
 reframed
 reframes
@@ -323,6 +324,7 @@ unbuilt
 uncached
 unconfigured
 undelegated
+underclock
 underclocked
 underclocking
 undercounted

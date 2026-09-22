@@ -179,8 +179,56 @@ module wb_framebuffer #(
     localparam WORDS  = (PIXELS + 3) / 4;
     localparam AW     = $clog2(WORDS);
 
-    reg [31:0] mem [0:WORDS-1];
+    // `mem[]` used to be one flat WORDS-word array; split into NBANKS
+    // smaller banks instead, each individually addressed, because a
+    // single array this large (19,200 words at the real 320x240
+    // default) crashes yosys's own CHECK pass during real FPGA
+    // synthesis - not a simulator issue, and not this project's own
+    // logic bug: a raw std::out_of_range C++ exception from inside
+    // yosys itself. docs/roadmap.md's "wb_framebuffer.v crashes yosys"
+    // entry (Updates 1-8) traces this to any wide, non-trivial COMPUTED
+    // write address (this module has three: blit_word_addr,
+    // copy_src_word_addr, and a_addr) driving a large array; two
+    // RTL-side fixes failed (registering the address, provably bounding
+    // its range) before splitting into smaller banks - each well under
+    // the ~4,096-word scale already shown safe - was confirmed to
+    // actually work, first on a minimal reproduction and now applied
+    // here. NBANKS is fixed at 8, the exact configuration validated
+    // there, not re-tuned for this file; BANK_WORDS is a ceiling
+    // division so this stays correct if FB_WIDTH/FB_HEIGHT are ever
+    // overridden away from the 320x240 default.
+    localparam NBANKS     = 8;
+    localparam BANK_WORDS = (WORDS + NBANKS - 1) / NBANKS;
+    localparam BANK_AW    = $clog2(BANK_WORDS);
+
+    reg [31:0] mem0 [0:BANK_WORDS-1];
+    reg [31:0] mem1 [0:BANK_WORDS-1];
+    reg [31:0] mem2 [0:BANK_WORDS-1];
+    reg [31:0] mem3 [0:BANK_WORDS-1];
+    reg [31:0] mem4 [0:BANK_WORDS-1];
+    reg [31:0] mem5 [0:BANK_WORDS-1];
+    reg [31:0] mem6 [0:BANK_WORDS-1];
+    reg [31:0] mem7 [0:BANK_WORDS-1];
     integer i;
+
+`ifndef SYNTHESIS
+    // Simulation-only staging: a flat WORDS-word array purely so
+    // INIT_FILE (if ever set - nothing in this repo does today) can
+    // still be read with one $readmemh call, exactly as before, then
+    // copied into the right bank. Entirely inside `ifndef SYNTHESIS` so
+    // synthesis never sees a flat array at all - the crash this banking
+    // exists to avoid was specifically about a large COMPUTED-address
+    // array reaching yosys's CHECK pass, and this guard means it
+    // structurally cannot recur here. One real behavior change from
+    // before, on this already-unused path: INIT_FILE now only takes
+    // effect in simulation, never during real synthesis (previously
+    // $readmemh ran unconditionally, so a synthesized bitstream could in
+    // principle have picked up INIT_FILE's content too - preserving that
+    // for a banked array would need one INIT_FILE per bank, not
+    // attempted here since nothing in this repo uses INIT_FILE today).
+    reg [31:0] mem_init_tmp [0:WORDS-1];
+    integer ib;
+`endif
 
     // Guarded for the same reason wb_ram.v's is: yosys unrolls this into one
     // assignment per word, which is what used to make full-SoC synthesis
@@ -189,10 +237,22 @@ module wb_framebuffer #(
     initial begin
 `ifndef SYNTHESIS
         for (i = 0; i < WORDS; i = i + 1)
-            mem[i] = 32'b0;
-`endif
+            mem_init_tmp[i] = 32'b0;
         if (INIT_FILE != "")
-            $readmemh(INIT_FILE, mem);
+            $readmemh(INIT_FILE, mem_init_tmp);
+        for (ib = 0; ib < WORDS; ib = ib + 1) begin
+            case (ib / BANK_WORDS)
+                0: mem0[ib % BANK_WORDS] = mem_init_tmp[ib];
+                1: mem1[ib % BANK_WORDS] = mem_init_tmp[ib];
+                2: mem2[ib % BANK_WORDS] = mem_init_tmp[ib];
+                3: mem3[ib % BANK_WORDS] = mem_init_tmp[ib];
+                4: mem4[ib % BANK_WORDS] = mem_init_tmp[ib];
+                5: mem5[ib % BANK_WORDS] = mem_init_tmp[ib];
+                6: mem6[ib % BANK_WORDS] = mem_init_tmp[ib];
+                default: mem7[ib % BANK_WORDS] = mem_init_tmp[ib];
+            endcase
+        end
+`endif
     end
 
     // =====================================================================
@@ -224,6 +284,20 @@ module wb_framebuffer #(
     wire [31:0] blit_pixel_index = (blit_cur_y * FB_WIDTH) + {20'd0, blit_cur_x};
     wire [AW-1:0] blit_word_addr = blit_pixel_index[AW+1:2];
     wire [1:0]    blit_byte_lane = blit_pixel_index[1:0];
+    // Bank decomposition for the engine's own write address - see the
+    // banking comment by `mem0..mem7`'s own declaration above.
+    // Explicit AW-wide intermediates, then an explicit bit-slice down to
+    // the real bank/sub_addr width - Verilator's own width inference for
+    // `/`/`%` against an unsized localparam divisor computes a wider
+    // result than the 3-bit/BANK_AW-bit target, and an implicit
+    // assignment-width truncation there is a real WIDTHTRUNC warning
+    // (fatal under this project's own Verilator invocation); a bit-select
+    // is an explicit, deliberate narrowing instead, and warns about
+    // nothing.
+    wire [AW-1:0]      eng_word_addr_div = blit_word_addr / BANK_WORDS;
+    wire [AW-1:0]      eng_word_addr_mod = blit_word_addr % BANK_WORDS;
+    wire [2:0]         eng_bank          = eng_word_addr_div[2:0];
+    wire [BANK_AW-1:0] eng_sub_addr      = eng_word_addr_mod[BANK_AW-1:0];
 
     // X+W and Y+H, each up to 4095+4095, computed a bit wider than either
     // operand so an oversized W/H clamps correctly instead of wrapping
@@ -275,6 +349,12 @@ module wb_framebuffer #(
         (copy_src_cur_y * FB_WIDTH) + {20'd0, copy_src_cur_x};
     wire [AW-1:0] copy_src_word_addr = copy_src_pixel_index[AW+1:2];
     wire [1:0]    copy_src_byte_lane = copy_src_pixel_index[1:0];
+    // Same explicit-intermediate-then-slice pattern as eng_bank/eng_sub_addr
+    // above, for the same WIDTHTRUNC reason.
+    wire [AW-1:0]      copy_word_addr_div = copy_src_word_addr / BANK_WORDS;
+    wire [AW-1:0]      copy_word_addr_mod = copy_src_word_addr % BANK_WORDS;
+    wire [2:0]         copy_bank          = copy_word_addr_div[2:0];
+    wire [BANK_AW-1:0] copy_sub_addr      = copy_word_addr_mod[BANK_AW-1:0];
 
     // The byte the last read cycle captured into a_q, reused here rather
     // than adding a second capture register - a_q is otherwise unused
@@ -310,6 +390,12 @@ module wb_framebuffer #(
     // Port A: the bus
     // =====================================================================
     wire [AW-1:0] a_addr = wb_adr[AW+1:2];
+    // Same explicit-intermediate-then-slice pattern as eng_bank/eng_sub_addr
+    // above, for the same WIDTHTRUNC reason.
+    wire [AW-1:0]      a_addr_div = a_addr / BANK_WORDS;
+    wire [AW-1:0]      a_addr_mod = a_addr % BANK_WORDS;
+    wire [2:0]         a_bank     = a_addr_div[2:0];
+    wire [BANK_AW-1:0] a_sub_addr = a_addr_mod[BANK_AW-1:0];
     wire          is_blit_region = wb_adr[17];
     wire [3:0]    blit_reg_sel   = wb_adr[5:2];
     wire          is_status_read = is_blit_region && !wb_we && (blit_reg_sel == 4'd6);
@@ -317,9 +403,13 @@ module wb_framebuffer #(
     // While a copy's read phase is in flight, Port A's one read reference
     // is redirected to the source pixel instead of the (stalled, and
     // during this phase irrelevant) CPU address - see the header comment
-    // on why copying costs two cycles per pixel.
-    wire [AW-1:0] effective_read_addr =
-        (blit_busy_r && blit_op_r == OP_COPY && !copy_phase_r) ? copy_src_word_addr : a_addr;
+    // on why copying costs two cycles per pixel. Muxed here as
+    // (bank, sub_addr) pairs rather than a single effective_read_addr,
+    // matching the banking comment by `mem0..mem7`'s own declaration.
+    wire read_from_copy_src =
+        blit_busy_r && blit_op_r == OP_COPY && !copy_phase_r;
+    wire [2:0]         read_bank     = read_from_copy_src ? copy_bank     : a_bank;
+    wire [BANK_AW-1:0] read_sub_addr = read_from_copy_src ? copy_sub_addr : a_sub_addr;
 
     // A fill in progress withholds ack from everything except a STATUS
     // read - see the header for why. Address and byte-enables are still
@@ -422,10 +512,60 @@ module wb_framebuffer #(
                         default: ; // BLIT_STATUS is read-only
                     endcase
                 end else begin
-                    if (wb_sel[0]) mem[a_addr][7:0]   <= wb_dat_w[7:0];
-                    if (wb_sel[1]) mem[a_addr][15:8]  <= wb_dat_w[15:8];
-                    if (wb_sel[2]) mem[a_addr][23:16] <= wb_dat_w[23:16];
-                    if (wb_sel[3]) mem[a_addr][31:24] <= wb_dat_w[31:24];
+                    // Routed through `a_bank` into the right bank array -
+                    // see the banking comment by `mem0..mem7`'s own
+                    // declaration. Each arm is the exact same four
+                    // byte-lane writes the single flat array used to get.
+                    case (a_bank)
+                        3'd0: begin
+                            if (wb_sel[0]) mem0[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem0[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem0[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem0[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                        3'd1: begin
+                            if (wb_sel[0]) mem1[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem1[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem1[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem1[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                        3'd2: begin
+                            if (wb_sel[0]) mem2[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem2[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem2[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem2[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                        3'd3: begin
+                            if (wb_sel[0]) mem3[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem3[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem3[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem3[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                        3'd4: begin
+                            if (wb_sel[0]) mem4[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem4[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem4[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem4[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                        3'd5: begin
+                            if (wb_sel[0]) mem5[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem5[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem5[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem5[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                        3'd6: begin
+                            if (wb_sel[0]) mem6[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem6[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem6[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem6[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                        default: begin // 3'd7
+                            if (wb_sel[0]) mem7[a_sub_addr][7:0]   <= wb_dat_w[7:0];
+                            if (wb_sel[1]) mem7[a_sub_addr][15:8]  <= wb_dat_w[15:8];
+                            if (wb_sel[2]) mem7[a_sub_addr][23:16] <= wb_dat_w[23:16];
+                            if (wb_sel[3]) mem7[a_sub_addr][31:24] <= wb_dat_w[31:24];
+                        end
+                    endcase
                 end
             end
 
@@ -440,11 +580,60 @@ module wb_framebuffer #(
                     // stalled, when the current pixel is off the buffer -
                     // see the header comment), then a Bresenham step.
                     if (line_plot_ok) begin
-                        case (blit_byte_lane)
-                            2'd0: mem[blit_word_addr][7:0]   <= blit_color_r;
-                            2'd1: mem[blit_word_addr][15:8]  <= blit_color_r;
-                            2'd2: mem[blit_word_addr][23:16] <= blit_color_r;
-                            default: mem[blit_word_addr][31:24] <= blit_color_r;
+                        // Routed through `eng_bank` into the right bank
+                        // array - see the banking comment by
+                        // `mem0..mem7`'s own declaration. Each arm is the
+                        // exact same byte-lane case the single flat array
+                        // used to get.
+                        case (eng_bank)
+                            3'd0: case (blit_byte_lane)
+                                2'd0: mem0[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem0[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem0[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem0[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
+                            3'd1: case (blit_byte_lane)
+                                2'd0: mem1[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem1[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem1[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem1[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
+                            3'd2: case (blit_byte_lane)
+                                2'd0: mem2[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem2[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem2[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem2[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
+                            3'd3: case (blit_byte_lane)
+                                2'd0: mem3[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem3[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem3[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem3[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
+                            3'd4: case (blit_byte_lane)
+                                2'd0: mem4[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem4[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem4[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem4[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
+                            3'd5: case (blit_byte_lane)
+                                2'd0: mem5[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem5[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem5[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem5[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
+                            3'd6: case (blit_byte_lane)
+                                2'd0: mem6[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem6[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem6[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem6[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
+                            default: case (blit_byte_lane) // 3'd7
+                                2'd0: mem7[eng_sub_addr][7:0]   <= blit_color_r;
+                                2'd1: mem7[eng_sub_addr][15:8]  <= blit_color_r;
+                                2'd2: mem7[eng_sub_addr][23:16] <= blit_color_r;
+                                default: mem7[eng_sub_addr][31:24] <= blit_color_r;
+                            endcase
                         endcase
                     end
                     if (blit_cur_x == line_x1_r && blit_cur_y == line_y1_r) begin
@@ -458,11 +647,60 @@ module wb_framebuffer #(
                             blit_cur_y <= blit_ydir_r ? (blit_cur_y - 12'd1) : (blit_cur_y + 12'd1);
                     end
                 end else begin
-                    case (blit_byte_lane)
-                        2'd0: mem[blit_word_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
-                        2'd1: mem[blit_word_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
-                        2'd2: mem[blit_word_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
-                        default: mem[blit_word_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                    // Routed through `eng_bank` into the right bank
+                    // array - see the banking comment by `mem0..mem7`'s
+                    // own declaration. Each arm is the exact same
+                    // byte-lane case (shared by fill and copy's own
+                    // write phase) the single flat array used to get.
+                    case (eng_bank)
+                        3'd0: case (blit_byte_lane)
+                            2'd0: mem0[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem0[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem0[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem0[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
+                        3'd1: case (blit_byte_lane)
+                            2'd0: mem1[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem1[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem1[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem1[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
+                        3'd2: case (blit_byte_lane)
+                            2'd0: mem2[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem2[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem2[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem2[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
+                        3'd3: case (blit_byte_lane)
+                            2'd0: mem3[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem3[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem3[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem3[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
+                        3'd4: case (blit_byte_lane)
+                            2'd0: mem4[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem4[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem4[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem4[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
+                        3'd5: case (blit_byte_lane)
+                            2'd0: mem5[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem5[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem5[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem5[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
+                        3'd6: case (blit_byte_lane)
+                            2'd0: mem6[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem6[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem6[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem6[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
+                        default: case (blit_byte_lane) // 3'd7
+                            2'd0: mem7[eng_sub_addr][7:0]   <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd1: mem7[eng_sub_addr][15:8]  <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            2'd2: mem7[eng_sub_addr][23:16] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                            default: mem7[eng_sub_addr][31:24] <= (blit_op_r == OP_COPY) ? copy_src_byte : blit_color_r;
+                        endcase
                     endcase
                     if (blit_op_r == OP_COPY) copy_phase_r <= 1'b0;
                     if (x_last_in_row) begin
@@ -494,7 +732,18 @@ module wb_framebuffer #(
     // bookkeeping with no reset dependency of their own, exactly like
     // `a_q`.
     always @(posedge clk) begin
-        a_q            <= mem[effective_read_addr];
+        // Routed through `read_bank` into the right bank array - see the
+        // banking comment by `mem0..mem7`'s own declaration.
+        case (read_bank)
+            3'd0: a_q <= mem0[read_sub_addr];
+            3'd1: a_q <= mem1[read_sub_addr];
+            3'd2: a_q <= mem2[read_sub_addr];
+            3'd3: a_q <= mem3[read_sub_addr];
+            3'd4: a_q <= mem4[read_sub_addr];
+            3'd5: a_q <= mem5[read_sub_addr];
+            3'd6: a_q <= mem6[read_sub_addr];
+            default: a_q <= mem7[read_sub_addr];
+        endcase
         blit_region_q  <= is_blit_region;
         blit_reg_sel_q <= blit_reg_sel;
     end
@@ -529,11 +778,28 @@ module wb_framebuffer #(
     wire [31:0] pixel_index = (fb_y * FB_WIDTH) + {20'd0, fb_x};
 
     wire [AW-1:0] b_addr = pixel_index[AW+1:2];
+    // Same explicit-intermediate-then-slice pattern as eng_bank/eng_sub_addr
+    // above, for the same WIDTHTRUNC reason.
+    wire [AW-1:0]      b_addr_div = b_addr / BANK_WORDS;
+    wire [AW-1:0]      b_addr_mod = b_addr % BANK_WORDS;
+    wire [2:0]         b_bank     = b_addr_div[2:0];
+    wire [BANK_AW-1:0] b_sub_addr = b_addr_mod[BANK_AW-1:0];
     reg  [31:0]   b_q;
     reg  [1:0]    b_lane;
 
     always @(posedge clk) begin
-        b_q    <= mem[b_addr];
+        // Routed through `b_bank` into the right bank array - see the
+        // banking comment by `mem0..mem7`'s own declaration.
+        case (b_bank)
+            3'd0: b_q <= mem0[b_sub_addr];
+            3'd1: b_q <= mem1[b_sub_addr];
+            3'd2: b_q <= mem2[b_sub_addr];
+            3'd3: b_q <= mem3[b_sub_addr];
+            3'd4: b_q <= mem4[b_sub_addr];
+            3'd5: b_q <= mem5[b_sub_addr];
+            3'd6: b_q <= mem6[b_sub_addr];
+            default: b_q <= mem7[b_sub_addr];
+        endcase
         b_lane <= pixel_index[1:0];
     end
 
