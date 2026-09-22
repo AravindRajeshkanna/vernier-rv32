@@ -8350,3 +8350,80 @@ question this round did not test. Applying this same address-range
 split to the real `wb_framebuffer.v` file, and confirming whether it
 both avoids the crash *and* produces an efficient netlist there, is real
 follow-up work, not yet attempted.
+
+**Update 9: applied to the real file. The crash is gone.** Rewrote
+`rtl/soc/wb_framebuffer.v` itself using Update 8's exact validated
+shape: `mem[]` replaced by `NBANKS=8` separate bank arrays
+(`BANK_WORDS = ceil(WORDS/NBANKS)`, 2,400 words each at the real
+default), every address that used to index `mem[]` directly
+(`a_addr`, `blit_word_addr`, `copy_src_word_addr`, `b_addr`) decomposed
+into `(bank, sub_addr)` via `/`/`%`, and every write/read site routed
+through an explicit `case` on its own bank-select signal into the
+correct bank array - the same pattern, applied to all three real write
+categories (CPU byte-lane writes, the line engine, the fill/copy
+engine) and both real read ports (Port A, Port B), not just the
+single write path the minimal reproduction covered. `INIT_FILE`'s
+external contract is preserved via a simulation-only flat staging array
+under `` `ifndef SYNTHESIS`` (so synthesis never sees a flat array at all -
+one real, narrow behavior change on this already-unused path: INIT_FILE
+now only takes effect in simulation, not during real synthesis, since
+supporting it there for a banked array would need one file per bank).
+
+One real bug caught before trusting the result: Verilator's own build
+(part of `make verify`'s coverage stage) failed with 8
+`WIDTHTRUNC` warnings treated as fatal - `/`/`%` against the unsized
+`BANK_WORDS` localparam computes a wider result than the 3-bit/12-bit
+`bank`/`sub_addr` target, and an implicit assignment-width truncation
+there is exactly the kind of silent narrowing Verilator's own lint
+exists to catch. Fixed by computing each division/modulo into an
+explicit `AW`-bit intermediate wire, then an explicit bit-slice down to
+the real width - a deliberate narrowing instead of an implicit one,
+which warns about nothing.
+
+**Real verification, in order:**
+
+```
+make sim_blit / make sim_video (the module's own two dedicated
+testbenches, run directly): BLIT TEST PASSED / VIDEO TEST PASSED
+
+make verify:   EXIT=0 (61/61 real test markers passed, Linux boot
+               reached userspace, formal 6/6 proved)
+make verify_ooo: EXIT=0 (61/61, same)
+
+yosys -p "read_verilog rtl/soc/wb_framebuffer.v; hierarchy -top
+    wb_framebuffer; proc; check -force-detailed-loop-check"
+  Checking module wb_framebuffer...
+  Found and reported 0 problems.
+  End of script. ... time: 1940.17s, ... MEM: 2687.72 MB peak
+```
+
+**The real, full, 601-line production file - Bresenham line engine,
+fill/copy engine, CTRL/STATUS registers, everything - now passes
+yosys's `CHECK` pass cleanly at the real 320x240/19,200-word default
+scale.** Not the minimal reproduction module; the actual file this
+whole investigation (Updates 1-8) was about. `make verify`/
+`make verify_ooo` passing confirms this is not merely "doesn't crash
+yosys" - the module's own two dedicated testbenches (`sim_blit`,
+`sim_video`, both already part of `verify`'s own target list) prove
+fill, copy (including all four directional-overlap quadrants), all nine
+Bresenham line variants, and a full 320x240 write-then-scan-out
+readback all still behave identically to before the rewrite.
+
+**What this does not establish.** Whether banking also restores real
+block-RAM mapping (`MEMORY_LIBMAP` producing `DP16KD` primitives instead
+of the flip-flop fallback "Update 1" documented) - attempted via a
+fuller `synth_ecp5` techmap pass on the module in isolation, but that
+run's own `yosys-abc` stage ran past 10 hours of CPU time (615+ minutes)
+and 14+ hours of real wall-clock with no end in sight - dramatically
+longer than Round 6's own full-*SoC* `synth_ecp5` precedent (~2 hours
+for the equivalent stage), for one isolated peripheral module. Stopped
+deliberately rather than let it run indefinitely, since it was an
+explicitly optional bonus check, not required for this change's own
+success criterion (avoiding the crash, which is already confirmed).
+BRAM-mapping efficiency for the banked version remains a real, genuinely
+open question - this update establishes the crash is gone, not that the
+resulting netlist is an efficient one. A full `nextpnr-ecp5`
+place-and-route of the real SoC with this change, at real scale, is
+also not attempted here - a real, separate, much more expensive
+follow-up, matching Round 6/the underclock work's own standard, worth
+doing once (or alongside) confirming BRAM mapping.

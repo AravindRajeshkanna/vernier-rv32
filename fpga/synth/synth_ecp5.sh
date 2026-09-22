@@ -51,19 +51,23 @@ BUILD=fpga/build
 
 # Diagnostic-only overrides on rtl/soc/soc_top.v's own real parameters -
 # unset by default, so every existing board target's own real,
-# full-scale build is completely unaffected. FB_WIDTH/FB_HEIGHT exist
-# specifically to work around rtl/soc/wb_framebuffer.v's own long-running,
+# full-scale build is completely unaffected. FB_WIDTH/FB_HEIGHT were
+# added to work around rtl/soc/wb_framebuffer.v's own long-running,
 # separately-tracked yosys CHECK-pass crash at its real 320x240 scale
 # (docs/roadmap.md's own account has the full investigation) - shrinking
-# them lets synthesis proceed past that crash entirely for a build that
-# does not care about the framebuffer's own real behavior, the same
+# them let synthesis proceed past that crash entirely for a build that
+# did not care about the framebuffer's own real behavior, the same
 # substitution that investigation's own "Update 1" already validated as
-# safe (8x8 through 128x128 all reach `CHECK` cleanly). This does **not**
-# fix that crash - it only lets other work (this file's own
-# `ulx3s85-underclock` case among it) reach real synthesis without
-# needing a hand-rolled, one-off invocation outside this script every
-# time, the way an earlier round of the "CORE=ooo has no Fmax"
-# investigation first had to.
+# safe (8x8 through 128x128 all reach `CHECK` cleanly). This override
+# was never itself a fix for that crash - and, as of "Update 9" in the
+# same account, it no longer needs to be: wb_framebuffer.v's own mem[]
+# was rewritten into 8 smaller banks, and the real 320x240 file now
+# passes `CHECK` cleanly on its own. This override still exists for
+# other, unrelated reasons (this file's own `ulx3s85-underclock` case
+# among them) - a cheap, real way to reach synthesis without needing a
+# hand-rolled, one-off invocation outside this script every time - not
+# because the framebuffer crash it was first built to route around is
+# still open.
 FB_WIDTH=${FB_WIDTH:-}
 FB_HEIGHT=${FB_HEIGHT:-}
 
