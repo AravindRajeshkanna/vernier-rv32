@@ -32,6 +32,7 @@ Endianness
 FB's
 FFs
 FIFOs
+FPGA's
 FPGAs
 FSM's
 Floorplan
@@ -40,6 +41,8 @@ Framebuffer
 GPIO
 GPRs
 GTKWave
+Gb
+Gbps
 Gowin
 IMMU
 IPIs
@@ -261,6 +264,7 @@ preloaded
 preloading
 preloads
 printf
+prjtrellis
 pty
 pulldown
 raiseable
@@ -338,6 +342,7 @@ uninstantiated
 unmerged
 unoptimized
 unparked
+unregressed
 unsized
 unstalls
 unstarted
@@ -346,6 +351,7 @@ unticked
 untruncated
 unwindowed
 unwired
+upstreaming
 userspace
 vendored
 verify_ooo
