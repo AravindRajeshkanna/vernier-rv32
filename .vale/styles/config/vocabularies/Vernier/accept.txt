@@ -48,6 +48,7 @@ Gowin
 IMMU
 IPIs
 Intergalaktik
+JEDEC's
 JTAG
 Kbit
 Kconfig
@@ -257,6 +258,7 @@ pinout
 pipelined
 plictest
 plusarg
+postamble
 pragma
 precharge
 precompiled
