@@ -312,6 +312,32 @@ case "$BOARD" in
         PNR_EXTRA=${PNR_EXTRA:-}
         BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         ;;
+    ecpix5)
+        # docs/roadmap.md's Phase 9 entry, Stage 0 - board bring-up only,
+        # no DDR controller yet. LFE5UM5G-85F, package CABGA554 (the real
+        # package name nextpnr-ecp5/prjtrellis use internally for this
+        # part's 554-ball BGA - confirmed against this toolchain's own
+        # iodb.json, not assumed from LambdaConcept's own "8BG554I"
+        # datasheet-style naming, which is not what nextpnr's --package
+        # flag accepts). Not run on a board this session - see
+        # fpga/constraints/ecpix5.lpf's own header for exactly which pins
+        # are cited from where.
+        DEVICE=${DEVICE:-um5g-85k}
+        # Unconditional, not `${PACKAGE:-...}` - this script's own
+        # top-level `PACKAGE=${PACKAGE:-CABGA381}` (above) already ran by
+        # the time this case block executes, so the ULX3S-family default
+        # would win every time under the usual pattern. Unlike DEVICE
+        # (a real choice across this board's own multiple density SKUs),
+        # ECPIX-5's package is fixed by its own real BGA footprint - a
+        # different chip on this exact board is not a real option the
+        # way a different LUT count is, so there is nothing genuine to
+        # let an env override pick between.
+        PACKAGE=CABGA554
+        TOP=${TOP:-ecpix5_top}
+        LPF=${LPF:-fpga/constraints/ecpix5.lpf}
+        PNR_EXTRA=${PNR_EXTRA:-}
+        BOARD_RTL="fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v"
+        ;;
     ulx3s85-video)
         # Same board and pins as plain ulx3s85, GPDI wired in - opt-in
         # rather than the default, because it measurably is not free: 0 of
@@ -369,7 +395,8 @@ case "$BOARD" in
     *)
         echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s85-video," >&2
         echo "       ulx3s85-underclock, ulx3s85-ram, ulx3s85-probe, ulx3s85-trapcheck," >&2
-        echo "       ulx3s85-sdramcheck, ulx3s-diag, ulx3s-cmd0, ulx3s-sdram, or unset)" >&2
+        echo "       ulx3s85-sdramcheck, ulx3s-diag, ulx3s-cmd0, ulx3s-sdram, ecpix5," >&2
+        echo "       or unset)" >&2
         exit 1
         ;;
 esac

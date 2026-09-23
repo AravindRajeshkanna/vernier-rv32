@@ -3165,14 +3165,18 @@ on silicon, not asserted from the simulation alone.
 
 ## Phase 9 — DDR
 
-**Not started. Everything below is a plan, not an account - no stage here
-has shipped, and nothing in this section should be read as a completed
-claim the way the "Stage N:" entries in every phase above it are.** What
-changed since this phase was first written down as "blocked on a board,
-board not chosen" is that a real, evidence-based board candidate now
-exists - `docs/roadmap.md`'s own Phase 8 entry describes the same
-research this section draws on. No hardware has been purchased or
-touched this session; every board-specific claim below is a documented
+**Stage 0 has real, partial progress - board files, real synthesis, a
+real diagnostic-scale bitstream - but is not done, and Stages 1 through
+5 remain entirely a plan, not an account.** Nothing past Stage 0's own
+"Update" paragraph below should be read as a completed claim the way
+the "Stage N:" entries in every phase above this one are; Stage 0's own
+"Done when" bar (a real boot banner, a real measured Fmax, on silicon)
+stays explicitly unmet too - no ECPIX-5 is attached to this session.
+What changed since this phase was first written down as "blocked on a
+board, board not chosen" is that a real, evidence-based board candidate
+now exists - `docs/roadmap.md`'s own Phase 8 entry describes the same
+research this section draws on. No hardware has been purchased this
+session; every board-specific claim below is either a documented
 spec or an external project's own published result, cited as such, not
 something confirmed on silicon here.
 
@@ -3248,6 +3252,54 @@ loads, and prints a boot banner on real ECPIX-5 hardware, with a real
 measured Fmax and resource count recorded in `fpga/README.md`'s own
 style, and the existing `BOARD=ulx3s85` target still builds identically
 to before - this stage adds a board, it does not touch one.
+
+**Update: real progress, real gaps still open - not done, but no
+longer just a plan.** `fpga/ecpix5_top.v`, `fpga/ecpix5_clk_pll.v` (a
+100→25 MHz PLL, generated with `ecppll` the same way as
+`fpga/video_pll.v`/`fpga/underclock_pll.v` - this design's own measured
+Fmax is nowhere near the board's real 100 MHz oscillator, so the SoC
+cannot run directly off it), `fpga/constraints/ecpix5.lpf`, a new
+`BOARD=ecpix5` case in `fpga/synth/synth_ecp5.sh`, and `sim_ecpix5` (a
+new board-wrapper testbench, `sim/tb_ecpix5.v`, mirroring
+`sim_ulx3s`'s own reason for existing - a board wrapper is RTL no other
+target would build - now part of `make verify`) all exist and are real.
+`make verify`/`make verify_ooo` both pass (62/62 real test markers,
+`sim_ecpix5` among them, non-vacuity confirmed by mutating the reset
+polarity and watching 3 checks correctly fail before reverting).
+
+Real synthesis was attempted, not just written. Two real bugs were
+found and fixed by actually running it, not by review: `PACKAGE`
+silently stayed at the ULX3S default (`CABGA381`) because this script's
+own top-level `PACKAGE=${PACKAGE:-CABGA381}` runs before the board
+`case` statement does, so the `ecpix5` block's own `${PACKAGE:-...}`
+was a no-op - fixed with an unconditional `PACKAGE=CABGA554` there
+instead, with the reasoning written down next to it; and the LPF's own
+LED port name (`led0_g`) did not match the Verilog port it was meant to
+constrain (`led2_g`) - nextpnr caught both immediately and by name, not
+silently.
+
+At the real 320x240 framebuffer scale, the actual `synth_ecp5.sh` run
+was killed (`SIGKILL`) during ABC9 technology mapping after several
+hours, on this exact 8 GB development machine - the same real memory
+constraint this file's own "`wb_framebuffer.v` crashes yosys" entry
+documents elsewhere, not a defect in this board's own files. Retried at
+the diagnostic `FB_WIDTH=8 FB_HEIGHT=8` scale that entry's own Update 9
+already established as a legitimate, permanent way to reach real
+synthesis for unrelated work - and at that scale, synthesis, place and
+route, and bitstream generation all completed cleanly, first attempt,
+no seed retries:
+
+```
+Info: Max frequency for clock '$glbnet$soc_clk': 25.91 MHz (PASS at 25.00 MHz)
+```
+
+`fpga/build/ecpix5_top.bit` is real. **What this does not establish:**
+whether synthesis closes at the real 320x240 scale on a machine with
+more headroom than this one - genuinely unknown, not assumed either
+way. Whether the board actually boots anything - no ECPIX-5 is attached
+to this session; the bitstream has never been loaded onto real
+hardware, and this stage's own "Done when" bar (a real boot banner, a
+real measured Fmax on silicon) stays explicitly unmet on both counts.
 
 **Stage 1 - the custom DDR3 PHY/controller, and a simulation model
 trustworthy enough to develop against.** The real design work the
