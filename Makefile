@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2495,6 +2495,26 @@ sim_ddr3_data: sim/sim_ddr3_data.out
 	@grep -q "DDR3 DATA PATH TEST PASSED" sim/ddr3_data.log || \
 	    { echo "sim_ddr3_data FAILED"; exit 1; }
 
+# ---- DDR3 PHY integration (Phase 9 Stage 1, Part 3, docs/roadmap.md) ----
+#
+# rtl/soc/ddr3_ecp5_top.v wires Part 1 (init sequence + command/address)
+# and Part 2 (DQ/DQS data path) onto one real, shared, PLL-derived clock
+# tree for the first time - distinct from sim_ddr3_init/sim_ddr3_data
+# above, which each proved their own half in isolation, against their
+# own independently free-running testbench clock.
+sim/sim_ddr3_top.out: sim/tb_ddr3_top.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_model.v sim/ddr3_dq_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_top.v rtl/soc/ddr3_ecp5_top.v \
+	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_read_calib.v sim/ddr3_model.v sim/ddr3_dq_model.v
+
+sim_ddr3_top: sim/sim_ddr3_top.out
+	@cd sim && $(VVP) sim_ddr3_top.out $(VVP_DUMP) 2>&1 | tee ddr3_top.log
+	@grep -q "DDR3 PHY INTEGRATION TEST PASSED" sim/ddr3_top.log || \
+	    { echo "sim_ddr3_top FAILED"; exit 1; }
+
 SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
 
 software/soc/sdramtest.elf: $(SDRAMTEST_SRCS) software/soc/link_sdram.ld $(SOC_HDRS)
@@ -2532,7 +2552,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \

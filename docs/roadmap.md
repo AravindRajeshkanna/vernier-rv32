@@ -3467,6 +3467,69 @@ clock-domain pair is not yet reconciled with Part 1's own single-`clk`
 `ddr3_phy_ecp5.v` design - real, deliberate later work, not assumed
 compatible here.
 
+**Update, Part 3: Parts 1 and 2 now run together, on one real, shared,
+PLL-derived clock tree, for the first time.** A new
+`rtl/soc/ddr3_ecp5_top.v` instantiates `ddr3_eclk_pll.v` once and
+drives every downstream module from its outputs - `ddr3_init_seq.v`
+and `ddr3_phy_ecp5.v` (Part 1) now run on `sclk`, not an independent
+`clk`, and `ddr3_dqs_ecp5.v`/`ddr3_dq_serdes_ecp5.v` (Part 2) keep
+their own `eclk`/`sclk` pair from the same PLL - closing the gap named
+above. Two real internal resets are gated correctly, not asserted:
+`rst_all` stays high until `pll_locked`, so `ddr3_phy_ecp5.v` cannot
+start toggling `CK`/`CK#` off a not-yet-locked clock; `ddr3_read_calib.v`'s
+own reset stays high until `init_ready`, so this byte lane's read
+calibration does not begin before the JEDEC power-up sequence itself
+has reported ready.
+
+A new `sim/tb_ddr3_top.v` wires `ddr3_ecp5_top.v` against BOTH
+existing sim models at once, for the first time - `sim/ddr3_model.v`
+(Part 1's own protocol checker) on the command/address pins and
+`sim/ddr3_dq_model.v` (Part 2's own byte-lane memory) on the data
+pins - rather than each part continuing to prove itself only in
+isolation. The first real run found a real bug: the same
+`model_seq_done`-lags-`ready`-by-a-few-cycles timing gap
+`sim/tb_ddr3_init.v`'s own fix already found for Part 1 reproduced
+here, sampled at the wrong instant; fixed the same way, with a real
+settle delay before the check. Mutation-tested three ways, not two -
+the third specific to what this integration adds over Parts 1 and 2
+each proven alone: a wrong bank-address wire inside
+`ddr3_ecp5_top.v` itself (`cmd_ba` tied to a constant instead of
+`ddr3_init_seq.v`'s own output) is correctly caught by
+`sim/ddr3_model.v`'s own real protocol check, proving this file's own
+port-to-port wiring is load-bearing, not just individually-correct
+submodules pasted together. The other two mutations (a corrupted
+stored byte, a forced always-driving memory model) reproduce Part 2's
+own two checks end-to-end through the new integration's real tristate
+arbitration on `ddr3_dq`, not through a testbench-internal `wire` as
+Part 2's own narrower test used. `make verify`/`make verify_ooo` both
+pass, `sim_ddr3_top` among them, no regression on any existing path.
+
+**What this does not establish, worth stating precisely.** Two
+mutations this round could not have been meaningfully caught by
+simulation at all, and are named here rather than skipped quietly: a
+mutation removing the `pll_locked` reset gate, and one swapping
+`ddr3_phy_ecp5.v`'s own clock from `sclk` back to raw `clk` (the exact
+bug this Part exists to fix) - neither produces an observable failure
+in this behavioral simulation, because `ddr3_eclk_pll.v`'s own
+simulation model does not model real PLL lock delay or real
+`sclk`-vs-`clk` phase difference at all (`assign sclk = clk;` in its
+own simulation body - see that file's own header). The real benefit of
+this Part - genuine phase alignment between `sclk` and `eclk` on real
+silicon - is therefore asserted from datasheet/architecture reasoning,
+the same way it was in Part 2's own account, not demonstrated by a
+test that could fail. `ddr3_dqs` stays `input`-only, not `inout` -
+`ddr3_dq_serdes_ecp5.v` still has no DQS write-drive primitive
+(`ODDRX2DQSB`/`TSHX2DQSA`-for-DQS), so even though DQ's own
+`ODDRX2DQA`/`TSHX2DQA` can drive out, no real write to real silicon
+could work yet without a real strobe alongside it. `ddr3_read_calib.v`
+still does not issue real ACT/WR/RD commands through
+`ddr3_phy_ecp5.v` - gating its own reset on `init_ready` is real,
+correct sequencing, but does not by itself turn its own
+direct-signal-injection calibration scheme into a real command-level
+read/write path; that, the second DQ byte lane, and real hardware
+bring-up (no ECPIX-5 is attached to this session) remain later,
+separate work.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a
