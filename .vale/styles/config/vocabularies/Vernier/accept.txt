@@ -284,6 +284,7 @@ repo
 requesters
 retargeted
 retiming
+reverified
 revert
 riscv
 ruleset

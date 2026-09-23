@@ -3382,6 +3382,91 @@ this - not silently presented as fully authoritative. No real DDR3
 chip has ever seen this sequence - only `sim/ddr3_model.v`'s own
 protocol checker has - and no ECPIX-5 is attached to this session.
 
+**Update, Part 2: one byte lane's own DQ/DQS data path - real
+`DQSBUFM`-based read calibration, and a real write-then-readback round
+trip - now exists and passes a new directed test, independent of Part
+1's own init sequence.** The user's own explicit choice this round:
+`DQSBUFM`-based hardware DQS tracking (LiteDRAM's real, proven
+architecture) over the simpler UberDDR3-style fixed-delay/bitslip
+scheme Part 1's own update first recommended - checked directly
+against LiteDRAM's own real source (`litedram/phy/ecp5ddrphy.py`,
+BSD) rather than assumed from `DQSBUFM`'s own 23-port list. Two real
+findings made the primitive tractable: `DDRDLLA` is a one-shot,
+reset-time-only lock sequence, not a continuous loop; and `DQSBUFM`'s
+own hardest feature - the internal `RDMOVE`/`WRMOVE` dynamic
+margin-control engine - is real, present in silicon, and simply not
+used, matching LiteDRAM's own real, shipping choice. Real calibration
+instead happens through a bounded, one-shot sweep of
+`READCLKSEL[2:0]`'s 8 discrete tap positions, Lattice's own documented
+"READ Pulse Positioning" mechanism (`FPGA-TN-02035`, fetched via a
+legitimate community mirror after Lattice's own `.ashx` URL failed the
+same way an earlier datasheet fetch had).
+
+A genuine new complexity surfaced mid-design and was put to the user
+rather than decided unilaterally: `IDDRX2DQA`/`ODDRX2DQA`/`TSHX2DQA`
+need a real 1:2 `SCLK`:`ECLK` clock-domain split, distinct from Part
+1's own single-clock-domain command/address design - the user chose to
+take this on now rather than narrow scope further.
+`rtl/soc/ddr3_eclk_pll.v` generates both from this design's own 25 MHz
+`clk` via `EHXPLLL` (25 -> 50 MHz `eclk`, 25 MHz `sclk`,
+`ecppll`-generated, no warnings). Its own first simulation-model draft
+(`eclk_r ^ clk`, toggled from separate posedge/negedge `always`
+blocks) was not trusted on hand-trace alone - a real, standalone
+`iverilog`/`vvp` test with `$dumpvars` caught it producing a
+degenerate, near-zero-duration glitch rather than a real square wave;
+replaced with a plain delay-based generator, independently reverified
+the same way before use.
+
+`rtl/soc/ddr3_dqs_ecp5.v` (`DDRDLLA` + `DQSBUFM`, tied off exactly as
+LiteDRAM's own real code does) and `rtl/soc/ddr3_dq_serdes_ecp5.v`
+(`IDDRX2DQA`/`ODDRX2DQA`/`TSHX2DQA` via `generate`, one byte lane,
+`DQ_WIDTH=8`) both follow the same `ifdef SYNTHESIS`/
+behavioral-substitute pattern Part 1 established - this toolchain has
+zero simulation models for any of these primitives either, confirmed
+the same way. `rtl/soc/ddr3_read_calib.v` sweeps all 8 `READCLKSEL`
+positions once at boot, checking real captured data against a known
+test pattern (not `DATAVALID` alone - a real status bit could
+plausibly assert "valid" at a tap that still samples the wrong cycle)
+and latching the first tap that actually matches; a real `calib_error`
+if every tap fails. `sim/ddr3_dq_model.v` is a new, focused behavioral
+DQ/DQS memory (kept separate from `sim/ddr3_model.v`'s own
+protocol-only checker, a deliberate choice to keep concerns apart)
+modeling DQS as genuinely source-synchronous - idle except while a
+real read is active.
+
+`sim/tb_ddr3_data.v` wires all of the above together with a real
+tristate bus - both the FPGA's own drive and the memory model's own
+drive sharing one `wire` - and a real bus-contention check: `dq_oe`
+and the model's own drive enable asserted simultaneously is flagged as
+a real error, not assumed impossible. The first real run passed
+outright, with the sweep genuinely finding tap 2 (not tap 0, the
+default starting position) - real proof the search itself is doing the
+work, not a lucky first-try pass. Mutation-tested twice: a corrupted
+stored byte correctly fails every one of the 8 taps and asserts
+`calib_error`; a forced always-driving memory model correctly trips
+the bus-contention check - the second mutation caught a real bug in
+the testbench itself first (the contention check originally sampled
+the live signal at one instant near the end, long after the one-cycle
+write pulse that was the only real contention window, and so missed a
+real violation silently; fixed to check a latched `contention_seen`
+register instead, then reconfirmed both mutations catch and the clean
+case still passes). `make verify`/`make verify_ooo` both pass
+(`sim_ddr3_data` among them; formal 6/6 proved, riscv-tests 82
+passed/0 failed/2 xfail, co-simulation vs Spike 84/84, Linux boot
+reached userspace - no regression on any existing path).
+
+**What this does not establish.** The full 16-bit DQ bus - one byte
+lane only, matching this slice's own explicit scope. `DQSBUFM`'s own
+`RDMOVE`/`WRMOVE` engine - deliberately unused, not a gap. Real
+hardware bring-up - no ECPIX-5 is attached to this session, and the
+simulation models for `DDRDLLA`/`DQSBUFM`/`IDDRX2DQA`/`ODDRX2DQA`/
+`TSHX2DQA` are honest functional approximations, not phase-accurate -
+real silicon could behave differently at the actual `READCLKSEL` tap
+boundaries this sweep depends on. Part 2's own new `sclk`/`eclk`
+clock-domain pair is not yet reconciled with Part 1's own single-`clk`
+`ddr3_phy_ecp5.v` design - real, deliberate later work, not assumed
+compatible here.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a

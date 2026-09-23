@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2477,6 +2477,24 @@ sim_ddr3_init: sim/sim_ddr3_init.out
 	@grep -q "DDR3 INIT SEQUENCE TEST PASSED" sim/ddr3_init.log || \
 	    { echo "sim_ddr3_init FAILED"; exit 1; }
 
+# ---- DDR3 DQ/DQS data path (Phase 9 Stage 1, Part 2, docs/roadmap.md) ----
+#
+# One byte lane's own DQSBUFM-based read calibration and write-then-
+# readback round trip, against sim/ddr3_dq_model.v's own real
+# behavioral DQ/DQS memory. Distinct from sim_ddr3_init above: that one
+# proves the command/mode-register sequence, this one proves the
+# genuinely double-data-rate data path none of Part 1's own files touch.
+sim/sim_ddr3_data.out: sim/tb_ddr3_data.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_data.v rtl/soc/ddr3_eclk_pll.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
+
+sim_ddr3_data: sim/sim_ddr3_data.out
+	@cd sim && $(VVP) sim_ddr3_data.out $(VVP_DUMP) 2>&1 | tee ddr3_data.log
+	@grep -q "DDR3 DATA PATH TEST PASSED" sim/ddr3_data.log || \
+	    { echo "sim_ddr3_data FAILED"; exit 1; }
+
 SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
 
 software/soc/sdramtest.elf: $(SDRAMTEST_SRCS) software/soc/link_sdram.ld $(SOC_HDRS)
@@ -2514,7 +2532,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
