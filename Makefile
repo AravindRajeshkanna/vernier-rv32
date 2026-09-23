@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2461,6 +2461,22 @@ sim_sdram: sim/sim_sdram.out
 	@grep -q "SDRAM TEST PASSED" sim/sdram.log || \
 	    { echo "sim_sdram FAILED"; exit 1; }
 
+# ---- DDR3 init sequence (Phase 9 Stage 1, Part 1, docs/roadmap.md) ----
+#
+# Command sequence and timing only - no read/write/refresh data path
+# exists yet, so this is not "sim_sdram for DDR3," it is the narrower
+# thing that exists before that: proving the real JEDEC power-up/mode-
+# register order and the real inter-command waits are honored, against
+# sim/ddr3_model.v's own real protocol checker.
+sim/sim_ddr3_init.out: sim/tb_ddr3_init.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_init.v rtl/soc/ddr3_init_seq.v \
+	    rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+
+sim_ddr3_init: sim/sim_ddr3_init.out
+	@cd sim && $(VVP) sim_ddr3_init.out $(VVP_DUMP) 2>&1 | tee ddr3_init.log
+	@grep -q "DDR3 INIT SEQUENCE TEST PASSED" sim/ddr3_init.log || \
+	    { echo "sim_ddr3_init FAILED"; exit 1; }
+
 SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
 
 software/soc/sdramtest.elf: $(SDRAMTEST_SRCS) software/soc/link_sdram.ld $(SOC_HDRS)
@@ -2498,7 +2514,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \

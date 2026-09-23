@@ -3165,13 +3165,17 @@ on silicon, not asserted from the simulation alone.
 
 ## Phase 9 — DDR
 
-**Stage 0 has real, partial progress - board files, real synthesis, a
-real diagnostic-scale bitstream - but is not done, and Stages 1 through
-5 remain entirely a plan, not an account.** Nothing past Stage 0's own
+**Stage 0 and Stage 1 both have real, partial progress - board files, a
+real diagnostic-scale bitstream, a real DDR3 init sequence passing a
+real protocol checker - but neither is done, and Stage 2 through Stage 5
+remain entirely a plan, not an account.** Nothing past each stage's own
 "Update" paragraph below should be read as a completed claim the way
-the "Stage N:" entries in every phase above this one are; Stage 0's own
-"Done when" bar (a real boot banner, a real measured Fmax, on silicon)
-stays explicitly unmet too - no ECPIX-5 is attached to this session.
+the "Stage N:" entries in every phase above this one are; both stages'
+own "Done when" bars (real hardware, a real measured Fmax on silicon;
+standalone read/write/refresh tests, which do not exist yet since no
+data path does) stay explicitly unmet - no ECPIX-5 is attached to this
+session, and no real DDR3 chip has seen anything this project has
+written.
 What changed since this phase was first written down as "blocked on a
 board, board not chosen" is that a real, evidence-based board candidate
 now exists - `docs/roadmap.md`'s own Phase 8 entry describes the same
@@ -3317,6 +3321,66 @@ down here, not assumed from the current SDRAM's own `0x9000_0000`.
 read/write/refresh tests under both Icarus and Verilator, with formal or
 property checks where the design actually admits them - not asserted,
 the same bar every other controller in this tree is held to.
+
+**Update, Part 1: the real init/mode-register sequence and CK/CK#
+generation exist and pass a real, fail-capable protocol checker - the
+read/write/refresh data path does not exist yet, so this is a real
+first slice of Stage 1, not the whole of it.** Two rounds of real
+research this round answered Stage 1's own open "soft IOSERDES or
+otherwise" question with real, cited technical grounding rather than a
+guess: DDR3's own "DLL off" mode (fixing CL=CWL=6, capping the DRAM
+clock at 125 MHz - far above what this design runs at) is confirmed,
+against two independent real, working ECP5 implementations read for
+architecture only, to let read/write leveling be skipped entirely for a
+single-rank, point-to-point topology - exactly what ECPIX-5's own
+on-board DDR3L chip is. A third real third-party option
+(`ultraembedded/core_ddr3_controller`) was found, initially reported as
+Apache-2.0 (which would have made it license-compatible, unlike
+UberDDR3's GPL-3.0), and checked directly against GitHub's own API
+before treating it as real: `license: null`, no code change since 2021,
+and its own README already calling its ECP5 PHY "sub-optimal." Not
+adopted - and this project's own "build custom" decision stands
+confirmed by checking, not just left unchallenged.
+
+Also confirmed, and worth stating plainly: DDR3's command/address bus
+is single-data-rate - only `CK`/`CK#` and the DQ/DQS data lines are
+truly double-pumped - so Part 1 needs only one DDR primitive
+(`ODDRX1F`, for `CK`/`CK#`, mirroring `fpga/sdram_clk_out.v`'s own
+real, hardware-confirmed 180-degree-phase reasoning almost exactly) -
+`IDDRX1F`/`DELAYG`/DQS capture are real, but belong to the data-path
+slice this update does not attempt. This toolchain's own behavioral
+simulation model file (`cells_sim.v`) has zero DDR-I/O primitives at
+all - confirmed by reading it directly, not assumed - so
+`rtl/soc/ddr3_phy_ecp5.v` follows the exact `ifdef SYNTHESIS`/
+behavioral-substitute pattern `fpga/sdram_clk_out.v` already
+established, rather than inventing a new one.
+
+`rtl/soc/ddr3_init_seq.v` drives the real JEDEC power-up sequence
+(reset/CKE timing, MR2 -> MR3 -> MR1 -> MR0 -> ZQCL, the real required
+order) against `sim/ddr3_model.v`, a new behavioral protocol checker
+(not a memory array - no data path exists yet to model) that
+independently verifies the real command order and the real
+inter-command minimum waits, rather than trusting the sequence that
+generates them. Mutation-tested twice before shipping - a wrong MR2
+bank address, and a shortened tMRD wait - each caught by name
+(`sim/tb_ddr3_init.v`'s own real assertions), reverted, reconfirmed
+clean. `make verify`/`make verify_ooo` both pass (63/63 real test
+markers, `sim_ddr3_init` among them).
+
+**What this does not establish, named plainly rather than hidden.**
+The exact per-field bit *values* inside MR0-3 (as opposed to the real
+command order and timing above) were reasoned field-by-field against
+general JEDEC knowledge and cross-checked where possible against
+AngeloJacobo/UberDDR3's own real, working values (read for the
+bit-field positions and encoding only - no code copied, GPL-3.0 either
+way) - but this round could not successfully fetch the primary Micron
+datasheet PDF directly (the fetch returned a redirect page, not the
+document), so these individual values are not independently confirmed
+against the primary source the way this project's own practices
+normally require. A real, open verification gap for whoever continues
+this - not silently presented as fully authoritative. No real DDR3
+chip has ever seen this sequence - only `sim/ddr3_model.v`'s own
+protocol checker has - and no ECPIX-5 is attached to this session.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
