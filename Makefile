@@ -205,7 +205,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
-        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_cmd0 dtb \
+        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
@@ -796,6 +796,14 @@ sim_ulx3s: soc
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v
 	cd sim && $(VVP) sim_ulx3s.out
+
+# Same reasoning as sim_ulx3s above, for docs/roadmap.md's Phase 9
+# entry's own Stage 0 board wrapper - fpga/ecpix5_top.v is real RTL no
+# other target would otherwise build.
+sim_ecpix5: soc
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_ecpix5.out sim/tb_ecpix5.v \
+	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v
+	cd sim && $(VVP) sim_ecpix5.out
 
 # `WITH_VIDEO` is opt-in (fpga/ulx3s_top.v, BOARD=ulx3s85-video in
 # fpga/synth/synth_ecp5.sh) - the primary board target above builds and
@@ -2489,7 +2497,7 @@ verify_ooo:
 	$(MAKE) verify CORE=ooo
 	rm -f sim/*.out
 
-verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_cmd0 \
+verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \

@@ -51,6 +51,7 @@ JTAG
 Kbit
 Kconfig
 LEDs
+LPF's
 LUTs
 LiteX
 MMU

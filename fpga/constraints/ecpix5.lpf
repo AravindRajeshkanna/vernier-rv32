@@ -1,0 +1,64 @@
+## ECPIX-5 (LambdaConcept), LFE5UM5G-45F or -85F, package 8BG554I.
+##
+## Stage 0 only (docs/roadmap.md's Phase 9 entry) - board bring-up, no DDR
+## controller yet. This file has NOT been run on a board: no ECPIX-5 is
+## attached to this project's own development session. Every pin below is
+## a documented spec, not something confirmed on silicon - unlike
+## fpga/constraints/ulx3s.lpf's own header, which can say that.
+##
+## Clock and reset: two independent sources agree exactly -
+## litex-boards' own lambdaconcept_ecpix5.py platform file and
+## LambdaConcept's own official docs (docs.lambdaconcept.com/ecpix-5/
+## features/clock-reset.html) both give the system clock as K23/100 MHz
+## and system reset as N5.
+##
+## UART and LEDs: litex-boards' platform file only - not yet
+## cross-checked against a second independent source the way the clock/
+## reset pins above were. Treat these as a documented spec pending a
+## second source or real hardware, the same "the SD pins are the
+## exception" honesty fpga/ulx3s_top.v's own header already models for
+## a less-certain pin group on a different board.
+##
+## Used by:  LPF=fpga/constraints/ecpix5.lpf TOP=ecpix5_top ./fpga/synth/synth_ecp5.sh
+
+## ---- clock ----
+## 100 MHz raw oscillator - see fpga/ecpix5_clk_pll.v for why this feeds
+## a PLL rather than the SoC directly (this design's own measured Fmax is
+## nowhere near 100 MHz).
+LOCATE COMP "clk_sys" SITE "K23";
+IOBUF  PORT "clk_sys" PULLMODE=NONE IO_TYPE=LVCMOS33;
+FREQUENCY PORT "clk_sys" 100 MHZ;
+
+## ---- reset ----
+## System reset, debounced on-board by a MAX6420 reset generator per
+## LambdaConcept's own docs - so no additional debounce is needed here,
+## unlike fpga/ulx3s.lpf's own raw button input.
+LOCATE COMP "rst_n" SITE "N5";
+IOBUF  PORT "rst_n" PULLMODE=UP IO_TYPE=LVCMOS33;
+
+## ---- UART (FTDI USB-serial) ----
+## Named from the FPGA's own point of view, unlike fpga/ulx3s.lpf's
+## ftdi_rxd/ftdi_txd naming (which is named from the FTDI's point of
+## view) - litex-boards' own platform file uses "rx"/"tx" without a
+## stated point of view, so this file spells out which is which rather
+## than reusing ambiguous names.
+LOCATE COMP "uart_tx" SITE "R24";
+LOCATE COMP "uart_rx" SITE "R26";
+IOBUF  PORT "uart_tx" PULLMODE=NONE IO_TYPE=LVCMOS33;
+IOBUF  PORT "uart_rx" PULLMODE=UP   IO_TYPE=LVCMOS33;
+
+## ---- LED0 only (Stage 0's own minimal cut) ----
+## ECPIX-5 has four RGB LEDs (12 pins total); only LED0's green channel
+## is wired here, carrying soc_fpga.v's own real heartbeat bit
+## (`led[2]`, `heartbeat[24]` - confirmed by reading fpga/soc_fpga.v's
+## own `assign led = {trap_seen, heartbeat[24], gpio_out[1:0]}`, not
+## assumed) - enough for Stage 0's own "blinks an LED" bar without
+## claiming pins this file has not actually needed to place yet. LED0's
+## red/blue and LEDs 1-3 entirely are real, documented pins
+## (litex-boards' own platform file) left unclaimed here on purpose, not
+## because they are unknown.
+## Port name is `led2_g` (matching soc_fpga.v's own logical led[2] bit,
+## not the physical LED0 index it happens to be wired to - the two are
+## different numbers on purpose, see fpga/ecpix5_top.v's own comment).
+LOCATE COMP "led2_g" SITE "R23";
+IOBUF  PORT "led2_g" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
