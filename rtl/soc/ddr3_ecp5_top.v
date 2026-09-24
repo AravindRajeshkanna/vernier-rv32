@@ -1,12 +1,13 @@
-// DDR3 PHY integration, ECP5 - Phase 9 Stage 1, Part 3 (docs/roadmap.md).
-// Wires Part 1 (rtl/soc/ddr3_init_seq.v + rtl/soc/ddr3_phy_ecp5.v, the
-// real JEDEC power-up sequence and SDR command/address/CK generation)
-// and Part 2 (rtl/soc/ddr3_eclk_pll.v + rtl/soc/ddr3_dqs_ecp5.v +
-// rtl/soc/ddr3_dq_serdes_ecp5.v + rtl/soc/ddr3_read_calib.v, one byte
-// lane's own DQSBUFM-based DQ/DQS data path) onto one real, shared
-// clock tree for the first time - both were proven independently, each
-// against its own free-running testbench clock, not against each
-// other.
+// DDR3 PHY integration, ECP5 - Phase 9 Stage 1, Parts 3-5
+// (docs/roadmap.md). Wires Part 1 (rtl/soc/ddr3_init_seq.v +
+// rtl/soc/ddr3_phy_ecp5.v, the real JEDEC power-up sequence and SDR
+// command/address/CK generation), Part 2 (rtl/soc/ddr3_eclk_pll.v +
+// rtl/soc/ddr3_dqs_ecp5.v + rtl/soc/ddr3_dq_serdes_ecp5.v +
+// rtl/soc/ddr3_read_calib.v, one byte lane's own DQSBUFM-based DQ/DQS
+// data path), and Part 4 (rtl/soc/ddr3_dqs_write_ecp5.v, the real DQS
+// write-drive primitive) onto one real, shared clock tree - each was
+// proven independently first, against its own free-running testbench
+// clock or its own standalone test, not against the others.
 //
 // ---- Why this is real, not cosmetic ----
 // Part 1's own `ddr3_phy_ecp5.v` generates `CK`/`CK#` (and every
@@ -40,18 +41,21 @@
 // docs/roadmap.md's own account of what this integration does not
 // establish.
 //
-// ---- What is deliberately still missing here ----
-// DQS write-drive (`ODDRX2DQSB`/`TSHX2DQSA`-for-DQS) does not exist in
-// `rtl/soc/ddr3_dq_serdes_ecp5.v` - so even though that file's own
-// `ODDRX2DQA`/`TSHX2DQA` can drive DQ out, no real write to real
-// silicon could work yet without a real DQS strobe accompanying it.
-// `ddr3_dqs` is therefore `input`-only here, not `inout` - an honest
-// reflection of what this PHY can actually do today, not a
-// placeholder for something already working. A real command-level
-// read/write sequencer (issuing actual ACT/WR/RD through
-// `ddr3_phy_ecp5.v`, not this file's own direct-signal-injection
-// calibration path) and the second DQ byte lane are later, separate
-// work.
+// ---- DQS write-drive, Part 5 ----
+// `rtl/soc/ddr3_dqs_write_ecp5.v` (Part 4) is wired in here for the
+// first time - `ddr3_dqs` is genuinely `inout` now, tristate-arbitrated
+// the same way `ddr3_dq` already was. Its own `write_start` is driven
+// directly from `ddr3_read_calib.v`'s own `wr_en` pulse - the same
+// single-cycle signal that already marks "a write is happening now"
+// for the DQ side, reused rather than duplicated. This proves the real
+// wiring (the write-drive primitive fires exactly when a write
+// happens, and the shared `ddr3_dqs` pin is never driven from both
+// sides at once) - it does not yet prove a real DRAM would sample the
+// right data from it: `sim/ddr3_dq_model.v` still stores whatever
+// `wr_en`/`wr_d0` say directly, not by watching real DQS edges, and
+// `ddr3_read_calib.v` still does not issue real ACT/WR/RD commands
+// through `ddr3_phy_ecp5.v`. Both remain later, separate work, along
+// with the second DQ byte lane and real hardware bring-up.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
     input  wire        rst,
@@ -69,9 +73,9 @@ module ddr3_ecp5_top (
     output wire        ddr3_reset_n,
     output wire        ddr3_odt,
 
-    // ---- real DDR3 pins - one byte lane's own DQ/DQS, from Part 2 ----
+    // ---- real DDR3 pins - one byte lane's own DQ/DQS, from Parts 2/4 ----
     inout  wire [7:0]  ddr3_dq,
-    input  wire        ddr3_dqs,   // read-capture only - see header
+    inout  wire        ddr3_dqs,
 
     // ---- observability, matching this stage's own testbenches ----
     output wire        pll_locked,
@@ -142,6 +146,19 @@ module ddr3_ecp5_top (
         .dqsr90(dqsr90), .dqsw(dqsw), .dqsw270(dqsw270),
         .datavalid(datavalid), .burstdet(burstdet), .dll_locked(dll_locked)
     );
+
+    // Part 5: real DQS write-drive, triggered directly from the same
+    // wr_en pulse that already marks a write on the DQ side - see
+    // header.
+    wire dqs_wr_o, dqs_wr_oe;
+
+    ddr3_dqs_write_ecp5 DQS_WR (
+        .sclk(sclk), .eclk(eclk), .dqsw(dqsw), .rst(rst_all),
+        .write_start(wr_en),
+        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe)
+    );
+
+    assign ddr3_dqs = dqs_wr_oe ? dqs_wr_o : 1'bz;
 
     wire [7:0] dq_o, dq_oe, dq_i;
     wire [7:0] rd_q3, rd_q2, rd_q1;

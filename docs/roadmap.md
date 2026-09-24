@@ -3588,6 +3588,68 @@ ACT/WR/RD commands through `ddr3_phy_ecp5.v`. The second DQ byte lane
 and real hardware bring-up remain later, separate work, unchanged from
 Part 3's own account.
 
+**Update, Part 5: the DQS write-drive primitive is wired into
+`ddr3_ecp5_top.v` - `ddr3_dqs` is genuinely `inout` now, not
+`input`-only.** `write_start` is driven directly from
+`ddr3_read_calib.v`'s own `wr_en` pulse - the same single-cycle signal
+that already marks a write on the DQ side, reused rather than
+duplicated. `sim/tb_ddr3_top.v` proves two things: the wiring is real
+(`dqs_wr_oe` genuinely fires when a write happens, not dead code), and
+the now-shared `ddr3_dqs` pin is never driven from both sides at once.
+
+Getting the second check right took two real rounds of fixing the test
+itself, not the design - worth recording plainly. A first version
+tapped each side's own internal output-enable signal
+(`DUT.dqs_wr_oe`/`mem_dq_oe`) and flagged both asserting together; a
+mutation that broke the tristate assignment itself (driving the pin
+unconditionally, bypassing the enable signal entirely) left that
+internal signal's own value untouched, so the check kept passing while
+a standalone probe showed the real `ddr3_dqs` net actually resolving
+to `x` for 10 real cycles - genuine electrical contention the check
+had no way to see, because it was watching the wrong thing. Fixed to
+check the resolved pin value directly. That fix then surfaced a second
+bug, in the fix itself: a first pass used a reduction-XOR
+(`^ddr3_dq === 1'bx`) as a one-line "any bit contended" test, but
+Verilog's own 4-state XOR table resolves to `x` whenever any operand
+is `z` - so a cleanly floating, entirely undriven bus (confirmed
+directly via a standalone probe showing `ddr3_dq === 8'bzzzzzzzz` at
+the exact instant this reduction reported `x`) was misreported as
+contended. Fixed to a real per-bit `x` check instead. Both fixes were
+verified the same way the bugs were found - a standalone probe
+observing the actual signal, not a hand-trace.
+
+Mutation-tested four ways: `write_start` tied permanently low (the new
+wiring goes dead - caught), the DQS tristate assignment removed
+(genuine contention with the memory model's own read-side drive -
+caught, and only caught after the fix above), the DQ tristate
+assignment removed with the FPGA's own output left unmodified (not
+caught - see below), and the DQ tristate assignment removed with the
+FPGA's own output additionally inverted (genuine contention forced by
+construction - caught, confirming the check mechanism itself is sound
+for the cases it can see). `make verify`/`make verify_ooo` both pass,
+no regression on any existing path (`sim_ddr3_top` itself has no new
+Makefile target - Part 5 changes what it already gates).
+
+**What this does not establish, including one real, unfixable-in-
+simulation gap found this round.** The third mutation above - removing
+the DQ tristate but leaving the FPGA's own output value unchanged -
+was not caught, and cannot be, by any check built on 4-state `x`
+detection: this design's own read-calibration test writes a fixed
+pattern and reads it straight back, so both the FPGA's own (buggy,
+always-driving) output and the memory model's own read-side output
+happen to present the *same* value whenever they overlap, and Verilog
+only resolves disagreeing drivers to `x` - two drivers that agree
+resolve cleanly, indistinguishable in a digital simulator from a
+single driver, even though real silicon could still suffer a genuine
+electrical conflict from two active push-pull drivers fighting in
+agreement. Proving that class of bug needs drive-strength-aware
+modeling, out of scope here - named honestly rather than closed by a
+check that only looks correct. Everything else Part 4's own account
+named still applies unchanged: no memory model samples DQ on real DQS
+edges, `ddr3_read_calib.v` still does not issue real ACT/WR/RD
+commands, the second DQ byte lane and real hardware bring-up remain
+later work.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a

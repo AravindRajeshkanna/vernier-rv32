@@ -1,12 +1,13 @@
-// Integrated test for Phase 9 Stage 1, Part 3 (docs/roadmap.md):
-// rtl/soc/ddr3_ecp5_top.v wired against BOTH sim models at once for
-// the first time - sim/ddr3_model.v (the real JEDEC command/timing
-// protocol checker, Part 1) on the command/address pins, and
-// sim/ddr3_dq_model.v (the byte-lane DQ/DQS memory, Part 2) on the
-// data pins - proving the real init sequence and the real read
-// calibration sweep both run correctly off one shared, PLL-derived
-// clock tree, not two independently-clocked islands as in each part's
-// own standalone testbench.
+// Integrated test for Phase 9 Stage 1, Parts 3-5 (docs/roadmap.md):
+// rtl/soc/ddr3_ecp5_top.v wired against BOTH sim models at once -
+// sim/ddr3_model.v (the real JEDEC command/timing protocol checker,
+// Part 1) on the command/address pins, and sim/ddr3_dq_model.v (the
+// byte-lane DQ/DQS memory, Part 2) on the data pins - proving the real
+// init sequence and the real read calibration sweep both run correctly
+// off one shared, PLL-derived clock tree (Part 3), and that the real
+// DQS write-drive primitive (Part 4, wired in by Part 5) fires exactly
+// when a write happens without ever contending with the memory model's
+// own drive on the now-bidirectional ddr3_dqs pin.
 `timescale 1ns/1ps
 module tb_ddr3_top;
     localparam CLK_HZ    = 25_000_000;
@@ -88,15 +89,63 @@ module tb_ddr3_top;
     endgenerate
     assign ddr3_dqs = mem_dq_oe ? mem_dqs_o : 1'bz;
 
-    // A real bus-contention check on the shared DQ pins - both DUT's
-    // own dq_oe (tapped internally, since ddr3_dq itself only shows the
-    // resolved 'z/'0/'1 value, not which side actually asserted) and
-    // the memory model's own mem_dq_oe driving at once would be a real
-    // hardware conflict, not assumed impossible.
-    wire [7:0] tap_dq_oe = DUT.dq_oe;
-    wire bus_contention = (|tap_dq_oe) && mem_dq_oe;
-    reg  contention_seen = 1'b0;
-    always @(posedge DUT.sclk) if (bus_contention) contention_seen <= 1'b1;
+    // A real bus-contention check on the shared DQ/DQS pins. A first
+    // version of this check tapped each side's own internal output-
+    // enable signal (DUT.dq_oe / DUT.dqs_wr_oe) and flagged both
+    // asserting at once - real, but weaker than it looked: a mutation
+    // that broke the DQS tristate assignment itself (driving the pin
+    // unconditionally, bypassing dqs_wr_oe entirely) left dqs_wr_oe's
+    // own value untouched, so that check kept passing while the actual
+    // shared wire was electrically contended the whole time. Verified
+    // directly, not assumed: a standalone probe under that same
+    // mutation showed the real `ddr3_dqs` net resolving to `1'bx` for
+    // 10 real cycles. Fixed to check the resolved pin value itself -
+    // Verilog already resolves two disagreeing drivers on one wire to
+    // `x`, which is exactly the real electrical conflict this needs to
+    // catch, and cannot be bypassed by a bug in either side's own
+    // enable logic the way tapping an internal signal can. Gated on
+    // !rst: every register (both sides' own output-enable included) is
+    // genuinely, benignly `x` before the first real reset edge lands -
+    // confirmed directly, not assumed, by a standalone probe showing
+    // the only `x` in an otherwise-clean run at `t=20`, one clock edge
+    // before `rst` first deasserts. That is a universal Verilog
+    // simulation artifact, not real contention, and checking from
+    // time 0 would misreport it as one.
+    //
+    // A per-bit check, not a reduction-XOR - a second real bug this
+    // same investigation found: `^ddr3_dq === 1'bx` looked like a
+    // one-line "any bit contended" test, but Verilog's own 4-state
+    // XOR table resolves to `x` whenever ANY operand is `z`, so a
+    // cleanly floating, entirely undriven bus (every bit legitimately
+    // `z`, confirmed directly via a standalone probe showing
+    // `ddr3_dq === 8'bzzzzzzzz` at the exact instant this reduction
+    // reported `x`) was misreported as contended. Real contention -
+    // two drivers disagreeing on one bit - shows up as that specific
+    // bit reading `x`, not `z`; this function checks exactly that,
+    // bit by bit.
+    function automatic has_real_x;
+        input [7:0] v;
+        integer i;
+        begin
+            has_real_x = 1'b0;
+            for (i = 0; i < 8; i = i + 1)
+                if (v[i] === 1'bx) has_real_x = 1'b1;
+        end
+    endfunction
+
+    reg dq_contention_seen = 1'b0;
+    always @(posedge DUT.sclk) if (!rst && has_real_x(ddr3_dq)) dq_contention_seen <= 1'b1;
+
+    reg dqs_contention_seen = 1'b0;
+    always @(posedge DUT.sclk) if (!rst && (ddr3_dqs === 1'bx)) dqs_contention_seen <= 1'b1;
+
+    // Still tapped for diagnosis (which side asserted, not whether the
+    // pin was actually contended) and to prove the write-drive wiring
+    // itself is real, not dead code - Part 4's own primitive only ever
+    // asserts dqs_wr_oe when write_start (wr_en) actually pulses.
+    wire tap_dqs_oe = DUT.dqs_wr_oe;
+    reg  dqs_write_drive_seen = 1'b0;
+    always @(posedge DUT.sclk) if (tap_dqs_oe) dqs_write_drive_seen <= 1'b1;
 
     integer errors = 0;
 
@@ -112,7 +161,7 @@ module tb_ddr3_top;
     endtask
 
     initial begin
-        $display("=== DDR3 PHY integration (Phase 9 Stage 1, Part 3) ===");
+        $display("=== DDR3 PHY integration (Phase 9 Stage 1, Parts 3-5) ===");
         repeat (4) @(posedge clk);
         rst = 1'b0;
 
@@ -140,7 +189,9 @@ module tb_ddr3_top;
             $display("  calibrated READCLKSEL = %0d", calib_readclksel);
 
         repeat (4) @(posedge clk);
-        check("no bus contention seen at any point", contention_seen, 1'b0);
+        check("no bus contention seen at any point", dq_contention_seen, 1'b0);
+        check("no DQS bus contention seen at any point", dqs_contention_seen, 1'b0);
+        check("real DQS write-drive fired at least once", dqs_write_drive_seen, 1'b1);
 
         $display("");
         $display("---------------------------------------------");

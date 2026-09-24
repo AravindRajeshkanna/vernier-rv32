@@ -2504,11 +2504,13 @@ sim_ddr3_data: sim/sim_ddr3_data.out
 # own independently free-running testbench clock.
 sim/sim_ddr3_top.out: sim/tb_ddr3_top.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
     rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
-    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_model.v sim/ddr3_dq_model.v
+    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
+    sim/ddr3_model.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_top.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
 	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
-	    rtl/soc/ddr3_read_calib.v sim/ddr3_model.v sim/ddr3_dq_model.v
+	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
+	    sim/ddr3_model.v sim/ddr3_dq_model.v
 
 sim_ddr3_top: sim/sim_ddr3_top.out
 	@cd sim && $(VVP) sim_ddr3_top.out $(VVP_DUMP) 2>&1 | tee ddr3_top.log
