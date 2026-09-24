@@ -176,6 +176,7 @@ flashable
 floorplanning
 framebuffer
 fuzzer
+gateable
 gitignored
 glibc
 globals
