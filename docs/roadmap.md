@@ -3530,6 +3530,64 @@ read/write path; that, the second DQ byte lane, and real hardware
 bring-up (no ECPIX-5 is attached to this session) remain later,
 separate work.
 
+**Update, Part 4: a real DQS write-drive primitive now exists,
+standalone and proven - closing one specific half of the gap named
+above.** A new `rtl/soc/ddr3_dqs_write_ecp5.v` wraps `ODDRX2DQSB` +
+`TSHX2DQSA`, generating a real, fixed-shape burst-length-8 write
+waveform on a single `write_start` pulse: one real `sclk` cycle of
+low-with-OE-asserted preamble, two active toggle cycles (4 UI each,
+matching `ODDRX2DQSB`'s own real 4-bit-wide `D3:D0` port and this
+design's own already-established 4:1 `SCLK`:UI ratio), one real
+low-with-OE-asserted postamble cycle - four `sclk` cycles of real
+output-enable window in total, framed by real low guard bands on both
+sides. The preamble/postamble length (a full `sclk` cycle each) is
+reasoned as a conservative margin above JEDEC's own documented
+minimums (tWPRE/tWPST, roughly 0.35-0.6 tCK depending on speed grade),
+not independently checked against the primary Micron datasheet - the
+same open verification gap `rtl/soc/ddr3_init_seq.v`'s own MR
+field values already carry, named plainly again here rather than
+implied resolved.
+
+Proven standalone first, the same "narrow proof first" discipline
+Part 2's own byte-lane read-calibration test used before Part 3
+integrated it - `sim/tb_ddr3_dqs_write.v` is not yet wired into
+`rtl/soc/ddr3_ecp5_top.v`. The first real run found a real bug, in
+this file's own simulation substitute rather than the synthesis
+logic: the sim-only DQS output was a registered, one-cycle-delayed
+view of the active window, while the output-enable signal stayed
+purely combinational - two different latencies for supposedly
+synchronized signals, so DQS visibly stayed high for one extra cycle
+after OE had already dropped. Not a hand-traced worry, either - caught
+by the testbench's own real, recorded cycle-by-cycle history, the same
+"verify by running it, not by reading it" practice
+`rtl/soc/ddr3_eclk_pll.v`'s own first draft already needed. Fixed by
+making the DQS output combinational too, matching `oe`'s own timing
+exactly (`ODDRX2DQSB`/`TSHX2DQSA` both take their real inputs
+combinationally at the same cadence in the real synthesis path, so
+this fix also makes the simulation substitute more honestly
+consistent with the real primitives, not just internally self-
+consistent).
+
+Mutation-tested three ways: a broken preamble (driven high instead of
+low), a broken postamble (same), and a shortened output-enable window
+(skipping the postamble state entirely, collapsing the real four-cycle
+window to three) - all three caught by the test's own real recorded
+history, reverted, clean case reconfirmed passing. `make verify`/
+`make verify_ooo` both pass, `sim_ddr3_dqs_write` among them, no
+regression on any existing path.
+
+**What this does not establish.** `ddr3_ecp5_top.v` still exposes
+`ddr3_dqs` as `input`-only - this module is not wired into it yet, so
+the integration-level "real write to real silicon" claim stays exactly
+as unmet as Part 3 left it. No memory model in this tree samples DQ on
+real DQS edges yet - `sim/ddr3_dq_model.v` still trusts a direct
+`wr_en` signal, not a real strobe, so this Part proves the DQS
+waveform shape is correct, not that a real DRAM would actually latch
+the right data from it. `ddr3_read_calib.v` still does not issue real
+ACT/WR/RD commands through `ddr3_phy_ecp5.v`. The second DQ byte lane
+and real hardware bring-up remain later, separate work, unchanged from
+Part 3's own account.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a
