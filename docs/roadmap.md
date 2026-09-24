@@ -3650,6 +3650,63 @@ edges, `ddr3_read_calib.v` still does not issue real ACT/WR/RD
 commands, the second DQ byte lane and real hardware bring-up remain
 later work.
 
+**Update, Part 6: a real command-level write sequencer now exists,
+standalone and proven - the first time any real ACT/WR command has
+ever been issued through `rtl/soc/ddr3_phy_ecp5.v` in this stage.**
+A new `rtl/soc/ddr3_write_seq.v` accepts one write request (bank, row,
+column) and issues a real ACTIVATE, waits a real tRCD, issues a real
+WRITE (forcing A10 low - no auto-precharge), waits the real CAS Write
+Latency, then pulses `write_start` - the same single-cycle,
+`wr_en`-shaped signal `rtl/soc/ddr3_read_calib.v`'s own direct-
+injection scheme already produces, meant to eventually replace it.
+CWL=6 is not re-derived - it is the exact real value
+`rtl/soc/ddr3_init_seq.v`'s own MR2 already commits this design to
+under DLL-off, reused directly.
+
+Proven standalone first (`sim/tb_ddr3_write_seq.v`), the same "narrow
+proof first" discipline Part 4's own DQS write-drive test used before
+Part 5 integrated it - not yet wired into `rtl/soc/ddr3_ecp5_top.v`,
+and no read-side equivalent (`ddr3_read_seq.v`, issuing ACT+RD with
+tRCD/CL timing) exists yet either.
+
+The real ACT-to-WR gap this FSM produces measured 3 cycles, not the 2
+its own `TRCD_CYC` localparam name would suggest - `S_ACT` itself
+occupies one real cycle before `S_TRCD_WAIT`'s own cycles even begin,
+an off-by-one caught only by measuring the real testbench output, not
+by trusting the header's own hand-derived arithmetic. Not a
+correctness bug (3 cycles of real margin at this design's own 25 MHz
+only exceeds any real DDR3 tRCD requirement further) - the header
+comment was corrected to state the real measured value rather than
+leave the imprecise name standing uncorrected.
+
+Mutation-tested four ways, and one of the four exposed a real gap in
+the test itself, not the design: a first mutation removing the CWL
+wait entirely (`write_start` pulsing immediately after WR instead of
+six real cycles later) passed clean, because the test's own checks up
+to that point only verified *ordering* ("`write_start` happened after
+WR"), never the *exact* real cycle gap. Fixed by adding dedicated
+gap-value assertions matching the real, measured values above -
+re-tested, and this mutation (along with the other three - a
+mutation leaving A10 uncleared, one aliasing the WR encoding to ACT's
+own, and the CWL-skip above) are now all correctly caught. `make
+verify`/`make verify_ooo` both pass, `sim_ddr3_write_seq` among them,
+no regression on any existing path.
+
+**What this does not establish.** This module is not wired into
+`rtl/soc/ddr3_ecp5_top.v` yet, and no symmetric read-side sequencer
+exists - the "real command-level read/write sequencer" gap every
+part since Part 3 has named stays open in the direction that matters
+most for actually reading data back. This sequencer also does not
+track which banks are already open (a real controller would skip a
+redundant ACT) or issue PRECHARGE to close one down again - both
+later, separate work, matching this design's own already-established
+"one real, gateable slice at a time" discipline rather than an
+oversight. The exact tRCD/CWL cycle counts remain reasoned margins,
+not independently checked against the primary Micron datasheet - the
+same open gap `rtl/soc/ddr3_init_seq.v`'s own MR field values and
+`rtl/soc/ddr3_dqs_write_ecp5.v`'s own preamble/postamble margins
+already carry.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a

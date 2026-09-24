@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2532,6 +2532,21 @@ sim_ddr3_dqs_write: sim/sim_ddr3_dqs_write.out
 	@grep -q "DDR3 DQS WRITE-DRIVE TEST PASSED" sim/ddr3_dqs_write.log || \
 	    { echo "sim_ddr3_dqs_write FAILED"; exit 1; }
 
+# ---- DDR3 write command sequencer (Phase 9 Stage 1, Part 6, docs/roadmap.md) ----
+#
+# rtl/soc/ddr3_write_seq.v's own real ACT->WR->write_start command
+# sequencing with real (measured, not assumed) tRCD/CWL timing, proven
+# standalone - the same "narrow proof first" discipline Part 4's own
+# DQS write-drive test used before Part 5 integrated it. Not yet wired
+# into rtl/soc/ddr3_ecp5_top.v.
+sim/sim_ddr3_write_seq.out: sim/tb_ddr3_write_seq.v rtl/soc/ddr3_write_seq.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_write_seq.v rtl/soc/ddr3_write_seq.v
+
+sim_ddr3_write_seq: sim/sim_ddr3_write_seq.out
+	@cd sim && $(VVP) sim_ddr3_write_seq.out $(VVP_DUMP) 2>&1 | tee ddr3_write_seq.log
+	@grep -q "DDR3 WRITE SEQUENCER TEST PASSED" sim/ddr3_write_seq.log || \
+	    { echo "sim_ddr3_write_seq FAILED"; exit 1; }
+
 SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
 
 software/soc/sdramtest.elf: $(SDRAMTEST_SRCS) software/soc/link_sdram.ld $(SOC_HDRS)
@@ -2569,7 +2584,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
