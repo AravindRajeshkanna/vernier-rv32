@@ -3245,9 +3245,10 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over twelve gated slices (init and calibration, the DQ/DQS data path,
+over thirteen gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
-refresh arbitrated against writes and reads in both directions) - but
+refresh arbitrated against writes and reads in both directions and at most
+one transaction ever in flight) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -4219,6 +4220,107 @@ in the ten cycles after a refresh command is ignored even in the last few,
 where tRFC has already elapsed - which costs throughput, not correctness.
 Bank-state tracking, the second DQ byte lane, and real hardware bring-up
 remain open, unchanged.
+
+**Update, Part 13: a request is now either fully accepted or fully
+ignored - at most one DDR3 transaction is ever in flight - closing the
+write/read gap Part 12's probe measured, and the sweep that proved it
+also found a stale-data bug that had been in the design since Part 9.**
+A `write_req` and a `read_req` are accepted only if neither sequencer is
+busy and no refresh holds the bus, and in the same cycle a write beats a
+read:
+
+- `wseq_write_req = write_req & ~refresh_hold_d & ~wseq_busy & ~rseq_busy`
+- `rseq_read_req = read_req & ~refresh_hold_d & ~wseq_busy & ~rseq_busy & ~wseq_write_req`
+
+`write_busy` and `read_busy` are now the same value (either sequencer
+busy, or a refresh holding the bus), so a caller waiting on its own
+direction's busy is safe against the other direction too - a second real
+API change to those ports after Part 12's.
+
+**Test first, and what running it against the unfixed design measured.**
+`sim/tb_ddr3_wr_excl.v` was written and run against the unmodified RTL
+before anything was changed, so the hazards are measured, not reasoned.
+It failed in several distinct ways. *Same cycle* (d = 0): the read's ACT and
+RD never reached the pins and it returned wrong data, matching Part 12's
+probe. A *read overtaken by a write* (R->W, d = 1) also returned wrong data. *Coincident commands*: at d = 3, in both orders, a command from
+each sequencer landed in the same cycle and one was lost. Worth saying
+plainly that most other overlapping offsets did *not* fail on command
+counts - the two sequences simply interleave on the command bus - so a
+sparse test would have passed a design that was still wrong, and only the
+sweep found the offsets where the commands coincide. *A polite caller*: one
+that respected only its own direction's busy still collided at d = 2 in
+both orders, which is why per-direction busy was not enough and the two
+ports had to carry the same value. And *stale write data*: a second write
+presented at d = 11 reached memory carrying the previous write's data.
+
+**That last one was a latent bug, independent of the write/read gap.** A
+sequencer is back in `S_IDLE` one cycle before its `busy` drops, and it
+accepts a request in that cycle. `write_data_latch` (Part 9) only captured
+when `!write_busy`, so a request presented in exactly that cycle was
+accepted by the sequencer while the latch kept the old data. It needed a
+caller that violates the busy contract to reach, which is why nothing
+before this sweep hit it - but it is a real path to silently writing wrong
+data, and gating on the sequencer's *own* busy as well closes it. The
+mutation that removes just that term is not caught the obvious way: the
+latch then updates on every presented request, including mid-flight ones,
+overwriting an in-flight write's data - it is caught by the data check
+across `W->W` offsets 1 and up, which is why the term is load-bearing and
+not redundant with the latch change.
+
+The sweep: a second request presented at every offset `d` from 0 to 30
+after the first, for all four pairs (`W->W`, `W->R`, `R->W`, `R->R`), as a
+blind caller (ignores `busy`) and as a polite one (waits on its own
+direction's busy), 241 rounds, each anchored on `refresh_busy` falling and
+run in the quiet stretch before the next refresh is due so it does not
+interact with Part 12's hold. The property is stated as counts against
+the real command pins, which no internal signal can fake: ACT on the pins
+equals accepted writes plus accepted reads, WR equals accepted writes, RD
+equals accepted reads, completions and `read_data_valid` pulses equal
+acceptances, plus two global invariants (both sequencers never busy
+together, never both driving a command in the same cycle) and the
+documented tie-break itself. Measured result: 437 ACT, 219 WR and 218 RD
+on the pins for 219 accepted writes and 218 accepted reads, and the outcome
+symmetric across all four pairs - a blind second request ignored at 11
+offsets and accepted at 19 in each - with no polite request ever dropped.
+
+Mutation-tested six ways, all caught by the expected mechanism: the write
+gate without the read-busy term, the read gate without the write-busy
+term, no same-cycle tie-break, the write gate without its own busy, busy
+kept per direction (polite callers are dropped), and the tie-break
+reversed so a read beats a write (caught by the assertion added for
+exactly that, since coherence alone would not notice which one wins).
+All twelve DDR3 tests pass on the final design, and `make verify`/`make
+verify_ooo` both pass with `sim_ddr3_wr_excl` among them.
+
+**The PRECHARGE gap is broader than Part 12 framed it.** Part 12 named
+"PRECHARGE before REFRESH". Reading the datasheet's ACTIVATE entry for
+this update: "This row remains open (or active) for accesses until a
+PRECHARGE command is issued to that bank. A PRECHARGE command must be
+issued before opening a different row in the same bank." This design
+never issues PRECHARGE, so every transaction after the first that opens a
+different row of a bank it opened earlier is illegal on a real part, not
+only a REFRESH that lands with a bank open. (An ACT to the *same* row
+already open is not addressed by the text read, and is not claimed
+either way.) Nothing in simulation can see it: `sim/ddr3_model.v` does
+not track bank state and `sim/ddr3_dq_model.v` is a single stored
+location. The datasheet also gives a candidate for the smallest fix -
+READ and WRITE take auto precharge on `A10`, "the row being accessed will
+be precharged at the end of the READ burst" - which would close both
+halves of the gap at once; that is a candidate, not an evaluated design,
+and this is the next item.
+
+**What this does not establish.** The PRECHARGE gap above. *More than one
+caller*: the contract is one caller presenting at most one request at a
+time, and two independent masters presenting in the same cycle still get
+one silently ignored (write wins) - a real ack or queue is needed for
+that, and the Stage 2 Wishbone wrapper is single-master so it does not
+need it yet. Throughput: the controller is strictly one transaction at a
+time, with no pipelining or bank interleave. Stage 1's own "Done when" bar
+also still names Verilator (every test in this stage has only ever run
+under Icarus) and "formal or property checks where the design admits
+them" (not attempted anywhere in this stage). `sim/ddr3_dq_model.v` is
+still a single stored location. The second DQ byte lane and real hardware
+bring-up remain open, unchanged.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
