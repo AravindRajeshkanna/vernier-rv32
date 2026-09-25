@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2019,6 +2019,106 @@ sim_soc_2hart_lrsc_swap_hetero: sim/soc2hart_lrsc_swap.hex sim/sim_soc_2hart_lrs
 	@grep -aq "SOC-2HART-LRSC-SWAP-TEST: PASS" sim/soc_2hart_lrsc_swap_hetero.log && echo "CROSS-HART LR/SC OK (ooo holds, in-order writes)" || \
 	    { echo "FAILED: rtl/soc/reservation_monitor.v under CORE=hetero (ooo LR/SC vs in-order write)"; exit 1; }
 
+# ---- Phase 15 stage 2, closing the gap that stage's own account named:
+# ordinary (non-atomic) cross-hart loads/stores, stressed with the same
+# directed-hazard rigor as the LR/SC tests above, not just exercised
+# incidentally as a byproduct of them ----
+#
+# Both directions in one program, unlike the LR/SC pair above: ordinary
+# loads/stores have no core-type-specific internal mechanism the way LR/SC's
+# own reservation-invalidation logic does (that asymmetry is why the LR/SC
+# swap test needed a second file), so one hart writing then the other
+# reading, in both directions, within a single directed program, is real,
+# sufficient coverage rather than an arbitrarily narrower scope.
+#
+#   hart 0                          hart 1
+#   ------                          ------
+#   (tight delay loop)              WORD_A_WAIT: poll FLAG_A
+#   WORD_A = 0x11
+#   FLAG_A = 1
+#   WORD_B_WAIT: poll FLAG_B        (sees FLAG_A) read WORD_A -> R1
+#   (sees FLAG_B) read WORD_B -> R2 (tight delay loop)
+#   halt                            WORD_B = 0x22
+#                                   FLAG_B = 1
+#                                   halt
+#
+# The delay loops are short (20 iterations) - a real, tuned, tight window
+# rather than a generous one, so the flag-setting write and the other
+# hart's own concurrent pipeline state are genuinely close in real time,
+# matching the LR/SC test's own already-proven "tuned, not generous delay"
+# technique for provoking a real hazard rather than an eventually-consistent
+# non-event. Hand-encoded the same field-packing way sim/soc2hart_lrsc.hex
+# is - independently verified against a real disassembler
+# (riscv64-unknown-elf-objdump -m riscv:rv32) before being trusted, not
+# just hand-traced.
+sim/soc2hart_ordinary.hex: Makefile
+	@python3 -c "\
+	import sys;\
+	i_type = lambda imm, rs1, f3, rd, op: ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	j_type = lambda imm, rd, op: (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	b_type = lambda imm, rs1, rs2, f3, op: (((imm >> 12) & 1) << 31) | (((imm >> 5) & 0x3F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | (((imm >> 1) & 0xF) << 8) | (((imm >> 11) & 1) << 7) | (op & 0x7F);\
+	u_type = lambda imm20, rd, op: ((imm20 & 0xFFFFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F);\
+	s_type = lambda imm, rs1, rs2, f3, op: (((imm >> 5) & 0x7F) << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 0x7) << 12) | ((imm & 0x1F) << 7) | (op & 0x7F);\
+	words = [\
+	    i_type(0xF14, 0, 0x2, 10, 0x73),\
+	    u_type(0x80000, 1, 0x37),\
+	    b_type(72, 10, 0, 0x1, 0x63),\
+	    i_type(0x100, 1, 0x0, 2, 0x13),\
+	    i_type(0x104, 1, 0x0, 3, 0x13),\
+	    i_type(0x108, 1, 0x0, 4, 0x13),\
+	    i_type(0x10C, 1, 0x0, 5, 0x13),\
+	    i_type(0x114, 1, 0x0, 6, 0x13),\
+	    i_type(20, 0, 0x0, 12, 0x13),\
+	    i_type(-1, 12, 0x0, 12, 0x13),\
+	    b_type(-4, 12, 0, 0x1, 0x63),\
+	    i_type(0x11, 0, 0x0, 7, 0x13),\
+	    s_type(0, 2, 7, 0x2, 0x23),\
+	    i_type(1, 0, 0x0, 8, 0x13),\
+	    s_type(0, 3, 8, 0x2, 0x23),\
+	    i_type(0, 5, 0x2, 9, 0x03),\
+	    b_type(-4, 9, 0, 0x0, 0x63),\
+	    i_type(0, 4, 0x2, 10, 0x03),\
+	    s_type(0, 6, 10, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	    i_type(0x100, 1, 0x0, 2, 0x13),\
+	    i_type(0x104, 1, 0x0, 3, 0x13),\
+	    i_type(0x108, 1, 0x0, 4, 0x13),\
+	    i_type(0x10C, 1, 0x0, 5, 0x13),\
+	    i_type(0x110, 1, 0x0, 6, 0x13),\
+	    i_type(0, 3, 0x2, 9, 0x03),\
+	    b_type(-4, 9, 0, 0x0, 0x63),\
+	    i_type(0, 2, 0x2, 10, 0x03),\
+	    s_type(0, 6, 10, 0x2, 0x23),\
+	    i_type(20, 0, 0x0, 12, 0x13),\
+	    i_type(-1, 12, 0x0, 12, 0x13),\
+	    b_type(-4, 12, 0, 0x1, 0x63),\
+	    i_type(0x22, 0, 0x0, 7, 0x13),\
+	    s_type(0, 4, 7, 0x2, 0x23),\
+	    i_type(1, 0, 0x0, 8, 0x13),\
+	    s_type(0, 5, 8, 0x2, 0x23),\
+	    j_type(0, 0, 0x6F),\
+	];\
+	[sys.stdout.write('%08X\n' % (w & 0xFFFFFFFF)) for w in words]" > $@
+
+# CORE-aware the same way sim_soc_2hart_lrsc is - real, general coverage,
+# not a hetero-only patch, since this specific directed hazard has never
+# existed for any pairing before now, homogeneous or not.
+sim/sim_soc_2hart_ordinary.out: sim/tb_soc_2hart_ordinary.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_ordinary.v $(SOC_RTL)
+
+sim_soc_2hart_ordinary: sim/soc2hart_ordinary.hex sim/sim_soc_2hart_ordinary.out
+	cd sim && $(VVP) sim_soc_2hart_ordinary.out $(VVP_DUMP) | tee soc_2hart_ordinary.log
+	@grep -aq "SOC-2HART-ORDINARY-TEST: PASS" sim/soc_2hart_ordinary.log && echo "CROSS-HART ORDINARY LOAD/STORE OK" || \
+	    { echo "FAILED: rtl/soc/wb_interconnect.v ordinary cross-hart load/store visibility"; exit 1; }
+
+sim/sim_soc_2hart_ordinary_hetero.out: sim/tb_soc_2hart_ordinary.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -o $@ sim/tb_soc_2hart_ordinary.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_ordinary_hetero: sim/soc2hart_ordinary.hex sim/sim_soc_2hart_ordinary_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_ordinary_hetero.out $(VVP_DUMP) | tee soc_2hart_ordinary_hetero.log
+	@grep -aq "SOC-2HART-ORDINARY-TEST: PASS" sim/soc_2hart_ordinary_hetero.log && echo "CROSS-HART ORDINARY LOAD/STORE OK (hetero)" || \
+	    { echo "FAILED: rtl/soc/wb_interconnect.v ordinary cross-hart load/store visibility under CORE=hetero"; exit 1; }
+
 # ---- Phase 15 stage 3: the real boot-ROM mailbox, not the RESET_PC-into-
 # RAM shortcut every other Phase 15 test above uses ----
 #
@@ -2547,6 +2647,19 @@ sim_ddr3_write_seq: sim/sim_ddr3_write_seq.out
 	@grep -q "DDR3 WRITE SEQUENCER TEST PASSED" sim/ddr3_write_seq.log || \
 	    { echo "sim_ddr3_write_seq FAILED"; exit 1; }
 
+# ---- DDR3 read command sequencer (Phase 9 Stage 1, Part 7, docs/roadmap.md) ----
+#
+# rtl/soc/ddr3_read_seq.v's own real ACT->RD->read_start command
+# sequencing - the read-side twin of sim_ddr3_write_seq above. Proven
+# standalone; not yet wired into rtl/soc/ddr3_ecp5_top.v.
+sim/sim_ddr3_read_seq.out: sim/tb_ddr3_read_seq.v rtl/soc/ddr3_read_seq.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_read_seq.v rtl/soc/ddr3_read_seq.v
+
+sim_ddr3_read_seq: sim/sim_ddr3_read_seq.out
+	@cd sim && $(VVP) sim_ddr3_read_seq.out $(VVP_DUMP) 2>&1 | tee ddr3_read_seq.log
+	@grep -q "DDR3 READ SEQUENCER TEST PASSED" sim/ddr3_read_seq.log || \
+	    { echo "sim_ddr3_read_seq FAILED"; exit 1; }
+
 SDRAMTEST_SRCS = $(SOCRT_SRCS) software/soc/sdramtest.c software/soc/sdramtable.S
 
 software/soc/sdramtest.elf: $(SDRAMTEST_SRCS) software/soc/link_sdram.ld $(SOC_HDRS)
@@ -2584,7 +2697,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
@@ -2596,6 +2709,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_lrsc \
         sim_soc_2hart_lrsc_hetero \
         sim_soc_2hart_lrsc_swap_hetero \
+        sim_soc_2hart_ordinary \
+        sim_soc_2hart_ordinary_hetero \
         sim_ramboot_2hart_hetero \
         sim_soc_2hart_amoswap \
         sim_soc_2hart_amoswap_hetero \

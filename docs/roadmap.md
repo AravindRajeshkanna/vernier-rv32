@@ -3707,6 +3707,53 @@ same open gap `rtl/soc/ddr3_init_seq.v`'s own MR field values and
 `rtl/soc/ddr3_dqs_write_ecp5.v`'s own preamble/postamble margins
 already carry.
 
+**Update, Part 7: a symmetric read-side command sequencer now exists,
+standalone and proven - the same real ACT+command+wait shape as
+Part 6's own write sequencer, applied to READ.** A new
+`rtl/soc/ddr3_read_seq.v` issues a real ACTIVATE, waits a real tRCD,
+issues a real READ (forcing A10 low - no auto-precharge), waits the
+real CAS Latency (CL), then pulses `read_start`. CL=6 is not
+re-derived - it is the exact real value `rtl/soc/ddr3_init_seq.v`'s
+own MR0 already commits this design to under DLL-off, reused
+directly. Named as its own constant (`CL_CYC`), not shared with
+`ddr3_write_seq.v`'s own `CWL_CYC` even though both currently equal 6
+- a real DDR3 part can run CL and CWL at different values in general,
+and this design's own current equality is a property of its own MR
+encoding, not a fact worth baking into a shared name.
+
+Proven standalone first, matching Part 6's own precedent - not yet
+wired into `rtl/soc/ddr3_ecp5_top.v`, and its own `read_start` output
+(a single-cycle pulse, matching `write_start`'s own shape) is
+explicitly **not** the same signal as `rtl/soc/ddr3_dqs_ecp5.v`'s own
+`read_active` input, which needs to stay high for the whole real
+capture window, not pulse once - reconciling the two remains real,
+later, separate work, named here rather than assumed already
+compatible.
+
+The real measured timing came out identical to the write sequencer's
+own, cycle for cycle - ACT-to-RD measured 3 cycles (matching Part 6's
+own real, measured ACT-to-WR gap exactly, for the same reason: `S_ACT`
+occupies one real cycle before the wait state's own cycles begin), and
+RD-to-`read_start` measured 6 cycles, exactly `CL_CYC`. Mutation-tested
+three ways - A10 left uncleared, RD's own encoding aliased to ACT's,
+and the CL wait skipped entirely - all three caught immediately by the
+exact-gap assertions Part 6's own mutation round already established
+as necessary (an ordering-only check would have missed the CL-skip
+case the same way Part 6's own first attempt did; this file's own test
+started with the exact-gap check already in place, so it did not need
+to be re-discovered here). `make verify`/`make verify_ooo` both pass,
+`sim_ddr3_read_seq` among them, no regression on any existing path.
+
+**What this does not establish.** Neither sequencer is wired into
+`rtl/soc/ddr3_ecp5_top.v` yet, and the real reconciliation between a
+single-cycle `read_start`/`write_start` pulse and
+`rtl/soc/ddr3_dqs_ecp5.v`'s own level-held `read_active` input has not
+been attempted - that is real, necessary design work before either
+sequencer can actually drive a real capture or drive window, not a
+detail to paper over when integration happens. Bank-state tracking,
+PRECHARGE, and real hardware bring-up remain later work, unchanged
+from Part 6's own account.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a
@@ -6475,6 +6522,41 @@ incidentally by both new tests' own foreign-write step, but nothing
 here specifically stresses concurrent, unsynchronized ordinary traffic
 the way the LR/SC hazard stresses atomics - that remains open too.
 
+**Update: the ordinary-loads-stores gap named above is closed now, by a
+real, dedicated directed-hazard test, not left standing.** A new
+`sim/tb_soc_2hart_ordinary.v` proves both directions in one program -
+hart 0 writes a word, hart 1 reads it back; hart 1 writes a second
+word, hart 0 reads that back - matching the flag-poll handshake shape
+`sim/tb_soc_2hart_lrsc.v` already established, with the same "tuned,
+not generous delay" technique (20 iterations here, not that file's own
+200) so each write and the other hart's own concurrent pipeline state
+land close together in real time, a real hazard rather than an
+eventually-consistent non-event. One program suffices for both
+directions here, unlike the LR/SC pair above: ordinary loads/stores
+have no core-type-specific internal mechanism to be asymmetric about
+the way LR/SC's own per-core reservation-invalidation logic does, which
+is what actually forced the LR/SC swap test to be a second, separate
+file. Genuinely new coverage, not an extension of an existing Phase 13
+test - no cross-hart ordinary load/store hazard test existed anywhere
+in this project before this one, homogeneous pairings included.
+
+Passed on the first attempt against the real hardware, and verified as
+a real proof, not a test-shaped decoration, the same way Stage 2's own
+two tests above were: a real mutation to `rtl/soc/wb_interconnect.v`
+(aliasing every hart's own data-bus address to hart 0's) produced
+exactly the real, cascading failure a broken interconnect should -
+hart 1 reading garbage instead of hart 0's write, hart 0 reading
+garbage instead of hart 1's write, and hart 1's own write itself
+corrupted - three real check failures, not one. Reverted and
+reconfirmed clean before this was written down. Gated three ways,
+matching this stage's own established pattern: `sim_soc_2hart_ordinary`
+(ambient `$(CORE)`, so it runs against both homogeneous pairings too)
+and `sim_soc_2hart_ordinary_hetero` (hardcoded file list,
+`-DCORE_HETERO`), both in `verify`'s own dependency list
+unconditionally. `make verify`/`make verify_ooo` both green (Linux
+boot passed, formal 6/6 proved, riscv-tests 82/2 xfail, cosim 84/84
+traces match) - no regression on any existing path.
+
 **Stage 3, first half: the real boot-ROM mailbox, under real asymmetry.**
 `sim/tb_ramboot_2hart.v` (Phase 13 Stage 12's own directed test, the first
 one to boot two harts through the *actual* boot ROM - `software/soc/
@@ -6874,17 +6956,25 @@ CI job, matrixed over all three `CORE` values, the same "a real job of
 its own, run in parallel" shape the existing single-hart `coremark` job
 already has, for the same wall-clock-cost reason.
 
-**Done when:** one elaboration - simulation first, matching every other
-phase's own bar before a board build is attempted - contains a real
-`cpu_core.v` hart and a real `core_ooo.v` hart at once; cross-hart LR/SC
-and ordinary loads/stores between them are proven correct under the same
-directed-hazard standard `sim/tb_soc_2hart_lrsc.v` already set; OpenSBI
-and a `CONFIG_SMP=y` Linux boot to userspace seeing both; and neither
-existing single-core build nor either existing homogeneous
-`NUM_HARTS=2` pairing regresses - the same "the knob exists so a
-regression in one cannot hide behind the other" standard `make
-verify_ooo`'s own Makefile comment already states for the two cores
-today, extended to the third configuration this phase adds.
+**Done when:** ✅ **closed, in simulation, at this scale.** One
+elaboration - simulation first, matching every other phase's own bar
+before a board build is attempted - contains a real `cpu_core.v` hart
+and a real `core_ooo.v` hart at once (Stage 1, module identity
+mutation-confirmed); cross-hart LR/SC and ordinary loads/stores between
+them are proven correct under the same directed-hazard standard
+`sim/tb_soc_2hart_lrsc.v` already set (Stage 2, both LR/SC directions
+and, per that stage's own later "Update," a dedicated ordinary-
+load/store hazard test too, all three mutation-confirmed); OpenSBI and
+a `CONFIG_SMP=y` Linux boot to userspace seeing both (Stage 4, first
+attempt, `smp: Brought up 1 node, 2 CPUs`); and neither existing
+single-core build nor either existing homogeneous `NUM_HARTS=2` pairing
+regresses (`make verify`/`make verify_ooo` green at every stage above,
+the same "the knob exists so a regression in one cannot hide behind the
+other" standard `make verify_ooo`'s own Makefile comment already states
+for the two cores today, extended to the third configuration this
+phase adds). Not yet done, and not required by this bar's own wording:
+confirmation on real hardware - no board build has ever asked for
+`NUM_HARTS>1` of any kind, matching where Phase 13 itself still stands.
 
 ---
 
