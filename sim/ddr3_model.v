@@ -51,6 +51,9 @@ module ddr3_model #(
     wire is_act      = cmd_present && !ras_n &&  cas_n &&  we_n;
     wire is_wr       = cmd_present &&  ras_n && !cas_n && !we_n;
     wire is_rd       = cmd_present &&  ras_n && !cas_n &&  we_n;
+    // Part 10: real post-init REFRESH traffic from
+    // rtl/soc/ddr3_refresh_ctrl.v - same convention, same reasoning.
+    wire is_ref      = cmd_present && !ras_n && !cas_n &&  we_n;
 
     localparam [2:0]
         SEQ_WAIT_RESET = 3'd0,
@@ -158,20 +161,21 @@ module ddr3_model #(
                     end
                 end
                 SEQ_DONE: begin
-                    // Part 9: real ACT/WR/RD traffic
-                    // (rtl/soc/ddr3_write_seq.v/rtl/soc/ddr3_read_seq.v)
-                    // is now a legitimate post-init scenario, accepted
-                    // here rather than flagged - anything else (a stray
-                    // MRS/ZQCL/PRECHARGE, none of which this design
-                    // ever re-issues after init) still is, since that
-                    // really would be a protocol violation. Real
-                    // ACT-to-WR/RD bank-address consistency and the
-                    // real tRCD/CWL/CL timing themselves are not
-                    // re-verified here - rtl/soc/ddr3_write_seq.v's/
-                    // rtl/soc/ddr3_read_seq.v's own standalone tests
-                    // (Parts 6/7) already measure and mutation-test
+                    // Part 9/10: real ACT/WR/RD/REFRESH traffic
+                    // (rtl/soc/ddr3_write_seq.v/rtl/soc/ddr3_read_seq.v/
+                    // rtl/soc/ddr3_refresh_ctrl.v) is now a legitimate
+                    // post-init scenario, accepted here rather than
+                    // flagged - anything else (a stray MRS/ZQCL/
+                    // PRECHARGE, none of which this design ever
+                    // re-issues after init) still is, since that really
+                    // would be a protocol violation. Real ACT-to-WR/RD
+                    // bank-address consistency and the real tRCD/CWL/CL/
+                    // tRFC timing themselves are not re-verified here -
+                    // rtl/soc/ddr3_write_seq.v's/rtl/soc/ddr3_read_seq.v's/
+                    // rtl/soc/ddr3_refresh_ctrl.v's own standalone tests
+                    // (Parts 6/7/10) already measure and mutation-test
                     // that directly.
-                    if (!(is_act || is_wr || is_rd)) begin
+                    if (!(is_act || is_wr || is_rd || is_ref)) begin
                         fail("unexpected command after init sequence completed (not ACT/WR/RD)");
                     end
                 end

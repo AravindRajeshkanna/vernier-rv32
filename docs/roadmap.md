@@ -4028,6 +4028,85 @@ and "formal or property checks where the design admits them" (not
 attempted anywhere in this stage) - both real, open gaps, named
 plainly rather than implied closed by this update.
 
+**Update, Part 11: Part 10's own refresh scheduler is now wired into
+`rtl/soc/ddr3_ecp5_top.v`, with one real arbitration direction actually
+built.** `refresh_grant = !write_busy && !read_busy` - refresh waits
+for an in-flight write or read to finish before it is ever allowed to
+issue its own command - and the top-level command mux (already
+priority-ordered SEQ > WSEQ > RSEQ since Part 9) grew a fourth input,
+REFRESH, lowest priority of the four. Named honestly, not implied
+symmetric: the reverse direction - a new `write_req`/`read_req`
+arriving while `refresh_busy` is itself asserted, mid-tRFC - is real,
+deliberately unbuilt; nothing yet stops it, and this update does not
+claim otherwise.
+
+Getting a test that actually proves this arbitration, rather than
+merely exercising it, took three real rounds of debugging, each
+worth recording plainly rather than smoothing into "it passed."
+First, `sim/ddr3_model.v`'s own post-init acceptance check - extended
+in Part 9 for ACT/WR/RD - had never seen a real REFRESH command
+before and flagged the first one as a protocol violation; fixed by
+adding the same `is_ref` decode (JEDEC's own `3'b001` encoding) and
+extending the check, the same class of gap Part 9's own extension
+left for exactly this reason. Second, and the deepest finding of this
+round: an early version of the test ran a long, free-running write
+stream and simply hoped a refresh would become due while some write
+was still in flight - it did, confirmed by a probe, and a mutation
+deleting `refresh_grant`'s own gate entirely (forcing it to a constant
+1) still passed clean, because two fully deterministic schedules (a
+fixed write stream, a fixed 195-cycle tREFI interval) not colliding by
+chance proves nothing about whether real protection exists. Reacting
+to `refresh_req` instead (wait for it, then issue a write) was tried
+next and was also wrong - a probe showed a *working* grant issues the
+real command and moves on within the same cycle `refresh_req` first
+appears, before a reactive write could possibly land, meaning that
+design could never collide with a working grant in the first place.
+The fix that held: anticipate the known, deterministic 195-cycle
+deadline directly, timing a write to still be genuinely in flight when
+it arrives. Third, the resulting contention check itself first watched
+the muxed `phy_cmd_valid` output - the pins a real caller actually
+sees - and still missed the same forced-`1` mutation, because the
+mux's own fixed priority order lets an in-flight write's command
+silently win that cycle even though `ddr3_refresh_ctrl.v` itself
+believes its own command was issued and moves on to its own
+`S_RFC_WAIT` state regardless; fixed by checking the raw, pre-mux
+`refresh_cmd_valid` directly, the only place that real hazard is
+actually visible.
+
+Mutated two ways after the test itself was fixed, each specific to
+this round's own new wiring: `refresh_grant` forced to a constant `1`
+(now correctly caught, both via the raw-signal contention check and
+via the muxed command losing the REFRESH encoding for that cycle) and
+`refresh_cmd_valid` dropped from the top-level mux entirely (also
+correctly caught). Both reverted, clean case reconfirmed byte-
+identical against the pre-mutation file.
+
+A fourth real bug, this one in the build, not the design or the test:
+the full `make verify` run this update ships with caught it, which is
+exactly what running the full gate (not just the new target) before
+shipping is for. `rtl/soc/ddr3_ecp5_top.v` now instantiates
+`ddr3_refresh_ctrl` unconditionally, but two pre-existing compile
+rules that already built `ddr3_ecp5_top.v` - `sim_ddr3_top` (Parts
+3-5) and `sim_ddr3_cmd_seq` (Part 9) - had never been told about the
+new file, since only the new `sim_ddr3_refresh_wire` target's own rule
+had been updated to list it. Both failed elaboration outright
+("Unknown module type: ddr3_refresh_ctrl"), not a subtler mismatch;
+fixed by adding `rtl/soc/ddr3_refresh_ctrl.v` to both rules' own file
+lists, matching how the same file already appears in `sim_ddr3_refresh_wire`'s.
+`make verify`/`make verify_ooo` both pass, `sim_ddr3_refresh_wire`
+among them, no regression on any of the four existing DDR3 tests.
+
+**What this does not establish.** The reverse arbitration direction -
+a new write/read request starting while refresh is itself mid-tRFC -
+remains real, deliberately unbuilt, named in both
+`rtl/soc/ddr3_ecp5_top.v`'s own header and this new test's own header,
+not exercised here because there is nothing yet to observe protecting
+against it. Stage 1's own "Done when" bar still names Verilator (every
+test in this stage, including this one, has only ever run under
+Icarus) and "formal or property checks where the design admits them"
+(not attempted anywhere in this stage) - both still open, named
+plainly rather than implied closed.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a

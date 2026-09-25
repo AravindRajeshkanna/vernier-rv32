@@ -184,9 +184,10 @@ declaring a winner.
   on anything - just not yet started, gated on whether a real measurement
   of that bus's own contention under multi-master load ever justifies it.
   Phase 9 (DDR) is no longer blocked either - a real target (ECPIX-5) is
-  adopted, and ten real, gated, mutation-tested PHY slices exist in
+  adopted, and eleven real, gated, mutation-tested PHY slices exist in
   simulation, including a first real command-driven read/write round
-  trip; real hardware bring-up is what remains open, not a board
+  trip and refresh now arbitrated against write/read in one real
+  direction; real hardware bring-up is what remains open, not a board
   decision.
 
 ## 7. Picking one
