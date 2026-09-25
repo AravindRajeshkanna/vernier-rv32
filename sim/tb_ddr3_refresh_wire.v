@@ -131,8 +131,14 @@ module tb_ddr3_refresh_wire;
     // state) even though the real DRAM pins never saw it. That is a
     // real, silent correctness bug a muxed-output-only check cannot
     // see by construction, not a benign non-event.
+    //
+    // `DUT.wseq_busy`, not the top-level `write_busy` port: since Part 12
+    // that port also includes the refresh hold (refresh_req|refresh_busy),
+    // which is high whenever refresh_cmd_valid is - it would trip on every
+    // legitimate refresh. "A write is genuinely in flight" is the
+    // sequencer's own busy.
     always @(posedge DUT.sclk) begin
-        if (!rst && DUT.refresh_cmd_valid && write_busy)
+        if (!rst && DUT.refresh_cmd_valid && DUT.wseq_busy)
             contention_seen <= 1'b1;
     end
 
@@ -204,9 +210,9 @@ module tb_ddr3_refresh_wire;
         // separate monitor showing the collision genuinely working
         // correctly one cycle later, not a real DUT defect.
         @(posedge clk);
-        check("the deliberately-collided write is genuinely in flight", write_busy, 1'b1);
+        check("the deliberately-collided write is genuinely in flight", DUT.wseq_busy, 1'b1);
 
-        while (write_busy) begin
+        while (DUT.wseq_busy) begin
             @(posedge clk);
             if (refresh_busy) refresh_busy_during_writes = 1'b1;
         end
