@@ -176,11 +176,18 @@ declaring a winner.
   validates its own CRCs and nothing more; there is no published
   CoreMark/MHz figure to set against SweRV's or Ibex's, certified or
   otherwise, and this file is not going to manufacture one.
-- **PCIe, DDR and video output are unbuilt.** `docs/roadmap.md` Phases 4,
-  8 and 9 - framebuffer logic exists and is verified in simulation, but
-  nothing is routed to HDMI pins, and the PCIe/DDR phases are explicitly
-  blocked on choosing a board that has them, which the current ULX3S
-  target does not.
+- **Video output is unbuilt; a Network-on-Chip interconnect is a plan
+  only; DDR is real, in-progress work.** `docs/roadmap.md` Phase 4 -
+  framebuffer logic exists and is verified in simulation, but nothing is
+  routed to HDMI pins. Phase 8 (a Network-on-Chip fabric to replace
+  `rtl/soc/wb_interconnect.v`'s own shared-bus arbitration) is not blocked
+  on anything - just not yet started, gated on whether a real measurement
+  of that bus's own contention under multi-master load ever justifies it.
+  Phase 9 (DDR) is no longer blocked either - a real target (ECPIX-5) is
+  adopted, and ten real, gated, mutation-tested PHY slices exist in
+  simulation, including a first real command-driven read/write round
+  trip; real hardware bring-up is what remains open, not a board
+  decision.
 
 ## 7. Picking one
 

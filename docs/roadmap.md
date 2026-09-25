@@ -3131,35 +3131,113 @@ acceptance test off the card rather than out of block RAM.
 
 ---
 
-## Phase 8 — PCIe
+## Phase 8 — Network-on-Chip interconnect
 
-**Blocked on a board, not on anything in this project.** Every phase above is
-ordered by what it unblocks on the ULX3S / LFE5U-85F this project has run on
-since Phase 0. That board has no PCIe connector and the 85F has no SerDes -
-no hardened PCIe, no soft endpoint has anywhere to plug in. This phase starts
-when a board with both exists, and which board that is has not been decided.
-Nothing below is a spec; it's the shape of the work once that choice is made.
+**Not started - everything below is a plan, not an account, and nothing
+about it is blocked on a board.** `rtl/soc/wb_interconnect.v` is a real,
+existing file this project can measure and extend today. `wb_interconnect.v` is a shared
+Wishbone B4 bus with priority arbitration, already parameterized for
+`NUM_HARTS` (Phase 13's own real 2-hart configuration proves it), with a
+growing list of real masters (per-hart fetch/data, the page-table walkers,
+the debug module, the NPU's own DMA port) and slaves (ROM, RAM, SDRAM,
+every peripheral). It is simple, has real formally-proved properties
+(`formal/fv_interconnect.v`), and boots Linux SMP today - real strengths
+this plan does not propose discarding lightly. Its real limit is a single
+shared bus: contention grows quickly past 2-4 masters, and there is no
+spatial locality or parallel transactions the way a real network fabric
+would provide. A full NoC is judged worth building mainly once this project
+targets 4 or more harts, several accelerators at once, or DDR alongside
+multiple high-bandwidth DMA masters - not before: at 1-2 cores with modest
+accelerators, or when the measured bottleneck is memory latency or core IPC
+rather than interconnect contention, the current bus stays the right
+choice, the same "don't build what the measurement doesn't justify" standard
+this file already holds every other phase to.
 
-**Board selection is the first open item**, and it constrains everything
-after it: whether PCIe comes from a hardened hard IP or has to be a soft
-endpoint depends on the part, and the endpoint core to use follows from that.
-Guessing at a lane count or generation before the board is chosen would be
-exactly the kind of estimate `docs/practices.md` exists to catch - "numbers
-quoted are measured, not estimated" applies to specs as much as to Fmax.
+**Stage 0 - measure the current bus before designing its replacement.**
+Real numbers under real multi-master load - Linux SMP running, the NPU's own
+DMA active alongside CPU traffic, multi-hart atomics contending - come
+first, not a topology chosen from intuition. This stage also writes down
+the real requirements a NoC would have to satisfy (target scale, whether
+latency or bandwidth matters more, what LR/SC and any future cache coherence
+need from the network, and this board's own real FPGA resource budget - the
+85F is constrained) and picks a topology on that basis: a lightweight mesh
+or ring with Wishbone-compatible network interfaces is the plan's own
+starting recommendation, keeping existing masters and slaves close to
+unchanged, with a small crossbar or an AXI-based fabric named as real
+alternatives if the measurements point that way instead. **Done when:** a
+written decision, backed by real baseline numbers measured on the current
+bus under real multi-master stress, not assumed from its own known
+shared-bus limits.
 
-**What plugs in once it exists**, in the shape every other peripheral here
-already takes: `rtl/soc/wb_periph_bridge.v` is the template for a
-register-mapped endpoint (BAR space as a Wishbone slave), the same as the
-UART, CLINT and PLIC. A PCIe endpoint doing its own DMA is a different case -
-a *bus master*, like `rtl/debug/dm.v` and the page-table walkers are today -
-and `rtl/soc/wb_interconnect.v` would be gaining a fifth one rather than a
-new slave. Which shape this needs depends on what the endpoint is for, which
-is also not yet decided.
+**Stage 1 - a network interface and a real packet format.** The boundary
+between today's Wishbone masters/slaves and tomorrow's network: a real
+packet format (address, data, command, source/destination ID, and room for
+a QoS tag), and real Wishbone-to-NoC network interfaces on both the master
+and slave side. The existing single-bus behavior stays expressible as a
+degenerate one-node network, and LR/SC/AMO semantics have to survive
+crossing this new boundary intact - a real, non-negotiable requirement
+given Phase 13's own hard-won cross-hart atomicity work. **Done when:** a
+real master reaches a real slave through these network interfaces with the
+same functional behavior the bus provides today, proven by directed tests
+covering round-trip correctness, per-master ordering, and real back-pressure
+- formal properties where the design admits them, the same bar every
+controller in this tree is already held to.
 
-**Done when:** a real PCIe host's `lspci` sees the device, and a register
-read or write round-trips on real hardware - the same bar Phase 0 set for
-the pipeline and Phase 7 sets for the SD card: simulated first, then proven
-on silicon, not asserted from the simulation alone.
+**Stage 2 - the smallest router that could replace the bus.** A real router
+(wormhole or virtual-cut-through, 2-5 ports) in the smallest topology that
+says anything real - a 2x2 mesh, a small crossbar, or a ring, whichever
+Stage 0's own measurements favor - carrying a real first configuration: two
+harts, memory, and one accelerator. The classic `wb_interconnect.v` stays
+selectable throughout, so every existing test keeps passing against it
+while the new path is proven separately. **Done when:** that same
+`NUM_HARTS=2` configuration runs correctly over the NoC in simulation,
+Linux SMP still reaches userspace on it, and real latency/bandwidth/area
+numbers are recorded against the classic bus, not estimated.
+
+**Stage 3 - scaling past the minimal case.** Real growth to four or more
+nodes, a real quality-of-service mechanism (priority, virtual channels, or
+simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
+real check that the reservation monitor and any future coherence traffic
+still work correctly once real routing sits between the harts and the bus.
+Multiple real memory endpoints (on-chip RAM alongside SDRAM or a future DDR
+path) need sensible routing too. **Done when:** a measured improvement (or
+an honestly-recorded, acceptable trade-off) under real multi-master
+workloads - concurrent multi-hart Linux, NPU DMA racing CPU traffic, real
+interrupt traffic - with zero regression anywhere in the existing
+verification suite.
+
+**Stage 4 - software should not need to know.** Device tree and memory-map
+updates if node IDs or address decoding change, OpenSBI and Linux SMP
+booting unchanged (or with configuration differences only, not code
+changes), and optionally, real performance counters (packets, stalls,
+contention) exposed through CSRs or MMIO so the numbers above stop being a
+one-time measurement and become something software can watch continuously.
+**Done when:** a full Linux boot, single- and multi-hart, works on the NoC
+configuration with a real transcript and real performance numbers recorded,
+the same standard Phase 5's own OpenSBI/Linux work already set.
+
+**Stage 5 - real hardware, and a build-time choice that keeps both paths
+alive.** Timing closed on a real target (ULX3S today, ECPIX-5 once Phase 9
+gets there), router buffering and pipeline stages tuned for the ECP5's own
+real resources, and a real, permanent build switch - `INTERCONNECT=bus` for
+the classic path (the default for small configurations), `INTERCONNECT=noc`
+for the new one - rather than a one-way migration that leaves smaller
+configurations paying a NoC's own real area cost for no real benefit.
+Adaptive routing, better topologies, or cache-coherence extensions are named
+here as real later work, not committed to. **Done when:** the NoC
+configuration builds and runs on real hardware, both build paths stay
+stable, and every claim about it follows this project's own measured, not
+estimated, standard.
+
+**What decides whether any of this actually gets built.** Stage 0's own
+measurement is the real gate, not a schedule: this plan is worth pursuing
+once real contention under 4+ harts or several high-bandwidth accelerators
+actually shows up in that measurement, and not before - matching every
+other "don't build what the numbers don't justify" judgment this file
+already makes elsewhere (Phase 1's own honest CoreMark result being the
+closest precedent: a real design built, real numbers measured, and the
+measurement itself deciding what came next rather than the plan's own
+initial expectation).
 
 ---
 
@@ -3875,6 +3953,81 @@ separate work. Bank-state tracking (no redundant-ACT avoidance),
 PRECHARGE, the second DQ byte lane, and real hardware bring-up remain
 open too.
 
+**Update, Part 10: a real refresh scheduler now exists, standalone and
+proven - the first real REFRESH command issued anywhere in this stage,
+closing a gap this Stage's own "Done when" bar has named since Part 1
+("standalone read/write/refresh tests").** A new
+`rtl/soc/ddr3_refresh_ctrl.v` requests a refresh once every real tREFI
+interval, holds the request pending (not dropped) until an external
+caller grants it - a real controller must not interrupt an in-flight
+ACT/WR/RD sequence to refresh mid-transaction - then issues a real
+REFRESH command and holds `busy` for the real tRFC wait.
+
+**The first primary-datasheet-verified DDR3 timing value in this whole
+investigation, not another reasoned-margin caveat.** Every earlier
+timing constant in this stage (MR field encodings, tRCD, CWL/CL, DQS
+preamble/postamble) carried an honest "not checked against the primary
+datasheet" caveat, because every previous attempt to fetch one had
+failed (a redirect page, a corrupted PDF). This round's own fetch
+succeeded: Micron's own real `MT41K256M16` datasheet (32 Meg x 16 x 8
+banks = 4Gb - identified by a real, targeted web search as the chip
+ECPIX-5's own "4Gb (512MB) DDR3L" spec likely uses, though that
+specific board-to-chip identification came from search results, not a
+directly-viewed schematic, and is named as such) gives two real
+numbers directly from its own timing table, extracted via `pdftotext`
+after `poppler-utils` was installed specifically to read it, not
+estimated: tREFI = 7.8125us (`64ms/8192`, density-independent - holds
+regardless of whether the exact chip identification above is right),
+and tRFC(min) = 260ns for the 4Gb density this specific chip is - cross-
+checked against a second, real manufacturer datasheet (Zentel's own
+2Gb DDR3L part, tRFC(min) = 160ns) confirming the real pattern (larger
+density, longer tRFC), not a one-off number. Even if ECPIX-5's own real
+chip turns out smaller than 4Gb, using the larger part's own 260ns
+figure only ever waits longer than a smaller chip's real minimum
+requires, never less. `T_REFI` (195 cycles at 25 MHz) reuses
+`rtl/soc/wb_sdram.v`'s own exact real formula (`CLK_HZ / 128000`) -
+1/128000 = 7.8125us exactly, an algebraically exact conversion, not an
+approximation, consistent with this project's own existing SDR SDRAM
+controller. `T_RFC` (7 cycles = 280ns real margin, comfortably >= the
+real 260ns minimum) reuses `rtl/soc/ddr3_init_seq.v`'s own `NS2CYC`
+ceiling-rounding macro.
+
+Proven standalone first, matching this stage's own established
+discipline - not yet wired into `rtl/soc/ddr3_ecp5_top.v`. The real
+measured tREFI (195 cycles) and tRFC (7 cycles) both matched the
+primary-datasheet-verified values exactly on the first real run - the
+two check failures that first run actually produced were both in this
+test's own measurement methodology, not the design, and are worth
+naming honestly rather than silently smoothing over: a grant-to-command
+latency measured as 2 real cycles where the test's own first draft
+assumed 1 (a real, standalone `iverilog` probe confirmed this is
+because the stimulus's own non-blocking `refresh_grant <= 1'b1;`
+assignment itself costs one real cycle before the DUT can even see it,
+on top of the DUT's own one real cycle to register the command); and a
+second real tREFI interval measured as 194 cycles, not 195, traced via
+the same probe to a real, consistent one-cycle offset in exactly where
+this test's own second measurement started counting from (`busy`'s own
+drop is a registered, one-cycle-delayed reflection of the internal
+counter's own reload, so measuring "from busy dropping" starts one
+real cycle after the counter had already begun counting) - the raw
+probe confirmed the internal counter itself reloads to the identical
+value and counts down identically both times, not a design defect.
+Mutation-tested three ways: a wrong REFRESH encoding (aliased to MRS),
+`refresh_grant` ignored entirely, and the tRFC wait skipped outright -
+all three caught, reverted, clean case reconfirmed. `make verify`/
+`make verify_ooo` both pass, `sim_ddr3_refresh_ctrl` among them, no
+regression on any existing path.
+
+**What this does not establish.** This module is not wired into
+`rtl/soc/ddr3_ecp5_top.v` yet - real arbitration (granting a refresh
+only when neither `ddr3_write_seq.v` nor `ddr3_read_seq.v` has an
+in-flight transaction) is real, necessary integration work, not
+attempted here. Stage 1's own "Done when" bar also still names
+Verilator (every test in this stage has only ever run under Icarus)
+and "formal or property checks where the design admits them" (not
+attempted anywhere in this stage) - both real, open gaps, named
+plainly rather than implied closed by this update.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a
@@ -3905,8 +4058,8 @@ standard the current board's own table already holds itself to -
 including naming what remains unproven, the way that table already does
 for `CORE=ooo`. **Done when:** Linux reaches userspace on ECPIX-5 with
 DDR as main memory, a real console transcript and real timing numbers
-recorded - the same bar Phase 0 set for the pipeline itself and Phase 8
-sets for PCIe: simulated first, then proven on silicon, not asserted
+recorded - the same bar Phase 0 set for the pipeline itself and Phase 7
+sets for the SD card: simulated first, then proven on silicon, not asserted
 from simulation alone.
 
 **Stage 4 - making the larger memory actually useful.** Linux's own
@@ -3946,7 +4099,7 @@ for being a bigger phase.
 whole phase.** "Renders images, video, and user interfaces" spans a range
 too wide to plan against as one item - a solid-fill/blit engine that
 offloads `wb_framebuffer.v`'s current software rasterizer is a peripheral
-roughly PCIe's size; a programmable 3D pipeline with vertex/fragment
+roughly the size of `rtl/soc/wb_spi.v`; a programmable 3D pipeline with vertex/fragment
 shaders is closer in scope to Phase 1's out-of-order core, and shares
 none of its design. Naming this "the GPU phase" without picking a point
 on that range would be exactly the kind of estimate `docs/practices.md`
@@ -3985,7 +4138,8 @@ much of this codebase it touches:
   sampling, a framebuffer far larger than 320×240×8bpp allows. This is
   not "add a peripheral"; it is a second, parallel processor with its own
   instruction set and memory model, and belongs in the same conversation
-  as Phase 1's superscalar/OoO work, not Phase 8's PCIe one.
+  as Phase 1's superscalar/OoO work, not a small register-mapped
+  peripheral's.
 
 **Done when:** whichever target is chosen, the same bar Phase 0 set for
 the pipeline itself - simulated first, then a real, measured result on
