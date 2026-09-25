@@ -30,6 +30,16 @@ module tb_ddr3_top;
     wire calib_done, calib_error;
     wire [2:0] calib_readclksel;
 
+    // Part 9's own real command-level request ports - tied off here.
+    // This test's own job is Parts 3-5's own clock-unification and
+    // write-drive-integration claims specifically, not Part 9's real
+    // command-driven read/write (sim/tb_ddr3_cmd_seq.v proves that);
+    // never asserting write_req/read_req keeps ddr3_write_seq.v/
+    // ddr3_read_seq.v parked in S_IDLE throughout, so they cannot
+    // interfere with this test's own calibration-only scenario.
+    wire        write_busy, read_busy, read_data_valid;
+    wire [7:0]  read_data;
+
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
         .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
@@ -38,6 +48,10 @@ module tb_ddr3_top;
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
         .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs),
+        .write_req(1'b0), .write_bank(3'b0), .write_row(16'b0),
+        .write_col(16'b0), .write_data(8'b0), .write_busy(write_busy),
+        .read_req(1'b0), .read_bank(3'b0), .read_row(16'b0), .read_col(16'b0),
+        .read_busy(read_busy), .read_data(read_data), .read_data_valid(read_data_valid),
         .pll_locked(pll_locked), .dll_locked(dll_locked),
         .init_ready(init_ready),
         .calib_done(calib_done), .calib_readclksel(calib_readclksel),

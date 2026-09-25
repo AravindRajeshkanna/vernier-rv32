@@ -3802,6 +3802,79 @@ calibration still needs its own simple mechanism to find a working
 remains later, separate work. Bank-state tracking, PRECHARGE, and real
 hardware bring-up remain open too, unchanged from Part 7's own account.
 
+**Update, Part 9: the first real, command-driven write-then-read round
+trip through `rtl/soc/ddr3_ecp5_top.v` - a real ACT+WR followed by a
+real ACT+RD, not `rtl/soc/ddr3_read_calib.v`'s own direct-signal-
+injection scheme.** Both command sequencers (Parts 6/7) and the
+read-burst extender (Part 8) are wired in now. Calibration is kept, not
+replaced - it still runs first, gated on `init_ready` alone, and both
+command sequencers are held in reset until `calib_done` too: a real,
+deliberate safety property, since issuing a real read/write before a
+working `READCLKSEL` tap is known would sample data at an unproven,
+possibly-wrong point.
+
+Four real muxes make this work, each mutually exclusive by
+construction rather than an added arbitration state machine (the init
+sequence only ever asserts a command before `ready`; the two command
+sequencers only ever start after `calib_done`, which cannot happen
+before `init_ready`; calibration's own write/read triggers only ever
+fire before `calib_done`): the command/address bus into
+`ddr3_phy_ecp5.v`, the DQS write-drive's own trigger, the DQ write
+data, and `ddr3_dqs_ecp5.v`'s own `read_active` input. A new
+`write_data_latch` register captures the top-level `write_data` input
+at real request time, matching how `ddr3_write_seq.v`'s own
+`bank`/`row`/`col` inputs are already captured - neither command
+sequencer carries its own data path.
+
+Two real bugs were found this round, both by tracing a real, observed
+cycle-by-cycle probe rather than a hand-derived timing diagram - the
+same discipline this whole investigation has needed repeatedly.
+First: `sim/ddr3_model.v`, scoped to Part 1's own init-sequence-only
+job, unconditionally failed on any command issued after the init
+sequence completed - a real, now-stale check, since Part 9 makes real
+post-init ACT/WR/RD traffic a legitimate scenario for the first time.
+Fixed by decoding those three commands with the same
+`{ras_n,cas_n,we_n}` convention the real RTL itself uses and accepting
+them in that state, while still flagging anything else (a stray
+MRS/ZQCL/PRECHARGE) as the real protocol violation it would be.
+
+Second, and harder to find: `read_data_valid` was first gated directly
+on `datavalid && real_read_active` (both combinational, zero-lag) -
+but `rd_q0` is itself a registered capture of `dq_i`
+(`rtl/soc/ddr3_dq_serdes_ecp5.v`'s own simulation body), one real cycle
+behind `dq_i` becoming valid, which is itself one cycle behind
+`mem_dq_oe`/`real_read_active` first asserting. A first attempted fix
+(registering the gate by one cycle) produced a real, observed 2-cycle-
+wide pulse whose *first* cycle still sampled stale `z` data - caught
+only by re-running the same probe, not assumed fixed. The real, correct
+fix: `read_data_valid` is a genuine single-cycle pulse on
+`real_read_active`'s own falling edge (exactly the cycle `rd_q0` first
+reflects settled data), gated on whether `datavalid` was ever asserted
+at any point during the window that just closed.
+
+Mutation-tested three ways, each specific to this round's own new
+wiring, not a repeat of earlier parts' own mutations: the write-data
+latch never capturing (real read-back returns 0, not the written
+value), `real_read_active` removed from the `read_active` mux (the
+real read never activates, `read_data_valid` never pulses), and
+`wseq_write_start` removed from the write-trigger mux (the real
+write never fires, and the read-back returns calibration's own stale
+`0xA5` test pattern instead - a legible, specific failure, not just
+"wrong"). All three caught, reverted, clean case reconfirmed. `make
+verify`/`make verify_ooo` both pass, `sim_ddr3_cmd_seq` among them, no
+regression on any existing path (including `sim_ddr3_top`, whose own
+DUT gained new ports tied off to keep exercising Parts 3-5's own
+calibration-only scenario unchanged).
+
+**What this does not establish.** `sim/ddr3_dq_model.v` is still the
+same single-stored-location model every part through Part 8 already
+used - it does not address-decode `write_bank`/`write_row`/`write_col`
+at all, so this proves the real command *timing and wiring*, not a
+real multi-location memory array; a real memory model is later,
+separate work. Bank-state tracking (no redundant-ACT avoidance),
+PRECHARGE, the second DQ byte lane, and real hardware bring-up remain
+open too.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a
