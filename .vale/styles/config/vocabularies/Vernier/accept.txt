@@ -63,6 +63,7 @@ Misprediction
 Murax
 NPU's
 Neumann
+NoC's
 Nyquist
 OR
 PCIe
@@ -102,6 +103,7 @@ Von
 XORing
 Xilinx
 Yosys
+Zentel's
 Zicsr
 _n
 _p

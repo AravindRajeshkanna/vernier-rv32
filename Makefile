@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2643,6 +2643,21 @@ sim_ddr3_cmd_seq: sim/sim_ddr3_cmd_seq.out
 	@grep -q "DDR3 COMMAND-DRIVEN RW TEST PASSED" sim/ddr3_cmd_seq.log || \
 	    { echo "sim_ddr3_cmd_seq FAILED"; exit 1; }
 
+# ---- DDR3 refresh scheduler (Phase 9 Stage 1, Part 10, docs/roadmap.md) ----
+#
+# rtl/soc/ddr3_refresh_ctrl.v's own real tREFI/tRFC timing - the first
+# real REFRESH command ever issued anywhere in this stage, closing a
+# gap Stage 1's own "Done when" bar named explicitly ("standalone
+# read/write/refresh tests") since Part 1. Proven standalone; not yet
+# wired into rtl/soc/ddr3_ecp5_top.v.
+sim/sim_ddr3_refresh_ctrl.out: sim/tb_ddr3_refresh_ctrl.v rtl/soc/ddr3_refresh_ctrl.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_refresh_ctrl.v rtl/soc/ddr3_refresh_ctrl.v
+
+sim_ddr3_refresh_ctrl: sim/sim_ddr3_refresh_ctrl.out
+	@cd sim && $(VVP) sim_ddr3_refresh_ctrl.out $(VVP_DUMP) 2>&1 | tee ddr3_refresh_ctrl.log
+	@grep -q "DDR3 REFRESH CTRL TEST PASSED" sim/ddr3_refresh_ctrl.log || \
+	    { echo "sim_ddr3_refresh_ctrl FAILED"; exit 1; }
+
 # ---- DDR3 DQS write-drive (Phase 9 Stage 1, Part 4, docs/roadmap.md) ----
 #
 # rtl/soc/ddr3_dqs_write_ecp5.v's own real preamble/active/postamble
@@ -2739,7 +2754,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
