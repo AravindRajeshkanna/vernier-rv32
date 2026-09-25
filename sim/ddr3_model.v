@@ -43,6 +43,14 @@ module ddr3_model #(
     wire is_mrs      = cmd_present && !ras_n && !cas_n && !we_n;
     wire is_zqcl      = cmd_present &&  ras_n &&  cas_n && !we_n && a[10];
     wire is_nop       = cmd_present &&  ras_n &&  cas_n &&  we_n;
+    // Part 9 (docs/roadmap.md): real post-init ACT/WR/RD traffic from
+    // rtl/soc/ddr3_write_seq.v/rtl/soc/ddr3_read_seq.v - the same
+    // {ras_n,cas_n,we_n} convention those files themselves use,
+    // checked independently here rather than trusted, matching this
+    // whole file's own reason for existing.
+    wire is_act      = cmd_present && !ras_n &&  cas_n &&  we_n;
+    wire is_wr       = cmd_present &&  ras_n && !cas_n && !we_n;
+    wire is_rd       = cmd_present &&  ras_n && !cas_n &&  we_n;
 
     localparam [2:0]
         SEQ_WAIT_RESET = 3'd0,
@@ -150,11 +158,22 @@ module ddr3_model #(
                     end
                 end
                 SEQ_DONE: begin
-                    // Any further real command after ZQCL is out of
-                    // this slice's own scope (no read/write path yet) -
-                    // flagged, not silently accepted, since Part 1's
-                    // own init sequence should go idle here.
-                    fail("unexpected command after init sequence completed");
+                    // Part 9: real ACT/WR/RD traffic
+                    // (rtl/soc/ddr3_write_seq.v/rtl/soc/ddr3_read_seq.v)
+                    // is now a legitimate post-init scenario, accepted
+                    // here rather than flagged - anything else (a stray
+                    // MRS/ZQCL/PRECHARGE, none of which this design
+                    // ever re-issues after init) still is, since that
+                    // really would be a protocol violation. Real
+                    // ACT-to-WR/RD bank-address consistency and the
+                    // real tRCD/CWL/CL timing themselves are not
+                    // re-verified here - rtl/soc/ddr3_write_seq.v's/
+                    // rtl/soc/ddr3_read_seq.v's own standalone tests
+                    // (Parts 6/7) already measure and mutation-test
+                    // that directly.
+                    if (!(is_act || is_wr || is_rd)) begin
+                        fail("unexpected command after init sequence completed (not ACT/WR/RD)");
+                    end
                 end
                 default: ;
             endcase
