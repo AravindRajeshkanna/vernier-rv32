@@ -50,6 +50,7 @@ module tb_ddr3_cmd_seq;
     wire        read_busy;
     wire [7:0]  read_data;
     wire        read_data_valid;
+    wire        refresh_busy;
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
@@ -63,6 +64,7 @@ module tb_ddr3_cmd_seq;
         .write_col(write_col), .write_data(write_data), .write_busy(write_busy),
         .read_req(read_req), .read_bank(read_bank), .read_row(read_row), .read_col(read_col),
         .read_busy(read_busy), .read_data(read_data), .read_data_valid(read_data_valid),
+        .refresh_busy(refresh_busy),
         .pll_locked(pll_locked), .dll_locked(dll_locked),
         .init_ready(init_ready),
         .calib_done(calib_done), .calib_readclksel(calib_readclksel),

@@ -37,7 +37,7 @@ module tb_ddr3_top;
     // never asserting write_req/read_req keeps ddr3_write_seq.v/
     // ddr3_read_seq.v parked in S_IDLE throughout, so they cannot
     // interfere with this test's own calibration-only scenario.
-    wire        write_busy, read_busy, read_data_valid;
+    wire        write_busy, read_busy, read_data_valid, refresh_busy;
     wire [7:0]  read_data;
 
     ddr3_ecp5_top DUT (
@@ -52,6 +52,7 @@ module tb_ddr3_top;
         .write_col(16'b0), .write_data(8'b0), .write_busy(write_busy),
         .read_req(1'b0), .read_bank(3'b0), .read_row(16'b0), .read_col(16'b0),
         .read_busy(read_busy), .read_data(read_data), .read_data_valid(read_data_valid),
+        .refresh_busy(refresh_busy),
         .pll_locked(pll_locked), .dll_locked(dll_locked),
         .init_ready(init_ready),
         .calib_done(calib_done), .calib_readclksel(calib_readclksel),

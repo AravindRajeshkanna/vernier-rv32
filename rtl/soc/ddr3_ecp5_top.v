@@ -77,9 +77,27 @@
 // real capture window - not registered, the same simple style
 // `ddr3_read_calib.v`'s own `rd_q0` port already uses.
 //
+// ---- Part 11: real refresh, wired in and arbitrated one way, not
+// both ----
+// `rtl/soc/ddr3_refresh_ctrl.v` (Part 10) is wired into the same
+// command mux, gated on `!write_busy && !read_busy` - a real refresh
+// only starts once neither command sequencer has an in-flight
+// transaction, so its own real REFRESH command never contends with a
+// real ACT/WR/RD for the shared `cmd_*` bus. The reverse direction is
+// real, honest, and deliberately not built here: nothing currently
+// stops a new `write_req`/`read_req` from starting a transaction while
+// `refresh_busy` is still asserted (mid-tRFC) - a real DDR3 part
+// requires NOP/DES only during that window, and this integration does
+// not yet enforce it on the write/read side. Closing that requires
+// either gating `write_req`/`read_req` on `!refresh_busy` (at the cost
+// of a caller's own pulse silently getting missed if it lands in that
+// window, needing its own retry contract) or queuing the request - a
+// real design decision, not made here, named plainly rather than
+// quietly assumed safe.
+//
 // Still not attempted: bank-state tracking (no redundant-ACT
 // avoidance), PRECHARGE, the second DQ byte lane, and real hardware
-// bring-up - see docs/roadmap.md's own Part 9 account for the full
+// bring-up - see docs/roadmap.md's own Part 9/10 accounts for the full
 // list of what this does not establish.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
@@ -117,6 +135,9 @@ module ddr3_ecp5_top (
     output wire        read_busy,
     output wire [7:0]  read_data,
     output wire        read_data_valid,
+
+    // ---- Part 10: real refresh, observability only - see header ----
+    output wire        refresh_busy,
 
     // ---- observability, matching this stage's own testbenches ----
     output wire        pll_locked,
@@ -208,22 +229,44 @@ module ddr3_ecp5_top (
         .read_start(rseq_read_start), .read_active(real_read_active)
     );
 
+    // Part 11: real refresh scheduling - see header for the real,
+    // one-directional arbitration this integration actually provides.
+    wire        refresh_req;
+    wire        refresh_grant = !write_busy && !read_busy;
+    wire        refresh_cmd_valid;
+    wire [2:0]  refresh_cmd_cs_ras_cas_we;
+    wire [2:0]  refresh_cmd_ba;
+    wire [15:0] refresh_cmd_addr;
+
+    ddr3_refresh_ctrl REFRESH (
+        .clk(sclk), .rst(rst_cmd),
+        .refresh_grant(refresh_grant),
+        .refresh_req(refresh_req), .busy(refresh_busy),
+        .cmd_valid(refresh_cmd_valid), .cmd_cs_ras_cas_we(refresh_cmd_cs_ras_cas_we),
+        .cmd_ba(refresh_cmd_ba), .cmd_addr(refresh_cmd_addr)
+    );
+
     // Real command mux into ddr3_phy_ecp5.v - mutually exclusive by
     // construction, not by an added arbitration state machine: SEQ only
     // asserts cmd_valid before init_ready, WSEQ/RSEQ only start after
-    // calib_done, which cannot happen before init_ready. cmd_cke/
-    // cmd_reset_n/cmd_odt need no muxing - WSEQ/RSEQ don't drive them at
-    // all, and SEQ's own registers already hold their correct real
-    // post-init steady-state values forever (ddr3_init_seq.v's own
-    // S_READY state never reassigns them).
-    wire        phy_cmd_valid = seq_cmd_valid | wseq_cmd_valid | rseq_cmd_valid;
-    wire [2:0]  phy_cmd_cs_ras_cas_we = seq_cmd_valid  ? seq_cmd_cs_ras_cas_we :
-                                         wseq_cmd_valid ? wseq_cmd_cs_ras_cas_we :
-                                                           rseq_cmd_cs_ras_cas_we;
+    // calib_done, which cannot happen before init_ready, and REFRESH
+    // only asserts cmd_valid once granted, which only happens when
+    // neither WSEQ nor RSEQ is busy. cmd_cke/cmd_reset_n/cmd_odt need
+    // no muxing - none of WSEQ/RSEQ/REFRESH drive them at all, and
+    // SEQ's own registers already hold their correct real post-init
+    // steady-state values forever (ddr3_init_seq.v's own S_READY state
+    // never reassigns them).
+    wire        phy_cmd_valid = seq_cmd_valid | wseq_cmd_valid | rseq_cmd_valid | refresh_cmd_valid;
+    wire [2:0]  phy_cmd_cs_ras_cas_we = seq_cmd_valid     ? seq_cmd_cs_ras_cas_we :
+                                         wseq_cmd_valid    ? wseq_cmd_cs_ras_cas_we :
+                                         rseq_cmd_valid    ? rseq_cmd_cs_ras_cas_we :
+                                                              refresh_cmd_cs_ras_cas_we;
     wire [2:0]  phy_cmd_ba   = seq_cmd_valid  ? seq_cmd_ba   :
-                                wseq_cmd_valid ? wseq_cmd_ba  : rseq_cmd_ba;
+                                wseq_cmd_valid ? wseq_cmd_ba  :
+                                rseq_cmd_valid ? rseq_cmd_ba  : refresh_cmd_ba;
     wire [15:0] phy_cmd_addr = seq_cmd_valid  ? seq_cmd_addr :
-                                wseq_cmd_valid ? wseq_cmd_addr : rseq_cmd_addr;
+                                wseq_cmd_valid ? wseq_cmd_addr :
+                                rseq_cmd_valid ? rseq_cmd_addr : refresh_cmd_addr;
 
     ddr3_phy_ecp5 PHY (
         .clk(sclk), .rst(rst_all),
