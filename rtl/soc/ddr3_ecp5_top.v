@@ -83,22 +83,56 @@
 // command mux, gated on `!write_busy && !read_busy` - a real refresh
 // only starts once neither command sequencer has an in-flight
 // transaction, so its own real REFRESH command never contends with a
-// real ACT/WR/RD for the shared `cmd_*` bus. The reverse direction is
-// real, honest, and deliberately not built here: nothing currently
-// stops a new `write_req`/`read_req` from starting a transaction while
-// `refresh_busy` is still asserted (mid-tRFC) - a real DDR3 part
-// requires NOP/DES only during that window, and this integration does
-// not yet enforce it on the write/read side. Closing that requires
-// either gating `write_req`/`read_req` on `!refresh_busy` (at the cost
-// of a caller's own pulse silently getting missed if it lands in that
-// window, needing its own retry contract) or queuing the request - a
-// real design decision, not made here, named plainly rather than
-// quietly assumed safe.
+// real ACT/WR/RD for the shared `cmd_*` bus. Part 11 built only that
+// direction; the reverse (a new `write_req`/`read_req` starting while a
+// refresh is pending or mid-tRFC) is Part 12, below.
 //
-// Still not attempted: bank-state tracking (no redundant-ACT
-// avoidance), PRECHARGE, the second DQ byte lane, and real hardware
-// bring-up - see docs/roadmap.md's own Part 9/10 accounts for the full
-// list of what this does not establish.
+// ---- Part 12: the reverse direction - new requests are held off while
+// a refresh is pending or running ----
+// Micron's own MT41K256M16 datasheet (Figure 40, note 5): "Only NOP and
+// DES commands are allowed after a REFRESH command and until tRFC (MIN)
+// is satisfied." Part 11 left this unenforced. The design decision it
+// named - gate the request (risking a caller's own pulse being silently
+// missed) or queue it - is resolved here by a third option that needs
+// neither: the caller-visible `write_busy`/`read_busy` rise one cycle
+// BEFORE the request gate actually closes.
+//   refresh_hold   = refresh_req | refresh_busy  (contiguous from the
+//                    first cycle a refresh is due to one cycle past the
+//                    end of tRFC, since refresh_req falls exactly as
+//                    refresh_busy rises)
+//   refresh_hold_d = refresh_hold, registered - this is what actually
+//                    gates `write_req`/`read_req` at the sequencers
+//   write_busy     = write sequencer busy | refresh_hold   (likewise read)
+// A caller that respects `busy` decides in cycle t-1 and presents its
+// request in cycle t; it is only ever ignored if `refresh_hold_d` is high
+// in cycle t, which means `refresh_hold` was high in cycle t-1, which
+// means the caller saw `busy` and never presented. Not dropped, not
+// queued. A caller that ignores `busy` entirely is simply ignored while
+// the gate is closed - the ordinary ready/valid contract, stated here
+// rather than left implied.
+// `refresh_grant` gains one term for the same reason: it requires
+// `refresh_hold_d`, i.e. the gate is already closed in the cycle grant is
+// given. Without it, a request accepted in the very cycle `refresh_req`
+// first appears would start a transaction in the same cycle refresh
+// commits - the exact tRFC violation this part exists to close.
+// The sequencers' own `busy` (not the caller-visible one) still feeds
+// `refresh_grant`: the caller-visible one includes `refresh_hold`, which
+// refresh itself raises, so using it would deadlock refresh against its
+// own request.
+// `write_data_latch` must use the same gated accept condition the
+// sequencer does; if it used the caller-visible `write_busy` instead, a
+// request accepted in that first boundary cycle would leave the latch
+// holding stale data.
+//
+// Still not attempted, and two items newly named. PRECHARGE: Micron's
+// Figure 40 shows PRECHARGE-all (A10 high) then tRP before every REFRESH;
+// this design never precharges, so a REFRESH issued after any write or
+// read lands with a bank still open - a real gap a simulation model that
+// does not track bank state cannot see. Write/read mutual exclusion: see
+// the command mux below. Also not attempted: bank-state tracking (no
+// redundant-ACT avoidance), the second DQ byte lane, and real hardware
+// bring-up - see docs/roadmap.md's own Part 9/10/11/12 accounts for the
+// full list of what this does not establish.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
     input  wire        rst,
@@ -193,6 +227,22 @@ module ddr3_ecp5_top (
     // unproven, possibly-wrong point.
     wire rst_cmd = rst_calib || !calib_done;
 
+    // Part 12: see header. Declared ahead of the sequencers, which they
+    // gate, and the refresh scheduler below, which drives them.
+    wire refresh_req;
+    wire refresh_hold = refresh_req | refresh_busy;
+    reg  refresh_hold_d;
+    always @(posedge sclk or posedge rst_cmd) begin
+        if (rst_cmd) refresh_hold_d <= 1'b0;
+        else         refresh_hold_d <= refresh_hold;
+    end
+
+    wire wseq_write_req = write_req & ~refresh_hold_d;
+    wire rseq_read_req  = read_req  & ~refresh_hold_d;
+    wire wseq_busy, rseq_busy;
+    assign write_busy = wseq_busy | refresh_hold;
+    assign read_busy  = rseq_busy | refresh_hold;
+
     wire        wseq_cmd_valid;
     wire [2:0]  wseq_cmd_cs_ras_cas_we;
     wire [2:0]  wseq_cmd_ba;
@@ -201,8 +251,8 @@ module ddr3_ecp5_top (
 
     ddr3_write_seq WSEQ (
         .clk(sclk), .rst(rst_cmd),
-        .write_req(write_req), .bank(write_bank), .row(write_row), .col(write_col),
-        .busy(write_busy),
+        .write_req(wseq_write_req), .bank(write_bank), .row(write_row), .col(write_col),
+        .busy(wseq_busy),
         .cmd_valid(wseq_cmd_valid), .cmd_cs_ras_cas_we(wseq_cmd_cs_ras_cas_we),
         .cmd_ba(wseq_cmd_ba), .cmd_addr(wseq_cmd_addr),
         .write_start(wseq_write_start)
@@ -216,8 +266,8 @@ module ddr3_ecp5_top (
 
     ddr3_read_seq RSEQ (
         .clk(sclk), .rst(rst_cmd),
-        .read_req(read_req), .bank(read_bank), .row(read_row), .col(read_col),
-        .busy(read_busy),
+        .read_req(rseq_read_req), .bank(read_bank), .row(read_row), .col(read_col),
+        .busy(rseq_busy),
         .cmd_valid(rseq_cmd_valid), .cmd_cs_ras_cas_we(rseq_cmd_cs_ras_cas_we),
         .cmd_ba(rseq_cmd_ba), .cmd_addr(rseq_cmd_addr),
         .read_start(rseq_read_start)
@@ -229,10 +279,12 @@ module ddr3_ecp5_top (
         .read_start(rseq_read_start), .read_active(real_read_active)
     );
 
-    // Part 11: real refresh scheduling - see header for the real,
-    // one-directional arbitration this integration actually provides.
-    wire        refresh_req;
-    wire        refresh_grant = !write_busy && !read_busy;
+    // Part 11/12: real refresh scheduling - see header for the real,
+    // two-directional arbitration this integration provides. Grant uses
+    // the sequencers' own busy (not the caller-visible one, which
+    // includes refresh_hold and would deadlock) and requires the request
+    // gate to already be closed.
+    wire        refresh_grant = !wseq_busy && !rseq_busy && refresh_hold_d;
     wire        refresh_cmd_valid;
     wire [2:0]  refresh_cmd_cs_ras_cas_we;
     wire [2:0]  refresh_cmd_ba;
@@ -251,7 +303,20 @@ module ddr3_ecp5_top (
     // asserts cmd_valid before init_ready, WSEQ/RSEQ only start after
     // calib_done, which cannot happen before init_ready, and REFRESH
     // only asserts cmd_valid once granted, which only happens when
-    // neither WSEQ nor RSEQ is busy. cmd_cke/cmd_reset_n/cmd_odt need
+    // neither WSEQ nor RSEQ is busy.
+    //
+    // That holds for SEQ vs everything and for REFRESH vs WSEQ/RSEQ. It
+    // does NOT hold between WSEQ and RSEQ themselves: nothing stops a
+    // write and a read being in flight together, and the fixed priority
+    // below then hides it rather than catching it. Measured in Part 12
+    // (a `write_req` and `read_req` presented in the same cycle): both
+    // sequencers run in lockstep, the pins carry only the write's ACT
+    // and WR, the read's ACT and RD never reach the DRAM yet its
+    // `read_start` still pulses, `read_data` comes back `z`, and the
+    // protocol checker stays silent because the pins look legal.
+    // Callers must present one request at a time and wait for both
+    // `write_busy` and `read_busy` to fall; enforcing it here is later
+    // work. cmd_cke/cmd_reset_n/cmd_odt need
     // no muxing - none of WSEQ/RSEQ/REFRESH drive them at all, and
     // SEQ's own registers already hold their correct real post-init
     // steady-state values forever (ddr3_init_seq.v's own S_READY state
@@ -287,7 +352,7 @@ module ddr3_ecp5_top (
     reg [7:0] write_data_latch;
     always @(posedge sclk or posedge rst_cmd) begin
         if (rst_cmd) write_data_latch <= 8'b0;
-        else if (write_req && !write_busy) write_data_latch <= write_data;
+        else if (wseq_write_req && !wseq_busy) write_data_latch <= write_data;
     end
 
     wire dqsr90, dqsw, dqsw270, burstdet;

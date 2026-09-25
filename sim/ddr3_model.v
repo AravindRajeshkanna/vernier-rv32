@@ -34,6 +34,10 @@ module ddr3_model #(
     localparam RESET_MIN_CYC = `NS2CYC(200_000);  // tRESET minimum - real JEDEC requirement
     localparam MRD_MIN_CYC   = 4;                  // tMRD minimum, cycle count not ns
     localparam ZQINIT_MIN_CYC = 512;               // tZQinit/tDLLK minimum, cycle count not ns
+    // Part 12: Micron MT41K256M16 (4Gb) datasheet Figure 40, note 5 -
+    // "Only NOP and DES commands are allowed after a REFRESH command and
+    // until tRFC (MIN) is satisfied." tRFC(MIN) = 260ns for 4Gb.
+    localparam RFC_MIN_CYC   = `NS2CYC(260);
 
     // Command decode - same {ras_n,cas_n,we_n} convention
     // rtl/soc/ddr3_phy_ecp5.v itself uses, checked independently here
@@ -71,6 +75,8 @@ module ddr3_model #(
     reg        cke_seen_high;
     reg [31:0] since_last_cmd;    // cycles since the last real (non-NOP) command
     reg [31:0] wait_min_needed;   // the minimum this project's own init sequence itself claims for the current gap
+    reg [31:0] since_ref;         // cycles since the last REFRESH command (Part 12)
+    reg        ref_seen;
 
     task fail(input [511:0] msg);
         begin
@@ -98,6 +104,7 @@ module ddr3_model #(
 
     always @(posedge clk) begin
         since_last_cmd <= since_last_cmd + 1;
+        since_ref      <= since_ref + 1;
 
         if (reset_n && cke && !cke_seen_high) begin
             cke_seen_high <= 1'b1;
@@ -109,6 +116,14 @@ module ddr3_model #(
             // this state's own transition requires, then decode it.
             if (since_last_cmd < wait_min_needed) begin
                 fail("command issued before the required inter-command wait elapsed");
+            end
+
+            // Part 12: nothing but NOP/DES until tRFC has elapsed after a
+            // REFRESH. `since_ref` is 0 in the cycle after the REFRESH was
+            // sampled, so the gap in cycles is since_ref + 1. Checked here,
+            // independent of which module issued the offending command.
+            if (ref_seen && (since_ref + 1 < RFC_MIN_CYC)) begin
+                fail("command issued during tRFC after REFRESH (only NOP/DES allowed)");
             end
 
             case (seq_state)
@@ -178,6 +193,10 @@ module ddr3_model #(
                     if (!(is_act || is_wr || is_rd || is_ref)) begin
                         fail("unexpected command after init sequence completed (not ACT/WR/RD)");
                     end
+                    if (is_ref) begin
+                        ref_seen  <= 1'b1;
+                        since_ref <= 0;
+                    end
                 end
                 default: ;
             endcase
@@ -198,6 +217,8 @@ module ddr3_model #(
         cke_seen_high   = 1'b0;
         since_last_cmd  = 0;
         wait_min_needed = 0;
+        since_ref       = 0;
+        ref_seen        = 1'b0;
     end
 
     `undef NS2CYC

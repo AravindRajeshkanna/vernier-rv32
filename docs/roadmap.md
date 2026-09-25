@@ -3244,20 +3244,22 @@ initial expectation).
 ## Phase 9 — DDR
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
-real diagnostic-scale bitstream, a real DDR3 init sequence passing a
-real protocol checker - but neither is done, and Stage 2 through Stage 5
-remain entirely a plan, not an account.** Nothing past each stage's own
-"Update" paragraph below should be read as a completed claim the way
-the "Stage N:" entries in every phase above this one are; both stages'
-own "Done when" bars (real hardware, a real measured Fmax on silicon;
-standalone read/write/refresh tests, which do not exist yet since no
-data path does) stay explicitly unmet - no ECPIX-5 is attached to this
-session, and no real DDR3 chip has seen anything this project has
-written.
+real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
+over twelve gated slices (init and calibration, the DQ/DQS data path,
+write, read and refresh command sequencers wired into one top level, with
+refresh arbitrated against writes and reads in both directions) - but
+neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
+an account.** Nothing past each stage's own "Update" paragraph below
+should be read as a completed claim the way the "Stage N:" entries in
+every phase above this one are. Stage 0's "Done when" bar (real hardware,
+a real measured Fmax on silicon) is wholly unmet. Stage 1's is partly met:
+standalone read, write and refresh tests now exist and pass, under Icarus
+only - it still names Verilator and formal or property checks, neither
+attempted. No ECPIX-5 is attached to this session, and no real DDR3 chip
+has seen anything this project has written.
 What changed since this phase was first written down as "blocked on a
 board, board not chosen" is that a real, evidence-based board candidate
-now exists - `docs/roadmap.md`'s own Phase 8 entry describes the same
-research this section draws on. No hardware has been purchased this
+now exists, described below. No hardware has been purchased this
 session; every board-specific claim below is either a documented
 spec or an external project's own published result, cited as such, not
 something confirmed on silicon here.
@@ -3271,9 +3273,8 @@ on-board. Confirmed via the FPGA's own real hardware SerDes primitive
 `nextpnr-ecp5` today, not just the plain logic fabric - so this project's
 existing open-source toolchain (`yosys` + `nextpnr-ecp5` + prjtrellis)
 stays exactly what it is; no new synthesis toolchain is needed the way a
-Xilinx board (Phase 8's own AC701/KC705 candidates) would require. €151,
-in stock, not a prototype-only or crowdfunding-pending board the way
-ULX4M-LD currently is (Phase 8's own entry has that comparison).
+Xilinx board would require. €151, in stock, not a prototype-only or
+crowdfunding-pending board.
 
 **A DDR controller is a bigger design than `rtl/soc/wb_sdram.v`, not a
 version of it.** SDR SDRAM's controller is what Phase 2 measured against
@@ -4106,6 +4107,118 @@ test in this stage, including this one, has only ever run under
 Icarus) and "formal or property checks where the design admits them"
 (not attempted anywhere in this stage) - both still open, named
 plainly rather than implied closed.
+
+**Update, Part 12: the reverse arbitration direction Part 11 left
+unbuilt now exists - a new write or read request is held off while a
+refresh is pending or running - and the "gate it or queue it" decision
+Part 11 named turned out to have a third answer that needs neither.**
+The requirement is now primary-source, not reasoned: Micron's own
+`MT41K256M16` datasheet (Figure 40, note 5) says "Only NOP and DES
+commands are allowed after a REFRESH command and until tRFC (MIN) is
+satisfied." Part 11's account named this as unenforced; this closes it.
+
+Part 11's header named the dilemma plainly: gating `write_req`/`read_req`
+risks a caller's own one-cycle pulse being silently missed if it lands in
+the window, and queuing needs storage and a replay path. What Part 12
+does instead is make the caller-visible `write_busy`/`read_busy` rise one
+cycle *before* the gate at the sequencers closes. `refresh_hold`
+(`refresh_req | refresh_busy`, contiguous because `refresh_req` falls in
+the exact cycle `refresh_busy` rises) feeds the caller-visible busy
+directly and feeds the request gate through a register, `refresh_hold_d`.
+A registered caller decides in one cycle and presents in the next, so it
+can only be ignored if the hold was already high when it decided - in
+which case it saw `busy` and never presented. Not dropped, not queued. A
+caller that ignores `busy` entirely is simply ignored while the gate is
+closed, the ordinary ready/valid contract. `refresh_grant` gained one
+term, `refresh_hold_d`, so the gate is already closed in the cycle grant
+is given; without it a request accepted in the very cycle `refresh_req`
+first appears starts a transaction in the same cycle refresh commits, and
+the same term keeps the sequencers' own `busy` (not the caller-visible
+one, which refresh itself raises and would deadlock against) as grant's
+input. `write_data_latch` had to move to the same gated accept condition
+the sequencer uses - it read the caller-visible `write_busy`, which would
+now leave it holding stale data for a request accepted in that first
+boundary cycle. Real API change, named as one: `write_busy`/`read_busy`
+at the top level now mean "a transaction is running *or* a refresh has
+the bus", not just the sequencer's own state.
+
+**How it was tested, and what was measured rather than assumed.** The
+refresh interval is deterministic - the next refresh becomes due 194
+cycles after `refresh_busy` falls, measured before the test was written,
+not read off the RTL - so `sim/tb_ddr3_reverse_arb.v` anchors each round
+on that fall and presents one request `k` cycles later, for every `k`
+from 176 to 216, in four modes: a *polite* caller (registered, respects
+`busy`) and a *blind* one (ignores it), each for writes and for reads.
+This is a sweep rather than a chosen collision because of Part 11's own
+finding: a single deterministic alignment, or a hoped-for one, cannot
+tell working protection from none. Measured result: blind requests were
+ignored at exactly `k` = 195 through 204 (a 10-cycle window, matching the
+hold's measured length), four requests (a polite and a blind write, a
+polite and a blind read) were accepted in the exact cycle a refresh first
+became due (`k` = 194), 328 REFRESH commands were issued over the run with
+the longest gap between two at 215 cycles (204 is the measured gap when
+nothing is in flight; the rest is a pending refresh waiting for an
+in-flight transaction to finish - refresh is not starved), and no polite
+request was ever dropped. The independent check is a new tRFC rule in `sim/ddr3_model.v`
+itself, watching the real command pins and indifferent to which module
+issued a command; `tb_ddr3_refresh_wire.v` (Part 11) had to switch from
+the top-level `write_busy` to the sequencer's own `wseq_busy` for its
+contention check, since the former now includes the refresh hold and
+would trip on every legitimate refresh.
+
+It passed on the first run, which per this project's own discipline is
+not evidence of anything, so it was mutation-tested seven ways, each
+specific to this round's own logic, all caught by the mechanism expected:
+the write gate removed (the model's new tRFC rule fires on blind requests
+at `k` = 195 onward), the read gate removed (same, on reads), the gate fed
+by `refresh_hold` instead of `refresh_hold_d` (a polite caller is dropped
+at exactly `k` = 194 - the measured proof of the race the delayed gate
+exists to prevent, not a hypothetical), `refresh_grant` without its
+`refresh_hold_d` term (caught at the same boundary, by the model's tRFC rule
+firing - confirmed by printing its message, not inferred), `write_data_latch` on the caller-visible busy (stale data
+reaches memory at `k` = 194 only), `write_busy`/`read_busy` without the
+hold (polite callers no longer see busy and are dropped), and `refresh_grant`
+fed by the caller-visible busy (deadlock - caught as a timeout). Part 11's
+own forced-grant mutation was re-run against the modified design too, since
+this round edited that test's signals, and is still caught. `make
+verify`/`make verify_ooo` both pass, `sim_ddr3_reverse_arb` among them, no
+regression on the existing DDR3 tests. The gate was restarted once
+mid-round, after the write-versus-read probe below showed the command
+mux's "mutually exclusive by construction" comment overclaimed; the
+result covers the final file.
+
+**Two gaps this round found, both newly named.** *PRECHARGE before
+REFRESH.* The same Micron figure shows PRECHARGE-all (note 3: `A10` must
+be high "if more than one bank is active (must precharge all active
+banks)") and tRP ahead of every REFRESH. This design never issues
+PRECHARGE - its write and read sequencers force `A10` low and nothing
+closes a bank - so a REFRESH after any write or read lands with a bank
+still open. Established from the RTL and the datasheet, not measured:
+`sim/ddr3_model.v` does not track bank state and so cannot see it. It
+also means the new tRFC rule is the only refresh rule checked. *Write/read
+mutual exclusion.* Found by probing what a caller could do that the tests
+do not, and measured: a `write_req` and a `read_req` presented in the same
+cycle run in lockstep, the pins carry only the write's ACT and WR (the
+command mux's fixed priority silently wins), the read's ACT and RD never
+reach the DRAM yet its `read_start` still pulses, `read_data` comes back
+`z`, and the protocol checker stays silent because the pins look legal.
+Part 9's "mutually exclusive by construction" comment was true for init
+versus the rest and, since Part 11, for refresh versus write/read, but
+never for write versus read - it now says so in `rtl/soc/ddr3_ecp5_top.v`
+itself. Callers must present one request at a time; enforcing it is real,
+separate work.
+
+**What this does not establish.** Both gaps above. Stage 1's own "Done
+when" bar also still names Verilator (every test in this stage has only
+ever run under Icarus) and "formal or property checks where the design
+admits them" (not attempted anywhere in this stage). `sim/ddr3_dq_model.v`
+is still a single stored location, so the sweep checks that each accepted
+request ran with the right data and each ignored one left no trace, not a
+real multi-location array. The hold is conservative - a request presented
+in the ten cycles after a refresh command is ignored even in the last few,
+where tRFC has already elapsed - which costs throughput, not correctness.
+Bank-state tracking, the second DQ byte lane, and real hardware bring-up
+remain open, unchanged.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
