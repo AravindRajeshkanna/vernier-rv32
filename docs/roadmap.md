@@ -3754,6 +3754,54 @@ detail to paper over when integration happens. Bank-state tracking,
 PRECHARGE, and real hardware bring-up remain later work, unchanged
 from Part 6's own account.
 
+**Update, Part 8: the `read_start`/`read_active` shape mismatch Part 7
+named is closed, standalone, by a small, real extender module.** A new
+`rtl/soc/ddr3_read_burst_ext.v` converts `ddr3_read_seq.v`'s own
+single-cycle `read_start` pulse into a real, held-high `read_active`
+signal spanning this design's own real burst-length-8 duration - 2
+real `sclk` cycles, matching the 8 UI / 4:1 `SCLK`:UI ratio
+`rtl/soc/ddr3_dq_serdes_ecp5.v`'s own header already establishes. The
+write side needs no equivalent: `rtl/soc/ddr3_dqs_write_ecp5.v` already
+takes `write_start` as a single-cycle pulse directly and handles its
+own real multi-cycle preamble/active/postamble timing internally -
+only the read side's own `read_active` input had this real shape
+mismatch.
+
+The first real run found a real bug - in this test's own stimulus, not
+the design. A first draft drove `read_start` with a plain blocking
+assignment right after `@(posedge clk)`, the well-known same-edge race
+against the DUT's own NBA-clocked internal register - confirmed
+directly via a standalone probe with a settle delay after the clock
+edge, which showed `read_start` and the DUT's own internal delay
+register reading as 1 on the *same* cycle, collapsing the intended
+2-cycle window to 1. Not a real DUT defect: a real caller
+(`ddr3_read_seq.v`'s own `read_start <= 1'b1;`) already drives this
+signal with non-blocking assignment, so the race could not occur in
+real integration - only in a testbench careless enough to drive a
+synchronous stimulus signal with blocking assignment. Fixed by driving
+`read_start` with non-blocking assignment too, and by recording the
+real cycle history with a separate, continuously-running monitor
+rather than an inline sample interleaved with the stimulus's own
+sequencing (the same robust pattern `sim/tb_ddr3_dqs_write.v`'s own
+history recorder already uses) - re-run, and the real, intended
+2-cycle contiguous window appeared exactly as designed.
+
+Mutation-tested two ways: removing the extension entirely (`read_active
+= read_start`) and making the internal delay register never clear
+(stuck high after the first pulse) - both caught, reverted, clean case
+reconfirmed. `make verify`/`make verify_ooo` both pass,
+`sim_ddr3_read_burst_ext` among them, no regression on any existing
+path.
+
+**What this does not establish.** This module is not wired into
+`rtl/soc/ddr3_ecp5_top.v` yet - integrating both command sequencers
+into that top-level module, alongside `rtl/soc/ddr3_read_calib.v`'s
+own existing direct-injection calibration path (not replacing it -
+calibration still needs its own simple mechanism to find a working
+`READCLKSEL` tap before any command-driven read/write can be trusted),
+remains later, separate work. Bank-state tracking, PRECHARGE, and real
+hardware bring-up remain open too, unchanged from Part 7's own account.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a
