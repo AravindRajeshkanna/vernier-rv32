@@ -4975,11 +4975,31 @@ Verilator runs and the lint - and `synth_check_ddr3` is a step of the existing `
 job, which has yosys. `make verify` depends on the same two, through one list of tests in
 the Makefile, so a test is either reached by both or by neither.
 
-**What this does not establish.** CI installs Verilator from the distribution's package
-manager, an older release than the one used to measure this, so the first CI run is also
-a test of whether the two agree. Verilator scheduling is one more opinion, not a proof:
-it says nothing about real timing, and two simulators agreeing does not make a model
-hardware-faithful. The x-based and floating-net checks are exercised by Icarus alone.
+**The first CI run disagreed, and the disagreement was a finding.** The new job installs
+Verilator from the distribution's package manager, release 5.020, and failed on it: three
+tests that pass on 5.050 (`refresh_ctrl`, `reverse_arb`, `addr`) and the lint, which 5.020
+refuses to run on a file with a delay or an event control unless told `--timing`. A local
+build of 5.020 was not possible (the macOS flex fails to link it), so a throwaway branch
+ran a two-question micro-test on the runner. Reading a DUT register at the edge that
+updates it behaved as the standard says. A testbench's `a <= 1` made at an edge did not:
+a flop sampling `a` at that same edge saw the new value, where the standard gives the old
+one, so the DUT saw the testbench's request one cycle earlier than under Icarus or 5.050.
+The three tests that hard-code an exact alignment (a grant against the command it
+produces; a request against a pending refresh) measured the shifted timeline: "expected 2,
+got 1", and a caller that follows the busy signal having its request dropped. Their
+stimulus is now applied with `<= #1`, 1 ns after the edge. Under a conforming simulator
+the DUT-visible timeline is unchanged (no expected value moved); under 5.020 the
+assignment can no longer land at the same edge. The other fourteen pass under either
+alignment. The lint gained `--timing` and a waiver for the PLL model's deliberate blocking
+assignment, which `--timing` makes it report. A run on the runner's 5.020 then passed all
+seventeen Verilator tests, the eighteen Icarus tests and the lint.
+
+**What this does not establish.** Two versions of Verilator now disagree on one scheduling
+point and the tests avoid it rather than relying on either; a third might disagree
+elsewhere. The nine mutation runs above were made on 5.050 only. Verilator scheduling is
+one more opinion, not a proof: it says nothing about real timing, and two simulators
+agreeing does not make a model hardware-faithful. The x-based and floating-net checks are
+exercised by Icarus alone.
 The lint covers the simulation branch only. No formal or property checks, no data mask,
 no second lane, and the byte-granular versus 16-byte-burst interface decision is still
 the maintainer's. Real hardware bring-up remains open.
