@@ -192,10 +192,20 @@
 //   - ddr3_write_seq.v triggers the DQS FSM CWL - 1 sclk after its cmd_valid, so
 //     the burst starts exactly CWL = 6 CK = 3 sclk after the WRITE reaches the pins
 //     (the PHY registers the command once more, so the pins lag cmd_valid by one).
-// Not closed: the DRAM's READ timing (CL - 1 in DLL-off mode, tDQSCK) is still not
-// modelled - the memory model still drives read data when told; and calibration's
-// commandless write bursts have no WRITE to be timed against, so their position is
-// not checked.
+// Not closed (the read half is Part 18, below): calibration's commandless write
+// bursts have no WRITE to be timed against, so their position is not checked.
+//
+// ---- Part 18: the memory model answers a READ at the DRAM's own read latency ----
+// Nothing in this file changed. sim/ddr3_dq_model.v now schedules the read burst
+// itself from the READ command - preamble at R+2, DQS high with beat 0 at R+3 and
+// beat 4 at R+4, postamble at R+5 (sclk cycles after the cycle the READ is driven
+// in) - instead of driving data whenever `read_active` says so. A wrong CL_CYC in
+// ddr3_read_seq.v is therefore no longer invisible: 2, 4 and 5 each fail the
+// command-driven, address-path and one-transaction tests, where Part 16 measured
+// them all passing. sim/tb_ddr3_rd_window.v pins the read window and the byte it
+// returns. Calibration's reads issue no READ command and still follow
+// `read_active`. Not closed: at sclk resolution the tDQSCK spread (1-10 ns) is
+// invisible, and the ECP5's own capture latency through IDDRX2DQA is not modelled.
 //
 // Still not attempted: bank-state tracking in the controller (this design
 // still opens and closes a bank around every access rather than

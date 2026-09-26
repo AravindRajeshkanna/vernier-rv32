@@ -74,7 +74,7 @@ module tb_ddr3_data;
     assign rd_q0 = fpga_rd_q0;
 
     wire [7:0] mem_dq_o;
-    wire       mem_dq_oe, mem_dqs_o;
+    wire       mem_dq_oe, mem_dqs_oe, mem_dqs_o;
 
     wire         dq_error;
 
@@ -86,7 +86,7 @@ module tb_ddr3_data;
         .cs_n(1'b1), .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(16'b0),   // calibration issues no DRAM commands
         .dq_pin(dq_bus), .dqs_pin(dqs_bus),
         .read_active(read_active),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
@@ -100,7 +100,7 @@ module tb_ddr3_data;
                                 (mem_dq_oe    ? mem_dq_o[b]  : 1'bz);
         end
     endgenerate
-    assign dqs_bus = dqs_wr_oe ? dqs_wr_o : (mem_dq_oe ? mem_dqs_o : 1'bz);
+    assign dqs_bus = dqs_wr_oe ? dqs_wr_o : (mem_dqs_oe ? mem_dqs_o : 1'bz);
 
     wire bus_contention = (|fpga_dq_oe) && mem_dq_oe;
 

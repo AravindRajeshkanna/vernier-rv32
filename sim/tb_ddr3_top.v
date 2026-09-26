@@ -77,13 +77,14 @@ module tb_ddr3_top;
     // same real DQ pins this integration now drives via ODDRX2DQA/
     // TSHX2DQA off the PLL's own sclk/eclk pair ----
     wire [7:0] mem_dq_o;
-    wire       mem_dq_oe, mem_dqs_o;
+    wire       mem_dq_oe, mem_dqs_oe, mem_dqs_o;
 
     // The memory model judges writes from the real DQ and DQS pins (Part 17), so
-    // nothing about the write side is tapped here any more. `read_active` has no
-    // external pin - the DRAM's read side is still driven when told rather than at
-    // its own read latency - so that one internal net is still tapped, which a
-    // testbench may do and synthesizable RTL may not.
+    // nothing about the write side is tapped here any more. Reads follow the READ
+    // command at the DRAM's own latency (Part 18); `read_active` is still tapped
+    // for calibration's reads, which issue no READ command and so give the model
+    // nothing else to go on. A testbench may tap an internal net; synthesizable
+    // RTL may not.
     wire       tap_read_active = DUT.read_active;
 
     wire         dq_error;
@@ -97,7 +98,7 @@ module tb_ddr3_top;
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(tap_read_active),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
@@ -107,7 +108,7 @@ module tb_ddr3_top;
             assign ddr3_dq[b] = mem_dq_oe ? mem_dq_o[b] : 1'bz;
         end
     endgenerate
-    assign ddr3_dqs = mem_dq_oe ? mem_dqs_o : 1'bz;
+    assign ddr3_dqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
 
     // A real bus-contention check on the shared DQ/DQS pins. A first
     // version of this check tapped each side's own internal output-

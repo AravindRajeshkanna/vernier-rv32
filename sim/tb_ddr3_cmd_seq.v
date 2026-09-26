@@ -92,7 +92,7 @@ module tb_ddr3_cmd_seq;
     // uses (that test's own job is calibration in isolation; this
     // test's job is the real command path on top of it) ----
     wire [7:0] mem_dq_o;
-    wire       mem_dq_oe, mem_dqs_o;
+    wire       mem_dq_oe, mem_dqs_oe, mem_dqs_o;
 
     wire       tap_read_active  = DUT.read_active_final;
 
@@ -107,7 +107,7 @@ module tb_ddr3_cmd_seq;
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(tap_read_active),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
@@ -117,7 +117,7 @@ module tb_ddr3_cmd_seq;
             assign ddr3_dq[b] = mem_dq_oe ? mem_dq_o[b] : 1'bz;
         end
     endgenerate
-    assign ddr3_dqs = mem_dq_oe ? mem_dqs_o : 1'bz;
+    assign ddr3_dqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
 
     // Real per-bit X-detection contention checks - the same fix
     // sim/tb_ddr3_top.v's own investigation already found necessary
