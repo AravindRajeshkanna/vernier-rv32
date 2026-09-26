@@ -39,7 +39,10 @@ module ddr3_dq_model #(
     input  wire       sclk,
     input  wire       rst,
 
-    // the real DDR3 command pins, watched only to learn where data goes
+    // the real DDR3 command pins, watched only to learn where data goes.
+    // Commands are sampled on CK's rising edge, as the DRAM does; the data
+    // phase below stays on sclk.
+    input  wire       ck,
     input  wire       cs_n,
     input  wire       ras_n,
     input  wire       cas_n,
@@ -162,8 +165,6 @@ module ddr3_dq_model #(
             mem_dqs_o  <= 1'b0;
             n_used     = 0;
             calib_data = 8'b0;
-            cur_valid  <= 1'b0;
-            for (i = 0; i < 8; i = i + 1) row_known[i] <= 1'b0;
             for (i = 0; i < DEPTH; i = i + 1) k_used[i] = 1'b0;
         end else begin
             // Drive first: the registered value is the one held BEFORE this
@@ -180,8 +181,17 @@ module ddr3_dq_model #(
             mem_dqs_o <= read_active ? ~mem_dqs_o : 1'b0;
 
             if (wr_en) store_current(wr_d0);
+        end
+    end
 
-            // command capture takes effect from the next cycle
+    // Command capture, on CK. Sampled where the DRAM samples them - in the
+    // middle of the command's slot - so a command held for one CK is seen
+    // exactly once.
+    always @(posedge ck) begin
+        if (rst) begin
+            cur_valid <= 1'b0;
+            for (i = 0; i < 8; i = i + 1) row_known[i] <= 1'b0;
+        end else begin
             if (is_act) begin
                 open_row[ba]  <= a[14:0];
                 row_known[ba] <= 1'b1;

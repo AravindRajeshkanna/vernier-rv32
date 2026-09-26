@@ -73,7 +73,7 @@ module tb_ddr3_refresh_wire;
     wire        model_seq_done;
 
     ddr3_model #(.CLK_HZ(CLK_HZ)) PROTO (
-        .clk(clk), .ck(ddr3_ck),
+        .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
@@ -85,6 +85,7 @@ module tb_ddr3_refresh_wire;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
+        .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),

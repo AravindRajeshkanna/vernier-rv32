@@ -34,8 +34,12 @@ module tb_ddr3_init;
     wire [15:0] ddr3_a;
     wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
 
+    // The PHY's CK runs on the edge clock (Part 16), twice clk.
+    wire eclk, pll_sclk, pll_locked;
+    ddr3_eclk_pll PLL (.clk(clk), .eclk(eclk), .sclk(pll_sclk), .locked(pll_locked));
+
     ddr3_phy_ecp5 PHY (
-        .clk(clk), .rst(rst),
+        .clk(clk), .eclk(eclk), .rst(rst),
         .cmd_valid(cmd_valid), .cmd_cs_ras_cas_we(cmd_cs_ras_cas_we),
         .cmd_ba(cmd_ba), .cmd_addr(cmd_addr),
         .cmd_cke(cmd_cke), .cmd_reset_n(cmd_reset_n), .cmd_odt(cmd_odt),
@@ -51,7 +55,7 @@ module tb_ddr3_init;
     wire model_seq_done;
 
     ddr3_model #(.CLK_HZ(CLK_HZ)) MODEL (
-        .clk(clk), .ck(ddr3_ck),
+        .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
@@ -80,6 +84,12 @@ module tb_ddr3_init;
         // clock output would be a real, silent PHY bug no protocol
         // check above would catch on its own.
         repeat (8) @(posedge clk);
+        // eclk falls at every clk edge (and rises 10 ns after it), so
+        // sampling at the edge itself races the two continuous assigns that
+        // derive CK and CK# from it: one has updated, the other not yet. A
+        // settle delay reads them after both have. Measured with a probe:
+        // ck=0 ck_n=0 at the exact edge, complementary a moment later.
+        #1;
         check("ddr3_ck and ddr3_ck_n are complementary", ddr3_ck, ~ddr3_ck_n);
 
         // Wait for the sequence to finish, or the model to flag a real

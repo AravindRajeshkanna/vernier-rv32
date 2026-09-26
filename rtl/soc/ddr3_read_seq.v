@@ -25,11 +25,21 @@
 // file's header for the datasheet text and the bug this closes): after the
 // read data has come back the sequencer issues PRECHARGE-all (A10 high),
 // so whenever it is idle every bank is closed. The datasheet minimum is
-// tRTP, "the greater of 4CK or 7.5ns" - 4 cycles after RD. PRECHARGE is
-// deliberately placed later than that, at RD + CL + BL/2 + 1 = 11 cycles:
-// after the read burst has finished (CL 6 plus 4 for BL8) with the same
-// one-cycle margin the write side carries, so this design never
-// precharges a bank while its own capture window is still open.
+// tRTP, "the greater of 4CK or 7.5ns" - 4 CK, which is 2 sclk. PRECHARGE is
+// deliberately placed later than that, after the read burst has finished
+// (CL 6 CK plus 4 CK for BL8 is 10 CK, 5 sclk) with one sclk of margin:
+// RD + 6 sclk, so this design never precharges a bank while its own
+// capture window is still open.
+//
+// ---- Part 16: latencies are counted in CK, commands sit in phase 0 ----
+// See rtl/soc/ddr3_write_seq.v's own header. CL = 6 CK is exactly 3 sclk, so
+// `CL_CYC` below is 3, not 6: before Part 16 the design counted CK as sclk.
+// One caveat this does NOT close: in DLL-off mode Micron's datasheet says
+// read data starts "AL + CL - 1 cycles after the READ command" (5 CK, not
+// 6) and tDQSCK, the DQS-to-CK offset, is 1-10 ns and can exceed a clock.
+// The capture window here is aligned by the READCLKSEL calibration sweep,
+// not by this constant alone; modelling the DRAM's actual read timing is the
+// memory model's job, still to do.
 //
 // ---- Timing values ----
 // TRCD_CYC/the real measured ACT-to-RD gap match
@@ -79,11 +89,11 @@ module ddr3_read_seq (
     localparam [2:0] CMD_PRE = 3'b010;   // RAS_n=0, CAS_n=1, WE_n=0 (A10 high = all banks)
 
     localparam TRCD_CYC = 2;   // see header - matches ddr3_write_seq.v's own value
-    localparam CL_CYC   = 6;   // see header - matches ddr3_init_seq.v's own MR0
+    localparam CL_CYC   = 3;   // CL = 6 CK (ddr3_init_seq.v's own MR0) = 3 sclk; see header
     // Cycles from the read_start pulse to PRECHARGE being issued. PRE is
-    // visible on the pins at RD + 7 + RREC_CYC: 11 with RREC_CYC = 4, the
-    // burst end plus one cycle of margin (see header).
-    localparam RREC_CYC = 4;
+    // visible on the pins at RD + CL_CYC + 1 + RREC_CYC: 6 sclk (12 CK) with
+    // RREC_CYC = 2, the burst end (5 sclk) plus one sclk of margin.
+    localparam RREC_CYC = 2;
 
     localparam [2:0]
         S_IDLE      = 3'd0,
