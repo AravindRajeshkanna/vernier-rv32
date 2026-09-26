@@ -124,15 +124,34 @@
 // request accepted in that first boundary cycle would leave the latch
 // holding stale data.
 //
-// Still not attempted, and two items newly named. PRECHARGE: Micron's
+// ---- Part 13: at most one transaction in flight ----
+// Part 12's probe found that a write and a read in flight together
+// collide silently. Every request is now either fully accepted or fully
+// ignored: a request is accepted only if neither sequencer is busy and no
+// refresh holds the bus, and in the same cycle a write beats a read.
+//   wseq_write_req = write_req & ~refresh_hold_d & ~wseq_busy & ~rseq_busy
+//   rseq_read_req  = read_req  & ~refresh_hold_d & ~wseq_busy & ~rseq_busy
+//                             & ~wseq_write_req
+// `write_busy` and `read_busy` are now the same value (either sequencer
+// busy, or a refresh holding the bus), so a caller waiting on its own
+// direction's busy is safe against the other. Callers still present one
+// request at a time; a blind caller is ignored while the gate is closed.
+// The sweep that proved this also found a latent bug from Part 6: a
+// sequencer is back in S_IDLE one cycle before its `busy` drops, and a
+// request presented in that cycle was accepted while `write_data_latch`
+// kept the previous write's data - stale data written to memory. Gating on
+// the sequencer's own busy closes it.
+//
+// Still not attempted, and one item sharpened. PRECHARGE: Micron's
 // Figure 40 shows PRECHARGE-all (A10 high) then tRP before every REFRESH;
 // this design never precharges, so a REFRESH issued after any write or
-// read lands with a bank still open - a real gap a simulation model that
-// does not track bank state cannot see. Write/read mutual exclusion: see
-// the command mux below. Also not attempted: bank-state tracking (no
-// redundant-ACT avoidance), the second DQ byte lane, and real hardware
-// bring-up - see docs/roadmap.md's own Part 9/10/11/12 accounts for the
-// full list of what this does not establish.
+// read lands with a bank still open - and, the same gap seen from the
+// other side, every transaction after the first issues ACT to a bank it
+// never closed. A real gap a simulation model that does not track bank
+// state cannot see. Also not attempted: bank-state tracking, the second DQ
+// byte lane, and real hardware bring-up - see docs/roadmap.md's own
+// Part 9/10/11/12/13 accounts for the full list of what this does not
+// establish.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
     input  wire        rst,
@@ -237,11 +256,21 @@ module ddr3_ecp5_top (
         else         refresh_hold_d <= refresh_hold;
     end
 
-    wire wseq_write_req = write_req & ~refresh_hold_d;
-    wire rseq_read_req  = read_req  & ~refresh_hold_d;
+    // Part 13: at most one transaction in flight. A request is accepted
+    // only if neither sequencer is busy and no refresh holds the bus, and
+    // in the same cycle a write beats a read. Gating on the sequencer's
+    // OWN busy too (not just the other's) closes a latent stale-data
+    // hazard: a sequencer is back in S_IDLE one cycle before its `busy`
+    // drops, and a request presented in that cycle used to be accepted
+    // while `write_data_latch` (which only captured when not busy) kept
+    // the previous write's data.
     wire wseq_busy, rseq_busy;
-    assign write_busy = wseq_busy | refresh_hold;
-    assign read_busy  = rseq_busy | refresh_hold;
+    wire wseq_write_req = write_req & ~refresh_hold_d & ~wseq_busy & ~rseq_busy;
+    wire rseq_read_req  = read_req  & ~refresh_hold_d & ~wseq_busy & ~rseq_busy & ~wseq_write_req;
+    // Both ports carry the same value on purpose: a caller waiting on its
+    // own direction's busy must be safe against the other direction too.
+    assign write_busy = wseq_busy | rseq_busy | refresh_hold;
+    assign read_busy  = wseq_busy | rseq_busy | refresh_hold;
 
     wire        wseq_cmd_valid;
     wire [2:0]  wseq_cmd_cs_ras_cas_we;
@@ -305,18 +334,17 @@ module ddr3_ecp5_top (
     // only asserts cmd_valid once granted, which only happens when
     // neither WSEQ nor RSEQ is busy.
     //
-    // That holds for SEQ vs everything and for REFRESH vs WSEQ/RSEQ. It
-    // does NOT hold between WSEQ and RSEQ themselves: nothing stops a
-    // write and a read being in flight together, and the fixed priority
-    // below then hides it rather than catching it. Measured in Part 12
-    // (a `write_req` and `read_req` presented in the same cycle): both
-    // sequencers run in lockstep, the pins carry only the write's ACT
-    // and WR, the read's ACT and RD never reach the DRAM yet its
-    // `read_start` still pulses, `read_data` comes back `z`, and the
-    // protocol checker stays silent because the pins look legal.
-    // Callers must present one request at a time and wait for both
-    // `write_busy` and `read_busy` to fall; enforcing it here is later
-    // work. cmd_cke/cmd_reset_n/cmd_odt need
+    // That holds for every pair: SEQ vs the rest, REFRESH vs WSEQ/RSEQ
+    // (Part 11/12), and - since Part 13 - WSEQ vs RSEQ, which the gate
+    // above keeps from ever being in flight together. Before Part 13 it
+    // did not hold for that last pair and the fixed priority below hid it
+    // rather than catching it: a `write_req` and `read_req` presented in
+    // the same cycle ran in lockstep, the pins carried only the write's
+    // ACT and WR, the read's never reached the DRAM yet its `read_start`
+    // still pulsed and `read_data` came back `z`, with the protocol
+    // checker silent because the pins looked legal.
+    //
+    // cmd_cke/cmd_reset_n/cmd_odt need
     // no muxing - none of WSEQ/RSEQ/REFRESH drive them at all, and
     // SEQ's own registers already hold their correct real post-init
     // steady-state values forever (ddr3_init_seq.v's own S_READY state
@@ -352,7 +380,7 @@ module ddr3_ecp5_top (
     reg [7:0] write_data_latch;
     always @(posedge sclk or posedge rst_cmd) begin
         if (rst_cmd) write_data_latch <= 8'b0;
-        else if (wseq_write_req && !wseq_busy) write_data_latch <= write_data;
+        else if (wseq_write_req) write_data_latch <= write_data;
     end
 
     wire dqsr90, dqsw, dqsw270, burstdet;

@@ -265,6 +265,7 @@ plusarg
 postamble
 pragma
 precharge
+precharged
 precompiled
 preemptable
 preload
