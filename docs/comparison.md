@@ -189,8 +189,9 @@ declaring a winner.
   trip, refresh arbitrated against write/read in both directions, at
   most one transaction ever in flight, every transaction closing its
   bank, and a memory model that decodes the address the way the part
-  does; real hardware bring-up is what remains open, not a board
-  decision.
+  does - a model of the data path that is not yet hardware-faithful,
+  measured and recorded as such; real hardware bring-up is what remains
+  open, not a board decision.
 
 ## 7. Picking one
 

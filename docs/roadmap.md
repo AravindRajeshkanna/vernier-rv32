@@ -3257,8 +3257,9 @@ should be read as a completed claim the way the "Stage N:" entries in
 every phase above this one are. Stage 0's "Done when" bar (real hardware,
 a real measured Fmax on silicon) is wholly unmet. Stage 1's is partly met:
 standalone read, write and refresh tests now exist and pass, under Icarus
-only - it still names Verilator and formal or property checks, neither
-attempted. No ECPIX-5 is attached to this session, and no real DDR3 chip
+only and against a data-path model that has not yet been shown
+hardware-faithful (see the survey near the end of this phase) - it still
+names Verilator and formal or property checks, neither attempted. No ECPIX-5 is attached to this session, and no real DDR3 chip
 has seen anything this project has written.
 What changed since this phase was first written down as "blocked on a
 board, board not chosen" is that a real, evidence-based board candidate
@@ -4534,7 +4535,93 @@ still names Verilator (every test in this stage has only ever run under
 Icarus) and "formal or property checks where the design admits them" (not
 attempted anywhere in this stage). Open-page operation, real hardware
 bring-up and the four nanosecond parameters Part 14 chose not to model
-remain open, unchanged.
+remain open, unchanged. (A caveat on this update's memory model was found
+after it merged: see the survey below.)
+
+**Survey, no design change: the Stage 1 data path is a mechanism-level
+model, not yet a hardware-faithful one - measured, and it sits underneath
+the "second byte lane" item every account since Part 9 has named as
+next.** Before widening the data path to x16 the current one was measured
+rather than assumed, and it is not what "one byte lane" implies. Nothing
+below is a regression - none of it was ever claimed to work on hardware - but
+it is a distance the earlier accounts did not state, it changes what the
+sensible next step is, and it is recorded here in the "Known defects"
+ledger so it is not rediscovered.
+
+**Measured: DQ is driven outside the DQS window.** A single write, watched
+cycle by cycle on the integrated design: `write_start_final` is high for
+**one** `sclk` cycle, and DQ's output-enable (`dq_oe`) is high for exactly
+that one cycle. The write-drive enable for DQS (`dqs_wr_oe`) rises the *following*
+cycle and stays high for four (preamble, two active toggle cycles,
+postamble). So DQ is enabled for one cycle, one cycle before DQS is even
+enabled and two cycles before its first active toggle; the two active DQS
+cycles, which are the eight beats of a BL8 burst, see no DQ enable at all. A
+real DRAM samples DQ on DQS edges, so it would capture undriven pins. The
+simulation never noticed, because `sim/ddr3_dq_model.v` stores `wr_d0` on the
+internal `wr_en` tap - it never compares DQ against DQS, so every write in
+every test has been a mechanism check, not a timing check. The read side is
+closer: `read_active` is two cycles (eight UI at the design's 4:1 ratio) and
+the capture is aligned to it, but the model returns the same byte on all four
+phases, so a wrong capture phase is invisible.
+
+**Verified from the RTL: CK and the data rate disagree by 2x.**
+`rtl/soc/ddr3_phy_ecp5.v` generates CK with an `ODDRX1F` on `sclk` - CK runs
+at `sclk`'s 25 MHz - while `rtl/soc/ddr3_dq_serdes_ecp5.v` moves four UI per
+`sclk` cycle per pin, a 100 MT/s data rate that implies a 50 MHz CK. Part 3
+unified the clock *tree* (everything runs off one PLL) but never compared the
+two rates; the PLL header's own "reconciling the two is later work" was
+closed for the tree and left open for the ratio. The command timings the
+design already counts (`CL_CYC`, `CWL_CYC`, the new PRECHARGE spacings) all
+treat CK as `sclk`, so they are self-consistent and conservative in the sense
+Part 14 described, but the data path is on a different rate than the CK the
+DRAM would see. This one is an inference from two files, not a measurement on
+hardware; simulation cannot show it, since the PLL model is `assign sclk =
+clk`.
+
+**Also, not yet a burst.** MR0 selects BL8, but every transaction moves one
+byte: the four write phases all carry the same byte, the read takes only
+`rd_q0`, and there are no data-mask pins, no second lane and no `UDQS` -
+`ddr3_dm` and the upper byte's pins do not exist in the top-level ports,
+while the ECPIX-5's part, as Part 10 identified it, is x16. That is the part of
+the gap the "second byte lane" item already named; the two measurements above are what it did not.
+
+**A caveat on Part 15, added after it merged.** The address-decoded memory
+model stores one byte per (bank, row, column). A real part running BL8 writes
+eight beats into eight columns of an aligned block on every unmasked write, so
+two writes to different columns of the same block would clobber each other
+there and do not in the model. Part 15's finding stands for what it measured -
+the address that reaches the command pins - but the model is more forgiving
+than the part about what a single-byte write leaves behind, and a
+byte-granular write on real hardware needs the data mask (`DM` high on seven
+of the eight beats, the byte on beat zero, with the burst started at the
+wanted column).
+
+**What a hardware-faithful path needs, in an order that follows from
+the dependencies, not a commitment.** (1) Settle the clock and phase
+architecture: CK at the edge-clock rate, commands placed on one of two
+phases per `sclk`, every CK-counted timing recounted from that. This has to
+come first because everything else's timing follows from it. (2) A DRAM model
+that samples DQ on DQS edges at beat resolution, with data mask - the
+checker that would have caught the first measurement above. (3) A write path
+whose DQ enable and beats sit inside the DQS active window, and a read path
+that picks the right capture phase. (4) x16: the second lane, `UDQS`, the
+mask pins, per-lane calibration, the top-level ports and the ECPIX-5 pin
+constraints. (5) Only then Stage 2's `wb_ddr.v`, because its request
+interface depends on one open decision - whether the controller keeps a
+byte-granular interface (each access a masked single-beat burst) or exposes
+whole 16-byte bursts, which matches a 16-byte cache line and is far more
+efficient, at the cost of buffering and a partial-write path. That decision
+is the maintainer's, not this file's.
+
+**What this does not establish.** Whether the design would in fact fail on
+the board - the measurements are of a behavioural model, and the ECP5
+primitives' own behaviour around the DQS window was not read from Lattice's
+documentation for this survey (the copy on hand is the block-RAM guide, not
+the high-speed I/O one). The first measurement is against this design's own
+cycle-level model, and the real primitives' internal latencies could move the
+relationship by a cycle. It says nothing about `DQSBUFM` read calibration,
+which stands as measured. The exact effort of the path above is not
+estimated here.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
@@ -8398,6 +8485,18 @@ project applies everywhere else.
 ## Known defects
 
 Open, unscheduled, and written down so they are not rediscovered.
+
+**OPEN - the data path of the DDR3 PHY is a mechanism-level model, not yet
+hardware-faithful (Phase 9, Stage 1).** Measured on the integrated design: DQ
+is output-enabled for one `sclk` cycle, one cycle before DQS is enabled and
+two before its first active toggle, so the eight beats of a BL8 write see no
+DQ enable; and CK (25 MHz, `ODDRX1F` on `sclk`) disagrees by 2x with a data
+path that moves four UI per `sclk`. Neither is visible to simulation as it
+stands, because the memory model samples the internal `wr_en` tap rather than
+DQ against DQS. Not a regression and not a claim that ever failed; a distance
+the earlier accounts did not state. Full measurement, what a faithful path
+needs, and the one decision that is the maintainer's, in the Phase 9 survey
+("Survey, no design change").
 
 **RESOLVED - the wide core's Linux boot did not reach userspace; root-caused
 and fixed.** See "Stage 1d was built anyway," Update 15, for the full
