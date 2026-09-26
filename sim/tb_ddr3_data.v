@@ -48,11 +48,26 @@ module tb_ddr3_data;
     wire [7:0] dq_bus;
     wire [7:0] fpga_rd_q3, fpga_rd_q2, fpga_rd_q1, fpga_rd_q0;
 
+    // The write side as rtl/soc/ddr3_ecp5_top.v wires it (Part 17): calibration's
+    // wr_en triggers the DQS write FSM, and DQ is enabled, carrying the held byte,
+    // for exactly the cycles DQS is toggling - not for the trigger cycle alone.
+    wire dqs_wr_o, dqs_wr_oe, dq_burst;
+    ddr3_dqs_write_ecp5 DQS_WR (
+        .sclk(sclk), .eclk(eclk), .dqsw(dqsw), .rst(rst),
+        .write_start(wr_en),
+        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe), .burst_active(dq_burst)
+    );
+    reg [7:0] dq_data_hold;
+    always @(posedge sclk or posedge rst) begin
+        if (rst)        dq_data_hold <= 8'b0;
+        else if (wr_en) dq_data_hold <= wr_d0;
+    end
+
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES (
         .sclk(sclk), .eclk(eclk), .rst(rst),
         .dqsr90(dqsr90), .dqsw270(dqsw270),
-        .wr_d3(wr_d0), .wr_d2(wr_d0), .wr_d1(wr_d0), .wr_d0(wr_d0),
-        .wr_en(wr_en),
+        .wr_d3(dq_data_hold), .wr_d2(dq_data_hold), .wr_d1(dq_data_hold), .wr_d0(dq_data_hold),
+        .wr_en(dq_burst),
         .rd_q3(fpga_rd_q3), .rd_q2(fpga_rd_q2), .rd_q1(fpga_rd_q1), .rd_q0(fpga_rd_q0),
         .dq_o(fpga_dq_o), .dq_oe(fpga_dq_oe), .dq_i(dq_bus)
     );
@@ -61,13 +76,18 @@ module tb_ddr3_data;
     wire [7:0] mem_dq_o;
     wire       mem_dq_oe, mem_dqs_o;
 
+    wire         dq_error;
+
+    wire [511:0] dq_error_msg;
+
     ddr3_dq_model MEM (
         .sclk(sclk), .rst(rst),
         .ck(1'b0),   // calibration issues no DRAM commands
         .cs_n(1'b1), .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(16'b0),   // calibration issues no DRAM commands
-        .wr_d0(wr_d0), .wr_en(wr_en),
+        .dq_pin(dq_bus), .dqs_pin(dqs_bus),
         .read_active(read_active),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
     // ---- real tristate bus arbitration, matching how the two real
@@ -80,16 +100,15 @@ module tb_ddr3_data;
                                 (mem_dq_oe    ? mem_dq_o[b]  : 1'bz);
         end
     endgenerate
-    assign dqs_bus = mem_dq_oe ? mem_dqs_o : 1'bz;
+    assign dqs_bus = dqs_wr_oe ? dqs_wr_o : (mem_dq_oe ? mem_dqs_o : 1'bz);
 
     wire bus_contention = (|fpga_dq_oe) && mem_dq_oe;
 
     // Latches the first real bus-contention violation seen at any point
-    // during the run - the FPGA's own write-drive window is a single
-    // real cycle (S_WRITE's own one-cycle wr_en pulse), long over by
-    // the time the final check below runs, so sampling `bus_contention`
-    // live at that one instant would miss a real transient violation
-    // earlier in the run. Declared here, above its first use, rather
+    // during the run - the FPGA's own write-drive window is two real
+    // cycles (the DQS burst), long over by the time the final check
+    // below runs, so sampling `bus_contention` live at that one instant
+    // would miss a real transient violation earlier in the run. Declared here, above its first use, rather
     // than after - `always @(posedge sclk)` below only reads it.
     reg contention_seen = 1'b0;
     always @(posedge sclk) if (bus_contention) contention_seen <= 1'b1;

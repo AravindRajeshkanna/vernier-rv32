@@ -44,7 +44,10 @@ module tb_ddr3_write_seq;
     // so a real change to either constant in the DUT is expected to
     // require updating this line too, not silently drift out of sync.
     localparam ACT_TO_WR_GAP_CYC = 3;          // TRCD_CYC(2)+1 - see that file's own header for why +1
-    localparam WR_TO_WRITE_START_GAP_CYC = 3;  // CWL_CYC exactly: CWL = 6 CK = 3 sclk (Part 16: CK is twice sclk)
+    // WSTART_CYC = CWL_CYC - 1 (Part 17): the trigger leads the DQS burst by two sclk
+    // and the command pins lag cmd_valid by one, so the burst starts CWL = 6 CK = 3 sclk
+    // after the WRITE reaches the pins. (3 before Part 17, 6 before Part 16.)
+    localparam WR_TO_WRITE_START_GAP_CYC = 2;
 
     // Part 14: PRECHARGE-all after every transaction. The exact gap is what
     // the DUT commits to (one sclk over the datasheet minimum, see

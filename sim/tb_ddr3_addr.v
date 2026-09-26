@@ -102,14 +102,19 @@ module tb_ddr3_addr;
     wire [7:0] mem_dq_o;
     wire       mem_dq_oe, mem_dqs_o;
 
+    wire         dq_error;
+
+    wire [511:0] dq_error_msg;
+
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
-        .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(DUT.read_active_final),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
     genvar b;
@@ -334,6 +339,7 @@ module tb_ddr3_addr;
         check_true("every read returned what was written to its own location, and nothing else", addr_fails == 0);
         check_true("the memory model never ran out of room", !MEM.overflowed);
         check_true("no real protocol error by the end of the test", !model_error);
+        check_true("no DQ/DQS write-burst timing error across every write", !dq_error);
         check_true("many refreshes were crossed, so integrity across them was exercised", refresh_cmds >= 5);
 
         $display("");

@@ -30,7 +30,7 @@ module ddr3_dq_serdes_ecp5 #(
     // cycle, D3 first in time, D0 last (matching IDDRX2DQA/ODDRX2DQA's
     // own real bit-time ordering) ----
     input  wire [DQ_WIDTH-1:0]     wr_d3, wr_d2, wr_d1, wr_d0,
-    input  wire                    wr_en,   // this design's own write-active signal, drives every lane's TSHX2DQA the same way
+    input  wire                    wr_en,   // the DQ enable window (Part 17: rtl/soc/ddr3_ecp5_top.v drives it from the DQS FSM's burst_active, so DQ is enabled exactly while DQS toggles), drives every lane's TSHX2DQA the same way
 
     // ---- read side: the same 4-bit-wide shape, captured ----
     output wire [DQ_WIDTH-1:0]     rd_q3, rd_q2, rd_q1, rd_q0,
