@@ -142,16 +142,30 @@
 // kept the previous write's data - stale data written to memory. Gating on
 // the sequencer's own busy closes it.
 //
-// Still not attempted, and one item sharpened. PRECHARGE: Micron's
-// Figure 40 shows PRECHARGE-all (A10 high) then tRP before every REFRESH;
-// this design never precharges, so a REFRESH issued after any write or
-// read lands with a bank still open - and, the same gap seen from the
-// other side, every transaction after the first issues ACT to a bank it
-// never closed. A real gap a simulation model that does not track bank
-// state cannot see. Also not attempted: bank-state tracking, the second DQ
-// byte lane, and real hardware bring-up - see docs/roadmap.md's own
-// Part 9/10/11/12/13 accounts for the full list of what this does not
-// establish.
+// ---- Part 14: every transaction closes its bank ----
+// Micron's datasheet: a row "remains open (or active) for accesses until a
+// PRECHARGE command is issued to that bank. A PRECHARGE command must be
+// issued before opening a different row in the same bank", its state
+// diagram (Figure 2) has ACT leaving only the Idle state, and REFRESH
+// needs every bank precharged (Figure 40: PRECHARGE-all, then tRP, then
+// REFRESH). Until Part 14 nothing here ever issued PRECHARGE: Part 9's own
+// write-then-read round trip opened a bank and then activated it again.
+// Nothing in simulation could see that until sim/ddr3_model.v grew per-bank
+// state (sim/tb_ddr3_model_banks.v proves each of its rules can fire).
+// ddr3_write_seq.v and ddr3_read_seq.v now each end by issuing
+// PRECHARGE-all after the data phase, at the datasheet minimum plus one
+// cycle, and hold `busy` through it. The result is an invariant this file
+// relies on: whenever both sequencers are idle, every bank is closed - so
+// a REFRESH granted while they are idle is legal by construction, with no
+// change to the refresh path. tRP is under one cycle at this clock and is
+// covered by the FSMs themselves (measured 3 cycles PRECHARGE-to-ACT for
+// the fastest possible caller); it has no wait state of its own.
+//
+// Still not attempted: bank-state tracking in the controller (this design
+// still opens and closes a bank around every access rather than
+// exploiting open rows), the second DQ byte lane, and real hardware
+// bring-up - see docs/roadmap.md's own Part 9/10/11/12/13/14 accounts for
+// the full list of what this does not establish.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
     input  wire        rst,

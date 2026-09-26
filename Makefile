@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2732,6 +2732,26 @@ sim_ddr3_wr_excl: sim/sim_ddr3_wr_excl.out
 	@grep -q "DDR3 ONE-TRANSACTION TEST PASSED" sim/ddr3_wr_excl.log || \
 	    { echo "sim_ddr3_wr_excl FAILED"; exit 1; }
 
+# ---- DDR3 model bank-state rules, self-test (Phase 9 Stage 1, Part 14,
+# docs/roadmap.md) ----
+#
+# sim/ddr3_model.v tracks per-bank state now (ACTIVATE to an open bank,
+# READ/WRITE to a closed one, PRECHARGE before tRTP/write recovery,
+# REFRESH with a bank open). A checker whose rules cannot be shown to fire
+# is not a checker, and a design that follows the rules never triggers
+# them - so each gets a directed stream on its own model instance, plus
+# legal controls at the exact minimum spacings so a too-strict rule fails
+# here instead.
+sim/sim_ddr3_model_banks.out: sim/tb_ddr3_model_banks.v rtl/soc/ddr3_init_seq.v \
+    rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_model_banks.v rtl/soc/ddr3_init_seq.v \
+	    rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+
+sim_ddr3_model_banks: sim/sim_ddr3_model_banks.out
+	@cd sim && $(VVP) sim_ddr3_model_banks.out $(VVP_DUMP) 2>&1 | tee ddr3_model_banks.log
+	@grep -q "DDR3 MODEL BANK RULES TEST PASSED" sim/ddr3_model_banks.log || \
+	    { echo "sim_ddr3_model_banks FAILED"; exit 1; }
+
 # ---- DDR3 DQS write-drive (Phase 9 Stage 1, Part 4, docs/roadmap.md) ----
 #
 # rtl/soc/ddr3_dqs_write_ecp5.v's own real preamble/active/postamble
@@ -2828,7 +2848,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \

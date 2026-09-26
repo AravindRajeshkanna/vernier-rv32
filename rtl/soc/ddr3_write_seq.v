@@ -13,15 +13,34 @@
 // One write request at a time (`busy` gates a second `write_req` until
 // the current one completes); no bank-state tracking (a real
 // controller would remember which banks are already open and skip a
-// redundant ACT - deliberately not attempted here), no PRECHARGE
-// (this design's own MR1 already leaves auto-precharge unused
-// elsewhere, and this sequencer forces A10=0 on its own WRITE command
-// too - closing a bank down again is later, separate work), no read
+// redundant ACT - deliberately not attempted here), no read
 // side (a symmetric `ddr3_read_seq.v` proving ACT+RD with tRCD/CL
 // timing is deliberately left for a later part), and this module is
 // not wired into `rtl/soc/ddr3_ecp5_top.v` yet - proven standalone
 // first, the same "narrow proof first" discipline every part in this
 // stage has used before its own later integration.
+//
+// ---- Part 14: every transaction ends by closing the bank ----
+// Micron's datasheet: a row "remains open (or active) for accesses until a
+// PRECHARGE command is issued to that bank. A PRECHARGE command must be
+// issued before opening a different row in the same bank", and REFRESH
+// needs every bank precharged. Until Part 14 this sequencer never issued
+// PRECHARGE, so the second transaction to a bank was an ACT to an open
+// bank (Part 9's own write-then-read round trip did exactly this - found
+// by giving sim/ddr3_model.v per-bank state). After the write data has
+// gone out and write recovery has elapsed it now issues PRECHARGE-all
+// (A10 high), so whenever this sequencer is idle every bank is closed,
+// and a REFRESH granted while it is idle is legal by construction.
+// The earliest legal PRECHARGE after a WRITE is WR + CWL + 4 + tWR: write
+// recovery starts four clocks after WL for BL8 (note 34), and tWR is "the
+// greater of 4CK or 15ns" in DLL-off mode (note 33), which this design
+// runs in - 14 cycles, counted the way CWL already is (a CK count in sclk
+// cycles). WREC_CYC below puts PRECHARGE one cycle later than that, the
+// same one-cycle margin TRCD_CYC carries. tRP (13.1-15 ns) is under one
+// 40 ns cycle and is covered by the FSM itself rather than by a wait state:
+// a request cannot be accepted before `busy` drops, and its ACT follows
+// after that - measured in sim/tb_ddr3_write_seq.v at 3 cycles (120 ns)
+// from PRECHARGE to the next ACT for the fastest possible caller.
 //
 // ---- Timing values ----
 // tRCD (RAS-to-CAS delay) is speed-grade dependent; commonly ~13.5-15ns
@@ -72,16 +91,23 @@ module ddr3_write_seq (
     localparam [2:0] CMD_NOP = 3'b111;
     localparam [2:0] CMD_ACT = 3'b011;   // RAS_n=0, CAS_n=1, WE_n=1
     localparam [2:0] CMD_WR  = 3'b100;   // RAS_n=1, CAS_n=0, WE_n=0
+    localparam [2:0] CMD_PRE = 3'b010;   // RAS_n=0, CAS_n=1, WE_n=0 (A10 high = all banks)
 
     localparam TRCD_CYC = 2;   // see header
     localparam CWL_CYC  = 6;   // see header - matches ddr3_init_seq.v's own MR2
+    // Cycles from the write_start pulse to PRECHARGE being issued. PRE is
+    // visible on the pins at WR + 7 + WREC_CYC: 15 with WREC_CYC = 8, one
+    // cycle over the 14-cycle datasheet minimum (see header).
+    localparam WREC_CYC = 8;
 
     localparam [2:0]
         S_IDLE      = 3'd0,
         S_ACT       = 3'd1,
         S_TRCD_WAIT = 3'd2,
         S_WR        = 3'd3,
-        S_CWL_WAIT  = 3'd4;
+        S_CWL_WAIT  = 3'd4,
+        S_WREC_WAIT = 3'd5,
+        S_PRE       = 3'd6;
 
     reg [2:0]  state;
     reg [3:0]  wait_cnt;
@@ -139,10 +165,22 @@ module ddr3_write_seq (
                 S_CWL_WAIT: begin
                     if (wait_cnt == 0) begin
                         write_start <= 1'b1;
-                        state       <= S_IDLE;
+                        wait_cnt    <= WREC_CYC - 1;
+                        state       <= S_WREC_WAIT;
                     end else begin
                         wait_cnt <= wait_cnt - 1;
                     end
+                end
+                S_WREC_WAIT: begin
+                    if (wait_cnt == 0) state <= S_PRE;
+                    else               wait_cnt <= wait_cnt - 1;
+                end
+                S_PRE: begin
+                    cmd_valid         <= 1'b1;
+                    cmd_cs_ras_cas_we <= CMD_PRE;
+                    cmd_ba            <= bank_r;
+                    cmd_addr          <= 16'h0400;   // A10 high: all banks
+                    state             <= S_IDLE;
                 end
                 default: state <= S_IDLE;
             endcase
