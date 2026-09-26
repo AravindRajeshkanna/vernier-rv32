@@ -100,7 +100,7 @@ module tb_ddr3_addr;
     );
 
     wire [7:0] mem_dq_o;
-    wire       mem_dq_oe, mem_dqs_o;
+    wire       mem_dq_oe, mem_dqs_oe, mem_dqs_o;
 
     wire         dq_error;
 
@@ -113,7 +113,7 @@ module tb_ddr3_addr;
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(DUT.read_active_final),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
@@ -123,7 +123,7 @@ module tb_ddr3_addr;
             assign ddr3_dq[b] = mem_dq_oe ? mem_dq_o[b] : 1'bz;
         end
     endgenerate
-    assign ddr3_dqs = mem_dq_oe ? mem_dqs_o : 1'bz;
+    assign ddr3_dqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
 
     // ---- what actually appeared on the real command pins, sampled on CK's
     // rising edge where the DRAM samples them (Part 16: commands sit in the

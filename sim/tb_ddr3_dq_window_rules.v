@@ -22,7 +22,8 @@
 //   7  no preamble (DQS high-Z the cycle before the burst)
 //   8  no postamble (DQS high-Z the cycle after)
 //   9  DQS driven again after the burst
-//  10  a DQS burst with no WRITE behind it (a READ, then the burst)
+//  10  a DQS burst with no WRITE behind it (a READ, then - eight cycles later, once
+//      the model's own read drive is over - the burst)
 `timescale 1ns/1ps
 module tb_ddr3_dq_window_rules;
     localparam CLK_PERIOD = 40;
@@ -56,14 +57,14 @@ module tb_ddr3_dq_window_rules;
             wire        e;
             wire [511:0] m;
             wire [7:0]  mq_o;
-            wire        mq_oe, mqs_o;
+            wire        mq_oe, mqs_oe, mqs_o;
             ddr3_dq_model MODEL (
                 .sclk(clk), .rst(rst), .ck(ck),
                 .cs_n(cs_n[g]), .ras_n(ras_n[g]), .cas_n(cas_n[g]), .we_n(we_n[g]),
                 .ba(ba[3*g +: 3]), .a(a[16*g +: 16]),
                 .dq_pin(dq[8*g +: 8]), .dqs_pin(dqs[g]),
                 .read_active(1'b0),
-                .mem_dq_o(mq_o), .mem_dq_oe(mq_oe), .mem_dqs_o(mqs_o),
+                .mem_dq_o(mq_o), .mem_dq_oe(mq_oe), .mem_dqs_oe(mqs_oe), .mem_dqs_o(mqs_o),
                 .dq_error(e), .dq_error_msg(m)
             );
             assign errs[g] = e;
@@ -107,6 +108,7 @@ module tb_ddr3_dq_window_rules;
                 7:  if (k == 2) p[1:0] = 2'd2;
                 8:  if (k == 5) p[1:0] = 2'd2;
                 9:  if (k == 6) p[1:0] = 2'd0;
+                10: p = legal(k - 8, bv);
                 default: ;
             endcase
             pattern = p;
@@ -149,7 +151,7 @@ module tb_ddr3_dq_window_rules;
 
         // t = cycle offset from the ACTIVATE; the WRITE goes out at t = 3, so W = 3
         w = 3;
-        for (t = 0; t <= 14; t = t + 1) begin
+        for (t = 0; t <= 20; t = t + 1) begin
             @(posedge clk);
             // ---- command slot 0 of this cycle ----
             if (t == 0) begin

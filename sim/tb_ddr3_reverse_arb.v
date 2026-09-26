@@ -106,7 +106,7 @@ module tb_ddr3_reverse_arb;
     );
 
     wire [7:0] mem_dq_o;
-    wire       mem_dq_oe, mem_dqs_o;
+    wire       mem_dq_oe, mem_dqs_oe, mem_dqs_o;
 
     wire         dq_error;
 
@@ -119,7 +119,7 @@ module tb_ddr3_reverse_arb;
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(DUT.read_active_final),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
@@ -129,7 +129,7 @@ module tb_ddr3_reverse_arb;
             assign ddr3_dq[b] = mem_dq_oe ? mem_dq_o[b] : 1'bz;
         end
     endgenerate
-    assign ddr3_dqs = mem_dq_oe ? mem_dqs_o : 1'bz;
+    assign ddr3_dqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
 
     // ---- monitors, all sampled on the DUT's own sclk ----
     // "Accepted" is the sequencer going busy; "ignored" is a request

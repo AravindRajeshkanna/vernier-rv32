@@ -7,7 +7,7 @@
 // same real command pins the protocol checker (sim/ddr3_model.v) watches, to
 // learn WHERE data goes: an ACTIVATE records the open row of its bank, and a
 // WRITE or READ records (bank, that bank's open row, column). The data phase
-// - the write burst a CWL later, `read_active` a CL later - then lands in, or comes
+// - the write burst a CWL later, the read burst a CL later - then lands in, or comes
 // from, that location. Pairing a data phase with the most recent WR/RD
 // command is sound because the controller keeps at most one transaction in
 // flight (Part 13); this file relies on it.
@@ -61,10 +61,42 @@
 // data mask covered them. That is a stand-in for real BL8 semantics (an
 // unmasked burst writes eight columns) and lasts until the data-mask slice.
 //
-// DQS is modeled as a genuinely source-synchronous signal - it only
-// toggles while `read_active` is high, staying idle otherwise - the
-// real behavior `rtl/soc/ddr3_dqs_ecp5.v`'s own `READ0`/`READ1` gating
-// depends on, not a free-running clock.
+// ---- Part 18: reads are driven at the DRAM's own read latency ----
+// Through Part 17 the read side was self-referential: the model drove DQ and DQS
+// whenever the DUT said `read_active`, so nothing about the read path depended on
+// when a real DRAM would respond - and a wrong CL passed every integrated test.
+// For a READ sampled in sclk cycle R the model now schedules the burst itself,
+// from the command. In DLL-off mode Micron gives read data "AL + CL - 1 cycles
+// after the READ command" (5 CK), with tDQSCK of 1-10 ns after that, so the first
+// DQS edge falls 110-120 ns into cycle R: at sclk resolution
+//     R+2  preamble        DQS driven low, DQ still high-Z
+//     R+3  burst, half 1   DQS high, DQ = beat 0's byte (the addressed column)
+//     R+4  burst, half 2   DQS high, DQ = beat 4's byte
+//     R+5  postamble       DQS driven low
+// Beat 4 is the byte at column {col[9:3], col[2:0] ^ 3'b100}: BL8 in sequential
+// order from column c returns columns c, c+1 ... wrapping within the aligned 8, so
+// beat 4 is four columns on (wrapping), and the two halves DIFFER unless those two
+// columns hold the same byte. That is the point: with both halves equal a capture
+// one cycle late would still return the right byte. A neighbour column never
+// written returns 00 - unlike the addressed column, which reads x when unwritten
+// so that a stale read cannot pass as a hit - because this is a different, defined
+// cell content rather than an undriven bus.
+// Quantised to whole sclk cycles, the tDQSCK spread (up to 10 ns) is invisible;
+// sub-cycle capture alignment is what the READCLKSEL calibration is for.
+// Calibration reads issue no READ command, so with no command yet seen the model
+// still responds to `read_active`, as before.
+//
+// What this does and does not catch, measured (Part 18): a READ window at the wrong
+// cycle now returns the wrong byte, or an unknown one, so a wrong CL fails the
+// integrated tests through the data. The DQSBUFM stand-in in
+// rtl/soc/ddr3_dqs_ecp5.v still ignores the DQS pin - its DATAVALID and BURSTDET
+// follow the DUT's own `read_active` - and making DATAVALID require DQS high was
+// tried and changed no test outcome, so it was left out.
+//
+// DQS is modeled as a genuinely source-synchronous signal: it is driven only around
+// a burst (the preamble, the burst, the postamble) and high-Z otherwise, the
+// behavior `rtl/soc/ddr3_dqs_ecp5.v`'s own `READ0`/`READ1` gating depends on, not a
+// free-running clock.
 module ddr3_dq_model #(
     parameter DEPTH = 1024
 )(
@@ -89,6 +121,7 @@ module ddr3_dq_model #(
     input  wire       read_active,
     output reg  [7:0] mem_dq_o,
     output reg        mem_dq_oe,
+    output reg        mem_dqs_oe,    // DQS is driven low in the preamble while DQ is still high-Z
     output reg        mem_dqs_o,
 
     output reg          dq_error,      // sticky: a write burst broke the DRAM's own timing
@@ -127,6 +160,7 @@ module ddr3_dq_model #(
     // each cycle ends.
     integer    cyc;
     reg [2:0]  wexp [0:7];   // 0 nothing expected, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
+    reg [2:0]  rdexp [0:7];  // the same, for a READ: 0 nothing, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
     reg        cmd_seen;     // a WRITE or READ has been seen: calibration is over
     reg        cal_active_prev;
 
@@ -159,6 +193,15 @@ module ddr3_dq_model #(
                 j = find(cur_bank, cur_row, cur_col);
                 current_value = (j < 0) ? 8'hxx : k_data[j];
             end
+        end
+    endfunction
+
+    // beat 4 of a BL8 read in sequential order: four columns on, wrapping in the aligned 8
+    function [7:0] beat4_value(input dummy);
+        integer j;
+        begin
+            j = find(cur_bank, cur_row, {cur_col[9:3], cur_col[2:0] ^ 3'b100});
+            beat4_value = (j < 0) ? 8'h00 : k_data[j];
         end
     endfunction
 
@@ -215,38 +258,50 @@ module ddr3_dq_model #(
         cyc             = 0;
         cmd_seen        = 1'b0;
         cal_active_prev = 1'b0;
-        for (i = 0; i < 8; i = i + 1) wexp[i] = 3'd0;
+        for (i = 0; i < 8; i = i + 1) begin wexp[i] = 3'd0; rdexp[i] = 3'd0; end
     end
 
     always @(posedge sclk or posedge rst) begin
         if (rst) begin
             mem_dq_o   <= 8'b0;
             mem_dq_oe  <= 1'b0;
+            mem_dqs_oe <= 1'b0;
             mem_dqs_o  <= 1'b0;
             n_used     = 0;
             calib_data = 8'b0;
             cyc        = 0;
             cal_active_prev = 1'b0;
-            for (i = 0; i < 8; i = i + 1) wexp[i] = 3'd0;
+            for (i = 0; i < 8; i = i + 1) begin wexp[i] = 3'd0; rdexp[i] = 3'd0; end
             for (i = 0; i < DEPTH; i = i + 1) k_used[i] = 1'b0;
         end else begin
-            // Drive first: the registered value is the one held BEFORE this
-            // edge's write lands, the same one-cycle lag the single-cell
-            // model had.
-            mem_dq_o  <= current_value(1'b0);
-            mem_dq_oe <= read_active;
-            // Real DQS behavior: idle when no read is happening, a
-            // real toggle only while one is - `mem_dqs_o` here is a
-            // simplified, sclk-rate toggle (matching
-            // rtl/soc/ddr3_dq_serdes_ecp5.v's own honest sclk-rate,
-            // not eclk-rate, simulation approximation), not a claim of
-            // real DQS bit-timing.
-            mem_dqs_o <= read_active ? ~mem_dqs_o : 1'b0;
+            // ---- drive for the NEXT cycle ----
+            // A READ scheduled this cycle's successor (see the header); otherwise,
+            // only before any command has been seen (calibration, which issues no
+            // READ), respond to `read_active` as the single-cell model did.
+            case (rdexp[(cyc + 1) % 8])
+                3'd1: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b0; mem_dq_oe <= 1'b0; end
+                3'd2: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b1; mem_dq_oe <= 1'b1; mem_dq_o <= current_value(1'b0); end
+                3'd3: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b1; mem_dq_oe <= 1'b1; mem_dq_o <= beat4_value(1'b0); end
+                3'd4: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b0; mem_dq_oe <= 1'b0; end
+                default: begin
+                    if (!cmd_seen) begin
+                        mem_dq_o   <= current_value(1'b0);
+                        mem_dq_oe  <= read_active;
+                        mem_dqs_oe <= read_active;
+                        mem_dqs_o  <= read_active;
+                    end else begin
+                        mem_dq_oe  <= 1'b0;
+                        mem_dqs_oe <= 1'b0;
+                        mem_dqs_o  <= 1'b0;
+                    end
+                end
+            endcase
+            rdexp[(cyc + 1) % 8] = 3'd0;
 
             // ---- the write burst, judged from the pins for the cycle that just
             // ended ----
             // The model's own read drive is on the same bus; skip while it drives.
-            if (!mem_dq_oe) begin
+            if (!mem_dq_oe && !mem_dqs_oe) begin
                 case (wexp[cyc % 8])
                     3'd1: if (dqs_pin !== 1'b0)
                               dq_fail("write preamble: DQS not driven low the cycle before the burst");
@@ -295,6 +350,14 @@ module ddr3_dq_model #(
                 wexp[(cyc + 3) % 8] = 3'd2;
                 wexp[(cyc + 4) % 8] = 3'd3;
                 wexp[(cyc + 5) % 8] = 3'd4;
+            end
+            if (is_rd) begin
+                // read data starts CL - 1 = 5 CK after the READ (DLL-off), so at sclk
+                // resolution the preamble is two cycles on and the burst the two after
+                rdexp[(cyc + 2) % 8] = 3'd1;
+                rdexp[(cyc + 3) % 8] = 3'd2;
+                rdexp[(cyc + 4) % 8] = 3'd3;
+                rdexp[(cyc + 5) % 8] = 3'd4;
             end
             if (is_wr || is_rd) begin
                 cmd_seen  <= 1'b1;
