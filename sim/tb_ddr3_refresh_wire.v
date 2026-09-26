@@ -85,6 +85,8 @@ module tb_ddr3_refresh_wire;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
         .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
         .read_active(DUT.read_active_final),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)

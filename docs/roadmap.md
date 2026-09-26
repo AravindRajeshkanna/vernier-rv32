@@ -3245,10 +3245,12 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over fourteen gated slices (init and calibration, the DQ/DQS data path,
+over fifteen gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
-one transaction ever in flight, and every transaction closing its bank) - but
+one transaction ever in flight, every transaction closing its bank, and a
+memory model that decodes bank, row and column so the address path is
+finally checked) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -4440,6 +4442,99 @@ anywhere in this stage). `sim/ddr3_dq_model.v` is still a single stored
 location, so no test can see a write landing in the wrong row. Two
 independent callers presenting in the same cycle still get one silently
 ignored. The second DQ byte lane and real hardware bring-up remain open.
+
+**Update, Part 15: the memory model now decodes bank, row and column the
+way the part does, so a write landing in the wrong cell is finally
+visible - and the measured result is that the address path is correct,
+and that until now nothing could have told us if it were not.** Every
+account since Part 9 has carried the same caveat: `sim/ddr3_dq_model.v` is
+a single stored byte, so "no test can see a write landing in the wrong
+row". That was a coverage gap a green suite was silent about, and it is
+closed here. No bug in the address path turned up; what changed is that
+one would now be seen.
+
+**What the part decodes, primary-source.** Micron's Table 2 for the 256 Meg
+x 16 device (32 Meg x 16 x 8 banks - the chip Part 10 identified as
+ECPIX-5's): row address 32K, `A[14:0]`; bank address 8, `BA[2:0]`; column
+address 1K, `A[9:0]`; 2KB page. The controller's interface is wider than
+that - `write_row`, `read_row`, `write_col` and `read_col` are 16 bits - so
+the model decodes what the part would, not what the ports carry: row bit 15
+and column bits 10 and up are not address bits (in a column command `A10`
+is auto-precharge, `A12` is BC#, and `A11` and `A13`-`A15` carry no column
+address on x16), and two requests differing only there hit the same cell,
+exactly as on the real part. That is
+now an asserted behavior of the test, not folklore. It also means
+`ddr3_write_seq.v` and `ddr3_read_seq.v` pass `col[15:11]` through to the
+pins where the part ignores them - harmless, and left alone.
+
+**The model.** It watches the same real command pins the protocol checker
+does: an ACTIVATE records the open row of its bank, and a WRITE or READ
+records the bank, that bank's open row, and the column. The data phase - the
+write data a CWL later, the read window a CL later - then lands in, or comes
+from, that location. Pairing a data phase with the most recent WR or RD
+command is sound only because the controller keeps at most one transaction
+in flight (Part 13), and the file says it relies on that. Storage is a
+small content-addressable table, since Icarus has no usable associative
+arrays. A location never written reads back as `x`, on purpose: a read that
+returned stale data from somewhere else would otherwise look like a hit.
+Data written before any command has been seen goes to one separate cell,
+which is what the calibration sweep's direct write and read injection needs,
+since it issues no DRAM commands.
+
+**The test, and why it has three layers.** `sim/tb_ddr3_addr.v` writes
+distinct data to 47 locations, reads them all back, overwrites every fifth
+and reads again, reads three never-written locations (each differing from a
+written one in one field), and checks the aliasing case above. The set is
+built to expose single-bit faults: every bank, every single-bit row (15) and
+column (10) with the rest fixed, both all-ones extremes, and one location
+per low/high combination of the three fields. It ran 157 transactions and
+crossed 18 REFRESH commands, so data integrity across refreshes is checked
+too. Three independent checks, because each misses what the others catch -
+and this was measured, not assumed. *Read-back through the DUT* catches
+aliasing and any write-versus-read disagreement. *Asking the model directly*
+where each byte landed, by the address the test requested, catches a
+permutation. *The real pins* - each ACT's bank and row and each WR or RD's
+bank and column must equal the request, decoded as above - catches a dropped
+or shifted bit directly. The case that separates them is a bank-bit swap
+applied identically to the write and read paths: uncaught by read-back
+(zero failures, since both paths agree), caught by the pins check (120) and
+by the direct check (17).
+
+**Mutation-tested eleven ways, all caught.** Seven address-path bugs in the
+sequencers - row bit 14 dropped on writes, column bit 9 dropped on reads,
+the write bank masked on the WR command only, row bit 0 dropped, the read
+path's bank low bit inverted, bank bit 2 dropped on both paths (aliasing banks 0-3
+with 4-7), and the consistent bank-bit swap - and four in the memory model:
+the key ignoring the bank, the key using 14 row bits, the row taken from the
+wrong bank, and unwritten locations reading zero instead of `x`.
+
+**The gap, measured rather than argued.** The same address-path bugs were
+applied to a copy of `main` with the old single-byte model and its old
+tests. Three of the four tried (row bit 14 dropped on writes, column bit 9
+dropped on reads, bank bit 2 dropped on both paths) passed all five DDR3
+integration tests: green and wrong. The fourth, the write bank masked on the
+WR command only, was caught by `sim_ddr3_cmd_seq` - and only because Part 14
+gave the protocol checker bank state, which flags a WRITE to a bank that is
+not open. That last one is the honest footnote: bank state closed one slice
+of this class two parts ago; this closes the rest. `make verify` passes with
+`sim_ddr3_addr` among the targets. `make verify_ooo` was not run: no file under
+`rtl/` changed, the DDR3 targets do not take `CORE`, and CI runs the wide-core
+variants regardless. The gate was restarted once mid-round, after a stale
+comment in `sim/tb_ddr3_reverse_arb.v` (it still called the memory model a
+single stored location) was corrected; the result covers the final file.
+
+**What this does not establish.** The data path is still one byte lane on a
+part that is x16, so nothing here says anything about the second lane, the
+data-mask pins, or which byte of a 16-bit word a write lands in; that is the
+next real piece of hardware-facing work. The memory returns `x` for a
+location never written, which is a modelling choice - a real part returns
+whatever its cells hold. Two independent callers presenting in the same
+cycle still get one silently ignored. Stage 1's own "Done when" bar also
+still names Verilator (every test in this stage has only ever run under
+Icarus) and "formal or property checks where the design admits them" (not
+attempted anywhere in this stage). Open-page operation, real hardware
+bring-up and the four nanosecond parameters Part 14 chose not to model
+remain open, unchanged.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into

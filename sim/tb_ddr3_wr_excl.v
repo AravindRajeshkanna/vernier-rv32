@@ -101,6 +101,8 @@ module tb_ddr3_wr_excl;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
         .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
         .read_active(DUT.read_active_final),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)
@@ -217,7 +219,7 @@ module tb_ddr3_wr_excl;
 
             act0 = act_pins; wr0 = wr_pins; rd0 = rd_pins; pre0 = pre_pins;
             wacc0 = w_acc; racc0 = r_acc; wdone0 = w_done; rdone0 = r_done; valid0 = r_valid;
-            stored0 = MEM.stored;
+            stored0 = MEM.peek(write_bank, write_row, write_col);
 
             // first request, sampled by the DUT on the next edge (T)
             if (first_w) begin write_data <= a_data; write_req <= 1'b1; end
@@ -286,7 +288,7 @@ module tb_ddr3_wr_excl;
             exp_stored = stored0;
             if (first_w) exp_stored = a_data;
             if (second_accepted && second_w) exp_stored = b_data;
-            if (MEM.stored !== exp_stored)
+            if (MEM.peek(write_bank, write_row, write_col) !== exp_stored)
                 round_fail(kname, polite, d, "wrong (or stale) data reached memory");
 
             for (k = 0; k < (r_valid - valid0); k = k + 1) begin
