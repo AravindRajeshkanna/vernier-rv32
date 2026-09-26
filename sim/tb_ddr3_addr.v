@@ -213,7 +213,11 @@ module tb_ddr3_addr;
     endtask
 
     // One polite transaction: wait for idle, present, wait for completion,
-    // then check the address that reached the real pins.
+    // then check the address that reached the real pins. The request is applied with
+    // `<= #1`, 1 ns after the clock edge it follows: Verilator 5.020 (Ubuntu 24.04's
+    // package) lets a testbench's non-blocking assignment reach the DUT at that same
+    // edge, which moves the request one cycle earlier, into a refresh that had closed the
+    // gate. See Part 19 in docs/roadmap.md.
     integer pin_fails = 0;
     task op(input is_wr, input integer idx, input [7:0] wdata, input [255:0] phase);
         integer act0, col0, r0, guard;
@@ -222,14 +226,14 @@ module tb_ddr3_addr;
             guard = 0;
             while ((is_wr ? write_busy : read_busy) && guard < 300) begin @(posedge clk); guard = guard + 1; end
             if (is_wr) begin
-                write_bank <= L_bank[idx]; write_row <= L_row[idx]; write_col <= L_col[idx];
-                write_data <= wdata; write_req <= 1'b1;
+                write_bank <= #1 L_bank[idx]; write_row <= #1 L_row[idx]; write_col <= #1 L_col[idx];
+                write_data <= #1 wdata; write_req <= #1 1'b1;
             end else begin
-                read_bank <= L_bank[idx]; read_row <= L_row[idx]; read_col <= L_col[idx];
-                read_req <= 1'b1;
+                read_bank <= #1 L_bank[idx]; read_row <= #1 L_row[idx]; read_col <= #1 L_col[idx];
+                read_req <= #1 1'b1;
             end
             @(posedge clk);
-            write_req <= 1'b0; read_req <= 1'b0;
+            write_req <= #1 1'b0; read_req <= #1 1'b0;
             @(posedge clk);
             guard = 0;
             while ((is_wr ? write_busy : read_busy) && guard < 300) begin @(posedge clk); guard = guard + 1; end

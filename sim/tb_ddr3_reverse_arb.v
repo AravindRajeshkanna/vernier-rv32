@@ -239,6 +239,11 @@ module tb_ddr3_reverse_arb;
     integer lo_ignored_k_w = 10_000, hi_ignored_k_w = -1;
     integer lo_ignored_k_r = 10_000, hi_ignored_k_r = -1;
 
+    // Stimulus is applied with `<= #1`, 1 ns after the clock edge it follows. A
+    // non-blocking assignment made at an edge should reach clocked logic only after
+    // that edge, but Verilator 5.020 (Ubuntu 24.04's package) lets it reach the DUT at
+    // the same edge, which moves a request one cycle earlier and changes what a sweep
+    // over request offsets measures. See Part 19 in docs/roadmap.md.
     task write_round(input integer k, input polite, input [7:0] data);
         integer acc0, ign0, done0, bnd0;
         reg [7:0] stored0;
@@ -247,15 +252,15 @@ module tb_ddr3_reverse_arb;
             wait_fall;
             acc0 = w_accepted; ign0 = w_ignored; done0 = w_done; bnd0 = w_boundary;
             stored0 = MEM.peek(write_bank, write_row, write_col);
-            write_data <= data;
+            write_data <= #1 data;
             repeat (k - 1) @(posedge clk);
             if (polite) begin
                 if (write_busy && !DUT.wseq_busy) polite_hold_seen = 1'b1;
                 while (write_busy) @(posedge clk);
             end
-            write_req <= 1'b1;
+            write_req <= #1 1'b1;
             @(posedge clk);
-            write_req <= 1'b0;
+            write_req <= #1 1'b0;
             repeat (40) @(posedge clk);
 
             accepted = (w_accepted - acc0) == 1;
@@ -293,9 +298,9 @@ module tb_ddr3_reverse_arb;
                 if (read_busy && !DUT.rseq_busy) polite_hold_seen = 1'b1;
                 while (read_busy) @(posedge clk);
             end
-            read_req <= 1'b1;
+            read_req <= #1 1'b1;
             @(posedge clk);
-            read_req <= 1'b0;
+            read_req <= #1 1'b0;
             repeat (40) @(posedge clk);
 
             accepted = (r_accepted - acc0) == 1;

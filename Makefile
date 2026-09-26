@@ -990,8 +990,12 @@ lint-rtl-soc:
 # -Wno-UNUSEDSIGNAL as in the two targets above: the ports and taps the PHY
 # carries for its hardware branch are unread in simulation, and the design's own
 # unused-signal convention (an `_unused_ok` reduction) already accounts for them.
+#
+# --timing because the PLL model has a delay-based clock and the DQS block an event
+# control, and Verilator 5.020 (Ubuntu 24.04's package, so CI's) refuses to lint a file
+# with either unless told how to treat them; 5.050 does not ask.
 lint-rtl-ddr3:
-	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module ddr3_ecp5_top \
+	$(VERILATOR) --lint-only --timing -Wall -Wno-UNUSEDSIGNAL --top-module ddr3_ecp5_top \
 	    $(DDR3_SYNTH_SRCS)
 
 lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3
