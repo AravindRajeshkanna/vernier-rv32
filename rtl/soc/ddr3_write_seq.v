@@ -74,7 +74,9 @@
 // a correctness bug (3 cycles of real margin only exceeds a real
 // tRCD requirement further), but a naming precision this header
 // corrects rather than leaves standing uncorrected. WR-to-write_start
-// measured exactly 3 cycles (Part 16; 6 before it), matching `CWL_CYC`.
+// measured exactly 2 cycles (Part 17; 3 before it, 6 before Part 16), matching
+// `WSTART_CYC` = `CWL_CYC` - 1: the trigger leads the burst by two sclk, and the
+// command pins lag `cmd_valid` by one.
 module ddr3_write_seq (
     input  wire        clk,
     input  wire        rst,
@@ -105,10 +107,24 @@ module ddr3_write_seq (
 
     localparam TRCD_CYC = 2;   // see header
     localparam CWL_CYC  = 3;   // CWL = 6 CK (ddr3_init_seq.v's own MR2) = 3 sclk; see header
+    // write_start triggers rtl/soc/ddr3_dqs_write_ecp5.v, whose first ACTIVE
+    // cycle (the first DQS toggle, the first data beat) comes two cycles after
+    // the trigger (one for the preamble, one for the FSM's own state register).
+    // The WRITE itself reaches the pins one cycle after this module's cmd_valid
+    // (rtl/soc/ddr3_phy_ecp5.v registers the command once more), and the burst
+    // must start CWL after it on the pins. So the trigger goes out CWL - 1 sclk
+    // after cmd_valid. Before Part 17 it went out at CWL, so the burst came two
+    // sclk (four CK) late - and DQ, enabled only for the trigger cycle, never
+    // overlapped it at all. (A first attempt at this used CWL - 2, forgetting the
+    // PHY's own register, and put the burst one sclk early; the pin-level checker
+    // in sim/ddr3_dq_model.v caught it at once.)
+    localparam WSTART_CYC = CWL_CYC - 1;
     // Cycles from the write_start pulse to PRECHARGE being issued. PRE is
-    // visible on the pins at WR + CWL_CYC + 1 + WREC_CYC: 8 sclk (16 CK) with
-    // WREC_CYC = 4, one sclk over the 7-sclk (14 CK) datasheet minimum.
-    localparam WREC_CYC = 4;
+    // visible on the pins at WR + WSTART_CYC + 1 + WREC_CYC: 8 sclk (16 CK) with
+    // WREC_CYC = 5, one sclk over the 7-sclk (14 CK) datasheet minimum. (The
+    // trigger moved one sclk earlier in Part 17, so this count grew by one to
+    // keep the PRECHARGE where the datasheet minimum put it.)
+    localparam WREC_CYC = 5;
 
     localparam [2:0]
         S_IDLE      = 3'd0,
@@ -169,7 +185,7 @@ module ddr3_write_seq (
                     cmd_cs_ras_cas_we <= CMD_WR;
                     cmd_ba            <= bank_r;
                     cmd_addr          <= {col_r[15:11], 1'b0, col_r[9:0]};
-                    wait_cnt          <= CWL_CYC - 1;
+                    wait_cnt          <= WSTART_CYC - 1;
                     state             <= S_CWL_WAIT;
                 end
                 S_CWL_WAIT: begin

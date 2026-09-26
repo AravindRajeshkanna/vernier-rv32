@@ -41,7 +41,12 @@ module ddr3_dqs_write_ecp5 (
     input  wire        write_start,  // one real sclk-cycle pulse - starts one BL8 write burst
 
     output wire        dqs_o,
-    output wire        dqs_oe
+    output wire        dqs_oe,
+
+    // High exactly during the two active cycles (S_ACTIVE0, S_ACTIVE1) - the eight
+    // beats of the BL8 burst. rtl/soc/ddr3_ecp5_top.v drives DQ from this, so DQ is
+    // enabled, and carries data, in the same cycles DQS is toggling.
+    output wire        burst_active
 );
     localparam [2:0]
         S_IDLE      = 3'd0,
@@ -74,6 +79,8 @@ module ddr3_dqs_write_ecp5 (
     // preamble/postamble.
     reg [3:0] d;
     reg       oe;
+
+    assign burst_active = (state == S_ACTIVE0) || (state == S_ACTIVE1);
 
     always @(*) begin
         case (state)

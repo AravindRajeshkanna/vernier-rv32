@@ -94,18 +94,21 @@ module tb_ddr3_cmd_seq;
     wire [7:0] mem_dq_o;
     wire       mem_dq_oe, mem_dqs_o;
 
-    wire [7:0] tap_wr_data      = DUT.wr_data_final;
-    wire       tap_write_start  = DUT.write_start_final;
     wire       tap_read_active  = DUT.read_active_final;
+
+    wire         dq_error;
+
+    wire [511:0] dq_error_msg;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
-        .wr_d0(tap_wr_data), .wr_en(tap_write_start),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(tap_read_active),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
     genvar b;
@@ -221,6 +224,7 @@ module tb_ddr3_cmd_seq;
         while (read_busy && $time < 1_300_000) @(posedge clk);
         check("read_busy deasserted again after the real read", read_busy, 1'b0);
         check("no real protocol error during the read", model_error, 1'b0);
+        check("no DQ/DQS write-burst timing error at any point (the DRAM's own write latency, from the pins)", dq_error, 1'b0);
         check("read_data_valid pulsed at some point during the real read", captured_read_valid, 1'b1);
         check_byte("real read-back data matches the real write, through actual ACT+WR/ACT+RD commands",
                    captured_read_data, write_data);

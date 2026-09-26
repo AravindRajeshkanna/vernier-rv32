@@ -108,14 +108,19 @@ module tb_ddr3_reverse_arb;
     wire [7:0] mem_dq_o;
     wire       mem_dq_oe, mem_dqs_o;
 
+    wire         dq_error;
+
+    wire [511:0] dq_error_msg;
+
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
-        .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(DUT.read_active_final),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
     genvar b;
@@ -368,6 +373,7 @@ module tb_ddr3_reverse_arb;
 
         check("no REFRESH command ever asserted while a transaction was in flight", contention_seen, 1'b0);
         check("no real protocol error by the end of the test (incl. the model's tRFC rule)", model_error, 1'b0);
+        check("no DQ/DQS write-burst timing error across every accepted write", dq_error, 1'b0);
         // 204 is the measured gap when nothing is in flight; a pending
         // refresh may also wait for one whole transaction, which since
         // Part 14 (PRECHARGE after every transaction) is about 22 cycles
