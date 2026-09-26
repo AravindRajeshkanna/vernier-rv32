@@ -83,14 +83,19 @@ module tb_ddr3_refresh_wire;
     wire [7:0] mem_dq_o;
     wire       mem_dq_oe, mem_dqs_o;
 
+    wire         dq_error;
+
+    wire [511:0] dq_error_msg;
+
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
-        .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
         .read_active(DUT.read_active_final),
-        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o),
+        .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
 
     genvar b;
@@ -244,6 +249,7 @@ module tb_ddr3_refresh_wire;
         while (refresh_busy && $time < 950_000) @(posedge clk);
         check("refresh_busy deasserted again after the real tRFC wait", refresh_busy, 1'b0);
         check("no real protocol error by the end of the test", model_error, 1'b0);
+        check("no DQ/DQS write-burst timing error, including the write a refresh collided with", dq_error, 1'b0);
 
         $display("");
         $display("---------------------------------------------");

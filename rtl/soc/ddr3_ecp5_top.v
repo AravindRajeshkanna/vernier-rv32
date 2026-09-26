@@ -179,6 +179,24 @@
 // latency, so a wrong CL or CWL is caught only by the standalone sequencer
 // tests, not by the integrated ones.
 //
+// ---- Part 17: the write burst lands where the DRAM's write latency says ----
+// The Part 14/15 survey measured that DQ was enabled for a single cycle, one
+// cycle before DQS was enabled and two before its first active toggle, so the
+// eight beats of a BL8 write saw no DQ enable. sim/ddr3_dq_model.v now judges a
+// burst from the DQ and DQS pins against each WRITE command - and against the
+// unaligned design it could not even complete calibration. Fixed here:
+//   - ddr3_dqs_write_ecp5.v exports `burst_active`, its two active cycles, and DQ
+//     is enabled from that, so DQ is driven exactly while DQS toggles;
+//   - the byte is captured when the burst is triggered (CALIB's wr_d0 is only
+//     valid for the trigger cycle) and held in `dq_data_hold` until the window;
+//   - ddr3_write_seq.v triggers the DQS FSM CWL - 1 sclk after its cmd_valid, so
+//     the burst starts exactly CWL = 6 CK = 3 sclk after the WRITE reaches the pins
+//     (the PHY registers the command once more, so the pins lag cmd_valid by one).
+// Not closed: the DRAM's READ timing (CL - 1 in DLL-off mode, tDQSCK) is still not
+// modelled - the memory model still drives read data when told; and calibration's
+// commandless write bursts have no WRITE to be timed against, so their position is
+// not checked.
+//
 // Still not attempted: bank-state tracking in the controller (this design
 // still opens and closes a bank around every access rather than
 // exploiting open rows), the second DQ byte lane, and real hardware
@@ -433,13 +451,13 @@ module ddr3_ecp5_top (
     // CALIB's own wr_en or WSEQ's own write_start fires - mutually
     // exclusive by the same real sequencing (calibration completes
     // before any real command-driven write can start).
-    wire dqs_wr_o, dqs_wr_oe;
+    wire dqs_wr_o, dqs_wr_oe, dq_burst;
     wire write_start_final = wr_en | wseq_write_start;
 
     ddr3_dqs_write_ecp5 DQS_WR (
         .sclk(sclk), .eclk(eclk), .dqsw(dqsw), .rst(rst_all),
         .write_start(write_start_final),
-        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe)
+        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe), .burst_active(dq_burst)
     );
 
     assign ddr3_dqs = dqs_wr_oe ? dqs_wr_o : 1'bz;
@@ -447,17 +465,28 @@ module ddr3_ecp5_top (
     wire [7:0] dq_o, dq_oe, dq_i;
     wire [7:0] rd_q3, rd_q2, rd_q1;
 
-    // Real write-data mux: CALIB's own wr_d0 during calibration,
-    // write_data_latch for a real command-driven write - mutually
-    // exclusive the same way write_start_final's own two sources are.
-    wire [7:0] wr_data_final = wr_en ? wr_d0 : write_data_latch;
+    // Part 17: DQ is enabled, and carries the byte, for exactly the cycles DQS is
+    // toggling - the burst window the DQS write FSM exports. Until Part 17 DQ was
+    // enabled for the single cycle of `write_start_final`, two cycles before DQS's
+    // first active toggle, so the eight beats of a BL8 write saw no DQ enable (the
+    // Part 14/15 survey; sim/ddr3_dq_model.v now checks it from the pins).
+    // The byte is captured when the burst is triggered - CALIB's own wr_d0 for a
+    // calibration write, write_data_latch for a real one, mutually exclusive the
+    // same way write_start_final's two sources are - and held until the window
+    // opens, since the trigger comes before it and CALIB's wr_d0 is only valid for
+    // the trigger cycle.
+    reg [7:0] dq_data_hold;
+    always @(posedge sclk or posedge rst_all) begin
+        if (rst_all)                dq_data_hold <= 8'b0;
+        else if (write_start_final) dq_data_hold <= wr_en ? wr_d0 : write_data_latch;
+    end
 
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES (
         .sclk(sclk), .eclk(eclk), .rst(rst_all),
         .dqsr90(dqsr90), .dqsw270(dqsw270),
-        .wr_d3(wr_data_final), .wr_d2(wr_data_final),
-        .wr_d1(wr_data_final), .wr_d0(wr_data_final),
-        .wr_en(write_start_final),
+        .wr_d3(dq_data_hold), .wr_d2(dq_data_hold),
+        .wr_d1(dq_data_hold), .wr_d0(dq_data_hold),
+        .wr_en(dq_burst),
         .rd_q3(rd_q3), .rd_q2(rd_q2), .rd_q1(rd_q1), .rd_q0(rd_q0),
         .dq_o(dq_o), .dq_oe(dq_oe), .dq_i(dq_i)
     );

@@ -14,12 +14,12 @@ module tb_ddr3_dqs_write;
     reg rst = 1'b1;
     reg write_start = 1'b0;
 
-    wire dqs_o, dqs_oe;
+    wire dqs_o, dqs_oe, burst_active;
 
     ddr3_dqs_write_ecp5 DUT (
         .sclk(clk), .eclk(clk), .dqsw(clk), .rst(rst),
         .write_start(write_start),
-        .dqs_o(dqs_o), .dqs_oe(dqs_oe)
+        .dqs_o(dqs_o), .dqs_oe(dqs_oe), .burst_active(burst_active)
     );
 
     integer errors = 0;
@@ -39,11 +39,13 @@ module tb_ddr3_dqs_write;
     reg [31:0] cyc;
     reg [0:9]  oe_hist;
     reg [0:9]  o_hist;
+    reg [0:9]  ba_hist;
 
     always @(posedge clk) begin
         if (!rst) begin
             oe_hist <= {oe_hist[1:9], dqs_oe};
             o_hist  <= {o_hist[1:9], dqs_o};
+            ba_hist <= {ba_hist[1:9], burst_active};
         end
     end
 
@@ -69,6 +71,30 @@ module tb_ddr3_dqs_write;
 
         $display("  oe history (oldest..newest): %b", oe_hist);
         $display("  dqs history (oldest..newest): %b", o_hist);
+        $display("  burst_active history (oldest..newest): %b", ba_hist);
+
+        // Part 17: rtl/soc/ddr3_ecp5_top.v drives DQ from burst_active, so it must be
+        // the two active DQS cycles exactly - not the preamble, not the postamble.
+        begin : BURST_ACTIVE_CHECK
+            integer i, ones, first_oe, last_oe, first_ba, last_ba, same;
+            ones = 0; first_oe = -1; last_oe = -1; first_ba = -1; last_ba = -1; same = 1;
+            for (i = 0; i < 10; i = i + 1) begin
+                if (ba_hist[i]) begin
+                    ones = ones + 1;
+                    if (first_ba == -1) first_ba = i;
+                    last_ba = i;
+                end
+                if (oe_hist[i]) begin
+                    if (first_oe == -1) first_oe = i;
+                    last_oe = i;
+                end
+                if (ba_hist[i] !== o_hist[i]) same = 0;
+            end
+            check("burst_active was asserted for exactly 2 real cycles", (ones == 2), 1'b1);
+            check("burst_active is exactly the cycles DQS is active", same, 1);
+            check("burst_active starts one cycle after OE (after the preamble)", (first_ba == first_oe + 1), 1'b1);
+            check("burst_active ends one cycle before OE drops (before the postamble)", (last_ba == last_oe - 1), 1'b1);
+        end
 
         // Real OE window: exactly 4 cycles asserted, framed by
         // deasserted cycles on both sides - counted from the real

@@ -3245,13 +3245,13 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over sixteen gated slices (init and calibration, the DQ/DQS data path,
+over seventeen gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
 one transaction ever in flight, every transaction closing its bank, a
 memory model that decodes bank, row and column so the address path is
-finally checked, and CK at the edge-clock rate with two command slots per
-`sclk`) - but
+finally checked, CK at the edge-clock rate with two command slots per
+`sclk`, and a write burst that lands where the DRAM's write latency says) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -4622,8 +4622,8 @@ the high-speed I/O one). The first measurement is against this design's own
 cycle-level model, and the real primitives' internal latencies could move the
 relationship by a cycle. It says nothing about `DQSBUFM` read calibration,
 which stands as measured. The exact effort of the path above is not
-estimated here. (Step 1, the clock and phase architecture, is Part 16,
-below.)
+estimated here. (Step 1, the clock and phase architecture, is Part 16, and
+the write half of steps 2 and 3 is Part 17, below.)
 
 **Update, Part 16: CK now runs at the edge-clock rate, twice `sclk`, with
 two command slots per `sclk` - the structure Lattice's own reference DDR3
@@ -4729,6 +4729,95 @@ derived: it depends on a testbench generating `clk` as `always #(period/2)`
 from time zero. No data mask, no second lane, and the interface decision
 (byte-granular versus 16-byte bursts) remains the maintainer's. Verilator,
 formal checks and real hardware bring-up remain open.
+
+**Update, Part 17: a write burst now lands where the DRAM's write latency
+says - DQ is driven exactly while DQS toggles, WL after the WRITE - and the
+memory model finally judges a write from the pins. Against the unaligned
+design that model could not even complete calibration.** This is the DQ-window
+half of the survey's finding, closed; the clock half was Part 16.
+
+**Test first, and the result was stronger than expected.** `sim/ddr3_dq_model.v`
+was changed to judge writes from what the DRAM would see - the command pins and
+the resolved DQ and DQS pins - instead of storing an internal tap, and run
+against the unchanged design. Calibration did not complete: `calib_done=0`,
+`calib_error=1`, and the model's calibration cell held `00`. The sweep's own
+test-pattern write never reached the memory, because DQ was not driven while
+DQS was active. The survey had measured a misalignment; this showed the write
+path had never worked at this level of fidelity, and nothing had been able to say
+so. (The model did not flag an error for calibration itself - it issues no WRITE
+command, so there is nothing to time the burst against - which is why the symptom
+was calibration failing, not a message.)
+
+**What the DRAM requires.** For a WRITE driven in `sclk` cycle W (Part 16: commands
+sit in the first of two command slots), WL = CWL = 6 CK = 3 `sclk`, so the first
+DQS rising edge falls 10 ns into cycle W+3: DQS low in W+2 (a full `sclk`, 2 CK,
+over the 0.9 tCK preamble minimum), active with DQ driven in W+3 and W+4 (the
+eight beats), low in W+5, and high-Z in every other cycle.
+
+**What changed.** `ddr3_dqs_write_ecp5.v` exports `burst_active`, its two active
+cycles. `ddr3_ecp5_top.v` enables DQ from it instead of from the one-cycle
+trigger, and captures the byte when the burst is triggered - calibration's
+`wr_d0` is only valid for the trigger cycle - holding it until the window opens.
+`ddr3_write_seq.v` triggers the DQS FSM `CWL_CYC - 1` `sclk` after its own
+`cmd_valid`. **That constant was wrong on the first attempt**, and it is worth
+saying how: the derivation used `CWL_CYC - 2`, forgetting that the PHY registers
+the command once more, so the command pins lag `cmd_valid` by one `sclk`. The
+burst came out one cycle early, and the pin-level checker flagged it at once - a
+small demonstration of why the checker exists. The PRECHARGE spacing is unchanged
+at 8 `sclk` (`WREC_CYC` 4 to 5 to absorb the earlier trigger). The calibration
+bench, which predates the DQS write FSM, now wires the real one as the top does;
+the calibrated tap is unchanged.
+
+**The model.** For each WRITE sampled in cycle W it expects the schedule above and
+sets a sticky `dq_error` for anything else: DQS not low in the preamble, not active
+or DQ not driven in a burst cycle, not low in the postamble, or DQS driven outside
+the burst once commands have started. Data is stored from the first burst cycle
+only if that cycle itself looked valid. That last point corrects a claim in this
+part's first draft of the model header, that a misaligned burst's data is never
+stored: the self-test showed a burst shifted by exactly one cycle can still store,
+since one of its cycles lands where the first half was expected. For that case
+`dq_error` is the verdict, so every integrated test now reads it.
+
+**Three layers of test.** `sim/tb_ddr3_wr_window.v` watches the real pins with a
+monitor that shares nothing with the model's checker: eight writes with different
+banks, bytes and gaps, every one showing DQS low at W+2, active at W+3 and W+4,
+low at W+5, high-Z otherwise, and DQ carrying the requested byte in both active
+cycles. `sim/tb_ddr3_dq_window_rules.v` proves each model rule can fire - eleven
+instances on their own pins, two legal controls (one driving DQ during the
+preamble and postamble, which the DRAM ignores, so a rule rejecting it would be
+too strict) and one stream per rule, identified by the model's own message. And
+six integrated tests gained a `dq_error` check; the standalone DQS test gained one
+for `burst_active` being exactly the two active cycles.
+
+**Mutation-tested seventeen ways, all caught.** Nine on the model, each against
+the self-test: the preamble, burst-DQS, DQ-driven, postamble and outside-the-burst
+rules each removed (each fails exactly its own streams), the write latency off by
+one (eight streams and the integrated command-driven test), a rule made too strict
+(the control fails), data stored without the validity gate, and the calibration
+capture dead (the calibration bench and the top test). Eight on the design: the
+burst one cycle early and one cycle late, DQ enabled the old way, the burst one
+cycle long, the data hold removed, the hold reading the wrong source, and write
+recovery too short. Two findings. Shifting the burst one cycle early is **missed by
+the standalone calibration bench**, because calibration has no WRITE to time
+against - a real limit on what checks the calibration write. And putting the
+preamble inside `burst_active` is caught **only by the standalone DQS test**: DQ
+driven during the preamble is legal for the DRAM, so no timing check can object -
+that is a design choice, and the standalone test is the right layer for it.
+
+**What this does not establish.** The DRAM's **read** timing - `CL - 1` cycles after
+the READ in DLL-off mode, with `tDQSCK` of 1-10 ns - is still not modelled; the
+memory model still drives read data when told, so a wrong CL is still invisible to
+every integrated test. At `sclk` resolution the pins carry one DQ word per cycle, so
+beat order is not visible, all eight beats carry the same byte, and only the first
+half's byte is stored - a stand-in for real BL8 semantics, which write eight
+columns per unmasked burst, until the data-mask slice. Calibration's write
+bursts come with no WRITE command, so there is nothing to time them against. The alignment is to this design's
+own simulation substitutes: the ECP5's real fabric-to-pin latency through
+`ODDRX2DQA` and `ODDRX2DQSB`, and the sub-cycle `tDQSS` window (plus or minus a
+quarter CK), are not resolved at this resolution and are unverified on silicon. No
+data mask, no second lane, and the byte-granular versus 16-byte-burst interface
+decision is still the maintainer's. Verilator, formal checks and real hardware
+bring-up remain open.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
@@ -8593,16 +8682,18 @@ project applies everywhere else.
 
 Open, unscheduled, and written down so they are not rediscovered.
 
-**OPEN - the data path of the DDR3 PHY is a mechanism-level model, not yet
-hardware-faithful (Phase 9, Stage 1).** Measured on the integrated design: DQ
-is output-enabled for one `sclk` cycle, one cycle before DQS is enabled and
-two before its first active toggle, so the eight beats of a BL8 write see no
-DQ enable. (The second half of this entry as first written - CK at 25 MHz
-against a data path moving four UI per `sclk` - is RESOLVED: Part 16 put CK
-at the edge-clock rate, measured 1.00 before and 2.00 after.) The DQ window
-is not visible to simulation as it stands, because the memory model samples the internal `wr_en` tap rather than
-DQ against DQS. Not a regression and not a claim that ever failed; a distance
-the earlier accounts did not state. Full measurement, what a faithful path
+**OPEN, narrowed - the data path of the DDR3 PHY is not yet hardware-faithful
+(Phase 9, Stage 1).** As first written this entry had two parts, both now
+RESOLVED: CK at 25 MHz against a data path moving four UI per `sclk` (Part 16
+put CK at the edge-clock rate, measured 1.00 before and 2.00 after), and DQ
+output-enabled for one `sclk` cycle, one cycle before DQS was enabled and two
+before its first active toggle (Part 17 aligned the burst to the DRAM's write
+latency; against the unaligned design the pin-based checker could not even
+complete calibration). What remains: the memory model has no DRAM **read**
+latency (`CL - 1` in DLL-off mode, `tDQSCK`), so a wrong CL is invisible to
+every integrated test; all eight beats of a burst carry one byte; and there is
+no data mask or second lane. Not a regression and not a claim that ever failed;
+a distance the earlier accounts did not state. Full measurement, what a faithful path
 needs, and the one decision that is the maintainer's, in the Phase 9 survey
 ("Survey, no design change").
 
