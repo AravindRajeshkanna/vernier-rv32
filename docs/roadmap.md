@@ -3245,10 +3245,10 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over thirteen gated slices (init and calibration, the DQ/DQS data path,
+over fourteen gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
-refresh arbitrated against writes and reads in both directions and at most
-one transaction ever in flight) - but
+refresh arbitrated against writes and reads in both directions, at most
+one transaction ever in flight, and every transaction closing its bank) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -4321,6 +4321,125 @@ under Icarus) and "formal or property checks where the design admits
 them" (not attempted anywhere in this stage). `sim/ddr3_dq_model.v` is
 still a single stored location. The second DQ byte lane and real hardware
 bring-up remain open, unchanged.
+
+**Update, Part 14: every transaction now closes its own bank with a
+PRECHARGE, and the simulation model finally tracks bank state - which
+showed that Part 9's headline write-then-read round trip was not a legal
+DDR3 command sequence.** Parts 12 and 13 both named this as the next gap;
+the datasheet reading for Part 13 made it clear it was broader than "a
+REFRESH lands with a bank open".
+
+**What the datasheet says, primary-source.** Micron's ACTIVATE entry:
+"This row remains open (or active) for accesses until a PRECHARGE command
+is issued to that bank. A PRECHARGE command must be issued before opening
+a different row in the same bank." That states the different-row case.
+Part 13's account hedged the same-row case, since the text it had read did
+not address it; the datasheet's Simplified State Diagram (Figure 2) has
+ACT leaving only the Idle state, and its general rule is "Any
+functionality not specifically stated is considered undefined, illegal,
+and not supported, and can result in unknown operation" - so ACT to an
+already-open bank is out either way, and Part 13's hedge is settled. Also
+from the datasheet: REFRESH needs every bank precharged (Figure 40 shows
+PRECHARGE-all, then tRP, then REFRESH), tRTP is "the greater of 4CK or
+7.5ns", and in DLL-disable mode - which this design runs in - tWR is "the
+greater of 4CK or 15ns" (note 33), with write recovery starting four
+clocks after WL for BL8 (note 34).
+
+**Test first: giving the model bank state made the existing suite fail.**
+`sim/ddr3_model.v` gained per-bank state, independent of which module
+issued a command: ACTIVATE to an open bank, READ or WRITE to a closed one,
+PRECHARGE before tRTP or before write recovery, and REFRESH with any bank
+open (PRECHARGE with A10 low closes only its own bank, high closes all;
+PRECHARGE to an idle bank is a NOP, as the datasheet says). Run against
+the unchanged design, every test that issues more than one transaction
+failed, and printing the model's message for Part 9's own
+`sim_ddr3_cmd_seq` gave "ACTIVATE to a bank that is already open (no
+PRECHARGE first)": that test's read activates the bank the write had just
+opened and never closed. Part 9's result stands as what it claimed - the
+command timing and the write-drive, capture and calibration wiring work
+end to end - but its command sequence was never legal on a real part, and
+nothing could say so until the checker knew what a bank was.
+
+**The design.** `ddr3_write_seq.v` and `ddr3_read_seq.v` each end by
+issuing PRECHARGE-all (`A10` high) after the data phase, and hold `busy`
+through it. That gives one invariant the rest of the design leans on:
+whenever both sequencers are idle, every bank is closed, so a REFRESH
+granted while they are idle is legal by construction and the refresh path
+needed no change. Placement is the datasheet minimum plus one cycle, the
+margin `TRCD_CYC` already carries. After a write: WR + CWL(6) + BL/2(4) +
+tWR(4) = 14 cycles minimum, issued at 15, measured. After a read the
+datasheet minimum is only tRTP (4), but PRECHARGE is deliberately placed
+after the burst has finished, at RD + CL + BL/2 + 1 = 11 measured, so the
+design never closes a bank while its own capture window is open - a
+design margin, not a datasheet requirement, and named as one. tRP has no
+wait state of its own: at 15 ns or less it is under one 40 ns cycle, and a
+request cannot be accepted before `busy` drops, so the fastest possible
+caller measures 3 cycles (120 ns) from PRECHARGE to the next ACT.
+
+**What the model does not check, and why.** tRCD, tRAS, tRP and tRC are
+deliberately not modelled. At 25 MHz each is under one cycle (the two
+cycles tRC needs are implied by tRAS plus tRP), so a rule for them can never fire,
+and a rule that cannot fire cannot be tested. They become necessary if
+`sclk` is ever raised. CK-count minimums are counted in `sclk` cycles, the way
+the sequencers already count CL and CWL: a convention the whole design
+uses, conservative if CK is in fact faster than `sclk`, and named here rather
+than left implied.
+
+**A checker whose rules cannot fire is not a checker.** Two of the new
+rules cannot be triggered by the real design at all - a design that
+follows them never breaks them - so `sim/tb_ddr3_model_banks.v` gives each
+rule its own directed stream on its own model instance, behind one shared
+real init sequence: ten instances, two legal controls (one at the exact
+minimum spacings, so a too-strict rule fails there instead of silently
+rejecting a correct controller; one with several banks open closed by both
+PRECHARGE-all and per-bank PRECHARGE) and one stream per rule, each
+identified by the model's own message. The spacings come from the
+datasheet, not from the model's constants. Mutation-tested nine ways on
+the model itself: each of the five checks removed (each fails exactly its
+own streams), PRECHARGE ignoring `A10` (a REFRESH with a second bank open
+is no longer flagged), the write-recovery and tRTP limits each one cycle
+too strict (the legal control at the exact minimum fails), and PRECHARGE
+never closing the bank.
+
+**The design change, mutation-tested seven ways** against the standalone
+and integrated tests: either sequencer skipping its PRECHARGE (caught by
+its standalone test, by `sim_ddr3_wr_excl`, and for writes also by
+`sim_ddr3_cmd_seq` and `sim_ddr3_reverse_arb`), write PRECHARGE too early
+(the model's write-recovery rule), a wrong command encoding, and a
+PRECHARGE aimed at the wrong bank with `A10` low. One did not go the way
+it might look. Read PRECHARGE at RD + 8 instead of RD + 11 is still legal
+against tRTP, so the model correctly does not flag it; only the standalone
+test's exact-gap check catches it, which is the right layer for a design
+margin. And `sim_ddr3_cmd_seq` does not catch the read-side mutations at
+all, because it ends on a read and never follows it with another
+transaction - the one-transaction sweep does. `sim_ddr3_wr_excl` now also
+counts PRECHARGE on the real pins: 409 ACT, 409 PRE, 205 WR and 204 RD for
+205 accepted writes and 204 accepted reads, so "fully accepted" now means
+its ACT, its WR or RD, and its PRECHARGE all reached the pins. `make verify`
+and `make verify_ooo` both pass with `sim_ddr3_model_banks` and the
+updated sequencer tests among them. The gate was restarted once mid-round,
+after a stale comment in the model (it called PRECHARGE a stray command the
+design never issues) was corrected; the result covers the final file.
+
+**Cost, stated.** A transaction is now about 22 cycles for a write and 18
+for a read, up from about 11 and 13, because every one waits out its
+PRECHARGE. The measured longest gap between refreshes grew from 215 to 224 cycles (204
+nominal plus the wait for an in-flight write); that test's starvation bound
+was restated with its derivation instead of left sitting a few cycles from
+the measurement. This controller opens and closes a bank around every
+access rather than exploiting open rows.
+
+**What this does not establish.** Open-page operation, bank interleaving
+and any throughput work - correctness first. The four nanosecond
+parameters above that are not modelled, and the `CK = sclk` counting convention. Auto-precharge
+(`A10` high on READ or WRITE, which the datasheet also allows) was not
+evaluated or used. Stage 1's own "Done when" bar also still names
+Verilator (every test in this stage has only ever run under Icarus) and
+"formal or property checks where the design admits them" (not attempted
+anywhere in this stage). `sim/ddr3_dq_model.v` is still a single stored
+location, so no test can see a write landing in the wrong row. Two
+independent callers presenting in the same cycle still get one silently
+ignored. The second DQ byte lane and real hardware bring-up remain open.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into

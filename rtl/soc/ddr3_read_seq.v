@@ -10,7 +10,7 @@
 // ---- Scope: this proves real command timing, not a full controller,
 // and not yet reconciled with the existing capture mechanism ----
 // One read request at a time (`busy` gates a second `read_req`), no
-// bank-state tracking, no PRECHARGE - the same real, deliberate limits
+// bank-state tracking - the same real, deliberate limit
 // rtl/soc/ddr3_write_seq.v's own header already names for the write
 // side. This module is not wired into rtl/soc/ddr3_ecp5_top.v, and its
 // own `read_start` output (a single-cycle pulse, matching
@@ -19,6 +19,17 @@
 // real `DQSBUFM` wiring needs held HIGH for the whole real capture
 // window, not pulsed once - reconciling the two is real, later,
 // separate work, named here rather than assumed already compatible.
+//
+// ---- Part 14: every transaction ends by closing the bank ----
+// The read-side twin of the write sequencer's own Part 14 change (see that
+// file's header for the datasheet text and the bug this closes): after the
+// read data has come back the sequencer issues PRECHARGE-all (A10 high),
+// so whenever it is idle every bank is closed. The datasheet minimum is
+// tRTP, "the greater of 4CK or 7.5ns" - 4 cycles after RD. PRECHARGE is
+// deliberately placed later than that, at RD + CL + BL/2 + 1 = 11 cycles:
+// after the read burst has finished (CL 6 plus 4 for BL8) with the same
+// one-cycle margin the write side carries, so this design never
+// precharges a bank while its own capture window is still open.
 //
 // ---- Timing values ----
 // TRCD_CYC/the real measured ACT-to-RD gap match
@@ -65,16 +76,23 @@ module ddr3_read_seq (
     localparam [2:0] CMD_NOP = 3'b111;
     localparam [2:0] CMD_ACT = 3'b011;   // RAS_n=0, CAS_n=1, WE_n=1
     localparam [2:0] CMD_RD  = 3'b101;   // RAS_n=1, CAS_n=0, WE_n=1
+    localparam [2:0] CMD_PRE = 3'b010;   // RAS_n=0, CAS_n=1, WE_n=0 (A10 high = all banks)
 
     localparam TRCD_CYC = 2;   // see header - matches ddr3_write_seq.v's own value
     localparam CL_CYC   = 6;   // see header - matches ddr3_init_seq.v's own MR0
+    // Cycles from the read_start pulse to PRECHARGE being issued. PRE is
+    // visible on the pins at RD + 7 + RREC_CYC: 11 with RREC_CYC = 4, the
+    // burst end plus one cycle of margin (see header).
+    localparam RREC_CYC = 4;
 
     localparam [2:0]
         S_IDLE      = 3'd0,
         S_ACT       = 3'd1,
         S_TRCD_WAIT = 3'd2,
         S_RD        = 3'd3,
-        S_CL_WAIT   = 3'd4;
+        S_CL_WAIT   = 3'd4,
+        S_RREC_WAIT = 3'd5,
+        S_PRE       = 3'd6;
 
     reg [2:0]  state;
     reg [3:0]  wait_cnt;
@@ -132,10 +150,22 @@ module ddr3_read_seq (
                 S_CL_WAIT: begin
                     if (wait_cnt == 0) begin
                         read_start <= 1'b1;
-                        state      <= S_IDLE;
+                        wait_cnt   <= RREC_CYC - 1;
+                        state      <= S_RREC_WAIT;
                     end else begin
                         wait_cnt <= wait_cnt - 1;
                     end
+                end
+                S_RREC_WAIT: begin
+                    if (wait_cnt == 0) state <= S_PRE;
+                    else               wait_cnt <= wait_cnt - 1;
+                end
+                S_PRE: begin
+                    cmd_valid         <= 1'b1;
+                    cmd_cs_ras_cas_we <= CMD_PRE;
+                    cmd_ba            <= bank_r;
+                    cmd_addr          <= 16'h0400;   // A10 high: all banks
+                    state             <= S_IDLE;
                 end
                 default: state <= S_IDLE;
             endcase

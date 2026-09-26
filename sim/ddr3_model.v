@@ -39,6 +39,26 @@ module ddr3_model #(
     // until tRFC (MIN) is satisfied." tRFC(MIN) = 260ns for 4Gb.
     localparam RFC_MIN_CYC   = `NS2CYC(260);
 
+    // Part 14: per-bank state. Values are from the same datasheet (4Gb
+    // DDR3L, speed-bin tables and the timing-parameter table). Counted the
+    // way rtl/soc/ddr3_write_seq.v and ddr3_read_seq.v already count CL and
+    // CWL: a CK-count minimum is counted in sclk cycles, i.e. as if CK were
+    // sclk. That is conservative if CK is in fact faster than sclk (the
+    // minimum in real time only gets shorter), and it is the convention the
+    // whole design already uses - named here rather than left implied.
+    // tRCD (13.5-15 ns), tRAS (34-37.5 ns), tRP (13.125-15 ns) and tRC
+    // (47.9-52.5 ns) are deliberately NOT checked: at 25 MHz a cycle is
+    // 40 ns, so each is under one cycle (tRC's two cycles are already
+    // implied by tRAS plus tRP), and a rule that cannot fire cannot be
+    // tested. They become necessary if sclk is ever raised.
+    localparam RTP_MIN_CYC = 4;             // tRTP = greater of 4CK or 7.5 ns
+    localparam WR_REC_CYC  = 4;             // tWR = greater of 4CK or 15 ns in DLL-off mode (note 33)
+    localparam CWL_CYC     = 6;             // MR2, DLL-off
+    localparam BL_HALF_CYC = 4;             // BL8 = 4 CK
+    // Note 34: write recovery starts four clocks after WL for BL8, so the
+    // earliest legal PRECHARGE after a WRITE is WR + CWL + 4 + tWR.
+    localparam WR_TO_PRE_MIN_CYC = CWL_CYC + BL_HALF_CYC + WR_REC_CYC;
+
     // Command decode - same {ras_n,cas_n,we_n} convention
     // rtl/soc/ddr3_phy_ecp5.v itself uses, checked independently here
     // rather than trusted, since this file's whole job is catching a
@@ -58,6 +78,8 @@ module ddr3_model #(
     // Part 10: real post-init REFRESH traffic from
     // rtl/soc/ddr3_refresh_ctrl.v - same convention, same reasoning.
     wire is_ref      = cmd_present && !ras_n && !cas_n &&  we_n;
+    // Part 14: PRECHARGE (RAS_n=0, CAS_n=1, WE_n=0); A10 high = all banks.
+    wire is_pre      = cmd_present && !ras_n &&  cas_n && !we_n;
 
     localparam [2:0]
         SEQ_WAIT_RESET = 3'd0,
@@ -176,22 +198,24 @@ module ddr3_model #(
                     end
                 end
                 SEQ_DONE: begin
-                    // Part 9/10: real ACT/WR/RD/REFRESH traffic
-                    // (rtl/soc/ddr3_write_seq.v/rtl/soc/ddr3_read_seq.v/
-                    // rtl/soc/ddr3_refresh_ctrl.v) is now a legitimate
-                    // post-init scenario, accepted here rather than
-                    // flagged - anything else (a stray MRS/ZQCL/
-                    // PRECHARGE, none of which this design ever
+                    // Part 9/10/14: real ACT/WR/RD/PRECHARGE/REFRESH
+                    // traffic (rtl/soc/ddr3_write_seq.v/
+                    // rtl/soc/ddr3_read_seq.v/rtl/soc/ddr3_refresh_ctrl.v)
+                    // is a legitimate post-init scenario, accepted here
+                    // rather than flagged - anything else (a stray MRS
+                    // or ZQCL, neither of which this design ever
                     // re-issues after init) still is, since that really
-                    // would be a protocol violation. Real ACT-to-WR/RD
-                    // bank-address consistency and the real tRCD/CWL/CL/
-                    // tRFC timing themselves are not re-verified here -
+                    // would be a protocol violation. Whether each
+                    // accepted command is legal FOR THE STATE OF ITS
+                    // BANK is the separate per-bank tracker below
+                    // (Part 14). tRCD/CWL/CL timing themselves are not
+                    // re-verified here -
                     // rtl/soc/ddr3_write_seq.v's/rtl/soc/ddr3_read_seq.v's/
                     // rtl/soc/ddr3_refresh_ctrl.v's own standalone tests
-                    // (Parts 6/7/10) already measure and mutation-test
-                    // that directly.
-                    if (!(is_act || is_wr || is_rd || is_ref)) begin
-                        fail("unexpected command after init sequence completed (not ACT/WR/RD)");
+                    // (Parts 6/7/10/14) already measure and
+                    // mutation-test that directly.
+                    if (!(is_act || is_wr || is_rd || is_ref || is_pre)) begin
+                        fail("unexpected command after init sequence completed");
                     end
                     if (is_ref) begin
                         ref_seen  <= 1'b1;
@@ -207,7 +231,70 @@ module ddr3_model #(
         end
     end
 
+    // ---- Part 14: per-bank state tracking, independent of which module
+    // issued a command ----
+    // Datasheet, ACTIVATE: "This row remains open (or active) for accesses
+    // until a PRECHARGE command is issued to that bank. A PRECHARGE command
+    // must be issued before opening a different row in the same bank."
+    // REFRESH needs every bank precharged (Figure 40 shows PRECHARGE-all
+    // then tRP ahead of it). A PRECHARGE to a bank with no open row is a NOP.
+    reg        bank_open    [0:7];
+    integer    since_rd     [0:7];
+    integer    since_wr     [0:7];
+    reg        rd_after_act [0:7];
+    reg        wr_after_act [0:7];
+    integer    bi;
+
+    always @(posedge clk) begin
+        for (bi = 0; bi < 8; bi = bi + 1) begin
+            since_rd[bi]  <= since_rd[bi]  + 1;
+            since_wr[bi]  <= since_wr[bi]  + 1;
+        end
+
+        if (seq_state == SEQ_DONE && cmd_present && !is_nop) begin
+            if (is_act) begin
+                if (bank_open[ba])
+                    fail("ACTIVATE to a bank that is already open (no PRECHARGE first)");
+                bank_open[ba]    <= 1'b1;
+                rd_after_act[ba] <= 1'b0;
+                wr_after_act[ba] <= 1'b0;
+            end else if (is_rd || is_wr) begin
+                if (!bank_open[ba])
+                    fail("READ or WRITE to a bank that is not open");
+                if (is_rd) begin
+                    since_rd[ba]     <= 0;
+                    rd_after_act[ba] <= 1'b1;
+                end else begin
+                    since_wr[ba]     <= 0;
+                    wr_after_act[ba] <= 1'b1;
+                end
+            end else if (is_pre) begin
+                for (bi = 0; bi < 8; bi = bi + 1) begin
+                    if (a[10] || (bi == ba)) begin
+                        if (bank_open[bi]) begin
+                            if (rd_after_act[bi] && (since_rd[bi] + 1 < RTP_MIN_CYC))
+                                fail("PRECHARGE before tRTP elapsed after READ");
+                            if (wr_after_act[bi] && (since_wr[bi] + 1 < WR_TO_PRE_MIN_CYC))
+                                fail("PRECHARGE before write recovery elapsed after WRITE");
+                        end
+                        bank_open[bi] <= 1'b0;
+                    end
+                end
+            end else if (is_ref) begin
+                for (bi = 0; bi < 8; bi = bi + 1) begin
+                    if (bank_open[bi])
+                        fail("REFRESH with a bank still open (all banks must be precharged)");
+                end
+            end
+        end
+    end
+
     initial begin
+        for (bi = 0; bi < 8; bi = bi + 1) begin
+            bank_open[bi] = 1'b0;
+            rd_after_act[bi] = 1'b0; wr_after_act[bi] = 1'b0;
+            since_rd[bi] = 0; since_wr[bi] = 0;
+        end
         error           = 1'b0;
         error_msg       = "";
         seq_done        = 1'b0;

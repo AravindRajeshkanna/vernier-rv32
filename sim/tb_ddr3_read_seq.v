@@ -47,6 +47,40 @@ module tb_ddr3_read_seq;
     localparam ACT_TO_RD_GAP_CYC = 3;         // TRCD_CYC(2)+1 - see rtl/soc/ddr3_read_seq.v's own header for why +1
     localparam RD_TO_READ_START_GAP_CYC = 6;  // CL_CYC exactly
 
+    // Part 14: PRECHARGE-all after every transaction. The exact gap is what
+    // the DUT commits to (one cycle of margin over the datasheet minimum,
+    // see rtl/soc/ddr3_read_seq.v's own header); the minimum is the
+    // datasheet's own number, tRTP = 4 CK, so this test
+    // fails both if the DUT drifts and if the DUT is ever set below the
+    // real requirement.
+    localparam [2:0] CMD_PRE = 3'b010;
+    localparam RD_TO_PRE_GAP_CYC = 11;
+    localparam RD_TO_PRE_MIN_CYC = 4;
+
+    // Every command on the pins, timestamped on one global cycle counter,
+    // so a gap can be measured across two transactions.
+    integer gcyc = 0;
+    integer pre_abs [0:3];
+    integer act_abs [0:3];
+    integer pre_n = 0, act_n = 0;
+    reg     pre_busy_seen = 1'b0;    // busy was still high in the cycle PRECHARGE appeared
+    reg     pre_a10_all = 1'b1;      // every PRECHARGE seen had A10 high
+    always @(posedge clk) begin
+        gcyc <= gcyc + 1;
+        if (!rst && cmd_valid && cmd_cs_ras_cas_we == CMD_PRE) begin
+            pre_abs[pre_n] = gcyc;
+            pre_n = pre_n + 1;
+            if (busy) pre_busy_seen = 1'b1;
+            if (!cmd_addr[10]) pre_a10_all = 1'b0;
+        end
+        if (!rst && cmd_valid && cmd_cs_ras_cas_we == CMD_ACT) begin
+            act_abs[act_n] = gcyc;
+            act_n = act_n + 1;
+        end
+    end
+    integer rd_abs0;
+    integer pre_gap_meas, pre_to_act_meas;
+
     integer errors = 0;
     task check(input [511:0] what, input got, input want);
         begin
@@ -127,8 +161,21 @@ module tb_ddr3_read_seq;
         check_int("RD->read_start gap matches real CL exactly", read_start_cyc - rd_cyc, RD_TO_READ_START_GAP_CYC);
         check("no stray command during the ACT->RD wait", stray_cmd_seen, 1'b0);
 
-        repeat (4) @(posedge clk);
-        check("busy deasserted again after the full sequence", busy, 1'b0);
+        // PRECHARGE comes after read_start; wait for it, then for busy to drop.
+        cyc = 0;
+        while (pre_n < 1 && cyc < 60) begin @(posedge clk); cyc = cyc + 1; end
+        check("a real PRECHARGE command was issued", (pre_n >= 1), 1'b1);
+        check("PRECHARGE is PRECHARGE-all (A10 high)", pre_a10_all, 1'b1);
+        check("busy was still high when PRECHARGE appeared (idle means banks closed)", pre_busy_seen, 1'b1);
+        pre_gap_meas = pre_abs[0] - act_abs[0] - ((rd_cyc) - (act_cyc));
+        $display("  real measured: RD -> PRECHARGE = %0d cycles", pre_gap_meas);
+        check_int("RD->PRECHARGE gap matches the DUT's committed value exactly", pre_gap_meas, RD_TO_PRE_GAP_CYC);
+        check("RD->PRECHARGE is no earlier than the datasheet minimum", (pre_gap_meas >= RD_TO_PRE_MIN_CYC), 1'b1);
+
+        cyc = 0;
+        while (busy && cyc < 40) begin @(posedge clk); cyc = cyc + 1; end
+        check("busy deasserted again after the full sequence, PRECHARGE included", busy, 1'b0);
+        check_int("exactly one PRECHARGE for the one transaction", pre_n, 1);
 
         // A second, back-to-back request proves the FSM really returns
         // to idle and can restart - not a one-shot fluke.
@@ -137,8 +184,29 @@ module tb_ddr3_read_seq;
         read_req = 1'b1;
         @(posedge clk);
         read_req = 1'b0;
-        repeat (20) @(posedge clk);
+        cyc = 0;
+        while (pre_n < 2 && cyc < 80) begin @(posedge clk); cyc = cyc + 1; end
+        cyc = 0;
+        while (busy && cyc < 40) begin @(posedge clk); cyc = cyc + 1; end
         check("busy idle again after a second, different request", busy, 1'b0);
+        check_int("a second transaction issues its own PRECHARGE", pre_n, 2);
+
+        // tRP (13.1-15 ns) is under one 40 ns cycle, and the FSM covers it
+        // structurally rather than with a wait state: a caller cannot
+        // present a request before busy drops, and the ACT follows after
+        // that. Measured here as the smallest gap a caller can produce -
+        // request presented in the cycle busy is first seen low.
+        bank = 3'd6; row = 16'h0A0A;
+        while (busy) @(posedge clk);
+        read_req = 1'b1;
+        @(posedge clk);
+        read_req = 1'b0;
+        cyc = 0;
+        while (act_n < 3 && cyc < 20) begin @(posedge clk); cyc = cyc + 1; end
+        pre_to_act_meas = act_abs[2] - pre_abs[1];
+        $display("  real measured: PRECHARGE -> next ACTIVATE (fastest possible caller) = %0d cycles", pre_to_act_meas);
+        check("PRECHARGE -> next ACTIVATE is at least one cycle (tRP is 15 ns or less)", (pre_to_act_meas >= 1), 1'b1);
+        repeat (40) @(posedge clk);
 
         $display("");
         $display("---------------------------------------------");

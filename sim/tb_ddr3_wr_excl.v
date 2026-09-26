@@ -11,6 +11,8 @@
 // Never half-way. Stated as counts against the real command pins, which
 // no internal signal can fake:
 //     ACT on pins == accepted writes + accepted reads
+//     PRE on pins == accepted writes + accepted reads (Part 14: every
+//                    transaction ends by closing its bank)
 //     WR  on pins == accepted writes,   RD on pins == accepted reads
 //     completions and read_data_valid pulses == acceptances
 // plus two global invariants - both sequencers never busy together, and
@@ -28,7 +30,7 @@
 module tb_ddr3_wr_excl;
     localparam CLK_HZ     = 25_000_000;
     localparam CLK_PERIOD = 40;   // 25 MHz
-    localparam D_MAX      = 30;   // offsets swept; a transaction is ~12-14 cycles
+    localparam D_MAX      = 30;   // offsets swept; a transaction is ~18-22 cycles (with its PRECHARGE)
 
     reg clk = 0;
     always #(CLK_PERIOD / 2) clk = ~clk;
@@ -117,7 +119,7 @@ module tb_ddr3_wr_excl;
     // same {ras_n,cas_n,we_n} convention the model uses, so an accepted
     // transaction whose command never reached the pins shows up here as a
     // missing count, whatever the sequencers themselves believe.
-    integer act_pins = 0, wr_pins = 0, rd_pins = 0;
+    integer act_pins = 0, wr_pins = 0, rd_pins = 0, pre_pins = 0;
     // "Accepted" is read off the sequencer's own state, not its busy
     // flag: a request presented in the one cycle a sequencer is back in
     // S_IDLE but its busy has not yet dropped is accepted by the
@@ -136,6 +138,7 @@ module tb_ddr3_wr_excl;
             if (!ddr3_cs_n && !ddr3_ras_n &&  ddr3_cas_n &&  ddr3_we_n) act_pins <= act_pins + 1;
             if (!ddr3_cs_n &&  ddr3_ras_n && !ddr3_cas_n && !ddr3_we_n) wr_pins  <= wr_pins  + 1;
             if (!ddr3_cs_n &&  ddr3_ras_n && !ddr3_cas_n &&  ddr3_we_n) rd_pins  <= rd_pins  + 1;
+            if (!ddr3_cs_n && !ddr3_ras_n &&  ddr3_cas_n && !ddr3_we_n) pre_pins <= pre_pins + 1;
 
             if (w_accept_now) w_acc <= w_acc + 1;
             if (r_accept_now) r_acc <= r_acc + 1;
@@ -196,7 +199,7 @@ module tb_ddr3_wr_excl;
     integer round_no = 0;
 
     task pair_round(input first_w, input second_w, input integer d, input polite);
-        integer act0, wr0, rd0, wacc0, racc0, wdone0, rdone0, valid0;
+        integer act0, wr0, rd0, pre0, wacc0, racc0, wdone0, rdone0, valid0;
         integer wacc, racc, k;
         reg [7:0] a_data, b_data, stored0, exp_stored, exp_read;
         reg second_accepted;
@@ -212,7 +215,7 @@ module tb_ddr3_wr_excl;
             wait_fall;
             repeat (30) @(posedge clk);   // well clear of the next refresh (due ~194 after the fall)
 
-            act0 = act_pins; wr0 = wr_pins; rd0 = rd_pins;
+            act0 = act_pins; wr0 = wr_pins; rd0 = rd_pins; pre0 = pre_pins;
             wacc0 = w_acc; racc0 = r_acc; wdone0 = w_done; rdone0 = r_done; valid0 = r_valid;
             stored0 = MEM.stored;
 
@@ -253,6 +256,8 @@ module tb_ddr3_wr_excl;
             // ---- acceptance is all-or-nothing, counted on the real pins ----
             if ((act_pins - act0) != (wacc + racc))
                 round_fail(kname, polite, d, "ACT count on the pins does not match accepted requests");
+            if ((pre_pins - pre0) != (wacc + racc))
+                round_fail(kname, polite, d, "PRECHARGE count on the pins does not match accepted requests");
             if ((wr_pins - wr0) != wacc)
                 round_fail(kname, polite, d, "WR count on the pins does not match accepted writes");
             if ((rd_pins - rd0) != racc)
@@ -337,8 +342,8 @@ module tb_ddr3_wr_excl;
         $display("  blind second request ignored / accepted, per pair (W->W, W->R, R->W, R->R):");
         $display("    ignored:  %0d %0d %0d %0d", ign_cov[3], ign_cov[2], ign_cov[1], ign_cov[0]);
         $display("    accepted: %0d %0d %0d %0d", acc_cov[3], acc_cov[2], acc_cov[1], acc_cov[0]);
-        $display("  pins: %0d ACT, %0d WR, %0d RD for %0d accepted writes and %0d accepted reads",
-                 act_pins, wr_pins, rd_pins, w_acc, r_acc);
+        $display("  pins: %0d ACT, %0d WR, %0d RD, %0d PRE for %0d accepted writes and %0d accepted reads",
+                 act_pins, wr_pins, rd_pins, pre_pins, w_acc, r_acc);
 
         check_true("every request was fully accepted or fully ignored, and no polite request was dropped",
                    round_fails == 0);
