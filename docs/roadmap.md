@@ -3245,12 +3245,13 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over fifteen gated slices (init and calibration, the DQ/DQS data path,
+over sixteen gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
-one transaction ever in flight, every transaction closing its bank, and a
+one transaction ever in flight, every transaction closing its bank, a
 memory model that decodes bank, row and column so the address path is
-finally checked) - but
+finally checked, and CK at the edge-clock rate with two command slots per
+`sclk`) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -4434,7 +4435,7 @@ access rather than exploiting open rows.
 
 **What this does not establish.** Open-page operation, bank interleaving
 and any throughput work - correctness first. The four nanosecond
-parameters above that are not modelled, and the `CK = sclk` counting convention. Auto-precharge
+parameters above that are not modelled, and the `CK = sclk` counting convention (retired by Part 16). Auto-precharge
 (`A10` high on READ or WRITE, which the datasheet also allows) was not
 evaluated or used. Stage 1's own "Done when" bar also still names
 Verilator (every test in this stage has only ever run under Icarus) and
@@ -4621,7 +4622,113 @@ the high-speed I/O one). The first measurement is against this design's own
 cycle-level model, and the real primitives' internal latencies could move the
 relationship by a cycle. It says nothing about `DQSBUFM` read calibration,
 which stands as measured. The exact effort of the path above is not
-estimated here.
+estimated here. (Step 1, the clock and phase architecture, is Part 16,
+below.)
+
+**Update, Part 16: CK now runs at the edge-clock rate, twice `sclk`, with
+two command slots per `sclk` - the structure Lattice's own reference DDR3
+write side uses - closing the half of the survey's finding that was about
+the clock, and putting the synthesis half of the PHY under a tool for the
+first time.** The survey gave its second measurement as an inference from
+two files; this part measured it first, then fixed it, then read the
+document the survey admitted it had not read.
+
+**Measured before the fix.** A new test, `sim/tb_ddr3_phy_phases.v`, was
+written and run against the unchanged PHY: CK rose **5649 times against 5649
+`sclk` edges, a ratio of exactly 1.00** - CK at 25 MHz against a data path
+moving four UI per `sclk`. That turns the survey's "inferred from the RTL"
+into a measurement. After the fix the same test reads 2.00.
+
+**Primary source, read this time.** Lattice's FPGA-TN-02035 (the copy
+hosted in a public GitHub mirror, version 1.2 - a newer 1.3 exists
+and was not read), section 6.3.3 and Figure 6.10: CK is an `ODDRX2F` "with
+inputs tied to constants", four values per `sclk` on the edge clock, so CK
+runs at `eclk`; address, bank, RAS, CAS, WE, CKE and ODT go through
+`ODDRX1F` taking two values per `sclk`, and CS_n through `OSHX2A`, so two
+command slots per `sclk`, one per CK cycle; CK and CS_n then pass through a
+`DELAYG` in `DQS_CMD_CLK` mode. Figure 6.9, the write side, has DQ and DM on
+`ODDRX2DQA` clocked by `DQSW270` and DQS on `ODDRX2DQSB` clocked by `DQSW`,
+all fed from the same `sclk`-domain words - which is what the next slice
+needs. From Micron's datasheet, on why 50 MHz is legal: in DLL-off mode
+only CL = 6 and CWL = 6 are supported, and `tCK[DLL_DIS]` has a minimum
+(8 ns) and no stated maximum. The datasheet also says, for the read
+slice, that read data starts "AL + CL - 1 cycles after the READ command"
+in DLL-off mode (5 CK, not 6) with `tDQSCK` of 1-10 ns.
+
+**What changed.** `rtl/soc/ddr3_phy_ecp5.v` takes `eclk`. In synthesis, CK and
+CK# are `ODDRX2F` on constants through `DELAYG`, CS_n is `OSHX2A` (low only in
+phase 0, high in phase 1) through `DELAYG`, and everything else is `ODDRX1F`
+with both slots carrying the same value - the DRAM ignores them, since CS_n is
+high in phase 1. In simulation CK is the `eclk` itself, whose rising edges
+fall exactly 10 ns after each `sclk` edge, the centre of each command slot,
+and phase 1 is a deselect. The design still issues at most one command per
+`sclk` and always in phase 0, so nothing above the PHY changes shape - but a
+CK-counted latency now converts exactly. **CL = CWL = 6 CK is 3 `sclk`, not
+6:** before this part the design counted CK as `sclk` and waited twice as long
+as MR2 tells the DRAM to expect the write data. `CL_CYC` and `CWL_CYC` are 3,
+and the PRECHARGE spacings that follow from the datasheet minimums are
+recounted: write 15 to 8 `sclk` (the 14-CK minimum is 7, plus one `sclk` of
+margin), read 11 to 6. The init sequencer's mode-register and ZQ-calibration waits are
+counted in `sclk` and now wait twice the CK minimum; left as they are,
+conservative, with their comments corrected. The protocol model and the memory
+model now sample commands on the rising edge of CK, where the DRAM does, and the
+model converts nanoseconds at the CK rate - which retires Part 14's
+"CK counted as `sclk`" convention: every CK-count constant in it is now
+literally the datasheet's number. tRAS (two CK now) **can** fire, unlike the
+four rules Part 14 dropped, so the model gained it, with its own self-test
+case; the same self-test also gained the case Part 12's tRFC rule had never
+had (a command one CK short of 260 ns, 13 CK, after a REFRESH) and every
+legal control now sits at an exact CK boundary.
+
+**The synthesis branch, under a tool for the first time.** Every DDR3 test runs
+the simulation branch; the `ifdef SYNTHESIS` half of the PHY, DQ serializer and DQS
+files, the half that instantiates the real ECP5 primitives, had never been
+read by anything. `make synth_check_ddr3` elaborates it against yosys's own
+ECP5 cell library with `hierarchy -check`, and it is in `make verify`. It
+found nothing wrong with the existing branch - it elaborated on the first try
+- and it can fail: renaming one `ODDRX2F` port to a nonexistent one gives
+"Module `ODDRX2F` ... does not have a port named 'D9'". It catches wrong
+wiring, not wrong behaviour.
+
+**Mutation-tested eight ways, all caught.** CK back at `sclk` rate and phase 1
+not deselected (both by the phase test; the second also makes the protocol
+model see doubled commands), a command driven in phase 1 (caught **only** by
+the phase test - the models sample on CK whichever phase), CWL and CL left at
+6 (caught by the standalone sequencer tests), write recovery too short (the
+standalone test, and the model's own write-recovery rule in the integrated
+ones), the model converting nanoseconds at the wrong rate (the self-test's
+tRFC case), and the memory model sampling commands on `sclk` again (143
+failures in the address test). One of those is the finding worth having:
+**with CWL or CL left at the wrong value, every integrated test still
+passes.** The memory model drives read data when told and stores write data
+off an internal tap, so it has no DRAM latency to be wrong about. That is
+exactly the gap the survey named, now shown on a concrete change, and it is
+the next slice.
+
+**Measured after.** The phase test: 11274 CK edges against 5637 `sclk`, ratio
+2.00, all six commands of a write-then-read in phase 0, none doubled, pins
+stable across every CK edge. Transactions are shorter: a blind second request
+is now ignored at 13 offsets after a write (20 before) and 11 after a read (16
+before). The invariants hold - 433 ACT, 433 PRE, 217 WR and 216 RD on the pins
+for 217 accepted writes and 216 accepted reads - and the refresh hold window
+is unchanged (blind requests ignored at 195 through 204, the boundary hit at
+194), with the longest gap between refreshes at 217 cycles. `make verify` passes
+with the phase test, the synthesis check and every DDR3 target among them;
+`make verify_ooo` was not run: no CPU, SoC or board build references any DDR3
+file, so it cannot be affected, and CI runs the wide-core variants regardless.
+
+**What this does not establish.** The DQ write window is still misaligned with
+DQS - measured in the survey, untouched here, and the next thing to fix. The
+DRAM's read timing (`CL - 1` in DLL-off mode, `tDQSCK`) is not modelled. The ECP5
+primitives' behaviour is taken from Lattice's figure: whether phase 0 lands
+where this file assumes after the fabric-to-pin latency of `ODDRX2F`,
+`ODDRX1F` and `OSHX2A`, and what `DELAYG` in `DQS_CMD_CLK` mode actually
+delays by, is unverified on silicon - the synthesis check proves the wiring
+resolves, nothing more. The simulation's phase relationship is designed, not
+derived: it depends on a testbench generating `clk` as `always #(period/2)`
+from time zero. No data mask, no second lane, and the interface decision
+(byte-granular versus 16-byte bursts) remains the maintainer's. Verilator,
+formal checks and real hardware bring-up remain open.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
@@ -8490,9 +8597,10 @@ Open, unscheduled, and written down so they are not rediscovered.
 hardware-faithful (Phase 9, Stage 1).** Measured on the integrated design: DQ
 is output-enabled for one `sclk` cycle, one cycle before DQS is enabled and
 two before its first active toggle, so the eight beats of a BL8 write see no
-DQ enable; and CK (25 MHz, `ODDRX1F` on `sclk`) disagrees by 2x with a data
-path that moves four UI per `sclk`. Neither is visible to simulation as it
-stands, because the memory model samples the internal `wr_en` tap rather than
+DQ enable. (The second half of this entry as first written - CK at 25 MHz
+against a data path moving four UI per `sclk` - is RESOLVED: Part 16 put CK
+at the edge-clock rate, measured 1.00 before and 2.00 after.) The DQ window
+is not visible to simulation as it stands, because the memory model samples the internal `wr_en` tap rather than
 DQ against DQS. Not a regression and not a claim that ever failed; a distance
 the earlier accounts did not state. Full measurement, what a faithful path
 needs, and the one decision that is the maintainer's, in the Phase 9 survey

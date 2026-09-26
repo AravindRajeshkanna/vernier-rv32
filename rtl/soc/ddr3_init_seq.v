@@ -51,8 +51,8 @@ module ddr3_init_seq #(
     // Real JEDEC power-up timing this sequence must respect:
     localparam RESET_CYC   = `NS2CYC(200_000);  // tRESET, RESET_n low, >=200 us
     localparam XPR_CYC     = `NS2CYC(500);      // wait after CKE high before the first command (conservative - tXPR is one of the values not cross-checked against the primary datasheet, see header)
-    localparam MRD_CYC     = 4;                 // tMRD, 4 nCK, cycle count not ns - JEDEC-fixed
-    localparam ZQINIT_CYC  = 512;                // tZQinit/tDLLK, 512 nCK, cycle count not ns - JEDEC-fixed, applies even under DLL-off since ZQCL itself still runs
+    localparam MRD_CYC     = 4;                 // tMRD is 4 nCK; counted here in sclk cycles = 8 CK (Part 16: CK is twice sclk) - twice the minimum, conservative, deliberately not recounted
+    localparam ZQINIT_CYC  = 512;               // tZQinit/tDLLK is 512 nCK; counted here in sclk cycles = 1024 CK (Part 16) - twice the minimum, conservative, deliberately not recounted. Applies even under DLL-off since ZQCL calibrates independently
 
     // ---- command encodings, matching rtl/soc/ddr3_phy_ecp5.v's own
     // {ras_n,cas_n,we_n} convention (cs_n handled by cmd_valid there) ----

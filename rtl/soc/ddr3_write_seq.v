@@ -34,13 +34,23 @@
 // The earliest legal PRECHARGE after a WRITE is WR + CWL + 4 + tWR: write
 // recovery starts four clocks after WL for BL8 (note 34), and tWR is "the
 // greater of 4CK or 15ns" in DLL-off mode (note 33), which this design
-// runs in - 14 cycles, counted the way CWL already is (a CK count in sclk
-// cycles). WREC_CYC below puts PRECHARGE one cycle later than that, the
-// same one-cycle margin TRCD_CYC carries. tRP (13.1-15 ns) is under one
-// 40 ns cycle and is covered by the FSM itself rather than by a wait state:
-// a request cannot be accepted before `busy` drops, and its ACT follows
-// after that - measured in sim/tb_ddr3_write_seq.v at 3 cycles (120 ns)
-// from PRECHARGE to the next ACT for the fastest possible caller.
+// runs in - 6 + 4 + 4 = 14 CK, which is 7 sclk (Part 16: CK runs at twice
+// sclk, and every command is in the first of the two slots per sclk, so a CK
+// count converts exactly). WREC_CYC below puts PRECHARGE one sclk (two CK)
+// later than that. tRP (13.1-15 ns) is one CK and is covered by the FSM
+// itself rather than by a wait state: a request cannot be accepted before
+// `busy` drops, and its ACT follows after that - measured in
+// sim/tb_ddr3_write_seq.v at 3 sclk (6 CK) from PRECHARGE to the next ACT
+// for the fastest possible caller.
+//
+// ---- Part 16: latencies are counted in CK, commands sit in phase 0 ----
+// CK now runs at twice sclk (rtl/soc/ddr3_phy_ecp5.v) and a command is always
+// driven in the first of the two CK slots of its sclk cycle. That makes
+// CWL = 6 CK exactly 3 sclk, so `CWL_CYC` below is 3, not 6: before Part 16
+// the design counted CK as sclk and waited twice as long as MR2 tells the
+// DRAM to expect the write data. Odd CK counts cannot be placed (a command
+// is only ever in phase 0), so every other spacing here rounds UP to whole
+// sclk.
 //
 // ---- Timing values ----
 // tRCD (RAS-to-CAS delay) is speed-grade dependent; commonly ~13.5-15ns
@@ -64,7 +74,7 @@
 // a correctness bug (3 cycles of real margin only exceeds a real
 // tRCD requirement further), but a naming precision this header
 // corrects rather than leaves standing uncorrected. WR-to-write_start
-// measured exactly 6 cycles, matching `CWL_CYC` precisely.
+// measured exactly 3 cycles (Part 16; 6 before it), matching `CWL_CYC`.
 module ddr3_write_seq (
     input  wire        clk,
     input  wire        rst,
@@ -94,11 +104,11 @@ module ddr3_write_seq (
     localparam [2:0] CMD_PRE = 3'b010;   // RAS_n=0, CAS_n=1, WE_n=0 (A10 high = all banks)
 
     localparam TRCD_CYC = 2;   // see header
-    localparam CWL_CYC  = 6;   // see header - matches ddr3_init_seq.v's own MR2
+    localparam CWL_CYC  = 3;   // CWL = 6 CK (ddr3_init_seq.v's own MR2) = 3 sclk; see header
     // Cycles from the write_start pulse to PRECHARGE being issued. PRE is
-    // visible on the pins at WR + 7 + WREC_CYC: 15 with WREC_CYC = 8, one
-    // cycle over the 14-cycle datasheet minimum (see header).
-    localparam WREC_CYC = 8;
+    // visible on the pins at WR + CWL_CYC + 1 + WREC_CYC: 8 sclk (16 CK) with
+    // WREC_CYC = 4, one sclk over the 7-sclk (14 CK) datasheet minimum.
+    localparam WREC_CYC = 4;
 
     localparam [2:0]
         S_IDLE      = 3'd0,

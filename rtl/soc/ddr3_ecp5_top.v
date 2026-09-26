@@ -161,6 +161,24 @@
 // covered by the FSMs themselves (measured 3 cycles PRECHARGE-to-ACT for
 // the fastest possible caller); it has no wait state of its own.
 //
+// ---- Part 16: CK at the edge-clock rate, two command phases per sclk ----
+// The Part 14/15 survey measured that CK rose once per sclk while the DQ
+// serdes moves four UI per sclk. Lattice's own reference DDR3 write side
+// (FPGA-TN-02035, Figure 6.10) generates CK at the edge-clock rate - twice
+// sclk - and address/command with two values per sclk, one per CK cycle.
+// This design now does the same (see rtl/soc/ddr3_phy_ecp5.v): `eclk` is
+// passed to the PHY, CK runs at 50 MHz here, and every command is driven in
+// the first of the two slots of its sclk cycle. The controller still issues
+// at most one command per sclk, so nothing above the PHY changes shape; what
+// changes is that a CK-counted latency converts exactly (CL = CWL = 6 CK is
+// 3 sclk, not 6), so CL_CYC and CWL_CYC in the two sequencers, and the
+// PRECHARGE spacings that follow from them, are recounted. The protocol
+// model and the memory model now sample commands on CK's rising edge.
+// The simulation-model gap that survey named is NOT closed here: the memory
+// model still drives read data when told rather than at the DRAM's own read
+// latency, so a wrong CL or CWL is caught only by the standalone sequencer
+// tests, not by the integrated ones.
+//
 // Still not attempted: bank-state tracking in the controller (this design
 // still opens and closes a bank around every access rather than
 // exploiting open rows), the second DQ byte lane, and real hardware
@@ -376,7 +394,7 @@ module ddr3_ecp5_top (
                                 rseq_cmd_valid ? rseq_cmd_addr : refresh_cmd_addr;
 
     ddr3_phy_ecp5 PHY (
-        .clk(sclk), .rst(rst_all),
+        .clk(sclk), .eclk(eclk), .rst(rst_all),
         .cmd_valid(phy_cmd_valid), .cmd_cs_ras_cas_we(phy_cmd_cs_ras_cas_we),
         .cmd_ba(phy_cmd_ba), .cmd_addr(phy_cmd_addr),
         .cmd_cke(seq_cmd_cke), .cmd_reset_n(seq_cmd_reset_n), .cmd_odt(seq_cmd_odt),

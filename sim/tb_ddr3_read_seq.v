@@ -45,17 +45,17 @@ module tb_ddr3_read_seq;
     // change to either constant in the DUT is expected to require
     // updating this line too, not silently drift out of sync.
     localparam ACT_TO_RD_GAP_CYC = 3;         // TRCD_CYC(2)+1 - see rtl/soc/ddr3_read_seq.v's own header for why +1
-    localparam RD_TO_READ_START_GAP_CYC = 6;  // CL_CYC exactly
+    localparam RD_TO_READ_START_GAP_CYC = 3;  // CL_CYC exactly: CL = 6 CK = 3 sclk (Part 16: CK is twice sclk)
 
     // Part 14: PRECHARGE-all after every transaction. The exact gap is what
-    // the DUT commits to (one cycle of margin over the datasheet minimum,
-    // see rtl/soc/ddr3_read_seq.v's own header); the minimum is the
-    // datasheet's own number, tRTP = 4 CK, so this test
-    // fails both if the DUT drifts and if the DUT is ever set below the
-    // real requirement.
+    // the DUT commits to (the burst end plus one sclk of margin, see
+    // rtl/soc/ddr3_read_seq.v's own header); the minimum is the datasheet's
+    // own number, tRTP = 4 CK, which is 2 sclk (Part 16). The DUT is
+    // deliberately well above it, so a design margin and not a datasheet
+    // requirement is what the exact-gap check pins.
     localparam [2:0] CMD_PRE = 3'b010;
-    localparam RD_TO_PRE_GAP_CYC = 11;
-    localparam RD_TO_PRE_MIN_CYC = 4;
+    localparam RD_TO_PRE_GAP_CYC = 6;
+    localparam RD_TO_PRE_MIN_CYC = 2;
 
     // Every command on the pins, timestamped on one global cycle counter,
     // so a gap can be measured across two transactions.

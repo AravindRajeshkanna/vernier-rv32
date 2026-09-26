@@ -89,7 +89,7 @@ module tb_ddr3_wr_excl;
     wire        model_seq_done;
 
     ddr3_model #(.CLK_HZ(CLK_HZ)) PROTO (
-        .clk(clk), .ck(ddr3_ck),
+        .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
@@ -101,6 +101,7 @@ module tb_ddr3_wr_excl;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
+        .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
@@ -135,13 +136,20 @@ module tb_ddr3_wr_excl;
     wire w_accept_now = DUT.wseq_write_req && (DUT.WSEQ.state == 3'd0);
     wire r_accept_now = DUT.rseq_read_req  && (DUT.RSEQ.state == 3'd0);
 
-    always @(posedge DUT.sclk) begin
+    // The pins are sampled where the DRAM samples them, on CK's rising edge.
+    // Commands sit in the first of the two command slots per sclk (Part 16),
+    // so an sclk-edge sample would land on the phase-1 deselect instead.
+    always @(posedge ddr3_ck) begin
         if (!rst && calib_done) begin
             if (!ddr3_cs_n && !ddr3_ras_n &&  ddr3_cas_n &&  ddr3_we_n) act_pins <= act_pins + 1;
             if (!ddr3_cs_n &&  ddr3_ras_n && !ddr3_cas_n && !ddr3_we_n) wr_pins  <= wr_pins  + 1;
             if (!ddr3_cs_n &&  ddr3_ras_n && !ddr3_cas_n &&  ddr3_we_n) rd_pins  <= rd_pins  + 1;
             if (!ddr3_cs_n && !ddr3_ras_n &&  ddr3_cas_n && !ddr3_we_n) pre_pins <= pre_pins + 1;
+        end
+    end
 
+    always @(posedge DUT.sclk) begin
+        if (!rst && calib_done) begin
             if (w_accept_now) w_acc <= w_acc + 1;
             if (r_accept_now) r_acc <= r_acc + 1;
             if (write_req && !w_accept_now) w_ign <= w_ign + 1;

@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases synth_check_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2568,9 +2568,10 @@ sim_sdram: sim/sim_sdram.out
 # thing that exists before that: proving the real JEDEC power-up/mode-
 # register order and the real inter-command waits are honored, against
 # sim/ddr3_model.v's own real protocol checker.
-sim/sim_ddr3_init.out: sim/tb_ddr3_init.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+sim/sim_ddr3_init.out: sim/tb_ddr3_init.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
+    rtl/soc/ddr3_eclk_pll.v sim/ddr3_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_init.v rtl/soc/ddr3_init_seq.v \
-	    rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+	    rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_eclk_pll.v sim/ddr3_model.v
 
 sim_ddr3_init: sim/sim_ddr3_init.out
 	@cd sim && $(VVP) sim_ddr3_init.out $(VVP_DUMP) 2>&1 | tee ddr3_init.log
@@ -2743,9 +2744,9 @@ sim_ddr3_wr_excl: sim/sim_ddr3_wr_excl.out
 # legal controls at the exact minimum spacings so a too-strict rule fails
 # here instead.
 sim/sim_ddr3_model_banks.out: sim/tb_ddr3_model_banks.v rtl/soc/ddr3_init_seq.v \
-    rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+    rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_eclk_pll.v sim/ddr3_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_model_banks.v rtl/soc/ddr3_init_seq.v \
-	    rtl/soc/ddr3_phy_ecp5.v sim/ddr3_model.v
+	    rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_eclk_pll.v sim/ddr3_model.v
 
 sim_ddr3_model_banks: sim/sim_ddr3_model_banks.out
 	@cd sim && $(VVP) sim_ddr3_model_banks.out $(VVP_DUMP) 2>&1 | tee ddr3_model_banks.log
@@ -2776,6 +2777,54 @@ sim_ddr3_addr: sim/sim_ddr3_addr.out
 	@cd sim && $(VVP) sim_ddr3_addr.out $(VVP_DUMP) 2>&1 | tee ddr3_addr.log
 	@grep -q "DDR3 ADDRESS PATH TEST PASSED" sim/ddr3_addr.log || \
 	    { echo "sim_ddr3_addr FAILED"; exit 1; }
+
+# ---- DDR3 PHY clock and command phases (Phase 9 Stage 1, Part 16,
+# docs/roadmap.md) ----
+#
+# CK at the edge-clock rate (twice sclk), each command in exactly one CK
+# sample and always in the first of the two command slots per sclk - the
+# structure Lattice's own reference DDR3 write side uses (FPGA-TN-02035,
+# Figure 6.10). Until Part 16 CK ran at sclk's own rate against a data path
+# moving four UI per sclk; this test measured that (ratio 1.00) before the
+# fix and now holds it at 2.
+sim/sim_ddr3_phy_phases.out: sim/tb_ddr3_phy_phases.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
+    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_phy_phases.v rtl/soc/ddr3_ecp5_top.v \
+	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
+	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+
+sim_ddr3_phy_phases: sim/sim_ddr3_phy_phases.out
+	@cd sim && $(VVP) sim_ddr3_phy_phases.out $(VVP_DUMP) 2>&1 | tee ddr3_phy_phases.log
+	@grep -q "DDR3 PHY PHASES TEST PASSED" sim/ddr3_phy_phases.log || \
+	    { echo "sim_ddr3_phy_phases FAILED"; exit 1; }
+
+# ---- DDR3 synthesis branch, elaboration check (Phase 9 Stage 1, Part 16) ----
+#
+# Every DDR3 test runs the simulation branch: the `ifdef SYNTHESIS half of the
+# PHY, serdes and DQS files - the half that instantiates the real ECP5
+# primitives - had never been read by any tool. This elaborates it against
+# yosys's own ECP5 cell library with `hierarchy -check`, so a misspelled
+# primitive port, a wrong width or a missing primitive fails here. It catches
+# wrong WIRING, not wrong BEHAVIOUR: nothing here says the primitives put a
+# value where the design assumes, which needs a board.
+DDR3_SYNTH_SRCS = rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v \
+    rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v rtl/soc/ddr3_write_seq.v \
+    rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v
+
+synth_check_ddr3: $(DDR3_SYNTH_SRCS)
+	@YSHARE=$$(dirname $$(dirname $$(command -v yosys)))/share/yosys/ecp5/cells_bb.v; \
+	[ -f "$$YSHARE" ] || { echo "synth_check_ddr3: yosys ECP5 cell library not found at $$YSHARE"; exit 1; }; \
+	yosys -q -p "read_verilog -lib $$YSHARE; read_verilog -DSYNTHESIS -sv $(DDR3_SYNTH_SRCS); hierarchy -check -top ddr3_ecp5_top" \
+	    > sim/synth_check_ddr3.log 2>&1 || { grep -v "limited support for tri-state" sim/synth_check_ddr3.log; \
+	    echo "synth_check_ddr3 FAILED"; exit 1; }; \
+	echo "synth_check_ddr3: DDR3 synthesis branch elaborates (every primitive port resolves)"
 
 # ---- DDR3 DQS write-drive (Phase 9 Stage 1, Part 4, docs/roadmap.md) ----
 #
@@ -2873,7 +2922,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases synth_check_ddr3 \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \

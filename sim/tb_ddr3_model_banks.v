@@ -6,7 +6,7 @@
 // proof. Same "a testbench that can fail" discipline every other piece of
 // this project is held to.
 //
-// Nine independent model instances share one real init sequence (the same
+// Twelve independent model instances share one real init sequence (the same
 // ddr3_init_seq.v + ddr3_phy_ecp5.v that tb_ddr3_init.v uses) and then each
 // gets its own directed command stream on its own pins:
 //   - two LEGAL controls, one of them at the exact minimum spacings, so a
@@ -14,21 +14,26 @@
 //     correct controller
 //   - one stream per rule, each expected to trip exactly that rule and no
 //     other, identified by the model's own message
-// Every spacing below is in cycles between two sampled commands, from the
-// datasheet's own numbers (Micron 4Gb DDR3L, notes 33/34 and the tRTP
-// row), not from the model's own constants, so this test does not just
-// agree with the model by construction.
+// Every spacing below is in CK cycles between two sampled commands (since
+// Part 16 the model samples on CK's rising edge), from the datasheet's own
+// numbers (Micron 4Gb DDR3L, notes 33/34, the tRTP row and the tRAS row),
+// not from the model's own constants, so this test does not just agree
+// with the model by construction. Commands are set at CK's falling edge and
+// cleared at the next, so each is sampled at exactly one rising edge.
 `timescale 1ns/1ps
 module tb_ddr3_model_banks;
     localparam CLK_HZ     = 25_000_000;
     localparam CLK_PERIOD = 40;   // 25 MHz
-    localparam N          = 10;
+    localparam N          = 12;
 
-    // Datasheet minimums, in the design's own convention (a CK count is
-    // counted in sclk cycles): WRITE->PRECHARGE = CWL(6) + BL/2(4) + tWR(4),
-    // READ->PRECHARGE = tRTP(4).
-    localparam WR_TO_PRE = 14;
-    localparam RD_TO_PRE = 4;
+    // Datasheet minimums, in CK: WRITE->PRECHARGE = CWL(6) + BL/2(4) + tWR(4),
+    // READ->PRECHARGE = tRTP(4), ACTIVATE->PRECHARGE = tRAS (37.5 ns worst
+    // bin = 2 CK at 20 ns per CK).
+    localparam WR_TO_PRE  = 14;
+    localparam RD_TO_PRE  = 4;
+    localparam ACT_TO_PRE = 2;
+    // REFRESH -> next command: tRFC 260 ns for this 4Gb part = 13 CK at 20 ns.
+    localparam REF_TO_CMD = 13;
 
     localparam K_ACT = 0, K_WR = 1, K_RD = 2, K_PRE = 3, K_REF = 4;
 
@@ -55,8 +60,12 @@ module tb_ddr3_model_banks;
     wire [15:0] ddr3_a;
     wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
 
+    // The PHY's CK runs on the edge clock (Part 16), twice clk.
+    wire eclk, pll_sclk, pll_locked;
+    ddr3_eclk_pll PLL (.clk(clk), .eclk(eclk), .sclk(pll_sclk), .locked(pll_locked));
+
     ddr3_phy_ecp5 PHY (
-        .clk(clk), .rst(rst),
+        .clk(clk), .eclk(eclk), .rst(rst),
         .cmd_valid(cmd_valid), .cmd_cs_ras_cas_we(cmd_cs_ras_cas_we),
         .cmd_ba(cmd_ba), .cmd_addr(cmd_addr),
         .cmd_cke(cmd_cke), .cmd_reset_n(cmd_reset_n), .cmd_odt(cmd_odt),
@@ -85,7 +94,7 @@ module tb_ddr3_model_banks;
             wire        e;
             wire [511:0] m;
             ddr3_model #(.CLK_HZ(CLK_HZ)) MODEL (
-                .clk(clk), .ck(ddr3_ck),
+                .ck(ddr3_ck),
                 .cs_n (tb_live ? tb_cs_n[g]  : ddr3_cs_n),
                 .ras_n(tb_live ? tb_ras_n[g] : ddr3_ras_n),
                 .cas_n(tb_live ? tb_cas_n[g] : ddr3_cas_n),
@@ -116,7 +125,7 @@ module tb_ddr3_model_banks;
             endcase
             tb_ba[3*i +: 3]   <= bank;
             tb_a[16*i +: 16]  <= addr;
-            @(posedge clk);
+            @(negedge ddr3_ck);
             tb_cs_n[i]  <= 1'b1;
             tb_ras_n[i] <= 1'b1; tb_cas_n[i] <= 1'b1; tb_we_n[i] <= 1'b1;
         end
@@ -125,7 +134,7 @@ module tb_ddr3_model_banks;
     task next(input integer i, input integer spacing, input integer kind,
               input [2:0] bank, input [15:0] addr);
         begin
-            if (spacing > 1) repeat (spacing - 1) @(posedge clk);
+            if (spacing > 1) repeat (spacing - 1) @(negedge ddr3_ck);
             issue(i, kind, bank, addr);
         end
     endtask
@@ -163,7 +172,7 @@ module tb_ddr3_model_banks;
         while (!ready) @(posedge clk);
         repeat (700) @(posedge clk);   // clear of the model's own post-ZQCL wait
         tb_live = 1'b1;
-        @(posedge clk);
+        @(negedge ddr3_ck);
 
         // 0: legal, at the exact datasheet minimums
         issue(0, K_ACT, 3'd1, 16'h0123);
@@ -174,6 +183,8 @@ module tb_ddr3_model_banks;
         next (0, RD_TO_PRE, K_PRE, 3'd1, NO);       // single-bank PRECHARGE exactly at tRTP
         next (0,  1, K_PRE, 3'd1, NO);              // to an already-idle bank: a NOP, legal
         next (0,  1, K_REF, 3'd0, NO);
+        next (0, REF_TO_CMD, K_ACT, 3'd2, 16'h0044); // exactly tRFC after the REFRESH
+        next (0, ACT_TO_PRE, K_PRE, 3'd2, NO);      // ACTIVATE->PRECHARGE exactly at tRAS
 
         // 1: legal, several banks open at once, closed by PRECHARGE-all and
         // by per-bank PRECHARGEs, each followed by a REFRESH
@@ -182,7 +193,7 @@ module tb_ddr3_model_banks;
         next (1,  2, K_ACT, 3'd5, 16'h0030);
         next (1,  2, K_PRE, 3'd0, A10);
         next (1,  2, K_REF, 3'd0, NO);
-        next (1,  8, K_ACT, 3'd3, 16'h0040);
+        next (1, REF_TO_CMD, K_ACT, 3'd3, 16'h0040);
         next (1,  2, K_ACT, 3'd4, 16'h0050);
         next (1,  2, K_PRE, 3'd3, NO);
         next (1,  2, K_PRE, 3'd4, NO);
@@ -228,6 +239,14 @@ module tb_ddr3_model_banks;
         issue(9, K_ACT, 3'd1, 16'h0010);
         next (9,  5, K_ACT, 3'd1, 16'h0011);
 
+        // 10: PRECHARGE one CK after ACTIVATE - short of tRAS (2 CK)
+        issue(10, K_ACT, 3'd1, 16'h0010);
+        next (10, ACT_TO_PRE - 1, K_PRE, 3'd1, NO);
+
+        // 11: a command one CK short of tRFC after a REFRESH
+        issue(11, K_REF, 3'd0, NO);
+        next (11, REF_TO_CMD - 1, K_ACT, 3'd1, 16'h0010);
+
         repeat (30) @(posedge clk);
 
         expect_legal(0, "legal stream at the exact minimum spacings is accepted");
@@ -248,6 +267,10 @@ module tb_ddr3_model_banks;
                    "READ or WRITE to a bank that is not open");
         expect_msg(9, "ACTIVATE of a different row in an open bank is rejected",
                    "ACTIVATE to a bank that is already open (no PRECHARGE first)");
+        expect_msg(10, "PRECHARGE one CK after ACTIVATE (short of tRAS) is rejected",
+                   "PRECHARGE before tRAS elapsed after ACTIVATE");
+        expect_msg(11, "a command one CK short of tRFC after REFRESH is rejected",
+                   "command issued during tRFC after REFRESH (only NOP/DES allowed)");
 
         $display("");
         $display("---------------------------------------------");

@@ -14,8 +14,7 @@
 module ddr3_model #(
     parameter CLK_HZ = 25_000_000
 )(
-    input  wire        clk,
-    input  wire        ck,        // ddr3_ck, sampled for real toggling activity only
+    input  wire        ck,        // ddr3_ck: every command is sampled on its rising edge, and every count below is in CK cycles
     input  wire        cs_n,
     input  wire        ras_n,
     input  wire        cas_n,
@@ -30,7 +29,11 @@ module ddr3_model #(
     output reg  [511:0] error_msg,
     output reg           seq_done   // real MR2->MR3->MR1->MR0->ZQCL order completed, timing respected
 );
-    `define NS2CYC(ns) (((ns) * (CLK_HZ / 1000) + 999_999) / 1_000_000)
+    // CLK_HZ is sclk's rate, as every caller passes it; CK runs at twice that
+    // (rtl/soc/ddr3_phy_ecp5.v, Part 16), and this file samples and counts on
+    // CK, so a nanosecond figure becomes cycles at the CK rate.
+    localparam CK_HZ = 2 * CLK_HZ;
+    `define NS2CYC(ns) (((ns) * (CK_HZ / 1000) + 999_999) / 1_000_000)
     localparam RESET_MIN_CYC = `NS2CYC(200_000);  // tRESET minimum - real JEDEC requirement
     localparam MRD_MIN_CYC   = 4;                  // tMRD minimum, cycle count not ns
     localparam ZQINIT_MIN_CYC = 512;               // tZQinit/tDLLK minimum, cycle count not ns
@@ -40,17 +43,18 @@ module ddr3_model #(
     localparam RFC_MIN_CYC   = `NS2CYC(260);
 
     // Part 14: per-bank state. Values are from the same datasheet (4Gb
-    // DDR3L, speed-bin tables and the timing-parameter table). Counted the
-    // way rtl/soc/ddr3_write_seq.v and ddr3_read_seq.v already count CL and
-    // CWL: a CK-count minimum is counted in sclk cycles, i.e. as if CK were
-    // sclk. That is conservative if CK is in fact faster than sclk (the
-    // minimum in real time only gets shorter), and it is the convention the
-    // whole design already uses - named here rather than left implied.
-    // tRCD (13.5-15 ns), tRAS (34-37.5 ns), tRP (13.125-15 ns) and tRC
-    // (47.9-52.5 ns) are deliberately NOT checked: at 25 MHz a cycle is
-    // 40 ns, so each is under one cycle (tRC's two cycles are already
-    // implied by tRAS plus tRP), and a rule that cannot fire cannot be
-    // tested. They become necessary if sclk is ever raised.
+    // DDR3L, speed-bin tables and the timing-parameter table). Since Part 16
+    // every count here is in real CK cycles, sampled on CK's own rising edge:
+    // a CK-count minimum (tRTP, tWR in DLL-off mode, CWL, BL/2) is the
+    // datasheet's number as written, and a nanosecond figure goes through
+    // NS2CYC at the CK rate (20 ns per CK at sclk = 25 MHz).
+    // tRAS (34-37.5 ns) is two CK and IS checked - it can fire, because the
+    // self-test can place a PRECHARGE one CK after an ACTIVATE. tRCD
+    // (13.5-15 ns) and tRP (13.125-15 ns) are one CK each, so the closest
+    // two commands can be is already legal and a rule for them cannot fire;
+    // tRC (47.9-52.5 ns, three CK) is tRAS plus tRP, implied by the two.
+    // A rule that cannot fire cannot be tested, so those three are not here.
+    localparam RAS_MIN_CYC = `NS2CYC(38);   // tRAS, worst bin 37.5 ns
     localparam RTP_MIN_CYC = 4;             // tRTP = greater of 4CK or 7.5 ns
     localparam WR_REC_CYC  = 4;             // tWR = greater of 4CK or 15 ns in DLL-off mode (note 33)
     localparam CWL_CYC     = 6;             // MR2, DLL-off
@@ -112,7 +116,7 @@ module ddr3_model #(
     // Real reset-low duration tracking - independent of ddr3_init_seq.v's
     // own internal counter, so a bug in that counter cannot also hide
     // itself from this check.
-    always @(posedge clk) begin
+    always @(posedge ck) begin
         if (!reset_n) begin
             reset_low_cnt <= reset_low_cnt + 1;
             reset_was_low <= 1'b1;
@@ -124,7 +128,7 @@ module ddr3_model #(
         end
     end
 
-    always @(posedge clk) begin
+    always @(posedge ck) begin
         since_last_cmd <= since_last_cmd + 1;
         since_ref      <= since_ref + 1;
 
@@ -239,14 +243,16 @@ module ddr3_model #(
     // REFRESH needs every bank precharged (Figure 40 shows PRECHARGE-all
     // then tRP ahead of it). A PRECHARGE to a bank with no open row is a NOP.
     reg        bank_open    [0:7];
+    integer    since_act    [0:7];
     integer    since_rd     [0:7];
     integer    since_wr     [0:7];
     reg        rd_after_act [0:7];
     reg        wr_after_act [0:7];
     integer    bi;
 
-    always @(posedge clk) begin
+    always @(posedge ck) begin
         for (bi = 0; bi < 8; bi = bi + 1) begin
+            since_act[bi] <= since_act[bi] + 1;
             since_rd[bi]  <= since_rd[bi]  + 1;
             since_wr[bi]  <= since_wr[bi]  + 1;
         end
@@ -256,6 +262,7 @@ module ddr3_model #(
                 if (bank_open[ba])
                     fail("ACTIVATE to a bank that is already open (no PRECHARGE first)");
                 bank_open[ba]    <= 1'b1;
+                since_act[ba]    <= 0;
                 rd_after_act[ba] <= 1'b0;
                 wr_after_act[ba] <= 1'b0;
             end else if (is_rd || is_wr) begin
@@ -272,6 +279,8 @@ module ddr3_model #(
                 for (bi = 0; bi < 8; bi = bi + 1) begin
                     if (a[10] || (bi == ba)) begin
                         if (bank_open[bi]) begin
+                            if (since_act[bi] + 1 < RAS_MIN_CYC)
+                                fail("PRECHARGE before tRAS elapsed after ACTIVATE");
                             if (rd_after_act[bi] && (since_rd[bi] + 1 < RTP_MIN_CYC))
                                 fail("PRECHARGE before tRTP elapsed after READ");
                             if (wr_after_act[bi] && (since_wr[bi] + 1 < WR_TO_PRE_MIN_CYC))
@@ -293,7 +302,7 @@ module ddr3_model #(
         for (bi = 0; bi < 8; bi = bi + 1) begin
             bank_open[bi] = 1'b0;
             rd_after_act[bi] = 1'b0; wr_after_act[bi] = 1'b0;
-            since_rd[bi] = 0; since_wr[bi] = 0;
+            since_act[bi] = 0; since_rd[bi] = 0; since_wr[bi] = 0;
         end
         error           = 1'b0;
         error_msg       = "";

@@ -92,7 +92,7 @@ module tb_ddr3_addr;
     wire        model_seq_done;
 
     ddr3_model #(.CLK_HZ(CLK_HZ)) PROTO (
-        .clk(clk), .ck(ddr3_ck),
+        .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
@@ -104,6 +104,7 @@ module tb_ddr3_addr;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
+        .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
@@ -119,11 +120,13 @@ module tb_ddr3_addr;
     endgenerate
     assign ddr3_dqs = mem_dq_oe ? mem_dqs_o : 1'bz;
 
-    // ---- what actually appeared on the real command pins ----
+    // ---- what actually appeared on the real command pins, sampled on CK's
+    // rising edge where the DRAM samples them (Part 16: commands sit in the
+    // first of two slots per sclk) ----
     integer act_n = 0, col_n = 0, refresh_cmds = 0;
     reg [2:0]  pin_act_ba = 3'bx, pin_col_ba = 3'bx;
     reg [15:0] pin_act_a  = 16'bx, pin_col_a  = 16'bx;
-    always @(posedge DUT.sclk) begin
+    always @(posedge ddr3_ck) begin
         if (!rst && calib_done) begin
             if (!ddr3_cs_n && !ddr3_ras_n &&  ddr3_cas_n &&  ddr3_we_n) begin
                 act_n      <= act_n + 1;
