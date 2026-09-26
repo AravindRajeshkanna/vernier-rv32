@@ -7,13 +7,12 @@
 // before either command sequencer is allowed to start - see
 // ddr3_ecp5_top.v's own header).
 //
-// Real, honestly scoped: sim/ddr3_dq_model.v is still the same single-
-// stored-location model every part through Part 8 already used - it
-// does not address-decode `write_bank`/`write_row`/`write_col` at all,
-// so this test proves the real command *timing and wiring* (does the
-// write-drive/DQ-drive/capture mechanism fire at the right real cycle
-// relative to a genuine ACT+WR/ACT+RD sequence), not a real multi-
-// location memory array. A real memory model is later, separate work.
+// Real, honestly scoped: this test writes and reads back ONE location, so
+// it proves the real command *timing and wiring* (does the write-drive/
+// DQ-drive/capture mechanism fire at the right real cycle relative to a
+// genuine ACT+WR/ACT+RD sequence). That the bank, row and column reach the
+// right cell is Part 15's own test (sim/tb_ddr3_addr.v), against a memory
+// model that now decodes them.
 `timescale 1ns/1ps
 module tb_ddr3_cmd_seq;
     localparam CLK_HZ    = 25_000_000;
@@ -101,6 +100,8 @@ module tb_ddr3_cmd_seq;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
         .wr_d0(tap_wr_data), .wr_en(tap_write_start),
         .read_active(tap_read_active),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)

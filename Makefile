@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2752,6 +2752,31 @@ sim_ddr3_model_banks: sim/sim_ddr3_model_banks.out
 	@grep -q "DDR3 MODEL BANK RULES TEST PASSED" sim/ddr3_model_banks.log || \
 	    { echo "sim_ddr3_model_banks FAILED"; exit 1; }
 
+# ---- DDR3 address path, decoded memory (Phase 9 Stage 1, Part 15,
+# docs/roadmap.md) ----
+#
+# sim/ddr3_dq_model.v was one stored byte through Part 14, so a bug in the
+# bank, row or column path would have passed every DDR3 test. It now decodes
+# them the way the part does, and this test writes distinct data across a
+# spread of banks, rows and columns, reads it all back, and checks the
+# address that reached the real command pins.
+sim/sim_ddr3_addr.out: sim/tb_ddr3_addr.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
+    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_addr.v rtl/soc/ddr3_ecp5_top.v \
+	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
+	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
+
+sim_ddr3_addr: sim/sim_ddr3_addr.out
+	@cd sim && $(VVP) sim_ddr3_addr.out $(VVP_DUMP) 2>&1 | tee ddr3_addr.log
+	@grep -q "DDR3 ADDRESS PATH TEST PASSED" sim/ddr3_addr.log || \
+	    { echo "sim_ddr3_addr FAILED"; exit 1; }
+
 # ---- DDR3 DQS write-drive (Phase 9 Stage 1, Part 4, docs/roadmap.md) ----
 #
 # rtl/soc/ddr3_dqs_write_ecp5.v's own real preamble/active/postamble
@@ -2848,7 +2873,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \

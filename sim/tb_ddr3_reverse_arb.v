@@ -110,6 +110,8 @@ module tb_ddr3_reverse_arb;
 
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
         .wr_d0(DUT.wr_data_final), .wr_en(DUT.write_start_final),
         .read_active(DUT.read_active_final),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_o(mem_dqs_o)
@@ -238,7 +240,7 @@ module tb_ddr3_reverse_arb;
         begin
             wait_fall;
             acc0 = w_accepted; ign0 = w_ignored; done0 = w_done; bnd0 = w_boundary;
-            stored0 = MEM.stored;
+            stored0 = MEM.peek(write_bank, write_row, write_col);
             write_data <= data;
             repeat (k - 1) @(posedge clk);
             if (polite) begin
@@ -260,14 +262,14 @@ module tb_ddr3_reverse_arb;
             if (polite) begin
                 if (!accepted)                   round_fail("write polite", k, "request dropped");
                 else if ((w_done - done0) != 1)  round_fail("write polite", k, "accepted but did not complete once");
-                else if (MEM.stored !== data)    round_fail("write polite", k, "wrong data reached memory");
+                else if (MEM.peek(write_bank, write_row, write_col) !== data)    round_fail("write polite", k, "wrong data reached memory");
             end else begin
                 if (accepted) begin
                     if ((w_done - done0) != 1)   round_fail("write blind", k, "accepted but did not complete once");
-                    else if (MEM.stored !== data) round_fail("write blind", k, "accepted but wrong/stale data reached memory");
+                    else if (MEM.peek(write_bank, write_row, write_col) !== data) round_fail("write blind", k, "accepted but wrong/stale data reached memory");
                 end else begin
                     if ((w_done - done0) != 0)   round_fail("write blind", k, "ignored but a write still completed");
-                    else if (MEM.stored !== stored0) round_fail("write blind", k, "ignored but memory changed");
+                    else if (MEM.peek(write_bank, write_row, write_col) !== stored0) round_fail("write blind", k, "ignored but memory changed");
                 end
             end
             if (model_error) round_fail(polite ? "write polite" : "write blind", k, "protocol checker error");
@@ -300,11 +302,11 @@ module tb_ddr3_reverse_arb;
             if (polite) begin
                 if (!accepted)                      round_fail("read polite", k, "request dropped");
                 else if ((r_valid - valid0) != 1)   round_fail("read polite", k, "accepted but read_data_valid not seen once");
-                else if (r_last_data !== MEM.stored) round_fail("read polite", k, "wrong data read back");
+                else if (r_last_data !== MEM.peek(write_bank, write_row, write_col)) round_fail("read polite", k, "wrong data read back");
             end else begin
                 if (accepted) begin
                     if ((r_valid - valid0) != 1)    round_fail("read blind", k, "accepted but read_data_valid not seen once");
-                    else if (r_last_data !== MEM.stored) round_fail("read blind", k, "accepted but wrong data read back");
+                    else if (r_last_data !== MEM.peek(write_bank, write_row, write_col)) round_fail("read blind", k, "accepted but wrong data read back");
                 end else begin
                     if ((r_valid - valid0) != 0)    round_fail("read blind", k, "ignored but read data still came back");
                 end
@@ -326,7 +328,8 @@ module tb_ddr3_reverse_arb;
 
         // A known value in memory before any read round, so the polite
         // and blind read sweeps are checked against something this test
-        // itself put there (the memory model is a single stored location).
+        // itself put there. Every request here uses one location (bank 1,
+        // row 1, column 1); the address path itself is tb_ddr3_addr.v's.
         round_no = 0;
         for (k = K_FIRST; k <= K_LAST; k = k + 1) begin
             write_round(k, 1'b1, 8'h07 + 8'd3 * round_no[7:0]);
