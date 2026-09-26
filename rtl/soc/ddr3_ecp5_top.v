@@ -266,7 +266,12 @@ module ddr3_ecp5_top (
     );
 
     // Held until the PLL's own outputs are real and stable - see header.
+    // Every register here resets it asynchronously; the one synchronous read is the
+    // simulation PHY's falling-edge deselect (rtl/soc/ddr3_phy_ecp5.v, sim branch), which
+    // is what SYNCASYNCNET reports.
+    /* verilator lint_off SYNCASYNCNET */
     wire rst_all = rst || !pll_locked;
+    /* verilator lint_on SYNCASYNCNET */
 
     wire        seq_cmd_valid;
     wire [2:0]  seq_cmd_cs_ras_cas_we;

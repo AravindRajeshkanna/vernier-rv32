@@ -44,8 +44,13 @@ module tb_ddr3_dq_window_rules;
     reg [N-1:0]      we_n  = {N{1'b1}};
     reg [3*N-1:0]    ba    = {3*N{1'b0}};
     reg [16*N-1:0]   a     = {16*N{1'b0}};
-    reg [8*N-1:0]    dq    = {8*N{1'bz}};
-    reg [N-1:0]      dqs   = {N{1'bz}};
+    // DQ and DQS reach each model instance through explicit output enables. The model's
+    // pin ports are `inout` (so Verilator accepts a tri-state net into them - see
+    // verilator_ddr3 in the Makefile), and an inout port must connect to a net, not a reg.
+    reg [8*N-1:0]    dq_v   = {8*N{1'b0}};
+    reg [N-1:0]      dq_oe  = {N{1'b0}};
+    reg [N-1:0]      dqs_v  = {N{1'b0}};
+    reg [N-1:0]      dqs_oe = {N{1'b0}};
 
     wire [N-1:0]     errs;
     wire [512*N-1:0] msgs;
@@ -54,6 +59,8 @@ module tb_ddr3_dq_window_rules;
     genvar g;
     generate
         for (g = 0; g < N; g = g + 1) begin : M
+            wire        dqs_pin;
+            wire [7:0]  dq_pin;
             wire        e;
             wire [511:0] m;
             wire [7:0]  mq_o;
@@ -62,11 +69,13 @@ module tb_ddr3_dq_window_rules;
                 .sclk(clk), .rst(rst), .ck(ck),
                 .cs_n(cs_n[g]), .ras_n(ras_n[g]), .cas_n(cas_n[g]), .we_n(we_n[g]),
                 .ba(ba[3*g +: 3]), .a(a[16*g +: 16]),
-                .dq_pin(dq[8*g +: 8]), .dqs_pin(dqs[g]),
+                .dq_pin(dq_pin), .dqs_pin(dqs_pin),
                 .read_active(1'b0),
                 .mem_dq_o(mq_o), .mem_dq_oe(mq_oe), .mem_dqs_oe(mqs_oe), .mem_dqs_o(mqs_o),
                 .dq_error(e), .dq_error_msg(m)
             );
+            assign dqs_pin = dqs_oe[g] ? dqs_v[g] : 1'bz;
+            assign dq_pin  = dq_oe[g] ? dq_v[8*g +: 8] : 8'hzz;
             assign errs[g] = e;
             assign msgs[512*g +: 512] = m;
             // peek() reads the model's internal store, so it has to be re-evaluated as that
@@ -169,8 +178,10 @@ module tb_ddr3_dq_window_rules;
             for (i = 0; i < N; i = i + 1) begin
                 if (t >= w) begin
                     pv = pattern(i, t - w);
-                    dqs[i]         <= (pv[1:0] == 2'd0) ? 1'b0 : (pv[1:0] == 2'd1) ? 1'b1 : 1'bz;
-                    dq[8*i +: 8]   <= pv[10] ? pv[9:2] : 8'hzz;
+                    dqs_oe[i]      <= (pv[1:0] != 2'd2);
+                    dqs_v[i]       <= (pv[1:0] == 2'd1);
+                    dq_oe[i]       <= pv[10];
+                    dq_v[8*i +: 8] <= pv[9:2];
                 end
             end
             // ---- command slot 1: always a deselect, as the PHY drives it ----

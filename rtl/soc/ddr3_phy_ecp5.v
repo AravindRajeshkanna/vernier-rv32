@@ -180,7 +180,12 @@ module ddr3_phy_ecp5 (
     assign ddr3_ck   = eclk;
     assign ddr3_ck_n = ~eclk;
 
+    // Written on both sclk edges - phase 0 on the rising edge, phase 1 on the falling one -
+    // which is what a two-slots-per-sclk output primitive does, and exactly what MULTIDRIVEN
+    // reports: a register with drivers on different clocks.
+    /* verilator lint_off MULTIDRIVEN */
     reg cs_n_pin;
+    /* verilator lint_on MULTIDRIVEN */
     always @(posedge clk or posedge rst) begin
         if (rst) cs_n_pin <= 1'b1;
         else     cs_n_pin <= cs_n_eff;     // phase 0

@@ -314,7 +314,11 @@ module tb_ddr3_addr;
         add_loc(3'd2, 16'h0001, 16'h0001);          // an unwritten bank (bank 2 was only ever used at row 2AAA)
         for (i = nrows; i < nloc; i = i + 1) begin
             op(1'b0, i, 8'h00, "unwritten");
+`ifndef VERILATOR
+            // (Icarus only: a two-state simulator has no unknown value to return, so this
+            // check cannot be made under Verilator - see verilator_ddr3 in the Makefile.)
             if (r_data !== 8'hxx) loc_fail("unwritten", i, "an unwritten location did not read back as x");
+`endif
         end
 
         // Phase 5: bits outside the part's address decode are not address

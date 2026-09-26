@@ -527,6 +527,43 @@ jobs:
         run: |
           grep -qE "formal: [0-9]+ proved, 0 refuted" formal.log
 
+      # The DDR3 PHY's synthesis branch: elaborates every ECP5 primitive it
+      # instantiates against yosys's own cell library, so a port that does not exist
+      # or a width that does not match fails here. Verilator cannot do this (it has
+      # no models of those cells), and no other job has yosys.
+      - name: DDR3 PHY, synthesis branch elaborates
+        run: make synth_check_ddr3
+
+  # ---------------------------------------------------------------------
+  # The DDR3 PHY (Phase 9, Stage 1): every simulation test, the same tests again
+  # under Verilator, and Verilator lint of the simulation branch. No RISC-V
+  # toolchain. Until Part 19 nothing here ran any of it in CI - eighteen slices
+  # had been gated only by whatever a contributor ran locally.
+  #
+  # `make ddr3_check_sim` is the one place the list of tests lives, and
+  # `make verify` runs it too. The yosys half, `synth_check_ddr3`, is a step of the
+  # `formal` job instead, because oss-cad-suite puts its own bundled iverilog and
+  # verilator first on PATH and this job wants the apt versions the other jobs use.
+  #
+  # -k so that every failing test is reported, not just the first; -j because each
+  # test has its own build directory and log.
+  # ---------------------------------------------------------------------
+  ddr3:
+    name: DDR3 PHY (Icarus + Verilator)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/iverilog
+
+      - uses: ./.github/actions/verilator
+
+      - name: DDR3 simulation tests, Verilator runs and lint
+        run: |
+          set -o pipefail
+          make -k -j4 ddr3_check_sim 2>&1 | tee ddr3.log
+
   # ---------------------------------------------------------------------
   # Bill of materials: SBOM (software) and HBOM (hardware), CycloneDX 1.5
   # JSON. No RISC-V toolchain - bom/gen_sbom.py and bom/gen_hbom.py are

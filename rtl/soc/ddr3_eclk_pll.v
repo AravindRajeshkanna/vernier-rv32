@@ -95,7 +95,8 @@ module ddr3_eclk_pll #(
     // tying sclk directly to clk is the simpler, exactly equivalent
     // behavioral stand-in - no separate divider needed since there is
     // nothing here to divide).
-    reg eclk_r = 1'b0;
+    reg eclk_r;
+    initial eclk_r = 1'b0;
     always #(CLK_PERIOD_NS / 4) eclk_r = ~eclk_r;
     assign eclk = eclk_r;
     assign sclk = clk;

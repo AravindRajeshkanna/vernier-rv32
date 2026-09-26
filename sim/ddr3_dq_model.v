@@ -114,9 +114,13 @@ module ddr3_dq_model #(
     input  wire [2:0] ba,
     input  wire [15:0] a,
 
-    // the resolved DQ and DQS pins - what the DRAM sees when the controller drives
-    input  wire [7:0] dq_pin,
-    input  wire       dqs_pin,
+    // the resolved DQ and DQS pins - what the DRAM sees when the controller drives.
+    // `inout`, though this module never drives them (its own drive is the mem_* outputs
+    // below): Verilator rejects a tri-state net connected to an `input` port and accepts
+    // it on an `inout`, and reads high-Z correctly through one. Icarus needs a net, not a
+    // reg, on the other side of an inout - see sim/tb_ddr3_dq_window_rules.v.
+    inout  wire [7:0] dq_pin,
+    inout  wire       dqs_pin,
 
     input  wire       read_active,
     output reg  [7:0] mem_dq_o,
