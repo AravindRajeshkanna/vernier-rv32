@@ -184,7 +184,7 @@ declaring a winner.
   on anything - just not yet started, gated on whether a real measurement
   of that bus's own contention under multi-master load ever justifies it.
   Phase 9 (DDR) is no longer blocked either - a real target (ECPIX-5) is
-  adopted, and twenty real, gated, mutation-tested PHY slices exist in
+  adopted, and twenty-one real, gated, mutation-tested PHY slices exist in
   simulation, including a first real command-driven read/write round
   trip, refresh arbitrated against write/read in both directions, at
   most one transaction ever in flight, every transaction closing its
@@ -193,7 +193,8 @@ declaring a winner.
   does, a write burst that lands where the DRAM's write latency says, and a
   memory model that answers a read at the DRAM's own read latency, and the
   same tests under a second simulator and in CI, and a bounded formal
-  proof of the controller's arbitration and refresh gating -
+  proof of the controller's arbitration and refresh gating, and
+  place-and-route on the real device with the board's DDR3 pins -
   a model of the data path that is not yet hardware-faithful,
   measured and recorded as such; real hardware bring-up is what remains
   open, not a board decision.

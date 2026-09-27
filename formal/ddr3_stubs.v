@@ -133,8 +133,12 @@ module ddr3_dqs_ecp5 (
     output wire       dqsw270,
     output wire       datavalid,
     output wire       burstdet,
-    output wire       dll_locked
+    output wire       dll_locked,
+    output wire [2:0] rdpntr,
+    output wire [2:0] wrpntr
 );
+    assign rdpntr     = 3'b0;
+    assign wrpntr     = 3'b0;
     assign dqsr90     = 1'b0;
     assign dqsw       = 1'b0;
     assign dqsw270    = 1'b0;
@@ -152,10 +156,12 @@ module ddr3_dqs_write_ecp5 (
     input  wire write_start,
     output wire dqs_o,
     output wire dqs_oe,
+    output wire dqs_t,
     output wire burst_active
 );
     assign dqs_o        = 1'b0;
     assign dqs_oe       = 1'b0;
+    assign dqs_t        = 1'b1;
     assign burst_active = 1'b0;
     wire _unused_ok = &{1'b0, sclk, eclk, dqsw, rst, write_start, 1'b0};
 endmodule
@@ -168,11 +174,14 @@ module ddr3_dq_serdes_ecp5 #(
     input  wire                  rst,
     input  wire                  dqsr90,
     input  wire                  dqsw270,
+    input  wire [2:0]            rdpntr,
+    input  wire [2:0]            wrpntr,
     input  wire [DQ_WIDTH-1:0]   wr_d3, wr_d2, wr_d1, wr_d0,
     input  wire                  wr_en,
     output wire [DQ_WIDTH-1:0]   rd_q3, rd_q2, rd_q1, rd_q0,
     output wire [DQ_WIDTH-1:0]   dq_o,
     output wire [DQ_WIDTH-1:0]   dq_oe,
+    output wire [DQ_WIDTH-1:0]   dq_t,
     input  wire [DQ_WIDTH-1:0]   dq_i
 );
     assign rd_q3 = {DQ_WIDTH{1'b0}};
@@ -181,6 +190,7 @@ module ddr3_dq_serdes_ecp5 #(
     assign rd_q0 = {DQ_WIDTH{1'b0}};
     assign dq_o  = {DQ_WIDTH{1'b0}};
     assign dq_oe = {DQ_WIDTH{1'b0}};
+    assign dq_t  = {DQ_WIDTH{1'b1}};
     wire _unused_ok = &{1'b0, sclk, eclk, rst, dqsr90, dqsw270, wr_d3, wr_d2, wr_d1,
-                        wr_d0, wr_en, dq_i, 1'b0};
+                        wr_d0, wr_en, dq_i, rdpntr, wrpntr, 1'b0};
 endmodule

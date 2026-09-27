@@ -449,6 +449,8 @@ module ddr3_ecp5_top (
     end
 
     wire dqsr90, dqsw, dqsw270, burstdet;
+    wire [2:0] rdpntr, wrpntr;   // DQSBUFM's read-FIFO pointers, to every IDDRX2DQA
+    wire dqs_pad_in;             // what the DQS pad presents to the DQSBUFM
 
     // Real read_active mux - mutually exclusive the same way the
     // command mux above is: CALIB's own read_active only fires during
@@ -457,27 +459,37 @@ module ddr3_ecp5_top (
 
     ddr3_dqs_ecp5 DQS (
         .eclk(eclk), .sclk(sclk), .rst(rst_all),
-        .dqs_pad_i(ddr3_dqs), .read_active(read_active_final), .readclksel(readclksel),
+        .dqs_pad_i(dqs_pad_in), .read_active(read_active_final), .readclksel(readclksel),
         .dqsr90(dqsr90), .dqsw(dqsw), .dqsw270(dqsw270),
-        .datavalid(datavalid), .burstdet(burstdet), .dll_locked(dll_locked)
+        .datavalid(datavalid), .burstdet(burstdet), .dll_locked(dll_locked),
+        .rdpntr(rdpntr), .wrpntr(wrpntr)
     );
 
     // Part 5/9: real DQS write-drive, triggered by whichever of
     // CALIB's own wr_en or WSEQ's own write_start fires - mutually
     // exclusive by the same real sequencing (calibration completes
     // before any real command-driven write can start).
-    wire dqs_wr_o, dqs_wr_oe, dq_burst;
+    wire dqs_wr_o, dqs_wr_oe, dqs_wr_t, dq_burst;
     wire write_start_final = wr_en | wseq_write_start;
 
     ddr3_dqs_write_ecp5 DQS_WR (
         .sclk(sclk), .eclk(eclk), .dqsw(dqsw), .rst(rst_all),
         .write_start(write_start_final),
-        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe), .burst_active(dq_burst)
+        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe), .dqs_t(dqs_wr_t), .burst_active(dq_burst)
     );
 
-    assign ddr3_dqs = dqs_wr_oe ? dqs_wr_o : 1'bz;
+`ifdef SYNTHESIS
+    // Part 21: the pad is a BB (bidirectional buffer), driven by ODDRX2DQSB's Q and
+    // tri-stated by TSHX2DQSA's Q, which must reach T directly. The behavioural
+    // tri-state below is what simulation uses, and is what synthesis used to be given:
+    // it treated that Q as an enable, inverting the drive, and cannot be placed.
+    BB DQS_PAD (.I(dqs_wr_o), .T(dqs_wr_t), .O(dqs_pad_in), .B(ddr3_dqs));
+`else
+    assign ddr3_dqs   = dqs_wr_oe ? dqs_wr_o : 1'bz;
+    assign dqs_pad_in = ddr3_dqs;
+`endif
 
-    wire [7:0] dq_o, dq_oe, dq_i;
+    wire [7:0] dq_o, dq_oe, dq_t, dq_i;
     wire [7:0] rd_q3, rd_q2, rd_q1;
 
     // Part 17: DQ is enabled, and carries the byte, for exactly the cycles DQS is
@@ -499,11 +511,12 @@ module ddr3_ecp5_top (
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES (
         .sclk(sclk), .eclk(eclk), .rst(rst_all),
         .dqsr90(dqsr90), .dqsw270(dqsw270),
+        .rdpntr(rdpntr), .wrpntr(wrpntr),
         .wr_d3(dq_data_hold), .wr_d2(dq_data_hold),
         .wr_d1(dq_data_hold), .wr_d0(dq_data_hold),
         .wr_en(dq_burst),
         .rd_q3(rd_q3), .rd_q2(rd_q2), .rd_q1(rd_q1), .rd_q0(rd_q0),
-        .dq_o(dq_o), .dq_oe(dq_oe), .dq_i(dq_i)
+        .dq_o(dq_o), .dq_oe(dq_oe), .dq_t(dq_t), .dq_i(dq_i)
     );
 
     // Real read result. `rd_q0` is itself a registered capture of
@@ -543,8 +556,12 @@ module ddr3_ecp5_top (
     genvar i;
     generate
         for (i = 0; i < 8; i = i + 1) begin : DQ_PIN
+`ifdef SYNTHESIS
+            BB DQ_PAD (.I(dq_o[i]), .T(dq_t[i]), .O(dq_i[i]), .B(ddr3_dq[i]));   // see DQS_PAD
+`else
             assign ddr3_dq[i] = dq_oe[i] ? dq_o[i] : 1'bz;
             assign dq_i[i]    = ddr3_dq[i];
+`endif
         end
     endgenerate
 

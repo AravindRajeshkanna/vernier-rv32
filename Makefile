@@ -207,7 +207,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules verilator_ddr3 synth_check_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules verilator_ddr3 synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2962,6 +2962,16 @@ DDR3_SIM_TESTS = sim_ddr3_init sim_ddr3_data sim_ddr3_top \
 ddr3_check_sim: $(DDR3_SIM_TESTS) verilator_ddr3 lint-rtl-ddr3
 ddr3_check: ddr3_check_sim synth_check_ddr3
 
+# ---- DDR3 place-and-route probe (Phase 9 Stage 1, Part 21) ----
+#
+# Synthesis and place-and-route of the PHY against the ECPIX-5 device and its real DDR3 pins.
+# It found two defects no simulation could (a tri-state control with the wrong polarity and
+# unplaceable; read-FIFO pointers never wired) and it is what keeps them fixed. NOT in `make
+# verify`, for the reason the rest of the FPGA flow is not: it needs nextpnr-ecp5, which is in
+# YosysHQ's bundle and not in Homebrew. CI runs it, in the `formal` job, which has the bundle.
+pnr_probe_ddr3:
+	./fpga/synth/ddr3_pnr_probe.sh
+
 # ---- DDR3 synthesis branch, elaboration check (Phase 9 Stage 1, Part 16) ----
 #
 # Every DDR3 test runs the simulation branch: the `ifdef SYNTHESIS half of the
@@ -2979,7 +2989,9 @@ DDR3_SYNTH_SRCS = rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_i
 synth_check_ddr3: $(DDR3_SYNTH_SRCS)
 	@YSHARE=$$(dirname $$(dirname $$(command -v yosys)))/share/yosys/ecp5/cells_bb.v; \
 	[ -f "$$YSHARE" ] || { echo "synth_check_ddr3: yosys ECP5 cell library not found at $$YSHARE"; exit 1; }; \
-	yosys -q -p "read_verilog -lib $$YSHARE; read_verilog -DSYNTHESIS -sv $(DDR3_SYNTH_SRCS); hierarchy -check -top ddr3_ecp5_top" \
+	YIO=$$(dirname "$$YSHARE")/cells_io.vh; \
+	[ -f "$$YIO" ] || { echo "synth_check_ddr3: yosys ECP5 I/O cell library not found at $$YIO"; exit 1; }; \
+	yosys -q -p "read_verilog -lib $$YSHARE; read_verilog -lib $$YIO; read_verilog -DSYNTHESIS -sv $(DDR3_SYNTH_SRCS); hierarchy -check -top ddr3_ecp5_top" \
 	    > sim/synth_check_ddr3.log 2>&1 || { grep -v "limited support for tri-state" sim/synth_check_ddr3.log; \
 	    echo "synth_check_ddr3 FAILED"; exit 1; }; \
 	echo "synth_check_ddr3: DDR3 synthesis branch elaborates (every primitive port resolves)"

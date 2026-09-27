@@ -42,6 +42,11 @@ module ddr3_dqs_write_ecp5 (
 
     output wire        dqs_o,
     output wire        dqs_oe,
+    // The same control with the polarity the ECP5's pad takes: high = TRI-STATED. It is
+    // TSHX2DQSA's own Q (fed `!oe` below), and must reach the pad's T input directly - see
+    // the note on `dq_t` in rtl/soc/ddr3_dq_serdes_ecp5.v (Part 21). `dqs_oe` is the
+    // enable the simulation branch defines; in the synthesis branch it is derived, and unused.
+    output wire        dqs_t,
 
     // High exactly during the two active cycles (S_ACTIVE0, S_ACTIVE1) - the eight
     // beats of the BL8 burst. rtl/soc/ddr3_ecp5_top.v drives DQ from this, so DQ is
@@ -100,8 +105,9 @@ module ddr3_dqs_write_ecp5 (
     );
     TSHX2DQSA OE_DRV (
         .T1(!oe), .T0(!oe), .SCLK(sclk), .ECLK(eclk), .DQSW(dqsw), .RST(rst),
-        .Q(dqs_oe)
+        .Q(dqs_t)
     );
+    assign dqs_oe = !dqs_t;
 `else
     // Simulation. Neither ODDRX2DQSB nor TSHX2DQSA has a behavioral
     // model in this toolchain - the same real gap every other DDR-I/O
@@ -128,6 +134,7 @@ module ddr3_dqs_write_ecp5 (
     // uses.
     assign dqs_o  = d[3];
     assign dqs_oe = oe;
+    assign dqs_t  = !oe;
 
     wire _unused_ok = &{1'b0, eclk, dqsw, 1'b0};
 `endif

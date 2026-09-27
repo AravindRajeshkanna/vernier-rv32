@@ -25,6 +25,11 @@ module ddr3_dq_serdes_ecp5 #(
     input  wire                    rst,
     input  wire                    dqsr90,
     input  wire                    dqsw270,
+    // The read FIFO's pointers, from rtl/soc/ddr3_dqs_ecp5.v's DQSBUFM: on the ECP5
+    // every IDDRX2DQA must take its RDPNTR/WRPNTR from its byte lane's DQSBUFM
+    // (nextpnr refuses the design otherwise - Part 21). Unused in simulation.
+    input  wire [2:0]              rdpntr,
+    input  wire [2:0]              wrpntr,
 
     // ---- write side: one 4-bit-wide parallel word per pin per SCLK
     // cycle, D3 first in time, D0 last (matching IDDRX2DQA/ODDRX2DQA's
@@ -38,6 +43,14 @@ module ddr3_dq_serdes_ecp5 #(
     // ---- real pins ----
     output wire [DQ_WIDTH-1:0]     dq_o,
     output wire [DQ_WIDTH-1:0]     dq_oe,   // per-pin, though every bit is driven identically by wr_en - matching the out/enable/in split's own established shape
+    // The same control with the polarity the ECP5's pad takes: high = TRI-STATED.
+    // TSHX2DQA's Q is this, not `dq_oe` - the design feeds it `!wr_en`, so its Q is high
+    // when the pad should be released - and it must reach the pad's T input directly
+    // (nextpnr: "TSHX2DQA Q output must be connected only to a top level tristate").
+    // Until Part 21 the top used Q as if it were `dq_oe`, which inverts the drive and
+    // cannot be placed; no simulation could see it, because the simulation branch below
+    // defines `dq_oe` itself. In the synthesis branch `dq_oe` is derived, and unused.
+    output wire [DQ_WIDTH-1:0]     dq_t,
     input  wire [DQ_WIDTH-1:0]     dq_i
 );
     genvar i;
@@ -46,8 +59,8 @@ module ddr3_dq_serdes_ecp5 #(
 `ifdef SYNTHESIS
             IDDRX2DQA CAP (
                 .SCLK(sclk), .ECLK(eclk), .DQSR90(dqsr90), .D(dq_i[i]), .RST(rst),
-                .RDPNTR2(1'b0), .RDPNTR1(1'b0), .RDPNTR0(1'b0),
-                .WRPNTR2(1'b0), .WRPNTR1(1'b0), .WRPNTR0(1'b0),
+                .RDPNTR2(rdpntr[2]), .RDPNTR1(rdpntr[1]), .RDPNTR0(rdpntr[0]),
+                .WRPNTR2(wrpntr[2]), .WRPNTR1(wrpntr[1]), .WRPNTR0(wrpntr[0]),
                 .Q3(rd_q3[i]), .Q2(rd_q2[i]), .Q1(rd_q1[i]), .Q0(rd_q0[i]),
                 .QWL()
             );
@@ -58,8 +71,9 @@ module ddr3_dq_serdes_ecp5 #(
             );
             TSHX2DQA OE (
                 .T1(!wr_en), .T0(!wr_en), .SCLK(sclk), .ECLK(eclk),
-                .DQSW270(dqsw270), .RST(rst), .Q(dq_oe[i])
+                .DQSW270(dqsw270), .RST(rst), .Q(dq_t[i])
             );
+            assign dq_oe[i] = !dq_t[i];
 `else
             // Simulation. None of IDDRX2DQA/ODDRX2DQA/TSHX2DQA has a
             // behavioral model in this toolchain - the same real gap
@@ -91,6 +105,7 @@ module ddr3_dq_serdes_ecp5 #(
             assign rd_q0[i] = rd_q0_r;
             assign dq_o[i]  = wr_d0[i];
             assign dq_oe[i] = wr_en;
+            assign dq_t[i]  = !wr_en;
 `endif
         end
     endgenerate
