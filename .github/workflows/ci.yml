@@ -534,6 +534,13 @@ jobs:
       - name: DDR3 PHY, synthesis branch elaborates
         run: make synth_check_ddr3
 
+      # Full synthesis and place-and-route of the PHY against the ECPIX-5's device and its
+      # real DDR3 pins. It is what found the DQ/DQS tri-state and read-FIFO pointer defects
+      # (Part 21), which no simulation can see, and what keeps them fixed. Seconds, not the
+      # minutes of the SoC's own place-and-route, and this is the job that has nextpnr.
+      - name: DDR3 PHY places and routes on the ECPIX-5's device
+        run: make pnr_probe_ddr3
+
   # ---------------------------------------------------------------------
   # The DDR3 PHY (Phase 9, Stage 1): every simulation test, the same tests again
   # under Verilator, and Verilator lint of the simulation branch. No RISC-V

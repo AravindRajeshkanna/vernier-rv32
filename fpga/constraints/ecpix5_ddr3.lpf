@@ -1,0 +1,102 @@
+## ECPIX-5 (LambdaConcept), LFE5UM5G-85F, package CABGA554: the DDR3 pins this design uses.
+##
+## Source: two independently maintained platform descriptions of this board, which
+## agree pin for pin on every signal below (checked by comparing the two lists, not
+## assumed):
+##   - litex-boards, litex_boards/platforms/lambdaconcept_ecpix5.py, resource "ddram"
+##     (BSD-2-Clause, Florent Kermarrec / Enjoy-Digital)
+##   - amaranth-boards, amaranth_boards/ecpix5.py, resource "ddr3"
+##     (BSD-2-Clause, Amaranth project)
+## LambdaConcept's own documentation (docs.lambdaconcept.com/ecpix-5) has no DDR3 page,
+## so there is no vendor cross-check, and neither source is a schematic. No board is
+## attached to this project's development session: nothing here has been on hardware.
+##
+## The part is x16 (two byte lanes). This design has one lane, so only lane 0's DQ and
+## DQS are constrained. Pins the board has and this design does not yet drive:
+##   lane 1 DQ   R1 W3 T2 V3 U3 W1 T1 W2      UDQS (p)   V1  (n) U2
+##   data masks  U4 (lane 0)  U1 (lane 1)
+## Pins the design has and the board DOES NOT: CS# and RESET#. Neither source lists
+## them, so the FPGA cannot drive either on this board (CS# is presumably tied low
+## and RESET# handled on the board; neither is confirmed). Docs/roadmap.md's Part 21
+## account has what that means for the controller.
+## CK# and DQS# are the negative halves of differential pairs (J3, and U5); a differential
+## I/O standard locates only the positive pad, so neither appears below.
+##
+## Every SSTL15 pin needs its IO_TYPE stated: a pin left at the default (LVCMOS33)
+## puts 3.3 V and 1.5 V in one bank, which nextpnr rejects. Bank 6's VREF is pin N2.
+##
+## Used by:  ./fpga/synth/ddr3_pnr_probe.sh  (with fpga/constraints/ecpix5_ddr3_probe.lpf)
+
+## ---- address (A0..A14; the part has no A15) ----
+LOCATE COMP "ddr3_a[0]"  SITE "T5";
+LOCATE COMP "ddr3_a[1]"  SITE "M3";
+LOCATE COMP "ddr3_a[2]"  SITE "L3";
+LOCATE COMP "ddr3_a[3]"  SITE "V6";
+LOCATE COMP "ddr3_a[4]"  SITE "K2";
+LOCATE COMP "ddr3_a[5]"  SITE "W6";
+LOCATE COMP "ddr3_a[6]"  SITE "K3";
+LOCATE COMP "ddr3_a[7]"  SITE "L1";
+LOCATE COMP "ddr3_a[8]"  SITE "H2";
+LOCATE COMP "ddr3_a[9]"  SITE "L2";
+LOCATE COMP "ddr3_a[10]" SITE "N1";
+LOCATE COMP "ddr3_a[11]" SITE "J1";
+LOCATE COMP "ddr3_a[12]" SITE "M1";
+LOCATE COMP "ddr3_a[13]" SITE "K1";
+LOCATE COMP "ddr3_a[14]" SITE "H1";
+IOBUF PORT "ddr3_a[0]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[1]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[2]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[3]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[4]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[5]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[6]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[7]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[8]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[9]"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[10]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[11]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[12]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[13]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[14]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+
+## ---- bank address, command, clock enable, on-die termination ----
+LOCATE COMP "ddr3_ba[0]" SITE "U6";
+LOCATE COMP "ddr3_ba[1]" SITE "N3";
+LOCATE COMP "ddr3_ba[2]" SITE "N4";
+LOCATE COMP "ddr3_ras_n" SITE "T3";
+LOCATE COMP "ddr3_cas_n" SITE "P2";
+LOCATE COMP "ddr3_we_n"  SITE "R3";
+LOCATE COMP "ddr3_cke"   SITE "P1";
+LOCATE COMP "ddr3_odt"   SITE "P3";
+IOBUF PORT "ddr3_ba[0]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_ba[1]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_ba[2]" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_ras_n" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_cas_n" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_we_n"  IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_cke"   IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_odt"   IO_TYPE=SSTL15_I SLEWRATE=FAST;
+
+## ---- clock (differential; the negative pad, J3, follows) ----
+LOCATE COMP "ddr3_ck" SITE "H3";
+IOBUF PORT "ddr3_ck" IO_TYPE=SSTL15D_I SLEWRATE=FAST;
+
+## ---- byte lane 0: DQ and DQS (differential; the negative pad, U5, follows) ----
+LOCATE COMP "ddr3_dqs" SITE "V4";
+IOBUF PORT "ddr3_dqs" IO_TYPE=SSTL15D_I TERMINATION=OFF DIFFRESISTOR=100 SLEWRATE=FAST;
+LOCATE COMP "ddr3_dq[0]" SITE "T4";
+LOCATE COMP "ddr3_dq[1]" SITE "W4";
+LOCATE COMP "ddr3_dq[2]" SITE "R4";
+LOCATE COMP "ddr3_dq[3]" SITE "W5";
+LOCATE COMP "ddr3_dq[4]" SITE "R6";
+LOCATE COMP "ddr3_dq[5]" SITE "P6";
+LOCATE COMP "ddr3_dq[6]" SITE "P5";
+LOCATE COMP "ddr3_dq[7]" SITE "P4";
+IOBUF PORT "ddr3_dq[0]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dq[1]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dq[2]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dq[3]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dq[4]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dq[5]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dq[6]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dq[7]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;

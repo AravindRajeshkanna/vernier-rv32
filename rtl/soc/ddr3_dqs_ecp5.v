@@ -45,7 +45,13 @@ module ddr3_dqs_ecp5 (
     output wire        dqsw270,   // clocks ODDRX2DQA's own DQ write drive
     output wire        datavalid, // real DQSBUFM output - the calibration sweep's own pass/fail signal
     output wire        burstdet,  // real DQSBUFM output - confirms a real strobe transition was seen
-    output wire        dll_locked
+    output wire        dll_locked,
+
+    // The read FIFO's pointers. Every IDDRX2DQA in the byte lane must take its RDPNTR and
+    // WRPNTR from this DQSBUFM (nextpnr: "Port RDPNTR2 of cell ... must be driven by port
+    // RDPNTR2 of a DQSBUFM" - Part 21). Constant in simulation, which has no FIFO.
+    output wire [2:0]  rdpntr,
+    output wire [2:0]  wrpntr
 );
     wire ddrdel;
 
@@ -71,8 +77,8 @@ module ddr3_dqs_ecp5 (
         .RDLOADN(1'b0), .RDMOVE(1'b0), .RDDIRECTION(1'b1),
         .WRLOADN(1'b0), .WRMOVE(1'b0), .WRDIRECTION(1'b1),
         .DQSR90(dqsr90), .DQSW(dqsw), .DQSW270(dqsw270),
-        .RDPNTR2(), .RDPNTR1(), .RDPNTR0(),
-        .WRPNTR2(), .WRPNTR1(), .WRPNTR0(),
+        .RDPNTR2(rdpntr[2]), .RDPNTR1(rdpntr[1]), .RDPNTR0(rdpntr[0]),
+        .WRPNTR2(wrpntr[2]), .WRPNTR1(wrpntr[1]), .WRPNTR0(wrpntr[0]),
         .DATAVALID(datavalid), .BURSTDET(burstdet),
         .RDCFLAG(), .WRCFLAG()
     );
@@ -107,6 +113,8 @@ module ddr3_dqs_ecp5 (
     // instead (an honest, documented approximation, not a claim of
     // real DQS-referenced phase-shifting) - close enough for this
     // slice's own functional (not timing-accurate) simulation.
+    assign rdpntr  = 3'b0;
+    assign wrpntr  = 3'b0;
     assign dqsr90  = sclk;
     assign dqsw    = eclk;
     assign dqsw270 = ~eclk;

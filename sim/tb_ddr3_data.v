@@ -66,6 +66,7 @@ module tb_ddr3_data;
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES (
         .sclk(sclk), .eclk(eclk), .rst(rst),
         .dqsr90(dqsr90), .dqsw270(dqsw270),
+        .rdpntr(3'b0), .wrpntr(3'b0),
         .wr_d3(dq_data_hold), .wr_d2(dq_data_hold), .wr_d1(dq_data_hold), .wr_d0(dq_data_hold),
         .wr_en(dq_burst),
         .rd_q3(fpga_rd_q3), .rd_q2(fpga_rd_q2), .rd_q1(fpga_rd_q1), .rd_q0(fpga_rd_q0),

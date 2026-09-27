@@ -1,0 +1,34 @@
+## THROWAWAY PINS - NOT A PINOUT. Do not copy anything from this file into a board build.
+##
+## fpga/constraints/ecpix5_ddr3.lpf has every pin this board really has for the DDR3
+## controller. Four ports of rtl/soc/ddr3_ecp5_top.v have NO pin on this board - CS#,
+## RESET#, CK# (the negative half of the clock pair) and A15 - and nextpnr will not place
+## the design while a DDR-style output (which CS# and CK# are) has no pin. So that
+## place-and-route can go on to look at everything else, this file parks those four on
+## unrelated left-edge pins in banks 6 and 7, and gives the harness's three control pins
+## somewhere to sit. What those four ports need, on this board, is in docs/roadmap.md
+## (Part 21): they should not exist.
+##
+## Used by:  ./fpga/synth/ddr3_pnr_probe.sh
+
+## ---- harness control pins (right edge, 3.3 V) ----
+LOCATE COMP "clk" SITE "K23";
+IOBUF  PORT "clk" PULLMODE=NONE IO_TYPE=LVCMOS33;
+FREQUENCY PORT "clk" 25 MHZ;
+LOCATE COMP "rst"  SITE "T25";
+IOBUF  PORT "rst"  IO_TYPE=LVCMOS33;
+LOCATE COMP "din"  SITE "U25";
+IOBUF  PORT "din"  IO_TYPE=LVCMOS33;
+LOCATE COMP "dout" SITE "U24";
+IOBUF  PORT "dout" IO_TYPE=LVCMOS33;
+
+## ---- the four ports this board has no pin for ----
+## (Not N2: that is bank 6's VREF pin, and nextpnr refuses to use it for a signal.)
+LOCATE COMP "ddr3_cs_n"    SITE "H5";
+LOCATE COMP "ddr3_reset_n" SITE "K4";
+LOCATE COMP "ddr3_ck_n"    SITE "L4";
+LOCATE COMP "ddr3_a[15]"   SITE "N6";
+IOBUF PORT "ddr3_cs_n"    IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_reset_n" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_ck_n"    IO_TYPE=SSTL15_I SLEWRATE=FAST;
+IOBUF PORT "ddr3_a[15]"   IO_TYPE=SSTL15_I SLEWRATE=FAST;
