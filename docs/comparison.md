@@ -200,7 +200,10 @@ declaring a winner.
   into the real design, running at boot -
   a model of the data path that is not yet hardware-faithful,
   measured and recorded as such; real hardware bring-up is what remains
-  open, not a board decision.
+  open, not a board decision. Wishbone integration (Stage 2) has begun:
+  the maintainer's own 16-byte-burst interface decision is made, and a
+  standalone, mutation-tested `rtl/soc/wb_ddr.v` exists, not yet wired
+  into the SoC's own interconnect.
 
 ## 7. Picking one
 
