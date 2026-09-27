@@ -40,7 +40,7 @@ fi
 mkdir -p "$BUILD"
 
 RTL="fpga/ecpix5_ddr3_probe.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v
-     rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v
+     rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v
      rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v
      rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v
      rtl/soc/ddr3_refresh_ctrl.v"

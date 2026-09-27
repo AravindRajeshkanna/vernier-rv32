@@ -20,17 +20,25 @@
 // (FPGA-TN-02035) describes and LiteDRAM's own real code actually
 // exercises via a one-shot boot-time sweep, not a continuous loop.
 //
-// ---- DDRDLLA: one-shot, not continuous ----
-// Confirmed directly against LiteDRAM's own real source: `FREEZE`/
-// `UDDCNTLN` are pulsed through a fixed sequence exactly once, at
-// reset, triggered by `DDRDLLA`'s own `LOCK` output - not re-run
-// per transaction. This file follows the same real shape, reduced to
-// what a single always block can express cleanly rather than
-// LiteDRAM's own multi-step timeline (this project's own
-// `DDR3_ECLK_HZ` runs at a comfortably low, DLL-off-appropriate rate
-// throughout - see `rtl/soc/ddr3_eclk_pll.v` - so the tight timing
-// LiteDRAM's own multi-step sequence protects against at much higher
-// real DDR3 clock rates has real margin here too).
+// ---- DDRDLLA: shared, one per FPGA side - not instantiated here ----
+// Through Part 23 this file instantiated its own `DDRDLLA`, correct only because a single
+// byte lane was this whole slice's own scope (Part 2) and the distinction never came up.
+// Real hardware has one `DDRDLLA` per FPGA side, its `DDRDEL` output fanned out to every
+// lane's own `DQSBUFM` - confirmed directly against LiteDRAM's own real, shipping ECP5 PHY
+// - so instantiating a second copy of this file for a second lane would silently double a
+// primitive real hardware has exactly one of. `rtl/soc/ddr3_ddrdlla_ecp5.v` (Part 24) now
+// owns it; this file takes `ddrdel` as an input instead, and a real caller instantiates
+// the DLL once, whatever the real lane count.
+//
+// ---- DDRDLLA's own one-shot, not continuous, sequencing ----
+// Confirmed directly against LiteDRAM's own real source: `FREEZE`/`UDDCNTLN` are pulsed
+// through a fixed sequence exactly once, at reset, triggered by `DDRDLLA`'s own `LOCK`
+// output - not re-run per transaction. `ddr3_ddrdlla_ecp5.v` follows the same real shape,
+// reduced to what a single always block can express cleanly rather than LiteDRAM's own
+// multi-step timeline (this project's own `DDR3_ECLK_HZ` runs at a comfortably low,
+// DLL-off-appropriate rate throughout - see `rtl/soc/ddr3_eclk_pll.v` - so the tight
+// timing LiteDRAM's own multi-step sequence protects against at much higher real DDR3
+// clock rates has real margin here too).
 module ddr3_dqs_ecp5 (
     input  wire        eclk,      // pin-rate edge clock, from ddr3_eclk_pll
     input  wire        sclk,      // fabric-rate clock, from ddr3_eclk_pll
@@ -39,13 +47,15 @@ module ddr3_dqs_ecp5 (
     input  wire        dqs_pad_i, // the real DQS pin, input direction
     input  wire        read_active,  // this design's own read-burst-active signal (matches LiteDRAM's own dqs_re)
     input  wire [2:0]  readclksel,   // driven by rtl/soc/ddr3_read_calib.v's own sweep
+    // From the one, shared rtl/soc/ddr3_ddrdlla_ecp5.v instance (Part 24) - not generated
+    // here any more.
+    input  wire        ddrdel,
 
     output wire        dqsr90,    // clocks IDDRX2DQA's own read capture
     output wire        dqsw,      // clocks ODDRX2DQSB's own DQS write drive
     output wire        dqsw270,   // clocks ODDRX2DQA's own DQ write drive
     output wire        datavalid, // real DQSBUFM output - the calibration sweep's own pass/fail signal
     output wire        burstdet,  // real DQSBUFM output - confirms a real strobe transition was seen
-    output wire        dll_locked,
 
     // The read FIFO's pointers. Every IDDRX2DQA in the byte lane must take its RDPNTR and
     // WRPNTR from this DQSBUFM (nextpnr: "Port RDPNTR2 of cell ... must be driven by port
@@ -53,16 +63,7 @@ module ddr3_dqs_ecp5 (
     output wire [2:0]  rdpntr,
     output wire [2:0]  wrpntr
 );
-    wire ddrdel;
-
 `ifdef SYNTHESIS
-    DDRDLLA #(
-        .FORCE_MAX_DELAY("NO")
-    ) DLL (
-        .CLK(eclk), .RST(rst), .UDDCNTLN(1'b1), .FREEZE(1'b0),
-        .DDRDEL(ddrdel), .LOCK(dll_locked)
-    );
-
     DQSBUFM #(
         .DQS_LI_DEL_VAL(4), .DQS_LO_DEL_VAL(0)
     ) DQSBUF (
@@ -101,13 +102,6 @@ module ddr3_dqs_ecp5 (
     localparam [2:0] READCLKSEL_GOOD_LO = 3'd2;
     localparam [2:0] READCLKSEL_GOOD_HI = 3'd5;
 
-    reg dll_locked_r = 1'b0;
-    initial begin
-        repeat (8) @(posedge eclk);
-        dll_locked_r = 1'b1;
-    end
-    assign dll_locked = dll_locked_r;
-
     // dqsr90/dqsw/dqsw270: real DQSBUFM derives these from a captured,
     // phase-shifted DQS; this model derives them from sclk/eclk
     // instead (an honest, documented approximation, not a claim of
@@ -124,10 +118,10 @@ module ddr3_dqs_ecp5 (
                         (readclksel >= READCLKSEL_GOOD_LO) &&
                         (readclksel <= READCLKSEL_GOOD_HI);
 
-    // No DDRDLLA here, so nothing produces the delay code that DQSBUFM would consume in
-    // hardware. Nothing reads it in simulation either; drive it so it is not left floating.
-    assign ddrdel = 1'b0;
-
+    // `ddrdel` (from the shared rtl/soc/ddr3_ddrdlla_ecp5.v) is a real hardware delay
+    // code this simulation stand-in has no use for - it derives dqsr90/dqsw/dqsw270 from
+    // sclk/eclk directly, not from a delay line - so it is read only to keep it a genuine
+    // input rather than an unused one.
     wire _unused_ok = &{1'b0, dqs_pad_i, ddrdel, 1'b0};
 `endif
 endmodule

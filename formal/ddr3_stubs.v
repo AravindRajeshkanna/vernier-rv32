@@ -128,12 +128,12 @@ module ddr3_dqs_ecp5 (
     input  wire       dqs_pad_i,
     input  wire       read_active,
     input  wire [2:0] readclksel,
+    input  wire       ddrdel,
     output wire       dqsr90,
     output wire       dqsw,
     output wire       dqsw270,
     output wire       datavalid,
     output wire       burstdet,
-    output wire       dll_locked,
     output wire [2:0] rdpntr,
     output wire [2:0] wrpntr
 );
@@ -144,8 +144,18 @@ module ddr3_dqs_ecp5 (
     assign dqsw270    = 1'b0;
     assign datavalid  = 1'b0;
     assign burstdet   = 1'b0;
+    wire _unused_ok = &{1'b0, eclk, sclk, rst, dqs_pad_i, read_active, readclksel, ddrdel, 1'b0};
+endmodule
+
+module ddr3_ddrdlla_ecp5 (
+    input  wire eclk,
+    input  wire rst,
+    output wire ddrdel,
+    output wire dll_locked
+);
+    assign ddrdel     = 1'b0;
     assign dll_locked = 1'b1;
-    wire _unused_ok = &{1'b0, eclk, sclk, rst, dqs_pad_i, read_active, readclksel, 1'b0};
+    wire _unused_ok = &{1'b0, eclk, rst, 1'b0};
 endmodule
 
 module ddr3_dqs_write_ecp5 (
