@@ -3245,7 +3245,7 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over twenty-two gated slices (init and calibration, the DQ/DQS data path,
+over twenty-three gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
 one transaction ever in flight, every transaction closing its bank, a
@@ -3254,8 +3254,8 @@ finally checked, CK at the edge-clock rate with two command slots per
 `sclk`, a write burst that lands where the DRAM's write latency says, a memory
 model that answers a read at the DRAM's own read latency, the same tests run under a
 second simulator and in CI, a bounded formal proof of the controller's arbitration, bank
-state and refresh gating, place-and-route on the real device with the board's DDR3 pins, and
-a driven, tested data mask for lane 0) - but
+state and refresh gating, place-and-route on the real device with the board's DDR3 pins, a driven,
+tested data mask for lane 0, and the untouched upper lane held safely inert) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -5225,7 +5225,45 @@ first-half masking gate in the model can ever fire is untested (above); Calibrat
 direct-injection writes issue no command and are not checked against DM at all. Lane 1's
 own data mask is unchanged - still not driven, named in Part 21's own list of what the
 board says the controller still lacks. No formal proof of DM (Part 20's properties are the
-control plane; this is data). No board.
+control plane; this is data). No board. (Part 23, below, protects the untouched upper lane.)
+
+**Update, Part 23: the untouched upper byte lane is held safely inert, not left
+unconnected.** The part is x16; this design transfers through lane 0 only. Through Part 22,
+lane 1's own DQ, UDQS and UDM had no real pin at all - not just unused, a real hazard,
+since a x16 DRAM drives DQ[15:8] and UDQS from its own side on every real READ this
+design's lane-0 traffic still provokes, and an unconstrained pin gets an unstated
+direction rather than the one this design actually wants.
+
+**What changed.** `ddr3_udm` (lane 1's own data mask) is driven high, always - the same
+"FPGA-output-only, no tri-state needed" shape `ddr3_dm` already established (Part 22), so
+a write issued through lane 0 can never be read by the DRAM as also touching the upper
+byte. `ddr3_dqu` and `ddr3_udqs` are permanently tri-stated from the FPGA side - `BB` pads
+with `T` tied high, the same real primitive Part 21 already established for lane 0, not a
+plain `assign = z` left to inference - so a real READ's own drive from the DRAM is never
+contended. Nothing in this design reads through this lane yet; that is unchanged and named
+as such.
+
+**Test.** New `sim/tb_ddr3_upper_lane.v`: across a run with real command-driven writes and
+a real refresh - not just reset, when everything reads inert by construction regardless of
+whether the design is right - `ddr3_udm` is sampled every `sclk` cycle and must never read
+low or unknown; `ddr3_dqu` and `ddr3_udqs` must never read as driven. Three mutations, each
+caught: `ddr3_udm` tied low, the upper DQ lane driven, UDQS driven. (Excluded from
+`verilator_ddr3`: the whole point of this test is telling a floating pin from a driven one,
+on pins nothing in the design ever drives from either side, and Verilator has nothing left
+to distinguish once it resolves the net - the same reason `tb_ddr3_dq_window_rules.v` is
+excluded.)
+
+**Place-and-route.** `fpga/constraints/ecpix5_ddr3.lpf` gains lane 1's own real pins (the
+same two independently-maintained sources Part 21 cross-checked); `fpga/ecpix5_ddr3_probe.v`
+exposes them so the probe actually routes the full x16 footprint, not just lane 0's own
+half of it. Caught by mutation: UDM left at the board's default 3.3 V standard fails
+exactly the same way Part 21 measured for lane 0's own pins.
+
+**What this does not establish.** Nothing about lane 1's own capability to transfer data -
+no capture, no drive, no calibration for it; that is the "second lane" item every account
+since the Part 14/15 survey has named, and remains open. No formal proof (Part 20's
+properties are the control plane, unaffected by pins nothing in the design's own logic
+reads or writes). No board.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
@@ -9114,7 +9152,9 @@ Part 21).** Two independent descriptions of the board list no CS# and no RESET# 
 the FPGA cannot drive either: the CS# path in the PHY (a deselect in every idle command slot) has no pin
 to happen on, and the initialisation sequence's RESET# pulse cannot be issued. CK# and DQS# are the
 negative halves of differential pairs and are not separate ports. The part is x16 and lane 1, its
-strobe and its own data mask are undriven (lane 0's is - Part 22). Found by place-and-route with the
+strobe and its own data mask are undriven for real use, though both now sit on a real, safely-held-inert
+pin rather than an unconstrained one (Part 23); lane 0's own data mask is driven for real - Part 22.
+Found by place-and-route with the
 real pins, which refuses to place the CS# path; recorded rather than fixed, because how the board
 handles CS# and RESET# needs a schematic. Two defects place-and-route found in the same run - a
 tri-state control with the wrong polarity, and read-FIFO pointers never wired - are RESOLVED (Part 21).

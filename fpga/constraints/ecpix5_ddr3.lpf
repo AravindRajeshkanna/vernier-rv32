@@ -11,10 +11,13 @@
 ## so there is no vendor cross-check, and neither source is a schematic. No board is
 ## attached to this project's development session: nothing here has been on hardware.
 ##
-## The part is x16 (two byte lanes). This design has one lane, so only lane 0's DQ, DQS
-## and DM are constrained (DM, Part 22). Pins the board has and this design does not yet drive:
-##   lane 1 DQ    R1 W3 T2 V3 U3 W1 T1 W2      UDQS (p)   V1  (n) U2
-##   lane 1 mask  U1
+## The part is x16 (two byte lanes). This design transfers through lane 0 only, so only
+## lane 0's DQ/DQS/DM are wired to real logic (DM, Part 22). Lane 1's own real pins are
+## constrained too (Part 23), because the DRAM drives DQ[15:8]/UDQS on every real READ
+## regardless of whether this design uses them - left unconstrained, real synthesis would
+## give them an unstated direction rather than the permanently-tristated, receive-only one
+## rtl/soc/ddr3_ecp5_top.v now gives them. UDM is real-output-only and driven high always
+## (masked), so this design's own lane-0 writes can never touch the upper byte.
 ## Pins the design has and the board DOES NOT: CS# and RESET#. Neither source lists
 ## them, so the FPGA cannot drive either on this board (CS# is presumably tied low
 ## and RESET# handled on the board; neither is confirmed). Docs/roadmap.md's Part 21
@@ -102,3 +105,26 @@ IOBUF PORT "ddr3_dq[4]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
 IOBUF PORT "ddr3_dq[5]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
 IOBUF PORT "ddr3_dq[6]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
 IOBUF PORT "ddr3_dq[7]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+
+## ---- byte lane 1: DQ, UDQS (differential; the negative pad, U2, follows) and UDM ----
+## (Part 23 - held permanently tristated/high; see the header. Not yet used to transfer data.)
+LOCATE COMP "ddr3_udqs" SITE "V1";
+IOBUF PORT "ddr3_udqs" IO_TYPE=SSTL15D_I TERMINATION=OFF DIFFRESISTOR=100 SLEWRATE=FAST;
+LOCATE COMP "ddr3_udm" SITE "U1";
+IOBUF PORT "ddr3_udm" IO_TYPE=SSTL15_I SLEWRATE=FAST;
+LOCATE COMP "ddr3_dqu[0]" SITE "R1";
+LOCATE COMP "ddr3_dqu[1]" SITE "W3";
+LOCATE COMP "ddr3_dqu[2]" SITE "T2";
+LOCATE COMP "ddr3_dqu[3]" SITE "V3";
+LOCATE COMP "ddr3_dqu[4]" SITE "U3";
+LOCATE COMP "ddr3_dqu[5]" SITE "W1";
+LOCATE COMP "ddr3_dqu[6]" SITE "T1";
+LOCATE COMP "ddr3_dqu[7]" SITE "W2";
+IOBUF PORT "ddr3_dqu[0]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dqu[1]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dqu[2]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dqu[3]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dqu[4]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dqu[5]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dqu[6]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;
+IOBUF PORT "ddr3_dqu[7]" IO_TYPE=SSTL15_I TERMINATION=75 SLEWRATE=FAST;

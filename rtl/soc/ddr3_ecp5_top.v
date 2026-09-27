@@ -235,6 +235,18 @@ module ddr3_ecp5_top (
     // ---- lane 0's data mask, from Part 22 ----
     output wire        ddr3_dm,
 
+    // ---- lane 1 (the part is x16; this design transfers through lane 0 only), from
+    // Part 23: real pins, held safely inert rather than left unconnected. ddr3_dqu and
+    // ddr3_udqs are never driven by this design (permanently tri-stated - a real READ
+    // still drives them from the DRAM side, which this design ignores); ddr3_udm is
+    // driven high always, so this design's own writes - all issued through lane 0 -
+    // can never be interpreted as touching the upper byte. See rtl/soc/ddr3_ecp5_top.v's
+    // own DQU_PIN/UDQS_PAD/ddr3_udm wiring below for why this needs no calibration and
+    // no capture/drive primitives the way lane 0 does.
+    inout  wire [7:0]  ddr3_dqu,
+    inout  wire        ddr3_udqs,
+    output wire        ddr3_udm,
+
     // ---- Part 9: real command-level requests ----
     input  wire        write_req,
     input  wire [2:0]  write_bank,
@@ -570,7 +582,33 @@ module ddr3_ecp5_top (
     assign read_data       = rd_q0;
     assign read_data_valid = read_active_falling && datavalid_seen;
 
+    // Part 23: lane 1. `ddr3_udm` needs no BB - like `ddr3_dm`, it is FPGA-output-only,
+    // so a permanent-high assign is both the safe value and the whole implementation.
+    assign ddr3_udm = 1'b1;
+
     genvar i;
+    generate
+        // The upper DQ lane and UDQS: real, genuinely bidirectional pins on the part
+        // (a READ drives them from the DRAM side), so they get the same `BB` real
+        // pad Part 21 established for lane 0 - `T` tied permanently high (never driven
+        // from the FPGA side) rather than a plain `assign = z`, which Part 21 measured
+        // is not something to trust an inferred tri-state to get right on its own.
+        // `O` (what the pin reads) is left unconnected: nothing in this design reads
+        // through this lane, matching every other permanently-unused output here.
+        for (i = 0; i < 8; i = i + 1) begin : DQU_PIN
+`ifdef SYNTHESIS
+            BB DQU_PAD (.I(1'b0), .T(1'b1), .O(), .B(ddr3_dqu[i]));
+`else
+            assign ddr3_dqu[i] = 1'bz;
+`endif
+        end
+    endgenerate
+`ifdef SYNTHESIS
+    BB UDQS_PAD (.I(1'b0), .T(1'b1), .O(), .B(ddr3_udqs));
+`else
+    assign ddr3_udqs = 1'bz;
+`endif
+
     generate
         for (i = 0; i < 8; i = i + 1) begin : DQ_PIN
 `ifdef SYNTHESIS
