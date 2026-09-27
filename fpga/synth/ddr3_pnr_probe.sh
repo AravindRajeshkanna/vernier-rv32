@@ -2,22 +2,32 @@
 # Synthesis and place-and-route of the DDR3 PHY on the ECPIX-5's device, with the board's
 # real DDR3 pins - a probe of whether the PHY's structure is legal on an ECP5, not a
 # bring-up build. Docs/roadmap.md, Parts 21-25 (25 gives lane 1 its own real DQSBUFM,
-# sharing the one DDRDLLA lane 0 already had - Part 23's own tie-off is gone).
+# sharing the one DDRDLLA lane 0 already had - Part 23's own tie-off is gone), plus a later
+# survey, no RTL change, that probes this same flow with deliberate cross-lane mutations
+# to find out precisely what it does and does not catch.
 #
 # What passing shows: yosys maps every DDR primitive, and nextpnr packs, places and routes
 # them against the real LFE5UM5G-85F/CABGA554 pin data - including checks no simulation
-# can make: every IDDRX2DQA takes its pointers from its byte lane's DQSBUFM, a DQ/DQS
-# tri-state control reaches its pad directly (which also catches it being inverted on
+# can make: every IDDRX2DQA takes its pointers from its own byte lane's DQSBUFM (enforced
+# by real DQS-group locality - confirmed genuinely cross-lane-testable with a real second
+# lane, not just assumed from a single lane as Part 21 first found it), a DQSBUFM's own
+# DQSI input is a genuinely unique top-level net (a net two DQSBUFM instances share is
+# refused), a
+# DQ/DQS tri-state control reaches its pad directly (which also catches it being inverted on
 # the way), the DQS pad is a DQS site, DM lands on its own real pin at the right I/O
 # standard, edge clocks reach the banks they serve, and no bank mixes 1.5 V and 3.3 V
 # pads. Each was shown able to fail by mutation.
 #
-# What it does NOT show, and was shown not to (Part 21): that a DQ pin sits in its DQS
-# group - moving one to an address pin passed - or that a tri-state control is used at all
-# (tying it to a constant passed). It says nothing about behaviour, or about timing at the
-# DDR clock, or about the four ports that have no pin on this board
-# (fpga/constraints/ecpix5_ddr3_probe.lpf parks them on throwaway pins). The pin list is
-# only as good as the two sources it was taken from.
+# What it does NOT show, and was shown not to: that a DQ pin sits in its DQS group - moving
+# one to an address pin passed (Part 21) - or that a tri-state control is used at all (tying
+# it to a constant passed, Part 21). READCLKSEL[2:0] carries no physical locality
+# constraint either: cross-wiring lane 1's own DQSBUFM to lane 0's own calibrated
+# READCLKSEL places and routes without complaint - simulation cannot show this either
+# (docs/roadmap.md, Part 24), so a READCLKSEL cross-wire between lanes is a real,
+# currently open gap neither layer of proof this project has closes. It also says nothing
+# about behaviour, or about timing at the DDR clock, or about the four ports that have no
+# pin on this board (fpga/constraints/ecpix5_ddr3_probe.lpf parks them on throwaway pins).
+# The pin list is only as good as the two sources it was taken from.
 #
 # Needs yosys and nextpnr-ecp5, so YosysHQ's bundle first on PATH (see synth_ecp5.sh).
 # Not in `make verify`, for the reason the rest of the FPGA flow is not: it needs the bundle.

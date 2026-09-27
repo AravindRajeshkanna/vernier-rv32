@@ -5312,11 +5312,11 @@ into `rtl/soc/ddr3_ecp5_top.v`'s own write/read sequencers, so no controller-fac
 can reach it yet, and how one eventually would is still entangled with the
 byte-granular-versus-16-byte-burst decision this file has named as the maintainer's since
 the Part 14/15 survey. A `readclksel` or `dqs_pad_i` cross-wiring between the two lanes'
-own `DQSBUFM` instances is not reliably provable by simulation, for the reasons above - real
-hardware place-and-route (`make pnr_probe_ddr3`) is what would actually catch a net swapped
-between two real pads, and this part did not extend the probe to instantiate a second real
-`DQSBUFM`/`IDDRX2DQA` set (`fpga/ecpix5_ddr3_probe.v` still wraps the single-lane
-`ddr3_ecp5_top.v`). No formal proof. No board. (Part 25, below, wires it into the real design.)
+own `DQSBUFM` instances is not reliably provable by simulation, for the reasons above; this
+part did not yet extend the probe to instantiate a second real `DQSBUFM`/`IDDRX2DQA` set
+either (`fpga/ecpix5_ddr3_probe.v` still wraps the single-lane `ddr3_ecp5_top.v`). No
+formal proof. No board. (Part 25, below, wires it into the real design; a survey later in
+this stage measures what place-and-route actually catches of the gap named here.)
 
 **Update, Part 25: lane 1's own calibration, DQ/DQS write-drive and data mask are wired
 into the real design, running automatically at boot the same way lane 0's always has -
@@ -5363,9 +5363,57 @@ way - but is caught immediately by real place-and-route, as above.
 `rseq`-equivalent drives lane 1, so a controller-facing request cannot reach it, and how
 one eventually would remains entangled with the byte-granular-versus-16-byte-burst
 decision. The `readclksel`/`dqs_pad_i` cross-wiring gap Part 24 named is unchanged by this
-part - simulation still cannot show it, though place-and-route now at least proves the
-DLL sharing for real. No formal proof (Part 20's properties are the control plane). No
-board.
+part - simulation still cannot show it. Place-and-route now proves the DLL sharing for
+real, but whether it catches a `readclksel`/`dqs_pad_i` cross-wiring too was not actually
+checked here - a guess this file should not have stated as settled. No formal proof (Part
+20's properties are the control plane). No board. (The survey below measures it.)
+
+**Survey, no design change: which cross-lane wiring mistakes real place-and-route
+actually catches, measured directly rather than assumed.** Part 25 guessed
+that real place-and-route "would actually catch a net swapped between two real pads" for
+the `readclksel`/`dqs_pad_i` cross-wiring simulation cannot show. That guess was checked
+by running the mutations through `make pnr_probe_ddr3` for real, and it was only half
+right.
+
+**`readclksel` cross-wiring between the two lanes is NOT caught by place-and-route
+either.** Feeding lane 1's own `DQS1` instance lane 0's own `readclksel` places and routes
+without complaint - `READCLKSEL[2:0]` is a plain 3-bit select bus with no physical locality
+tie to a specific `DQSBUFM`, so nextpnr has no basis to object. This gap is real, and stays
+open: neither simulation nor place-and-route can show a `readclksel` cross-wiring between
+lanes.
+
+**`dqs_pad_i` cross-wiring IS caught, for a precise, previously unconfirmed reason: DQS
+group locality, not merely "two pads got swapped."** Two separate mutations were run.
+Making both `DQS` and `DQS1` share one `dqs_pad_i` source (an illegal share, not a swap)
+fails with `DQSBUFM 'DQS1.DQSBUF' DQSI input must be connected only to a top level input` -
+a `DQSBUFM`'s own `DQSI` must connect to a genuinely unique, real pad-derived net, not one
+another `DQSBUFM` already consumes. A true swap - each lane still gets a real, unique net,
+just the other lane's - fails differently, with `DQS group mismatch, port DQSW270 of
+'SERDES1...' in group LDQ89 is driven by DQSBUFM 'DQS.DQSBUF' in group LDQ77`: each byte
+lane's own primitives belong to a real, physical `DQS group` tied to their location on the
+device, and nextpnr enforces that a lane's own `IDDRX2DQA`/`ODDRX2DQA`/`TSHX2DQA` cells are
+driven only by their own group's `DQSBUFM`.
+
+**The same mechanism re-confirms Part 21's own `rdpntr`/`wrpntr` finding, this time with a
+genuine second lane to cross-wire against.** Part 21 could only prove "every `IDDRX2DQA`
+must take its pointers from its own byte lane's `DQSBUFM`" with one lane in existence,
+which makes it true trivially - there was no other `DQSBUFM` to wrongly connect to. Feeding
+lane 1's own `SERDES1` lane 0's own `rdpntr`/`wrpntr` now fails with the identical `DQS
+group mismatch` error, on `RDPNTR2` this time - the same real constraint, now checked
+against an actual alternative rather than an absence of one.
+
+**Corrected: Part 25's own wording.** "Real hardware place-and-route ... would actually
+catch a net swapped between two real pads" is true for `dqs_pad_i` and false for
+`readclksel` - not a single fact, and this file should not have implied it was one before
+measuring both. `fpga/synth/ddr3_pnr_probe.sh`'s own header is updated to state the real
+boundary precisely.
+
+**What this does not establish.** Nothing new about the real command path or the
+byte-granular-versus-16-byte-burst decision, unaffected by this survey. No RTL changed; this
+is a measurement, the same "survey, no design change" shape the Part 14/15 survey used.
+`readclksel` cross-wiring between lanes remains an open gap neither layer of proof this
+project has closes. No formal proof of any of this (Part 20's properties are the control
+plane). No board.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
