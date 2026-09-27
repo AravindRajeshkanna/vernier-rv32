@@ -1,7 +1,8 @@
 #!/bin/sh
 # Synthesis and place-and-route of the DDR3 PHY on the ECPIX-5's device, with the board's
 # real DDR3 pins - a probe of whether the PHY's structure is legal on an ECP5, not a
-# bring-up build. Docs/roadmap.md, Parts 21 and 22.
+# bring-up build. Docs/roadmap.md, Parts 21, 22 and 23 (23 adds lane 1's own real pins,
+# held permanently inert - see fpga/constraints/ecpix5_ddr3.lpf's own header).
 #
 # What passing shows: yosys maps every DDR primitive, and nextpnr packs, places and routes
 # them against the real LFE5UM5G-85F/CABGA554 pin data - including checks no simulation
