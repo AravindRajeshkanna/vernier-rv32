@@ -127,6 +127,7 @@ bitfield
 bitmanip
 bitstream
 bitstreams
+blackbox
 blit
 blitter
 blockquotes

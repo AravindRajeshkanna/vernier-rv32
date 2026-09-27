@@ -207,10 +207,24 @@
 // `read_active`. Not closed: at sclk resolution the tDQSCK spread (1-10 ns) is
 // invisible, and the ECP5's own capture latency through IDDRX2DQA is not modelled.
 //
+// ---- Part 25: lane 1's own calibration, wired in for real ----
+// Part 24 proved lane 1's own DQSBUFM/DQ serdes/calibration standalone, against its own
+// free-running clock, the way Part 2 first proved lane 0's. This wires that same chain
+// into the real, shared clock/reset tree here - `ddr3_dqu`/`ddr3_udqs` stop being
+// permanently tri-stated (Part 23's own safe-default wiring) and `ddr3_udm` stops being
+// tied high always, both replaced by lane 1's own real CALIB1/DQS1/DQS_WR1/SERDES1/
+// DM_DRV1, run automatically at boot the same way lane 0's always has - the shared
+// `ddr3_ddrdlla_ecp5` instance above is what makes sharing it, rather than duplicating
+// it, correct (Part 24). Not yet reachable from `write_req`/`read_req`: no command
+// sequencer drives lane 1, so `read_active_1` is `CALIB1`'s own signal alone, with no
+// `real_read_active`-style mux the way lane 0 gained in Part 9 - that step, and how a
+// caller would ask for 16 bits at once, is still the maintainer's own open decision
+// (byte-granular versus 16-byte-burst), named since the Part 14/15 survey.
+//
 // Still not attempted: bank-state tracking in the controller (this design
 // still opens and closes a bank around every access rather than
-// exploiting open rows), the second DQ byte lane, and real hardware
-// bring-up - see docs/roadmap.md's own Part 9/10/11/12/13/14 accounts for
+// exploiting open rows), lane 1's own command-driven read/write, and real hardware
+// bring-up - see docs/roadmap.md's own Part 9/10/11/12/13/14/25 accounts for
 // the full list of what this does not establish.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
@@ -272,7 +286,15 @@ module ddr3_ecp5_top (
     output wire        init_ready,
     output wire        calib_done,
     output wire [2:0]  calib_readclksel,
-    output wire        calib_error
+    output wire        calib_error,
+
+    // ---- lane 1's own calibration, from Part 25 - see the wiring below for what
+    // this does and does not establish (no command-driven read/write reaches lane 1
+    // yet; only its own calibration sweep, run automatically, the same way lane 0's
+    // did before Part 9) ----
+    output wire        calib1_done,
+    output wire [2:0]  calib1_readclksel,
+    output wire        calib1_error
 );
     wire eclk, sclk;
     ddr3_eclk_pll PLL (
@@ -592,32 +614,98 @@ module ddr3_ecp5_top (
     assign read_data       = rd_q0;
     assign read_data_valid = read_active_falling && datavalid_seen;
 
-    // Part 23: lane 1. `ddr3_udm` needs no BB - like `ddr3_dm`, it is FPGA-output-only,
-    // so a permanent-high assign is both the safe value and the whole implementation.
-    assign ddr3_udm = 1'b1;
+    // ---- Part 25: lane 1's own calibration, run automatically at boot the same way
+    // lane 0's does - see the module header for scope ----
+    wire [7:0] wr_d0_1, rd_q0_1;
+    wire       wr_en_1, read_active_1;
+    wire [2:0] readclksel_1;
+    wire       datavalid_1, burstdet_1;
+
+    ddr3_read_calib #(.TEST_PATTERN(8'h3C)) CALIB1 (
+        .clk(sclk), .rst(rst_calib),
+        .wr_d0(wr_d0_1), .wr_en(wr_en_1),
+        .read_active(read_active_1), .readclksel(readclksel_1),
+        .datavalid(datavalid_1), .rd_q0(rd_q0_1),
+        .calib_done(calib1_done), .calib_readclksel(calib1_readclksel),
+        .calib_error(calib1_error)
+    );
+
+    wire dqsr90_1, dqsw_1, dqsw270_1;
+    wire [2:0] rdpntr_1, wrpntr_1;
+    wire dqs_pad_in_1;
+
+    ddr3_dqs_ecp5 DQS1 (
+        .eclk(eclk), .sclk(sclk), .rst(rst_all),
+        .dqs_pad_i(dqs_pad_in_1), .read_active(read_active_1), .readclksel(readclksel_1),
+        .ddrdel(ddrdel),   // the one, shared DLL (Part 24) - not a second instance
+        .dqsr90(dqsr90_1), .dqsw(dqsw_1), .dqsw270(dqsw270_1),
+        .datavalid(datavalid_1), .burstdet(burstdet_1),
+        .rdpntr(rdpntr_1), .wrpntr(wrpntr_1)
+    );
+
+    wire dqs_wr_o_1, dqs_wr_oe_1, dqs_wr_t_1, dq_burst_1, dq_active0_1;
+    // Lane 1's only trigger is its own calibration sweep - no command sequencer drives
+    // it (see the header), so unlike lane 0's `write_start_final` this has one source.
+    ddr3_dqs_write_ecp5 DQS_WR1 (
+        .sclk(sclk), .eclk(eclk), .dqsw(dqsw_1), .rst(rst_all),
+        .write_start(wr_en_1),
+        .dqs_o(dqs_wr_o_1), .dqs_oe(dqs_wr_oe_1), .dqs_t(dqs_wr_t_1), .burst_active(dq_burst_1),
+        .active0(dq_active0_1)
+    );
+
+    // Part 22's own data mask, a second instance - lane 1's DM is UDM, masking exactly
+    // the same way lane 0's does, around its own calibration burst rather than a
+    // command-driven one.
+    wire dm_o_1;
+    wire dm_level_1 = !dq_active0_1;
+    ddr3_dm_drv_ecp5 DM_DRV1 (
+        .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270_1),
+        .dm_level(dm_level_1), .dm_o(dm_o_1)
+    );
+    assign ddr3_udm = dm_o_1;
+
+`ifdef SYNTHESIS
+    BB UDQS_PAD (.I(dqs_wr_o_1), .T(dqs_wr_t_1), .O(dqs_pad_in_1), .B(ddr3_udqs));
+`else
+    assign ddr3_udqs   = dqs_wr_oe_1 ? dqs_wr_o_1 : 1'bz;
+    assign dqs_pad_in_1 = ddr3_udqs;
+`endif
+
+    wire [7:0] dq_o_1, dq_oe_1, dq_t_1, dq_i_1;
+    wire [7:0] rd_q3_1, rd_q2_1, rd_q1_1;
+
+    // Calibration's own byte is the only source here (mirrors lane 0's `dq_data_hold`
+    // before Part 9 added a second, command-driven source).
+    reg [7:0] dq_data_hold_1;
+    always @(posedge sclk or posedge rst_all) begin
+        if (rst_all)      dq_data_hold_1 <= 8'b0;
+        else if (wr_en_1) dq_data_hold_1 <= wr_d0_1;
+    end
+
+    ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES1 (
+        .sclk(sclk), .eclk(eclk), .rst(rst_all),
+        .dqsr90(dqsr90_1), .dqsw270(dqsw270_1),
+        .rdpntr(rdpntr_1), .wrpntr(wrpntr_1),
+        .wr_d3(dq_data_hold_1), .wr_d2(dq_data_hold_1),
+        .wr_d1(dq_data_hold_1), .wr_d0(dq_data_hold_1),
+        .wr_en(dq_burst_1),
+        .rd_q3(rd_q3_1), .rd_q2(rd_q2_1), .rd_q1(rd_q1_1), .rd_q0(rd_q0_1),
+        .dq_o(dq_o_1), .dq_oe(dq_oe_1), .dq_t(dq_t_1), .dq_i(dq_i_1)
+    );
 
     genvar i;
     generate
-        // The upper DQ lane and UDQS: real, genuinely bidirectional pins on the part
-        // (a READ drives them from the DRAM side), so they get the same `BB` real
-        // pad Part 21 established for lane 0 - `T` tied permanently high (never driven
-        // from the FPGA side) rather than a plain `assign = z`, which Part 21 measured
-        // is not something to trust an inferred tri-state to get right on its own.
-        // `O` (what the pin reads) is left unconnected: nothing in this design reads
-        // through this lane, matching every other permanently-unused output here.
+        // The real BB pad Part 21 established for lane 0, now driven by lane 1's own
+        // serdes instead of Part 23's permanent tie-off.
         for (i = 0; i < 8; i = i + 1) begin : DQU_PIN
 `ifdef SYNTHESIS
-            BB DQU_PAD (.I(1'b0), .T(1'b1), .O(), .B(ddr3_dqu[i]));
+            BB DQU_PAD (.I(dq_o_1[i]), .T(dq_t_1[i]), .O(dq_i_1[i]), .B(ddr3_dqu[i]));
 `else
-            assign ddr3_dqu[i] = 1'bz;
+            assign ddr3_dqu[i] = dq_oe_1[i] ? dq_o_1[i] : 1'bz;
+            assign dq_i_1[i]   = ddr3_dqu[i];
 `endif
         end
     endgenerate
-`ifdef SYNTHESIS
-    BB UDQS_PAD (.I(1'b0), .T(1'b1), .O(), .B(ddr3_udqs));
-`else
-    assign ddr3_udqs = 1'bz;
-`endif
 
     generate
         for (i = 0; i < 8; i = i + 1) begin : DQ_PIN

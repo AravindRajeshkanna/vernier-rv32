@@ -207,7 +207,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_upper_lane sim_ddr3_data_lane1 verilator_ddr3 synth_check_ddr3 pnr_probe_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 verilator_ddr3 synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2872,32 +2872,6 @@ sim_ddr3_dm_window: sim/sim_ddr3_dm_window.out
 	@grep -q "DDR3 DATA MASK TEST PASSED" sim/ddr3_dm_window.log || \
 	    { echo "sim_ddr3_dm_window FAILED"; exit 1; }
 
-# ---- DDR3 upper byte lane held safely inert (Phase 9 Stage 1, Part 23) ----
-#
-# The part is x16; this design transfers through lane 0 only. Through Part 22, lane 1's
-# own DQ, UDQS and UDM were entirely unwired - not just unused, a real hazard on real
-# hardware, since the DRAM actively drives DQ[15:8]/UDQS on every real READ and would
-# sample whatever this design's own writes put on them without UDM's protection. This
-# test proves UDM is always driven high (never masks nothing) and the upper DQ/UDQS
-# pins are never driven by the FPGA side, across a run with real writes and a real
-# refresh, not just at reset.
-sim/sim_ddr3_upper_lane.out: sim/tb_ddr3_upper_lane.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
-    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
-    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
-    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
-	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_upper_lane.v rtl/soc/ddr3_ecp5_top.v \
-	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
-	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
-	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
-	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
-
-sim_ddr3_upper_lane: sim/sim_ddr3_upper_lane.out
-	@cd sim && $(VVP) sim_ddr3_upper_lane.out $(VVP_DUMP) 2>&1 | tee ddr3_upper_lane.log
-	@grep -q "DDR3 UPPER LANE TEST PASSED" sim/ddr3_upper_lane.log || \
-	    { echo "sim_ddr3_upper_lane FAILED"; exit 1; }
-
 # ---- DDR3 second byte lane: independent calibration (Phase 9 Stage 1, Part 24) ----
 #
 # The same real proof sim/tb_ddr3_data.v (Part 2) gave lane 0, run a second time on
@@ -2916,6 +2890,29 @@ sim_ddr3_data_lane1: sim/sim_ddr3_data_lane1.out
 	@cd sim && $(VVP) sim_ddr3_data_lane1.out $(VVP_DUMP) 2>&1 | tee ddr3_data_lane1.log
 	@grep -q "DDR3 SECOND LANE TEST PASSED" sim/ddr3_data_lane1.log || \
 	    { echo "sim_ddr3_data_lane1 FAILED"; exit 1; }
+
+# ---- DDR3 lane 1 wired in for real (Phase 9 Stage 1, Part 25) ----
+#
+# Lane 1's own calibration, DQ/DQS write-drive and UDM masking (Part 24 proved this
+# standalone) run through rtl/soc/ddr3_ecp5_top.v's own real, shared clock/reset tree -
+# the same proof sim/tb_ddr3_top.v (Parts 3-5) gave lane 0, mirrored, plus confirmation
+# that lane 0 is undisturbed by it.
+sim/sim_ddr3_top_lane1.out: sim/tb_ddr3_top_lane1.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
+    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
+    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_top_lane1.v rtl/soc/ddr3_ecp5_top.v \
+	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
+	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+
+sim_ddr3_top_lane1: sim/sim_ddr3_top_lane1.out
+	@cd sim && $(VVP) sim_ddr3_top_lane1.out $(VVP_DUMP) 2>&1 | tee ddr3_top_lane1.log
+	@grep -q "DDR3 LANE 1 INTEGRATION TEST PASSED" sim/ddr3_top_lane1.log || \
+	    { echo "sim_ddr3_top_lane1 FAILED"; exit 1; }
 
 # ---- DDR3 read burst window vs READ latency (Phase 9 Stage 1, Part 18) ----
 #
@@ -2981,16 +2978,12 @@ sim_ddr3_dq_window_rules: sim/sim_ddr3_dq_window_rules.out
 #   - sim/tb_ddr3_dq_window_rules.v is not run at all: its job is to show that
 #     each "DQ or DQS not driven" rule of the memory model can fire, and seven of
 #     its eleven cases are exactly that distinction.
-#   - sim/tb_ddr3_upper_lane.v is not run at all either: its whole job is telling a
-#     floating pin from a driven one, on pins nothing in the design ever drives from
-#     either side, so there is nothing left to distinguish once Verilator resolves
-#     the net.
 # Those stay Icarus-only; the sim_ddr3_* targets remain the authority for them.
 #
 # The testbench is the first file so that its `timescale reaches the RTL files
 # after it, exactly as in the Icarus builds. One build directory per test, so
 # `make -j verilator_ddr3` builds them in parallel.
-DDR3_VL_TBS  = init data data_lane1 top dqs_write write_seq read_seq read_burst_ext cmd_seq \
+DDR3_VL_TBS  = init data data_lane1 top top_lane1 dqs_write write_seq read_seq read_burst_ext cmd_seq \
                refresh_ctrl refresh_wire reverse_arb wr_excl model_banks addr \
                phy_phases wr_window rd_window dm_window
 DDR3_VL_SRCS = rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
@@ -3031,7 +3024,7 @@ DDR3_SIM_TESTS = sim_ddr3_init sim_ddr3_data sim_ddr3_top \
                  sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire \
                  sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
                  sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules \
-                 sim_ddr3_dm_window sim_ddr3_upper_lane sim_ddr3_data_lane1
+                 sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1
 .PHONY: ddr3_check ddr3_check_sim
 ddr3_check_sim: $(DDR3_SIM_TESTS) verilator_ddr3 lint-rtl-ddr3
 ddr3_check: ddr3_check_sim synth_check_ddr3

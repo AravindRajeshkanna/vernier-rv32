@@ -3245,7 +3245,7 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over twenty-four gated slices (init and calibration, the DQ/DQS data path,
+over twenty-five gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
 one transaction ever in flight, every transaction closing its bank, a
@@ -3256,7 +3256,8 @@ model that answers a read at the DRAM's own read latency, the same tests run und
 second simulator and in CI, a bounded formal proof of the controller's arbitration, bank
 state and refresh gating, place-and-route on the real device with the board's DDR3 pins, a driven,
 tested data mask for lane 0, the untouched upper lane held safely inert, and a second
-byte lane's own hardware proven to calibrate independently) - but
+byte lane's own hardware proven to calibrate independently, now wired into the real
+design and running at boot) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -5315,7 +5316,56 @@ own `DQSBUFM` instances is not reliably provable by simulation, for the reasons 
 hardware place-and-route (`make pnr_probe_ddr3`) is what would actually catch a net swapped
 between two real pads, and this part did not extend the probe to instantiate a second real
 `DQSBUFM`/`IDDRX2DQA` set (`fpga/ecpix5_ddr3_probe.v` still wraps the single-lane
-`ddr3_ecp5_top.v`). No formal proof. No board.
+`ddr3_ecp5_top.v`). No formal proof. No board. (Part 25, below, wires it into the real design.)
+
+**Update, Part 25: lane 1's own calibration, DQ/DQS write-drive and data mask are wired
+into the real design, running automatically at boot the same way lane 0's always has -
+not yet reachable from `write_req`/`read_req`, but no longer standalone or held
+permanently inert either.** Part 23's own safe-default wiring (`ddr3_dqu`/`ddr3_udqs`
+permanently tri-stated, `ddr3_udm` tied high always) is gone, replaced by a second, real
+`CALIB1`/`DQS1`/`DQS_WR1`/`SERDES1`/`DM_DRV1` instance - sharing the one `ddr3_ddrdlla_ecp5`
+instance Part 24 already established, exactly the way real hardware does.
+
+**A real, measured failure on the first attempt - the test was incomplete, not the RTL.**
+`sim/tb_ddr3_top_lane1.v` first showed lane 1's own calibration failing every tap through
+the real top, where the identical mechanism had passed standalone in Part 24. The
+difference: the standalone test gave lane 1 its own memory model to loop calibration's
+test pattern back through; this one, at first, did not - `ddr3_dqu`/`ddr3_udqs` floated,
+so no tap could ever read back what it wrote. Adding a second `ddr3_dq_model` instance,
+the same role Part 3's own `MEM` plays for lane 0, fixed it: the RTL had been correct.
+
+**A second, pre-existing bug found while strengthening the place-and-route probe for
+this part - the probe's own primitive-count check has been vacuous since Part 21.**
+`fpga/synth/ddr3_pnr_probe.sh` checked that each primitive's name appeared somewhere in
+`write_json`'s output, but `write_json` always dumps every ECP5 cell's own blackbox
+definition alongside the design - confirmed directly: `"OSCG"`, instantiated nowhere in
+this design, matches the same check. The check would have passed even if every one of the
+primitives it names had never been instantiated at all. Replaced with a real count of
+instances inside the design's own module entry, which also gives Part 24's own DLL-sharing
+claim its first real proof: exactly one `DDRDLLA` and exactly two `DQSBUFM` in the
+synthesized netlist. (A mutation making lane 1 instantiate its own, second `DDRDLLA` is
+caught even earlier than that count, by `nextpnr-ecp5` itself refusing to route a second
+edge clock to a second DLL in one bank - a real, physical confirmation that the "one per
+side" architecture this whole DLL-sharing effort follows is not a stylistic choice.)
+
+**Mutation-tested.** Cross-wiring lane 1's own DQ pads to lane 0's `dq_o` is caught
+(calibration fails outright). Lane 1's own DM tied permanently low was not caught by the
+test's first version (it only checked DM goes low at least once, which a stuck-low signal
+also satisfies) - strengthened to also require DM going back high afterward, which now
+catches it. Cross-wiring lane 1's own UDQS pad to lane 0's own DQS output is not caught,
+for the same reason Part 24 already named: the pins carry a plausible-looking burst
+waveform regardless of which lane's logic produced it, and the simulation stand-in for
+`DQSBUFM` does not check which. Feeding `CALIB1`'s own `DQS1` instance a fake, unshared
+`ddrdel` is not caught by simulation either - nothing there reads a real delay code either
+way - but is caught immediately by real place-and-route, as above.
+
+**What this does not establish.** Still nothing about the real command path: no `wseq`/
+`rseq`-equivalent drives lane 1, so a controller-facing request cannot reach it, and how
+one eventually would remains entangled with the byte-granular-versus-16-byte-burst
+decision. The `readclksel`/`dqs_pad_i` cross-wiring gap Part 24 named is unchanged by this
+part - simulation still cannot show it, though place-and-route now at least proves the
+DLL sharing for real. No formal proof (Part 20's properties are the control plane). No
+board.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into

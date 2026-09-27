@@ -1,8 +1,8 @@
 #!/bin/sh
 # Synthesis and place-and-route of the DDR3 PHY on the ECPIX-5's device, with the board's
 # real DDR3 pins - a probe of whether the PHY's structure is legal on an ECP5, not a
-# bring-up build. Docs/roadmap.md, Parts 21, 22 and 23 (23 adds lane 1's own real pins,
-# held permanently inert - see fpga/constraints/ecpix5_ddr3.lpf's own header).
+# bring-up build. Docs/roadmap.md, Parts 21-25 (25 gives lane 1 its own real DQSBUFM,
+# sharing the one DDRDLLA lane 0 already had - Part 23's own tie-off is gone).
 #
 # What passing shows: yosys maps every DDR primitive, and nextpnr packs, places and routes
 # them against the real LFE5UM5G-85F/CABGA554 pin data - including checks no simulation
@@ -67,8 +67,41 @@ if grep -E "Max frequency" "$BUILD/nextpnr.log" | grep -q "FAIL at"; then
     echo "ddr3_pnr_probe: a clock missed its constraint - see $BUILD/nextpnr.log"
     exit 1
 fi
-# The probe is worthless if the primitives it exists to check were optimised away.
-for cell in DQSBUFM DDRDLLA IDDRX2DQA ODDRX2DQA TSHX2DQA ODDRX2DQSB TSHX2DQSA ODDRX2F OSHX2A EHXPLLL; do
-    grep -q "\"$cell\"" "$BUILD/probe.json" || { echo "ddr3_pnr_probe: $cell is not in the synthesized netlist"; exit 1; }
-done
+# The probe is worthless if the primitives it exists to check were optimised away - and a
+# plain `grep -q "\"$cell\""` on the JSON does NOT show that: `write_json` always dumps
+# every ECP5 cell's own blackbox definition alongside the design, so the string for a
+# primitive nothing instantiates (checked directly: "OSCG", used nowhere in this design,
+# matches once) is present regardless. Found while adding the count below for Part 25 -
+# this check had been vacuous since Part 21. Counting real instances in the design's own
+# module entry is what actually proves it: exact counts for DQSBUFM/DDRDLLA double as the
+# one real check that lane 1 shares lane 0's own DLL rather than getting a second one
+# (Part 24's own refactor) - simulation cannot show this, since nothing there reads a real
+# delay code either way.
+python3 - "$BUILD/probe.json" <<'PYEOF'
+import json, sys, collections
+d = json.load(open(sys.argv[1]))
+mod = d["modules"]["ecpix5_ddr3_probe"]
+counts = collections.Counter(c["type"] for c in mod["cells"].values())
+checks = [
+    ("DQSBUFM",    2, "=="),   # one per byte lane
+    ("DDRDLLA",    1, "=="),   # shared, not one per lane (Part 24)
+    ("IDDRX2DQA",  1, ">="),
+    ("ODDRX2DQA",  1, ">="),
+    ("TSHX2DQA",   1, ">="),
+    ("ODDRX2DQSB", 1, ">="),
+    ("TSHX2DQSA",  1, ">="),
+    ("ODDRX2F",    1, ">="),
+    ("OSHX2A",     1, ">="),
+    ("EHXPLLL",    1, ">="),
+]
+failed = False
+for cell, want, op in checks:
+    got = counts.get(cell, 0)
+    ok = (got == want) if op == "==" else (got >= want)
+    if not ok:
+        print(f"ddr3_pnr_probe: {cell}: {got} instances in the synthesized netlist, expected {op} {want}")
+        failed = True
+if failed:
+    sys.exit(1)
+PYEOF
 echo "ddr3_pnr_probe: the DDR3 PHY places and routes on the ECPIX-5's device with its real DDR3 pins"
