@@ -5122,7 +5122,8 @@ wired now. Neither this nor defect 2 changes any simulation result (`make verify
 
 **Then it places and routes** (`make pnr_probe_ddr3`, `fpga/synth/ddr3_pnr_probe.sh`): 423 flip-flops,
 41 pads, 36 I/O logic cells, one `DQSBUFM` (nextpnr put it at `LDQS77`), one DLL, one PLL, `sclk`
-at 231 MHz against its 25 MHz constraint, edge clock promoted to banks 6 and 7, bank 6's VREF on
+at 231 MHz on the local tool bundle and 254 MHz on the one CI downloads (two nextpnr builds, so the figure moves; what is
+stable is that it passes its 25 MHz constraint), edge clock promoted to banks 6 and 7, bank 6's VREF on
 pin N2. The probe wraps the top in a shift register (`fpga/ecpix5_ddr3_probe.v`) so that only the DDR
 pins are pads; it is not a bring-up test and proves nothing about behaviour.
 
