@@ -36,6 +36,7 @@ module tb_ddr3_phy_phases;
     wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
+    wire        ddr3_dm;   // Part 22
 
     wire pll_locked, dll_locked, init_ready;
     wire calib_done, calib_error;
@@ -53,7 +54,7 @@ module tb_ddr3_phy_phases;
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
         .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
-        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs),
+        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .write_req(write_req), .write_bank(3'd2), .write_row(16'h0123),
         .write_col(16'h0040), .write_data(8'hA7), .write_busy(write_busy),
         .read_req(read_req), .read_bank(3'd2), .read_row(16'h0123), .read_col(16'h0040),
@@ -75,7 +76,7 @@ module tb_ddr3_phy_phases;
         .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
-        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.read_active_final),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)

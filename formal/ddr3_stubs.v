@@ -157,13 +157,27 @@ module ddr3_dqs_write_ecp5 (
     output wire dqs_o,
     output wire dqs_oe,
     output wire dqs_t,
-    output wire burst_active
+    output wire burst_active,
+    output wire active0
 );
     assign dqs_o        = 1'b0;
     assign dqs_oe       = 1'b0;
     assign dqs_t        = 1'b1;
     assign burst_active = 1'b0;
+    assign active0       = 1'b0;
     wire _unused_ok = &{1'b0, sclk, eclk, dqsw, rst, write_start, 1'b0};
+endmodule
+
+module ddr3_dm_drv_ecp5 (
+    input  wire sclk,
+    input  wire eclk,
+    input  wire rst,
+    input  wire dqsw270,
+    input  wire dm_level,
+    output wire dm_o
+);
+    assign dm_o = 1'b1;
+    wire _unused_ok = &{1'b0, sclk, eclk, rst, dqsw270, dm_level, 1'b0};
 endmodule
 
 module ddr3_dq_serdes_ecp5 #(
