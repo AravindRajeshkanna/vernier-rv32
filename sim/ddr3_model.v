@@ -67,7 +67,14 @@ module ddr3_model #(
     // rtl/soc/ddr3_phy_ecp5.v itself uses, checked independently here
     // rather than trusted, since this file's whole job is catching a
     // disagreement between the two.
-    wire cmd_present = !cs_n;
+    // While RESET# is low the DRAM is in reset and decodes nothing: the datasheet
+    // says every other input, ODT included, "may be undefined" until the reset
+    // has been released. The command pins do glitch then - the PHY's registers
+    // only come up at its first sclk edge, after CK's first - and a checker that
+    // read them would judge whatever a simulator happens to leave there. Icarus
+    // leaves x, which no rule matches; a two-state simulator leaves 0, which is
+    // an MRS.
+    wire cmd_present = reset_n && !cs_n;
     wire is_mrs      = cmd_present && !ras_n && !cas_n && !we_n;
     wire is_zqcl      = cmd_present &&  ras_n &&  cas_n && !we_n && a[10];
     wire is_nop       = cmd_present &&  ras_n &&  cas_n &&  we_n;

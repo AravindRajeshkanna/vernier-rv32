@@ -95,8 +95,13 @@ module ddr3_eclk_pll #(
     // tying sclk directly to clk is the simpler, exactly equivalent
     // behavioral stand-in - no separate divider needed since there is
     // nothing here to divide).
-    reg eclk_r = 1'b0;
+    reg eclk_r;
+    initial eclk_r = 1'b0;
+    // A delay-based clock generator, so the blocking assignment is deliberate (BLKSEQ is
+    // reported once the file is linted with --timing, which Verilator 5.020 requires).
+    /* verilator lint_off BLKSEQ */
     always #(CLK_PERIOD_NS / 4) eclk_r = ~eclk_r;
+    /* verilator lint_on BLKSEQ */
     assign eclk = eclk_r;
     assign sclk = clk;
 

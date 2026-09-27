@@ -116,6 +116,10 @@ module ddr3_dqs_ecp5 (
                         (readclksel >= READCLKSEL_GOOD_LO) &&
                         (readclksel <= READCLKSEL_GOOD_HI);
 
+    // No DDRDLLA here, so nothing produces the delay code that DQSBUFM would consume in
+    // hardware. Nothing reads it in simulation either; drive it so it is not left floating.
+    assign ddrdel = 1'b0;
+
     wire _unused_ok = &{1'b0, dqs_pad_i, ddrdel, 1'b0};
 `endif
 endmodule

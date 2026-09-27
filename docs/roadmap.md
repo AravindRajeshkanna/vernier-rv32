@@ -3245,23 +3245,25 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over eighteen gated slices (init and calibration, the DQ/DQS data path,
+over nineteen gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
 one transaction ever in flight, every transaction closing its bank, a
 memory model that decodes bank, row and column so the address path is
 finally checked, CK at the edge-clock rate with two command slots per
-`sclk`, a write burst that lands where the DRAM's write latency says, and a memory
-model that answers a read at the DRAM's own read latency) - but
+`sclk`, a write burst that lands where the DRAM's write latency says, a memory
+model that answers a read at the DRAM's own read latency, and the same tests run under a
+second simulator and in CI) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
 every phase above this one are. Stage 0's "Done when" bar (real hardware,
 a real measured Fmax on silicon) is wholly unmet. Stage 1's is partly met:
 standalone read, write and refresh tests now exist and pass, under Icarus
-only and against a data-path model that has not yet been shown
+and (Part 19) under Verilator and in CI, with limits that part names, and
+against a data-path model that has not yet been shown
 hardware-faithful (see the survey near the end of this phase) - it still
-names Verilator and formal or property checks, neither attempted. No ECPIX-5 is attached to this session, and no real DDR3 chip
+names formal or property checks, not attempted. No ECPIX-5 is attached to this session, and no real DDR3 chip
 has seen anything this project has written.
 What changed since this phase was first written down as "blocked on a
 board, board not chosen" is that a real, evidence-based board candidate
@@ -4897,7 +4899,110 @@ not eight beats, and a write still stores only its first half. Calibration's rea
 still follow `read_active`, so the calibration sweep is not judged against the
 DRAM's read timing. No data mask, no second lane, and the byte-granular versus
 16-byte-burst interface decision is still the maintainer's. Verilator, formal
-checks and real hardware bring-up remain open.
+checks and real hardware bring-up remain open. (Part 19, below, does the Verilator half.)
+
+**Update, Part 19: the DDR3 tests now run under a second simulator, Verilator,
+and - for the first time - in CI. The second simulator found two things Icarus could
+not: a protocol checker that judged whatever a simulator left on the command pins
+before reset, and a memory model no Verilator build could connect to.** This is the
+"Verilator" half of the gap every account since Part 1 has named, and it turned up
+a larger one on the way: `.github/workflows/ci.yml` had no reference to DDR3 at all.
+Eighteen slices had been gated only by whatever a contributor ran locally.
+
+**Test first.** The DDR3 testbenches were built under Verilator 5.050 (`--binary
+--timing`) with nothing changed. **Eleven of eighteen could not be built:**
+`Unsupported: tristate in top-level IO: 'dqs_pin'`, from a tri-state net connected to
+an `input` port of the memory model. A minimal repro showed the same net accepted on an
+`inout` port, and read correctly (high-Z included) through it. Of the seven that
+built, five passed and two failed. With the model's two pin ports changed to `inout`,
+all eighteen built: twelve passed and six failed.
+
+**A wrong first hypothesis, measured away.** The two failures that survived the port
+change (`sim_ddr3_init`, three checks, and `sim_ddr3_model_banks`, twelve) were the same
+symptom: the protocol checker reported "expected MRS to MR2 first" and the run ended at
+620 ns. The first guess was a `timescale` dependence in the PLL model (the only `#`
+delay in the DDR3 files is its edge-clock half period, and that file declares no
+`timescale`). Adding one changed nothing. A probe printing the command pins on
+every CK edge showed the real cause: at the very first CK edge, 10 ns in, `cs_n`,
+`ras_n`, `cas_n` and `we_n` were all 0 - an MRS - with RESET# low and CKE low. The
+registers in the PHY first take a value at the first `sclk` edge, 20 ns in, after the first CK edge.
+Icarus leaves those registers `x`, which no rule of the checker matches, so the garbage
+was invisible. Verilator has no `x`; it left 0.
+
+**The fix follows the datasheet, not the simulator.** Micron's initialisation section: while
+RESET# is low the outputs are High-Z and "all other inputs, including ODT, may be
+undefined". A DRAM in reset does not decode commands, so the checker now ignores the
+command pins while RESET# is low. Before, it passed only because Icarus's `x` happened to
+look like nothing.
+
+**The four other changes are portability, not behaviour.** The memory model's `dq_pin` and
+`dqs_pin` are `inout` ports (the model never drives them; its own drive is the `mem_*`
+outputs). The rules self-test drives its pins through output enables instead of assigning
+`z` to a reg - a Verilator reg is two-state, and Icarus needs a net on the other side of
+an `inout`. The two window testbenches read DQS and DQ through a new `sim/pin_probe.v`
+whose ports are `inout`, so a floating strobe reads as high-Z. And the checks that need an
+unknown value are compiled out under Verilator (`ifndef VERILATOR`).
+
+**What a pass under Verilator does not show.** Verilator is two-state, so, and these stay
+Icarus-only: the x-based bus-contention checks in the command-driven and top-level tests
+cannot fire; "an unwritten location reads back as x" cannot be asked; a strobe nobody
+drives reads as low on a net two modules drive, so the window tests accept low where they
+expect high-Z and cannot tell floating from driven-low; and the rules self-test, whose job
+is to show that each "DQ or DQS not driven" rule can fire and which is seven of eleven
+cases exactly that distinction, is **not run under Verilator at all**. Seventeen of
+eighteen are.
+
+**Are the Verilator runs able to fail?** Nine mutations of the design and the model, each
+run against all seventeen: `CL_CYC` 2 and 4 (six tests each fail), the model's read burst
+one cycle late (five), the write burst trigger one cycle late (eight), write recovery cut
+to 3 (seven), the delayed refresh gate removed (one - the reverse-arbitration test, as
+under Icarus), the DQ data hold removed (nine), and each of this part's own two fixes
+reverted. Every one is caught. Those last two are the point: with both model fixes
+reverted, all seven affected Icarus tests still pass, so they are defects only a second
+simulator sees. Reverting the port change is nine build failures.
+
+**Lint.** `make lint-rtl-ddr3` runs Verilator's `-Wall` on the simulation branch of the DDR3
+RTL - only that branch, since the synthesis branch instantiates ECP5 primitives Verilator
+has no models of, which is what `synth_check_ddr3` is for. It reported two warnings that
+were fixed - an initial value declared on a register the PLL model also assigns, and a delay code the
+simulation branch never drove - and two that are deliberate and are waived in place with
+the reason: `cs_n_pin`, written on both `sclk` edges because that is what two command
+slots per `sclk` are, and the reset net, read synchronously once by the falling-edge
+deselect in the PHY. It was shown able to fail by removing a waiver and by injecting a width mismatch.
+
+**CI.** A new `ddr3` job runs `make ddr3_check_sim` - the eighteen Icarus tests, the seventeen
+Verilator runs and the lint - and `synth_check_ddr3` is a step of the existing `formal`
+job, which has yosys. `make verify` depends on the same two, through one list of tests in
+the Makefile, so a test is either reached by both or by neither.
+
+**The first CI run disagreed, and the disagreement was a finding.** The new job installs
+Verilator from the distribution's package manager, release 5.020, and failed on it: three
+tests that pass on 5.050 (`refresh_ctrl`, `reverse_arb`, `addr`) and the lint, which 5.020
+refuses to run on a file with a delay or an event control unless told `--timing`. A local
+build of 5.020 was not possible (the macOS flex fails to link it), so a throwaway branch
+ran a two-question micro-test on the runner. Reading a DUT register at the edge that
+updates it behaved as the standard says. A testbench's `a <= 1` made at an edge did not:
+a flop sampling `a` at that same edge saw the new value, where the standard gives the old
+one, so the DUT saw the testbench's request one cycle earlier than under Icarus or 5.050.
+The three tests that hard-code an exact alignment (a grant against the command it
+produces; a request against a pending refresh) measured the shifted timeline: "expected 2,
+got 1", and a caller that follows the busy signal having its request dropped. Their
+stimulus is now applied with `<= #1`, 1 ns after the edge. Under a conforming simulator
+the DUT-visible timeline is unchanged (no expected value moved); under 5.020 the
+assignment can no longer land at the same edge. The other fourteen pass under either
+alignment. The lint gained `--timing` and a waiver for the PLL model's deliberate blocking
+assignment, which `--timing` makes it report. A run on the runner's 5.020 then passed all
+seventeen Verilator tests, the eighteen Icarus tests and the lint.
+
+**What this does not establish.** Two versions of Verilator now disagree on one scheduling
+point and the tests avoid it rather than relying on either; a third might disagree
+elsewhere. The nine mutation runs above were made on 5.050 only. Verilator scheduling is
+one more opinion, not a proof: it says nothing about real timing, and two simulators
+agreeing does not make a model hardware-faithful. The x-based and floating-net checks are
+exercised by Icarus alone.
+The lint covers the simulation branch only. No formal or property checks, no data mask,
+no second lane, and the byte-granular versus 16-byte-burst interface decision is still
+the maintainer's. Real hardware bring-up remains open.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into

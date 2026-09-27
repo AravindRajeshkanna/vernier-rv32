@@ -206,7 +206,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules synth_check_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules verilator_ddr3 synth_check_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -216,7 +216,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-c lint-py code-quality \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -982,7 +982,23 @@ lint-rtl-soc:
 	    --top-module soc_top $(VERILATOR_PARAMS) \
 	    $(SOC_RTL) sim/verilator_soc.vlt
 
-lint-rtl: lint-rtl-flat lint-rtl-soc
+# ---- Verilator lint of the DDR3 PHY, simulation branch (Phase 9 Stage 1, Part 19) ----
+#
+# Only the simulation branch can be linted this way: the SYNTHESIS branch
+# instantiates ECP5 primitives (DQSBUFM, ODDRX2F, ...) that Verilator has no
+# models of, so `synth_check_ddr3` (yosys, which does) is what covers that half.
+# -Wno-UNUSEDSIGNAL as in the two targets above: the ports and taps the PHY
+# carries for its hardware branch are unread in simulation, and the design's own
+# unused-signal convention (an `_unused_ok` reduction) already accounts for them.
+#
+# --timing because the PLL model has a delay-based clock and the DQS block an event
+# control, and Verilator 5.020 (Ubuntu 24.04's package, so CI's) refuses to lint a file
+# with either unless told how to treat them; 5.050 does not ask.
+lint-rtl-ddr3:
+	$(VERILATOR) --lint-only --timing -Wall -Wno-UNUSEDSIGNAL --top-module ddr3_ecp5_top \
+	    $(DDR3_SYNTH_SRCS)
+
+lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3
 
 # git ls-files rather than a glob, for the identical reason lint-markdown
 # gives: software/bench/coremark/ is a fetched, .gitignore'd tree with its
@@ -2818,13 +2834,13 @@ sim/sim_ddr3_wr_window.out: sim/tb_ddr3_wr_window.v rtl/soc/ddr3_ecp5_top.v rtl/
     rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
-    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_wr_window.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
 	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
-	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
 
 sim_ddr3_wr_window: sim/sim_ddr3_wr_window.out
 	@cd sim && $(VVP) sim_ddr3_wr_window.out $(VVP_DUMP) 2>&1 | tee ddr3_wr_window.log
@@ -2843,13 +2859,13 @@ sim/sim_ddr3_rd_window.out: sim/tb_ddr3_rd_window.v rtl/soc/ddr3_ecp5_top.v rtl/
     rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
-    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_rd_window.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
 	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
-	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
+	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
 
 sim_ddr3_rd_window: sim/sim_ddr3_rd_window.out
 	@cd sim && $(VVP) sim_ddr3_rd_window.out $(VVP_DUMP) 2>&1 | tee ddr3_rd_window.log
@@ -2869,6 +2885,81 @@ sim_ddr3_dq_window_rules: sim/sim_ddr3_dq_window_rules.out
 	@cd sim && $(VVP) sim_ddr3_dq_window_rules.out $(VVP_DUMP) 2>&1 | tee ddr3_dq_window_rules.log
 	@grep -q "DDR3 WRITE BURST RULES TEST PASSED" sim/ddr3_dq_window_rules.log || \
 	    { echo "sim_ddr3_dq_window_rules FAILED"; exit 1; }
+
+# ---- the DDR3 testbenches under Verilator (Phase 9 Stage 1, Part 19) ----
+#
+# Every DDR3 test above runs under Icarus Verilog only. Verilator schedules
+# events differently and is two-state, which is what makes it a useful second
+# opinion: a test or a simulation model that leans on a simulator-specific
+# behaviour - an uninitialised register reading x, a tri-state net read in the
+# scope that resolves it, a z assigned to a reg - passes under one and not the
+# other. Measured when this was added: eleven of the eighteen DDR3 tests could not
+# be built at all (a tri-state net into an `input` port, which Verilator rejects),
+# and once they could, six failed for exactly these reasons (docs/roadmap.md,
+# Part 19).
+#
+# What a pass here does NOT show: anything that needs an unknown value or a
+# floating net. Verilator has neither, so:
+#   - the x-based bus-contention checks in sim/tb_ddr3_cmd_seq.v and
+#     sim/tb_ddr3_top.v cannot fire under it;
+#   - the "an unwritten location reads back as x" checks in sim/tb_ddr3_addr.v
+#     and sim/tb_ddr3_rd_window.v are compiled out (`ifndef VERILATOR);
+#   - a DQS that nobody drives reads as low on a net two modules drive, so
+#     sim/tb_ddr3_wr_window.v and sim/tb_ddr3_rd_window.v accept "low" where they
+#     expect "high-Z" (an idle strobe), and cannot tell a floating strobe from a
+#     driven-low one;
+#   - sim/tb_ddr3_dq_window_rules.v is not run at all: its job is to show that
+#     each "DQ or DQS not driven" rule of the memory model can fire, and seven of
+#     its eleven cases are exactly that distinction.
+# Those stay Icarus-only; the sim_ddr3_* targets remain the authority for them.
+#
+# The testbench is the first file so that its `timescale reaches the RTL files
+# after it, exactly as in the Icarus builds. One build directory per test, so
+# `make -j verilator_ddr3` builds them in parallel.
+DDR3_VL_TBS  = init data top dqs_write write_seq read_seq read_burst_ext cmd_seq \
+               refresh_ctrl refresh_wire reverse_arb wr_excl model_banks addr \
+               phy_phases wr_window rd_window
+DDR3_VL_SRCS = rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
+               rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+               rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v \
+               rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v \
+               rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v \
+               rtl/soc/ddr3_ecp5_top.v sim/ddr3_dq_model.v sim/ddr3_model.v sim/pin_probe.v
+DDR3_VL_RUNS = $(addprefix verilator_ddr3_,$(DDR3_VL_TBS))
+.PHONY: verilator_ddr3 $(DDR3_VL_RUNS)
+
+$(DDR3_VL_RUNS): verilator_ddr3_%: sim/tb_ddr3_%.v $(DDR3_VL_SRCS)
+	@mkdir -p sim/vl_ddr3
+	@$(VERILATOR) --binary --timing -Wno-fatal -Wno-lint -Wno-style \
+	    --Mdir sim/vl_ddr3/$* --top-module tb_ddr3_$* sim/tb_ddr3_$*.v $(DDR3_VL_SRCS) \
+	    > sim/vl_ddr3/$*.build.log 2>&1 || \
+	    { echo "verilator_ddr3_$*: BUILD FAILED"; tail -20 sim/vl_ddr3/$*.build.log; exit 1; }
+	@sim/vl_ddr3/$*/Vtb_ddr3_$* > sim/vl_ddr3/$*.log 2>&1; \
+	    if grep -q "TEST PASSED" sim/vl_ddr3/$*.log; then \
+	        echo "verilator_ddr3_$*: $$(grep -m1 'TEST PASSED' sim/vl_ddr3/$*.log)"; \
+	    else \
+	        echo "verilator_ddr3_$*: FAILED"; grep -a "FAIL\|TIMEOUT" sim/vl_ddr3/$*.log | head -10; exit 1; \
+	    fi
+
+verilator_ddr3: $(DDR3_VL_RUNS)
+
+# Everything the DDR3 PHY is checked by, in one place. `make verify` depends on
+# `ddr3_check`. CI runs the same two halves by name, in different jobs because they
+# need different toolchains: `ddr3_check_sim` (both simulators and the lint) in the
+# `ddr3` job, and `synth_check_ddr3` (yosys) as a step of the `formal` job, which
+# already has it. A test added to DDR3_SIM_TESTS is therefore reached by both `make
+# verify` and CI, and cannot be added to one and forgotten in the other. (Until
+# Part 19 nothing in CI ran any of it: the DDR3 tests were in `make verify` but
+# never wired into CI, the same gap the comments in ci.yml name for sim_uartirq,
+# sim_probe and sim_div64test.)
+DDR3_SIM_TESTS = sim_ddr3_init sim_ddr3_data sim_ddr3_top \
+                 sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext \
+                 sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire \
+                 sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
+                 sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules
+.PHONY: ddr3_check ddr3_check_sim
+ddr3_check_sim: $(DDR3_SIM_TESTS) verilator_ddr3 lint-rtl-ddr3
+ddr3_check: ddr3_check_sim synth_check_ddr3
 
 # ---- DDR3 synthesis branch, elaboration check (Phase 9 Stage 1, Part 16) ----
 #
@@ -2988,7 +3079,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules synth_check_ddr3 \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck ddr3_check \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \

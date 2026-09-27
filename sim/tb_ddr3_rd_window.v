@@ -112,12 +112,18 @@ module tb_ddr3_rd_window;
     reg        ract_log [0:LOG-1];   // the DUT's READ window
     reg        rdv_log  [0:LOG-1];   // read_data_valid
     reg [7:0]  rd_log   [0:LOG-1];   // read_data when it pulsed
+    // The pins are read through sim/pin_probe.v's inout ports so that a floating strobe
+    // reads as high-Z under Verilator as well as under Icarus (see that file).
+    wire [1:0] probe_dqs_class;
+    wire       probe_dq_bad;
+    wire [7:0] probe_dq_value;
+    pin_probe PROBE (.dqs(ddr3_dqs), .dq(ddr3_dq), .dqs_class(probe_dqs_class),
+                     .dq_bad(probe_dq_bad), .dq_value(probe_dq_value));
     always @(posedge DUT.sclk) begin
         if (!rst) begin
-            dqs_log [cyc % LOG] = (ddr3_dqs === 1'b0) ? 2'd0 : (ddr3_dqs === 1'b1) ? 2'd1 :
-                                  (ddr3_dqs === 1'bz) ? 2'd2 : 2'd3;
-            dqz_log [cyc % LOG] = ((^ddr3_dq) === 1'bx);
-            dq_log  [cyc % LOG] = ddr3_dq;
+            dqs_log [cyc % LOG] = probe_dqs_class;
+            dqz_log [cyc % LOG] = probe_dq_bad;
+            dq_log  [cyc % LOG] = probe_dq_value;
             ract_log[cyc % LOG] = DUT.read_active_final;
             rdv_log [cyc % LOG] = read_data_valid;
             rd_log  [cyc % LOG] = read_data;
@@ -213,7 +219,13 @@ module tb_ddr3_rd_window;
                     5:       want_dqs = 2'd0;
                     default: want_dqs = 2'd2;
                 endcase
+`ifdef VERILATOR
+                // a floating DQS reads as low here (see tb_ddr3_wr_window.v)
+                if (dqs_log[(rd_cyc[w] + k) % LOG] !== want_dqs &&
+                    !(want_dqs == 2'd2 && dqs_log[(rd_cyc[w] + k) % LOG] == 2'd0)) begin
+`else
                 if (dqs_log[(rd_cyc[w] + k) % LOG] !== want_dqs) begin
+`endif
                     if (dqs_fails < 8)
                         $display("  FAIL read %0d: R+%0d DQS is %0d, expected %0d", w, k, dqs_log[(rd_cyc[w] + k) % LOG], want_dqs);
                     dqs_fails = dqs_fails + 1;
@@ -266,7 +278,13 @@ module tb_ddr3_rd_window;
                     5:       want_dqs = 2'd0;
                     default: want_dqs = 2'd2;
                 endcase
+`ifdef VERILATOR
+                // a floating DQS reads as low here (see tb_ddr3_wr_window.v)
+                if (dqs_log[(rd_cyc[w] + k) % LOG] !== want_dqs &&
+                    !(want_dqs == 2'd2 && dqs_log[(rd_cyc[w] + k) % LOG] == 2'd0)) begin
+`else
                 if (dqs_log[(rd_cyc[w] + k) % LOG] !== want_dqs) begin
+`endif
                     if (unw_fails < 8) $display("  FAIL read %0d: R+%0d DQS is %0d, expected %0d", w, k, dqs_log[(rd_cyc[w] + k) % LOG], want_dqs);
                     unw_fails = unw_fails + 1;
                 end
@@ -279,11 +297,15 @@ module tb_ddr3_rd_window;
             unw_fails = unw_fails + 1;
         end
         // 9: the addressed cell was never written - the DRAM drives DQ, but with no known value
+`ifndef VERILATOR
+        // (Icarus only: a two-state simulator has no unknown value to return, so this check
+        // cannot be made under Verilator - see the note in the Makefile at verilator_ddr3.)
         if (dq_log[(rd_cyc[NREADS + 1] + 3) % LOG] !== 8'hxx) begin
             $display("  FAIL read %0d: a never-written cell returned %02h, expected unknown (xx)", NREADS + 1,
                      dq_log[(rd_cyc[NREADS + 1] + 3) % LOG]);
             unw_fails = unw_fails + 1;
         end
+`endif
 
         check_true("every read: DQS low at R+2, high at R+3 and R+4, low at R+5, high-Z otherwise", dqs_fails == 0);
         check_true("every read: DQ carries beat 0 at R+3 and beat 4 at R+4", dq_fails == 0);

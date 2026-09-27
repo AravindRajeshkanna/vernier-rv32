@@ -90,7 +90,7 @@ module tb_ddr3_refresh_ctrl;
         // ---- grant it, and measure the real REFRESH command + tRFC
         // wait ----
         @(posedge clk);
-        refresh_grant <= 1'b1;
+        refresh_grant <= #1 1'b1;
 
         cyc = 0;
         cmd_cyc = -1;
@@ -106,12 +106,18 @@ module tb_ddr3_refresh_ctrl;
         // latency before the DUT can even see grant=1, then one more
         // real DUT cycle to register the command - confirmed by
         // tracing a real probe, not assumed from either number alone.
+        //
+        // The assignments are `<= #1` so that this holds on every simulator: a
+        // non-blocking assignment made at a clock edge is supposed to reach
+        // clocked logic only after that edge, but Verilator 5.020 (Ubuntu 24.04's
+        // package) lets it reach the DUT at the same edge, which made this
+        // read 1. Applied 1 ns later, it cannot.
         check_int("a real command was issued the expected number of cycles after grant", cmd_cyc, 2);
         check("the real command is a genuine REFRESH (RAS_n=0,CAS_n=0,WE_n=1)", (cmd_cs_ras_cas_we == CMD_REF), 1'b1);
         check("refresh_req deasserted the same cycle the command was issued", refresh_req, 1'b0);
 
         @(posedge clk);
-        refresh_grant <= 1'b0;
+        refresh_grant <= #1 1'b0;
 
         // Measured cleanly from the command's own cycle (cyc=0 reset
         // right here, at the same real point cmd_valid was last seen
