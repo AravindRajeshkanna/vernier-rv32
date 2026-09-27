@@ -207,7 +207,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_upper_lane verilator_ddr3 synth_check_ddr3 pnr_probe_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_upper_lane sim_ddr3_data_lane1 verilator_ddr3 synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2602,11 +2602,11 @@ sim_ddr3_init: sim/sim_ddr3_init.out
 # behavioral DQ/DQS memory. Distinct from sim_ddr3_init above: that one
 # proves the command/mode-register sequence, this one proves the
 # genuinely double-data-rate data path none of Part 1's own files touch.
-sim/sim_ddr3_data.out: sim/tb_ddr3_data.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_dqs_ecp5.v \
+sim/sim_ddr3_data.out: sim/tb_ddr3_data.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_data.v rtl/soc/ddr3_eclk_pll.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
 
 sim_ddr3_data: sim/sim_ddr3_data.out
@@ -2622,13 +2622,13 @@ sim_ddr3_data: sim/sim_ddr3_data.out
 # above, which each proved their own half in isolation, against their
 # own independently free-running testbench clock.
 sim/sim_ddr3_top.out: sim/tb_ddr3_top.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_top.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
@@ -2646,13 +2646,13 @@ sim_ddr3_top: sim/sim_ddr3_top.out
 # signal-injection scheme (which still runs first - calibration must
 # complete before either command sequencer is allowed to start).
 sim/sim_ddr3_cmd_seq.out: sim/tb_ddr3_cmd_seq.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_cmd_seq.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
@@ -2685,13 +2685,13 @@ sim_ddr3_refresh_ctrl: sim/sim_ddr3_refresh_ctrl.out
 # the shared cmd_* bus. Proven with a deliberately-timed collision, not
 # a hoped-for one.
 sim/sim_ddr3_refresh_wire.out: sim/tb_ddr3_refresh_wire.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_refresh_wire.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
@@ -2710,13 +2710,13 @@ sim_ddr3_refresh_wire: sim/sim_ddr3_refresh_wire.out
 # polite (busy-respecting, registered) and a blind caller, on both the
 # write and read side - not one hand-picked collision.
 sim/sim_ddr3_reverse_arb.out: sim/tb_ddr3_reverse_arb.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_reverse_arb.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
@@ -2735,13 +2735,13 @@ sim_ddr3_reverse_arb: sim/sim_ddr3_reverse_arb.out
 # request from the first, for all four write/read pairs, as a blind and as
 # a polite caller.
 sim/sim_ddr3_wr_excl.out: sim/tb_ddr3_wr_excl.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_wr_excl.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
@@ -2780,13 +2780,13 @@ sim_ddr3_model_banks: sim/sim_ddr3_model_banks.out
 # spread of banks, rows and columns, reads it all back, and checks the
 # address that reached the real command pins.
 sim/sim_ddr3_addr.out: sim/tb_ddr3_addr.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_addr.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
@@ -2806,13 +2806,13 @@ sim_ddr3_addr: sim/sim_ddr3_addr.out
 # moving four UI per sclk; this test measured that (ratio 1.00) before the
 # fix and now holds it at 2.
 sim/sim_ddr3_phy_phases.out: sim/tb_ddr3_phy_phases.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_phy_phases.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
@@ -2832,13 +2832,13 @@ sim_ddr3_phy_phases: sim/sim_ddr3_phy_phases.out
 # calibration. This pins the corrected timing in numbers: preamble at W+2,
 # DQS active with DQ driven at W+3 and W+4, postamble at W+5, high-Z otherwise.
 sim/sim_ddr3_wr_window.out: sim/tb_ddr3_wr_window.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_wr_window.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
@@ -2856,13 +2856,13 @@ sim_ddr3_wr_window: sim/sim_ddr3_wr_window.out
 # show whether an unmasked write would silently corrupt a real neighbour column. This
 # test pins the waveform and then writes two neighbouring columns to show it does not.
 sim/sim_ddr3_dm_window.out: sim/tb_ddr3_dm_window.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_dm_window.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
@@ -2882,13 +2882,13 @@ sim_ddr3_dm_window: sim/sim_ddr3_dm_window.out
 # pins are never driven by the FPGA side, across a run with real writes and a real
 # refresh, not just at reset.
 sim/sim_ddr3_upper_lane.out: sim/tb_ddr3_upper_lane.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_upper_lane.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v
@@ -2897,6 +2897,25 @@ sim_ddr3_upper_lane: sim/sim_ddr3_upper_lane.out
 	@cd sim && $(VVP) sim_ddr3_upper_lane.out $(VVP_DUMP) 2>&1 | tee ddr3_upper_lane.log
 	@grep -q "DDR3 UPPER LANE TEST PASSED" sim/ddr3_upper_lane.log || \
 	    { echo "sim_ddr3_upper_lane FAILED"; exit 1; }
+
+# ---- DDR3 second byte lane: independent calibration (Phase 9 Stage 1, Part 24) ----
+#
+# The same real proof sim/tb_ddr3_data.v (Part 2) gave lane 0, run a second time on
+# lane 1's own pins, sharing the one real rtl/soc/ddr3_ddrdlla_ecp5.v instance real
+# hardware has exactly one of - and, in the same run, proof the two do not interfere:
+# each lane's own calibration must find its OWN test pattern, and neither lane's bus may
+# ever show the other's.
+sim/sim_ddr3_data_lane1.out: sim/tb_ddr3_data_lane1.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_data_lane1.v rtl/soc/ddr3_eclk_pll.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
+
+sim_ddr3_data_lane1: sim/sim_ddr3_data_lane1.out
+	@cd sim && $(VVP) sim_ddr3_data_lane1.out $(VVP_DUMP) 2>&1 | tee ddr3_data_lane1.log
+	@grep -q "DDR3 SECOND LANE TEST PASSED" sim/ddr3_data_lane1.log || \
+	    { echo "sim_ddr3_data_lane1 FAILED"; exit 1; }
 
 # ---- DDR3 read burst window vs READ latency (Phase 9 Stage 1, Part 18) ----
 #
@@ -2907,13 +2926,13 @@ sim_ddr3_upper_lane: sim/sim_ddr3_upper_lane.out
 # at the DRAM's own read latency and the two burst halves carry different bytes,
 # so a capture one cycle early or late returns the wrong one.
 sim/sim_ddr3_rd_window.out: sim/tb_ddr3_rd_window.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
     rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
     rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_rd_window.v rtl/soc/ddr3_ecp5_top.v \
 	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
 	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
 	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
 	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_dq_model.v sim/pin_probe.v
@@ -2971,11 +2990,11 @@ sim_ddr3_dq_window_rules: sim/sim_ddr3_dq_window_rules.out
 # The testbench is the first file so that its `timescale reaches the RTL files
 # after it, exactly as in the Icarus builds. One build directory per test, so
 # `make -j verilator_ddr3` builds them in parallel.
-DDR3_VL_TBS  = init data top dqs_write write_seq read_seq read_burst_ext cmd_seq \
+DDR3_VL_TBS  = init data data_lane1 top dqs_write write_seq read_seq read_burst_ext cmd_seq \
                refresh_ctrl refresh_wire reverse_arb wr_excl model_banks addr \
                phy_phases wr_window rd_window dm_window
 DDR3_VL_SRCS = rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
-               rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+               rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
                rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
                rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v \
                rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v \
@@ -3012,7 +3031,7 @@ DDR3_SIM_TESTS = sim_ddr3_init sim_ddr3_data sim_ddr3_top \
                  sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire \
                  sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
                  sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules \
-                 sim_ddr3_dm_window sim_ddr3_upper_lane
+                 sim_ddr3_dm_window sim_ddr3_upper_lane sim_ddr3_data_lane1
 .PHONY: ddr3_check ddr3_check_sim
 ddr3_check_sim: $(DDR3_SIM_TESTS) verilator_ddr3 lint-rtl-ddr3
 ddr3_check: ddr3_check_sim synth_check_ddr3
@@ -3037,7 +3056,7 @@ pnr_probe_ddr3:
 # wrong WIRING, not wrong BEHAVIOUR: nothing here says the primitives put a
 # value where the design assumes, which needs a board.
 DDR3_SYNTH_SRCS = rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v \
-    rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+    rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
     rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v rtl/soc/ddr3_write_seq.v \
     rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v
 

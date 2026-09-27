@@ -37,11 +37,19 @@ module tb_ddr3_data;
     wire       dqsr90, dqsw, dqsw270, burstdet, dll_locked;
     wire       dqs_bus;
 
+    // Part 24: the shared DLL, one instance regardless of how many byte lanes exist.
+    wire ddrdel;
+    ddr3_ddrdlla_ecp5 DLL (
+        .eclk(eclk), .rst(rst),
+        .ddrdel(ddrdel), .dll_locked(dll_locked)
+    );
+
     ddr3_dqs_ecp5 DQS (
         .eclk(eclk), .sclk(sclk), .rst(rst),
         .dqs_pad_i(dqs_bus), .read_active(read_active), .readclksel(readclksel),
+        .ddrdel(ddrdel),
         .dqsr90(dqsr90), .dqsw(dqsw), .dqsw270(dqsw270),
-        .datavalid(datavalid), .burstdet(burstdet), .dll_locked(dll_locked)
+        .datavalid(datavalid), .burstdet(burstdet)
     );
 
     wire [7:0] fpga_dq_o, fpga_dq_oe;

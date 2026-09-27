@@ -466,6 +466,15 @@ module ddr3_ecp5_top (
     wire [2:0] rdpntr, wrpntr;   // DQSBUFM's read-FIFO pointers, to every IDDRX2DQA
     wire dqs_pad_in;             // what the DQS pad presents to the DQSBUFM
 
+    // Part 24: the shared DLL, one instance regardless of how many byte lanes exist -
+    // see rtl/soc/ddr3_ddrdlla_ecp5.v's own header for why this moved out of
+    // ddr3_dqs_ecp5.v itself.
+    wire ddrdel;
+    ddr3_ddrdlla_ecp5 DLL (
+        .eclk(eclk), .rst(rst_all),
+        .ddrdel(ddrdel), .dll_locked(dll_locked)
+    );
+
     // Real read_active mux - mutually exclusive the same way the
     // command mux above is: CALIB's own read_active only fires during
     // calibration, real_read_active only fires after calib_done.
@@ -474,8 +483,9 @@ module ddr3_ecp5_top (
     ddr3_dqs_ecp5 DQS (
         .eclk(eclk), .sclk(sclk), .rst(rst_all),
         .dqs_pad_i(dqs_pad_in), .read_active(read_active_final), .readclksel(readclksel),
+        .ddrdel(ddrdel),
         .dqsr90(dqsr90), .dqsw(dqsw), .dqsw270(dqsw270),
-        .datavalid(datavalid), .burstdet(burstdet), .dll_locked(dll_locked),
+        .datavalid(datavalid), .burstdet(burstdet),
         .rdpntr(rdpntr), .wrpntr(wrpntr)
     );
 
