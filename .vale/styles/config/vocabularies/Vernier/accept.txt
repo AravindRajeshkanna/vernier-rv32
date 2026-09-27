@@ -7,6 +7,7 @@ Anthropic
 Ariane
 Basys
 Bitstream
+Boolector
 Bresenham
 Buildroot
 CI
@@ -102,6 +103,7 @@ Vivado
 Von
 XORing
 Xilinx
+Yices
 Yosys
 Zentel's
 Zicsr
@@ -129,6 +131,7 @@ blit
 blitter
 blockquotes
 boolean
+boolector
 bootargs
 bootloader
 bootrom

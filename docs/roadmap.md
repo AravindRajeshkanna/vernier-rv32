@@ -3245,15 +3245,16 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over nineteen gated slices (init and calibration, the DQ/DQS data path,
+over twenty gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
 one transaction ever in flight, every transaction closing its bank, a
 memory model that decodes bank, row and column so the address path is
 finally checked, CK at the edge-clock rate with two command slots per
 `sclk`, a write burst that lands where the DRAM's write latency says, a memory
-model that answers a read at the DRAM's own read latency, and the same tests run under a
-second simulator and in CI) - but
+model that answers a read at the DRAM's own read latency, the same tests run under a
+second simulator and in CI, and a bounded formal proof of the controller's arbitration, bank
+state and refresh gating) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -3263,7 +3264,8 @@ standalone read, write and refresh tests now exist and pass, under Icarus
 and (Part 19) under Verilator and in CI, with limits that part names, and
 against a data-path model that has not yet been shown
 hardware-faithful (see the survey near the end of this phase) - it still
-names formal or property checks, not attempted. No ECPIX-5 is attached to this session, and no real DDR3 chip
+names formal or property checks, done (Part 20) for the controller's control plane and not
+for initialisation, calibration or the data path. No ECPIX-5 is attached to this session, and no real DDR3 chip
 has seen anything this project has written.
 What changed since this phase was first written down as "blocked on a
 board, board not chosen" is that a real, evidence-based board candidate
@@ -5002,7 +5004,81 @@ agreeing does not make a model hardware-faithful. The x-based and floating-net c
 exercised by Icarus alone.
 The lint covers the simulation branch only. No formal or property checks, no data mask,
 no second lane, and the byte-granular versus 16-byte-burst interface decision is still
-the maintainer's. Real hardware bring-up remains open.
+the maintainer's. Real hardware bring-up remains open. (Part 20, below, does the formal half.)
+
+**Update, Part 20: formal proofs of the DDR3 controller's control plane - arbitration,
+bank state and refresh gating - for every request pattern, up to 250 cycles. The solver
+refuted two of my own first-draft properties, and nine deliberate breakages of the RTL.**
+This is the "formal or property checks" half of Stage 1's own "Done when" bar, which every
+account has named as unattempted. It covers the controller between the request ports and
+the command pins; it does not cover power-up or data.
+
+**What is proved, and on what.** On the real `ddr3_ecp5_top.v`, not a copy: the properties
+sit in an `ifdef FORMAL` block at its end (yosys cannot follow a hierarchical reference from
+a wrapper), and `formal/ddr3_stubs.v` replaces what the controller does not need and yosys
+cannot read - the PLL, PHY and DQ/DQS data path with constants, and initialisation and
+calibration with what they hold for the rest of time (`ready` and `calib_done` high, nothing
+driven). The last is not a convenience: a proof starting from reset would spend its whole
+depth inside the 200 us reset wait and never see a request. So every claim below is "after
+initialisation and calibration", which is the only time the request ports do anything.
+
+- The three command sources - write sequencer, read sequencer, refresh - are never valid
+  together, and no two requests are forwarded at once. The header has said since Part 9 that the
+  command mux is exclusive by construction; this is that claim, proved.
+- A request reaches a sequencer only when nothing is in flight and the gate is open, and never
+  when the sequencer it would start is itself busy: the Part 13 hazard, stated directly.
+- A REFRESH command goes out only with both sequencers idle.
+- Two callers in the same cycle: the write is taken and the read is not, never both. This is the
+  named gap (the loser is ignored, not queued), now pinned down rather than merely described.
+- A caller that respects `busy` - sees it low in one cycle and presents in the next, and does not
+  present two cycles running - is never dropped. This is Part 12's guarantee, which the
+  reverse-arbitration test showed at 41 request offsets and which now holds at every offset.
+- Bank state on the command pins, with a monitor that ACTIVATE sets and PRECHARGE clears: no
+  ACTIVATE to an open bank, no column command to a closed one, no REFRESH with one open.
+- Command spacing, with the datasheet numbers the memory model already checks: WRITE to
+  PRECHARGE at least 7 `sclk` (14 CK), READ to PRECHARGE at least 2, ACTIVATE to PRECHARGE at
+  least 1, and nothing within 7 `sclk` (tRFC, 13 CK) of a REFRESH.
+
+**Measured, because the depth is the whole question.** The properties only mean something once a
+refresh has come due, which at the design's real interval is about 195 cycles after reset, so the
+bound has to reach past it. z3, the flow's solver, took 15 s at depth 20 and 199 s at depth 40,
+and grows steeply (about ninety times as long as Boolector at depth 40). Boolector took 2.3 s at depth 40 (Yices 9 s), 15 s at depth 100 and 55 s at
+depth 200; the proof at depth 250 takes about 85 s. `formal/run.sh` therefore checks this target
+with Boolector to depth 250 and everything else as before, and fails loudly if Boolector is not on
+`PATH`. It is in oss-cad-suite, which the `formal` CI job already installs, and not in Homebrew:
+`make formal` on a machine that has only Homebrew's yosys and z3 will now say so rather than pass.
+
+**Two of my properties were wrong, and the solver said so at the first refresh.** The first draft
+said a request is never forwarded while a refresh is pending. Part 12 deliberately gates on the
+*delayed* hold, so a request presented in the very cycle a refresh becomes pending is still taken and
+the refresh waits for it - that is what lets a polite caller never be dropped. And the first draft
+said the refresh scheduler is never busy while a sequencer is: its `busy` is high from the moment a
+refresh is pending, not only while it runs. Neither was a design fault; both were my restatement of
+the design, refuted at step 196 and 197 by a trace the design had produced legitimately. Each is
+corrected in the file with its reason.
+
+**A proof that cannot go red is not evidence, and one that cannot be reached is not either.** Two
+checks. Nine mutations of the RTL, each refuted at its own property: the write gate ignoring its own
+`busy` (step 2), a read not held off by a same-cycle write (step 1), a refresh granted with a write in
+flight (step 198), the gate ignoring a pending refresh (step 197), the gate using the hold without its delay -
+the Part 12 mutation - which is caught by the polite-caller property at the first refresh (step 196),
+write recovery cut to 3 (step 12), no PRECHARGE after a write (step 16), tRFC cut short (step 205), and a
+refresh granted without waiting for either sequencer (step 198). And twelve `cover` statements, one
+beside each event the properties talk about - a refresh command, a request taken in the cycle a refresh
+becomes pending, a refresh that had to wait for a transaction, a request ignored because one was in
+flight - which `formal/run.sh` now requires to be reachable within the same bound: an unreached one
+fails the target as vacuous. A tenth, initialisation that never finishes, holds the
+controller in reset for ever and makes every assertion true; it is reported as vacuous rather than
+proved.
+
+**What this does not establish.** A bounded proof: every request pattern up to 250 cycles from reset, so
+a bug that needs a second refresh (about cycle 400) or a longer history is out of reach, and unbounded
+proof would need k-induction. Nothing about initialisation, calibration, the PHY or any data. The bound on
+READ to PRECHARGE is loose (the design gives 6, the property says 2), so a shortened read recovery would
+still pass it and is caught only by the sequencer tests and the memory model. "Respects `busy`" is a
+definition of a caller, not something the design enforces. The stand-ins are stated assumptions: if
+`ddr3_init_seq` or `ddr3_read_calib` drove a command after they report done, this would not see it. Data
+mask, second lane and the byte-granular versus 16-byte-burst interface decision are unchanged.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into

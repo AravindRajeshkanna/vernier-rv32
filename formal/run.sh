@@ -28,6 +28,17 @@ FILTER="${1:-}"
 
 mkdir -p "$BUILD"
 
+# Per-target solver and depth. Most targets are small and z3 is what this flow
+# (and CI's tool bundle) is checked for. The DDR3 controller is not small enough for
+# it: at depth 40 z3 took 199 s and boolector 2.3 s (measured), and the properties
+# only mean something once a refresh has come due, which is about 195 cycles after
+# reset at the design's real refresh interval - so it needs depth ~250, which z3
+# cannot reach in any reasonable time and boolector does in about a minute and a half.
+DDR3_SOLVER="${DDR3_SOLVER:-boolector}"
+DDR3_DEPTH="${DDR3_DEPTH:-250}"
+solver_for() { case "$1" in ddr3_ecp5_top) echo "$DDR3_SOLVER" ;; *) echo "$SOLVER" ;; esac; }
+depth_for()  { case "$1" in ddr3_ecp5_top) echo "$DDR3_DEPTH"  ;; *) echo "$DEPTH"  ;; esac; }
+
 # What to check: "<top module> <verilog files>".
 #
 # Two shapes appear here, for a reason rather than by accident. Where the
@@ -44,6 +55,7 @@ TARGETS=(
     "fv_interconnect $ROOT/rtl/soc/wb_interconnect.v $HERE/fv_interconnect.v"
     "fv_regfile_wide $ROOT/rtl/ooo/regfile_wide.v $HERE/fv_regfile_wide.v"
     "fv_pmp          $ROOT/rtl/pmp.v $HERE/fv_pmp.v"
+    "ddr3_ecp5_top   $ROOT/rtl/soc/ddr3_ecp5_top.v $ROOT/rtl/soc/ddr3_write_seq.v $ROOT/rtl/soc/ddr3_read_seq.v $ROOT/rtl/soc/ddr3_read_burst_ext.v $ROOT/rtl/soc/ddr3_refresh_ctrl.v $HERE/ddr3_stubs.v"
 )
 
 # Returns 0 if the solver proved the properties, 1 if it found a
@@ -77,11 +89,32 @@ check() {
         return 2
     fi
 
-    yosys-smtbmc -s "$SOLVER" -t "$DEPTH" "$smt" >> "$log" 2>&1
-    if grep -q "Status: PASSED" "$log"; then return 0; fi
+    local solver depth
+    solver="$(solver_for "$top")"; depth="$(depth_for "$top")"
+    if ! command -v "$solver" >/dev/null 2>&1; then
+        echo "    solver '$solver' not found - $top needs it (see the comment on solver_for)"
+        return 2
+    fi
+
+    yosys-smtbmc -s "$solver" -t "$depth" "$smt" >> "$log" 2>&1
     if grep -q "Status: FAILED" "$log"; then return 1; fi
-    echo "    solver produced no verdict - see $log"
-    return 2
+    if ! grep -q "Status: PASSED" "$log"; then
+        echo "    solver produced no verdict - see $log"
+        return 2
+    fi
+
+    # A property that is true only because its premise can never happen looks
+    # exactly like a proof. Any `cover` statement in the design must therefore be
+    # reachable within the same bound; an unreached one fails the target.
+    # (Designs with no cover statements print nothing and are unaffected.)
+    yosys-smtbmc -c -s "$solver" -t "$depth" "$smt" > "$BUILD/$top.cover.log" 2>&1
+    COVERED=$(grep -c "Reached cover statement" "$BUILD/$top.cover.log")
+    if grep -q "Unreached cover statement" "$BUILD/$top.cover.log"; then
+        echo "    proved, but $(grep -c 'Unreached cover statement' "$BUILD/$top.cover.log") cover statement(s) unreached: the proof may be vacuous"
+        grep "Unreached cover statement" "$BUILD/$top.cover.log" | sed 's/^/      /'
+        return 3
+    fi
+    return 0
 }
 
 # ---- flow self-test: a property that must fail ----
@@ -107,7 +140,7 @@ else
 fi
 echo
 
-echo "bounded model checking to depth $DEPTH with $SOLVER:"
+echo "bounded model checking to depth $DEPTH with $SOLVER (per-target overrides shown on each line):"
 pass=0; fail=0; err=0; failed=""
 for entry in "${TARGETS[@]}"; do
     # shellcheck disable=SC2086
@@ -115,18 +148,27 @@ for entry in "${TARGETS[@]}"; do
     top="$1"
     if [ -n "$FILTER" ] && [[ "$top" != *"$FILTER"* ]]; then continue; fi
 
+    COVERED=0
     check "$@"
     case $? in
-        0) printf '  %-20s PROVED (depth %s)\n' "$top" "$DEPTH"; pass=$((pass+1)) ;;
+        0) if [ "$COVERED" -gt 0 ]; then
+               printf '  %-20s PROVED (depth %s, %s, %s cover statements reached)\n' \
+                      "$top" "$(depth_for "$top")" "$(solver_for "$top")" "$COVERED"
+           else
+               printf '  %-20s PROVED (depth %s)\n' "$top" "$(depth_for "$top")"
+           fi
+           pass=$((pass+1)) ;;
         1) printf '  %-20s COUNTEREXAMPLE FOUND - see %s/%s.log\n' \
                   "$top" "$BUILD" "$top"; fail=$((fail+1)); failed="$failed $top" ;;
+        3) printf '  %-20s VACUOUS - see %s/%s.cover.log\n' \
+                  "$top" "$BUILD" "$top"; err=$((err+1)) ;;
         *) printf '  %-20s ERROR\n' "$top"; err=$((err+1)) ;;
     esac
 done
 
 echo
 echo "==================================================="
-echo "formal: $pass proved, $fail refuted, $err errored (bound = $DEPTH cycles)"
+echo "formal: $pass proved, $fail refuted, $err errored (bound = $DEPTH cycles; ddr3_ecp5_top: $DDR3_DEPTH)"
 [ -n "$failed" ] && echo "refuted:$failed"
 echo "==================================================="
 [ "$fail" -eq 0 ] && [ "$err" -eq 0 ]

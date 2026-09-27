@@ -74,7 +74,9 @@ runs:
           echo "::error::yosys-smtbmc missing from the bundle."; exit 1; }
         command -v z3 >/dev/null || {
           echo "::error::z3 missing from the bundle; formal/run.sh uses it as the solver."; exit 1; }
-        echo "yosys, yosys-smtbmc and z3: present"
+        command -v boolector >/dev/null || {
+          echo "::error::boolector missing from the bundle; formal/run.sh checks the DDR3 controller with it (z3 is far too slow there)."; exit 1; }
+        echo "yosys, yosys-smtbmc, z3 and boolector: present"
 
         # No capability grep here. The first version of this step ran
         # `yosys -q -p "help chformal" | grep -- -lower` and failed against a
