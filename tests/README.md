@@ -216,7 +216,7 @@ z3. SymbiYosys (`sby`) is the usual driver and is not packaged for Homebrew,
 so the two steps it would wrap are done directly.
 
 ```
-formal: 6 proved, 0 refuted, 0 errored (bound = 12 cycles)
+formal: 7 proved, 0 refuted, 0 errored (bound = 12 cycles; ddr3_ecp5_top: 250)
 ```
 
 | Module | Properties |
@@ -227,6 +227,7 @@ formal: 6 proved, 0 refuted, 0 errored (bound = 12 cycles)
 | `regfile_wide` | x0 reads zero on all four ports; the bypass returns the written value from either write port; two ports reading one register agree; and port 1 (the younger instruction) wins when a dual-issue pair writes the same register |
 | `wb_interconnect` | At most one slave strobed; the strobed slave matches the decode; exactly one master granted, data over fetch; acks go only to the requesting master; an unmapped access still acks; a fetch never writes |
 | `pmp` | Fully unconfigured: M allowed, S/U denied; a maximal open NAPOT region allows every access regardless of what else is configured; the same region locked with zero permissions denies every access, M included |
+| `ddr3_ecp5_top` | The DDR3 controller's control plane, after initialisation and calibration: the write, read and refresh command sources are never valid together; a request is forwarded only with nothing in flight and the gate open; a REFRESH goes out only with both sequencers idle; a caller that respects `busy` is never dropped; no ACTIVATE to an open bank, no column command to a closed one, no REFRESH with one open; WRITE-to-PRECHARGE, READ-to-PRECHARGE, ACTIVATE-to-PRECHARGE and tRFC spacing at the datasheet minimums |
 
 The PLIC is the best target here and the reason this layer exists. Its job is
 priority arbitration over 8 priorities, 8 enables, 8 pending bits and a
@@ -238,7 +239,7 @@ directed test happened to catch it; the properties now make it
 uncatchable-by-accident.
 
 **What is and is not established.** BMC proves the properties for every input
-sequence up to 12 cycles from reset. That is a proof over all *inputs* -
+sequence up to 12 cycles from reset (250 for the DDR3 controller, whose properties only mean something once a refresh has come due, about 195 cycles after reset). That is a proof over all *inputs* -
 which is what simulation cannot do - but not over all *time*. Unbounded proof
 would need k-induction. For the interconnect (combinational) the distinction
 does not arise; for the PLIC and BTB it genuinely does, and the bounded claim
@@ -269,7 +270,15 @@ Two shapes, for a reason rather than by accident:
   reference into a submodule's array with a variable index, so a wrapper
   cannot express them at all.
 
-Both are compiled only under `-DFORMAL`; simulation and synthesis never see
+- `` `ifdef FORMAL `` inside `rtl/soc/ddr3_ecp5_top.v` for the DDR3 controller, which
+  needs internal nets no port exposes, with `formal/ddr3_stubs.v` standing in for
+  the modules yosys cannot read or that only matter before a request can be made
+  (initialisation, calibration, the PHY and the data path). Each interesting event
+  has a `cover` statement, and `formal/run.sh` fails a target whose covers are not
+  reachable within the bound: a property that is true only because its premise can
+  never happen looks exactly like a proof.
+
+All are compiled only under `-DFORMAL`; simulation and synthesis never see
 them.
 
 ---

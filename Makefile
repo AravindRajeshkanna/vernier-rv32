@@ -10,7 +10,8 @@
 #   make isa          -> build + run the official RISC-V architectural tests
 #   make cosim        -> co-simulate every ISA test against Spike, instruction
 #                        by instruction
-#   make formal       -> bounded model checking of key modules (yosys + z3)
+#   make formal       -> bounded model checking of key modules (yosys + z3;
+#                        boolector for the DDR3 controller)
 #   make coremark     -> build and run CoreMark on the SoC in simulation
 #   make wave         -> run sim, then open the waveform (surfer)
 #   make wave_soc     -> same for the SoC simulation
@@ -878,7 +879,7 @@ isa: sim/sim_isa.out isa-build
 cosim: sim/sim_isa.out isa-build
 	python3 tests/cosim.py --all --core=$(CORE)
 
-# ---- formal (yosys + yosys-smtbmc + z3) ----
+# ---- formal (yosys + yosys-smtbmc + z3, boolector for the DDR3 controller) ----
 formal:
 	./formal/run.sh
 

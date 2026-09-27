@@ -547,4 +547,146 @@ module ddr3_ecp5_top (
             assign dq_i[i]    = ddr3_dq[i];
         end
     endgenerate
+
+`ifdef FORMAL
+    // ---- formal properties (formal/run.sh) ----
+    //
+    // What this file's header says about the controller - that the command mux is
+    // mutually exclusive by construction, that at most one transaction is ever in
+    // flight, that every transaction closes its bank, that a refresh never finds a
+    // bank open, that a caller which respects `busy` is never dropped - was, until
+    // now, established by directed simulation: a sweep of request offsets against a
+    // refresh, a pin counter, a protocol checker. Each of those looks at the
+    // request patterns somebody thought of. These properties are the same claims
+    // over every request pattern the solver can construct, up to the bound.
+    //
+    // Proven on the controller AFTER initialisation and calibration: formal/ddr3_stubs.v
+    // replaces ddr3_init_seq and ddr3_read_calib with what they hold for the rest of
+    // time, and the PHY and the DQ/DQS data path with constants. That is the only time
+    // the request ports do anything (`rst_cmd` holds both sequencers in reset until then),
+    // but it means these say nothing about power-up, and nothing about data.
+    //
+    // A cover statement beside each interesting event exists so that a property which
+    // is true only because its premise can never happen shows up as unreached, rather
+    // than as a proof.
+    localparam [2:0] F_ACT = 3'b011, F_WR = 3'b100, F_RD = 3'b101,
+                     F_PRE = 3'b010, F_REF = 3'b001;
+
+    // BMC starts from an unconstrained state; requiring reset in the first step makes
+    // every trace start from the state reset really produces.
+    reg f_initialized = 1'b0;
+    always @(posedge clk) f_initialized <= 1'b1;
+    always @(*) if (!f_initialized) assume (rst);
+
+    // ---- one command source, one transaction ----
+    // The mux carries no arbitration of its own; it is exclusive only because of the
+    // gating above it. This is that claim.
+    always @(*) if (!rst) begin
+        assert ((wseq_cmd_valid + rseq_cmd_valid + refresh_cmd_valid) <= 2'd1);
+        assert (!(wseq_busy && rseq_busy));
+        // (`refresh_busy` is high from the moment a refresh is pending, not only while it
+        // runs, so it legitimately overlaps a transaction that is still finishing. The
+        // claim is about the command: it goes out only with both sequencers idle.)
+        assert (!(refresh_cmd_valid && (wseq_busy || rseq_busy)));
+        // A request is forwarded to a sequencer only when nothing is in flight and the
+        // gate is open, and never to both sequencers at once. The gate is the DELAYED
+        // hold, on purpose (Part 12): a request presented in the very cycle a refresh
+        // becomes pending is still taken, and the refresh then waits for it - which is
+        // what lets a caller that saw `busy` low never be dropped. A first draft of this
+        // property used the undelayed hold, and the solver refuted it at the first refresh.
+        assert (!(wseq_write_req && rseq_read_req));
+        assert (!((wseq_write_req || rseq_read_req) &&
+                  (wseq_busy || rseq_busy || refresh_hold_d)));
+        // The Part 13 hazard, stated directly: a sequencer is back in its idle state one
+        // cycle before its `busy` drops, and a request accepted then ran on stale data.
+        assert (!(wseq_write_req && wseq_busy));
+        assert (!(rseq_read_req  && rseq_busy));
+        // Two callers in the same cycle: the write is taken, the read is not. (A named
+        // gap - the loser is ignored, not queued - but never both, and never half-started.)
+        if (write_req && read_req && !wseq_busy && !rseq_busy && !refresh_hold_d) begin
+            assert (wseq_write_req);
+            assert (!rseq_read_req);
+        end
+    end
+
+    // ---- a caller that respects `busy` is never dropped (Part 12) ----
+    // "Respects busy" means what the reverse-arbitration test's polite caller does: it
+    // sees busy low in one cycle and presents in the next, and does not present in two
+    // cycles running. Without the second condition a caller's own request, accepted a
+    // cycle ago, is what makes it busy now.
+    reg f_busy_q = 1'b0, f_req_q = 1'b0;
+    always @(posedge clk) begin
+        f_busy_q <= write_busy;
+        f_req_q  <= write_req || read_req;
+    end
+    always @(*) if (!rst && f_initialized) begin
+        if (write_req && !f_busy_q && !f_req_q)
+            assert (wseq_write_req);
+        if (read_req && !write_req && !f_busy_q && !f_req_q)
+            assert (rseq_read_req);
+    end
+
+    // ---- bank state on the command pins ----
+    // The controller precharges after every transaction, so a single bit is enough:
+    // ACTIVATE sets it, PRECHARGE clears it.
+    reg f_open = 1'b0;
+    always @(posedge clk) begin
+        if (rst) f_open <= 1'b0;
+        else if (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_ACT) f_open <= 1'b1;
+        else if (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_PRE) f_open <= 1'b0;
+    end
+    always @(*) if (!rst && f_initialized && phy_cmd_valid) begin
+        if (phy_cmd_cs_ras_cas_we == F_ACT) assert (!f_open);
+        if (phy_cmd_cs_ras_cas_we == F_WR || phy_cmd_cs_ras_cas_we == F_RD) assert (f_open);
+        if (phy_cmd_cs_ras_cas_we == F_REF) assert (!f_open);
+    end
+
+    // ---- command spacing, in sclk (two CK each) ----
+    // The same datasheet numbers sim/ddr3_model.v checks - WRITE to PRECHARGE 14 CK
+    // (CWL 6 + BL/2 4 + tWR 4), READ to PRECHARGE tRTP 4 CK, ACTIVATE to PRECHARGE tRAS
+    // 2 CK, REFRESH to the next command tRFC 13 CK - here for every request pattern
+    // rather than the ones a test issues. Ages saturate at 15 after reset.
+    reg [3:0] f_wr_age = 4'd15, f_rd_age = 4'd15, f_act_age = 4'd15, f_ref_age = 4'd15;
+    always @(posedge clk) begin
+        if (rst) begin
+            f_wr_age <= 4'd15; f_rd_age <= 4'd15; f_act_age <= 4'd15; f_ref_age <= 4'd15;
+        end else begin
+            if (f_wr_age  != 4'd15) f_wr_age  <= f_wr_age  + 4'd1;
+            if (f_rd_age  != 4'd15) f_rd_age  <= f_rd_age  + 4'd1;
+            if (f_act_age != 4'd15) f_act_age <= f_act_age + 4'd1;
+            if (f_ref_age != 4'd15) f_ref_age <= f_ref_age + 4'd1;
+            if (phy_cmd_valid) begin
+                if (phy_cmd_cs_ras_cas_we == F_WR)  f_wr_age  <= 4'd0;
+                if (phy_cmd_cs_ras_cas_we == F_RD)  f_rd_age  <= 4'd0;
+                if (phy_cmd_cs_ras_cas_we == F_ACT) f_act_age <= 4'd0;
+                if (phy_cmd_cs_ras_cas_we == F_REF) f_ref_age <= 4'd0;
+            end
+        end
+    end
+    always @(*) if (!rst && f_initialized && phy_cmd_valid) begin
+        if (phy_cmd_cs_ras_cas_we == F_PRE) begin
+            assert (f_wr_age  >= 4'd7);
+            assert (f_rd_age  >= 4'd2);
+            assert (f_act_age >= 4'd1);
+        end
+        assert (f_ref_age >= 4'd7);
+    end
+
+    // ---- reachability: none of the above may be true only because it cannot happen ----
+    always @(*) if (!rst && f_initialized) begin
+        cover (wseq_cmd_valid && phy_cmd_cs_ras_cas_we == F_ACT);
+        cover (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_WR);
+        cover (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_RD);
+        cover (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_PRE);
+        cover (refresh_cmd_valid);
+        cover (write_req && read_req && wseq_write_req);
+        cover (write_req && !f_busy_q && !f_req_q && wseq_write_req);
+        cover (read_req && !write_req && !f_busy_q && !f_req_q && rseq_read_req);
+        // the corners the properties above are really about
+        cover (wseq_write_req && refresh_hold && !refresh_hold_d);   // taken in the cycle a refresh becomes pending
+        cover (refresh_req && (wseq_busy || rseq_busy));             // a refresh that has to wait for a transaction
+        cover (write_req && (wseq_busy || rseq_busy) && !wseq_write_req);   // a request ignored because one is in flight
+        cover (write_req && refresh_hold_d && !wseq_write_req);      // ... or because a refresh holds the gate
+    end
+`endif
 endmodule

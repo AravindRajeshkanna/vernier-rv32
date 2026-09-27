@@ -125,6 +125,7 @@ routing-dominated shape every measurement of this design has had.
 | **riscv64-unknown-elf-gcc** | 15.1.0 (`g1b306039a`) | Homebrew `riscv-gnu-toolchain` |
 | **Spike** | 1.1.1-dev | Homebrew `riscv-isa-sim` |
 | **z3** | 4.15.4 (64-bit) | Homebrew `z3` |
+| **boolector** | 3.2.4 | oss-cad-suite; **not in Homebrew**. `make formal` needs it for `ddr3_ecp5_top` (z3 is about ninety times slower on that target at depth 40, measured) and stops with a message if it is missing |
 | **Surfer** | 0.7.0 | Homebrew `surfer` |
 | **dtc** | installed | Homebrew `dtc` |
 | **openFPGALoader** | installed | Homebrew `openfpgaloader` |
@@ -182,7 +183,7 @@ targets (`&:`) — none of which 3.81 has.
 | `sim`, `sim_soc`, `sim_software` | iverilog + vvp |
 | `isa` | iverilog + vvp, driven by `tests/run.sh` |
 | `cosim` | iverilog + vvp + **Spike** + Python (`tests/cosim.py`) |
-| `formal` | **Yosys** + `yosys-smtbmc` + **z3** |
+| `formal` | **Yosys** + `yosys-smtbmc` + **z3**, and **boolector** for the DDR3 controller |
 | `coremark` | riscv64-unknown-elf-gcc + iverilog |
 | `software`, `soc` | riscv64-unknown-elf-gcc/objcopy + Python |
 | `verilator` | Verilator + a C++ toolchain (AppleClang) — the flat `rtl/top.v` |
@@ -261,7 +262,9 @@ C++ port is checked against it, not the other way round.
 `formal/run.sh` does the two steps it would wrap by hand: Yosys writes the
 design plus its properties out as an SMT2 transition system, and
 `yosys-smtbmc` unrolls that and asks z3 whether any assertion can be violated
-within `DEPTH` (default 12) cycles. `SOLVER=` and `DEPTH=` override.
+within `DEPTH` (default 12) cycles. `SOLVER=` and `DEPTH=` override. The DDR3 controller is the one
+target that overrides both by default (Boolector, depth 250; `DDR3_SOLVER=` and `DDR3_DEPTH=`), and its
+`cover` statements must be reachable within that bound or the target fails as vacuous.
 
 ### Python
 
