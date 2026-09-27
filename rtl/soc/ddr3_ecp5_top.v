@@ -232,6 +232,8 @@ module ddr3_ecp5_top (
     // ---- real DDR3 pins - one byte lane's own DQ/DQS, from Parts 2/4 ----
     inout  wire [7:0]  ddr3_dq,
     inout  wire        ddr3_dqs,
+    // ---- lane 0's data mask, from Part 22 ----
+    output wire        ddr3_dm,
 
     // ---- Part 9: real command-level requests ----
     input  wire        write_req,
@@ -469,14 +471,29 @@ module ddr3_ecp5_top (
     // CALIB's own wr_en or WSEQ's own write_start fires - mutually
     // exclusive by the same real sequencing (calibration completes
     // before any real command-driven write can start).
-    wire dqs_wr_o, dqs_wr_oe, dqs_wr_t, dq_burst;
+    wire dqs_wr_o, dqs_wr_oe, dqs_wr_t, dq_burst, dq_active0;
     wire write_start_final = wr_en | wseq_write_start;
 
     ddr3_dqs_write_ecp5 DQS_WR (
         .sclk(sclk), .eclk(eclk), .dqsw(dqsw), .rst(rst_all),
         .write_start(write_start_final),
-        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe), .dqs_t(dqs_wr_t), .burst_active(dq_burst)
+        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe), .dqs_t(dqs_wr_t), .burst_active(dq_burst),
+        .active0(dq_active0)
     );
+
+    // Part 22: the data mask. DM low (write it) only in the burst's first sclk-visible
+    // half, high (masked) everywhere else - see rtl/soc/ddr3_dm_drv_ecp5.v's own header
+    // for what this does and does not establish. FPGA-output-only: no tri-state, so
+    // unlike DQ/DQS this needs no BB and no separate synthesis/simulation split at the
+    // pad itself.
+    wire dm_o;
+    wire dm_level = !dq_active0;
+
+    ddr3_dm_drv_ecp5 DM_DRV (
+        .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270),
+        .dm_level(dm_level), .dm_o(dm_o)
+    );
+    assign ddr3_dm = dm_o;
 
 `ifdef SYNTHESIS
     // Part 21: the pad is a BB (bidirectional buffer), driven by ODDRX2DQSB's Q and

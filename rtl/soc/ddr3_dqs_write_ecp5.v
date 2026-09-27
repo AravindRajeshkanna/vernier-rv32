@@ -51,7 +51,17 @@ module ddr3_dqs_write_ecp5 (
     // High exactly during the two active cycles (S_ACTIVE0, S_ACTIVE1) - the eight
     // beats of the BL8 burst. rtl/soc/ddr3_ecp5_top.v drives DQ from this, so DQ is
     // enabled, and carries data, in the same cycles DQS is toggling.
-    output wire        burst_active
+    output wire        burst_active,
+
+    // High during S_ACTIVE0 only - the first of the burst's two sclk-visible halves,
+    // the one this design's data path treats as the addressed column (Part 18's read
+    // side and Part 17's write side both single out "the first half" the same way).
+    // rtl/soc/ddr3_ecp5_top.v drives DM from this (Part 22): DM low - unmasked, write
+    // it - only here, high everywhere else `burst_active` is high. At this design's own
+    // sclk resolution that is the honest analogue of "DM low for the one UI that
+    // carries real data, high for the other seven" - not real per-UI masking, which
+    // would need the beat-level resolution this project does not model.
+    output wire        active0
 );
     localparam [2:0]
         S_IDLE      = 3'd0,
@@ -86,6 +96,7 @@ module ddr3_dqs_write_ecp5 (
     reg       oe;
 
     assign burst_active = (state == S_ACTIVE0) || (state == S_ACTIVE1);
+    assign active0       = (state == S_ACTIVE0);
 
     always @(*) begin
         case (state)

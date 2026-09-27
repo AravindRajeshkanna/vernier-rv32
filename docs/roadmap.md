@@ -3245,7 +3245,7 @@ initial expectation).
 
 **Stage 0 and Stage 1 both have real, partial progress - board files, a
 real diagnostic-scale bitstream, and a real simulated DDR3 PHY built up
-over twenty-one gated slices (init and calibration, the DQ/DQS data path,
+over twenty-two gated slices (init and calibration, the DQ/DQS data path,
 write, read and refresh command sequencers wired into one top level, with
 refresh arbitrated against writes and reads in both directions, at most
 one transaction ever in flight, every transaction closing its bank, a
@@ -3254,7 +3254,8 @@ finally checked, CK at the edge-clock rate with two command slots per
 `sclk`, a write burst that lands where the DRAM's write latency says, a memory
 model that answers a read at the DRAM's own read latency, the same tests run under a
 second simulator and in CI, a bounded formal proof of the controller's arbitration, bank
-state and refresh gating, and place-and-route on the real device with the board's DDR3 pins) - but
+state and refresh gating, place-and-route on the real device with the board's DDR3 pins, and
+a driven, tested data mask for lane 0) - but
 neither is done, and Stage 2 through Stage 5 remain entirely a plan, not
 an account.** Nothing past each stage's own "Update" paragraph below
 should be read as a completed claim the way the "Stage N:" entries in
@@ -5151,7 +5152,8 @@ the right thing, and the pin list is exactly as good as its two sources.
 - **CK and DQS are single ports here, differential on the board.** The design has a `ddr3_ck_n` port and drives
   DQS as one wire; on the board the negative pads follow the positive ones automatically, so a real top has
   neither `ddr3_ck_n` nor `ddr3_dqs_n`. And the part is x16: lane 1, its strobe and the two data masks exist and
-  the design drives none of them - an unmasked, undriven upper lane on a write is a separate hazard.
+  the design drives none of them; lane 0's own data mask is now driven (Part 22) - an unmasked, undriven
+  upper lane on a write is a separate hazard.
 The probe parks CS#, RESET#, CK# and A15 on left-edge throwaway pins (`ecpix5_ddr3_probe.lpf`, headed as
 not a pinout) so that it can look at everything else.
 
@@ -5161,7 +5163,69 @@ and freeze inputs are tied off, where a reference design steps them at reset, an
 that. The ECP5's real fabric latency through the DDR primitives is still unverified, and no board has been touched. CS#
 and RESET# are open questions that a schematic would settle and these sources cannot. Only lane 0 is
 constrained. The probe is not in `make verify` (it needs nextpnr, which is in YosysHQ's bundle and not in Homebrew);
-CI runs it in the `formal` job.
+CI runs it in the `formal` job. (Part 22, below, drives lane 0's own data mask.)
+
+**Update, Part 22: the data mask (DM), lane 0. Through Part 21 nothing drove a DM pin at
+all, and every write burst carried the same one byte across all eight real UI - a real
+hazard, not just a missing pin, since the datasheet masks a beat only when DM is sampled
+high on it, and an undriven or always-low DM masks nothing.** This closes the "no data
+mask" half of the survey's own gap list; the second lane is the half that remains.
+
+**Measured, before any design change existed to measure against.** `sim/ddr3_dq_model.v`'s
+own write side had never modelled the write burst's second sclk-visible half touching a
+column at all - it was "ignored, as if the data mask covered them" (Part 17's own words),
+a claim nothing had tested. It now does: the second half lands on the same neighbour
+column Part 18's read side already names (`{col[9:3], col[2:0]^3'b100}`), unless DM masks
+it. With nothing yet driving DM, that neighbour column receives the burst's own byte -
+the "caveat on Part 15" made concrete: a byte-granular write, run to completion, silently
+overwrites a real column four columns away.
+
+**What changed.** `rtl/soc/ddr3_dm_drv_ecp5.v` (new): `ODDRX2DQA` alone, no tri-state -
+DM is FPGA-output-only on this part, so nothing ever drives it back and there is nothing
+to arbitrate. `rtl/soc/ddr3_dqs_write_ecp5.v` exports `active0`, high only in the first of
+its two active states. `rtl/soc/ddr3_ecp5_top.v` drives DM low exactly then, high
+otherwise - low for the addressed column, high for the neighbour, high at every other
+time (the safe idle default). A first version registered this in simulation, matching nothing
+in particular, and a real run caught it at once: DM read the *previous* cycle's value,
+one `sclk` behind the state register `active0` reads directly - masked exactly where it
+should write, and not where it should. Fixed to combinational passthrough, the same stand-in
+`ddr3_dq_serdes_ecp5.v` already uses for DQ and `ddr3_dqs_write_ecp5.v` already uses for DQS.
+
+**The model.** `sim/ddr3_dq_model.v` gained a `dm_pin` input, and a compatibility rule
+worth stating precisely: unconnected (`z`, what every testbench predating this part does)
+changes nothing - the first half stores exactly as before, the second still touches
+nothing. Only an explicit `1` at the first half (masking the write itself - a design
+defect, the byte is lost) or an explicit `0` at the second (leaving the neighbour
+unmasked - the corruption case) change anything. Nine testbenches that go through the
+real top now wire `dm_pin` for real, giving every one of them a live DM check for free.
+
+**Three layers of test.** `sim/tb_ddr3_dm_window.v` (new): the real DM waveform across eight
+writes (low only at W+3, high everywhere else, matching the design's own timing), then two
+real writes to neighbouring columns proving the second does not disturb the first.
+`sim/tb_ddr3_dq_window_rules.v` gained two directed instances on their own column (chosen
+so a naive `col+4` and the real wrap formula disagree): one with DM correctly masking the
+second half (neighbour stays unwritten), one without (the neighbour receives the burst's
+byte - the hazard, reproduced directly against the model). And the nine rewired
+integration tests.
+
+**Mutation-tested six ways.** Three on the design: DM tied low throughout (caught by
+`dm_window`, `addr`, `rd_window`), DM tied high throughout - never writes anything (caught
+by `dm_window`, `cmd_seq`, `addr`, `wr_excl`, `rd_window`), and DM masking the wrong half
+(same four). Three on the model: the first-half gate removed (**caught by nothing** - with
+DM always correctly unmasked there in the real design, the gate is never exercised; a
+named, honest gap, not a silent one), the second-half gate removed (caught by `dm_window`,
+`addr`, the new rules instances, `rd_window`), and the neighbour formula's own copy in
+`store_neighbour` changed to a naive `+4` (caught only by the new rules instances - the
+one place that drives DM low at the second half on purpose).
+
+**What this does not establish.** Real per-UI fidelity: only two of the eight real UI have
+any modelled effect (matching every other simplification in this file), so a design that
+masked, say, only six of the seven beats it should would not be caught here. Whether the
+first-half masking gate in the model can ever fire is untested (above); Calibration's own
+direct-injection writes issue no command and are not checked against DM at all. Lane 1's
+own data mask is unchanged - still not driven, named in Part 21's own list of what the
+board says the controller still lacks. No formal proof of DM (Part 20's properties are the
+control plane; this is data). No board.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
@@ -9050,10 +9114,10 @@ Part 21).** Two independent descriptions of the board list no CS# and no RESET# 
 the FPGA cannot drive either: the CS# path in the PHY (a deselect in every idle command slot) has no pin
 to happen on, and the initialisation sequence's RESET# pulse cannot be issued. CK# and DQS# are the
 negative halves of differential pairs and are not separate ports. The part is x16 and lane 1, its
-strobe and its data masks are undriven. Found by place-and-route with the real pins, which refuses to
-place the CS# path; recorded rather than fixed, because how the board handles CS# and RESET# needs a
-schematic. Two defects place-and-route found in the same run - a tri-state control with the wrong
-polarity, and read-FIFO pointers never wired - are RESOLVED (Part 21).
+strobe and its own data mask are undriven (lane 0's is - Part 22). Found by place-and-route with the
+real pins, which refuses to place the CS# path; recorded rather than fixed, because how the board
+handles CS# and RESET# needs a schematic. Two defects place-and-route found in the same run - a
+tri-state control with the wrong polarity, and read-FIFO pointers never wired - are RESOLVED (Part 21).
 
 **RESOLVED - the wide core's Linux boot did not reach userspace; root-caused
 and fixed.** See "Stage 1d was built anyway," Update 15, for the full

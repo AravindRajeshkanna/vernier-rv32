@@ -24,10 +24,21 @@
 //   9  DQS driven again after the burst
 //  10  a DQS burst with no WRITE behind it (a READ, then - eight cycles later, once
 //      the model's own read drive is over - the burst)
+//
+// Two more (Part 22), on their own column (COL2, not the shared COL above) since they
+// check what lands at a SECOND address - the neighbour the burst's second half would
+// touch if DM did not mask it - and need one whose wrap is not the same as a naive +4
+// (COL2's low three bits are 5, so `col + 4` = 9 lands somewhere else entirely from the
+// real `{col[9:3], col[2:0]^3'b100}` = 1, which a mutated formula would miss):
+//  11  a legal burst, DM correctly masking the second half - the neighbour must stay
+//      unwritten
+//  12  the same legal burst, DM NOT masking the second half - the neighbour receives the
+//      same byte the burst carries, the real hazard rtl/soc/ddr3_dm_drv_ecp5.v exists to
+//      prevent, reproduced here directly against the model rather than the real design
 `timescale 1ns/1ps
 module tb_ddr3_dq_window_rules;
     localparam CLK_PERIOD = 40;
-    localparam N          = 11;
+    localparam N          = 13;
 
     reg clk = 0;
     always #(CLK_PERIOD / 2) clk = ~clk;
@@ -51,10 +62,21 @@ module tb_ddr3_dq_window_rules;
     reg [N-1:0]      dq_oe  = {N{1'b0}};
     reg [N-1:0]      dqs_v  = {N{1'b0}};
     reg [N-1:0]      dqs_oe = {N{1'b0}};
+    // Left at its initial `z` for every instance predating Part 22 (0..10) - matching
+    // what an unwired dm_pin reads in every testbench that does not test DM - and driven
+    // for real only for instances 11 and 12, below.
+    reg [N-1:0]      dm_v   = {N{1'bz}};
 
     wire [N-1:0]     errs;
     wire [512*N-1:0] msgs;
     wire [8*N-1:0]   peeked;
+
+    localparam [15:0] ROW  = 16'h0123;
+    localparam [15:0] COL  = 16'h000A;
+    // Instances 11/12's own column (Part 22) - see the header for why it has to differ
+    // from COL. Its neighbour, by the model's own real wrap formula, is 16'h0009; a naive
+    // `col + 4` would instead reach 16'h0011.
+    localparam [15:0] COL2 = 16'h000D;
 
     genvar g;
     generate
@@ -69,7 +91,7 @@ module tb_ddr3_dq_window_rules;
                 .sclk(clk), .rst(rst), .ck(ck),
                 .cs_n(cs_n[g]), .ras_n(ras_n[g]), .cas_n(cas_n[g]), .we_n(we_n[g]),
                 .ba(ba[3*g +: 3]), .a(a[16*g +: 16]),
-                .dq_pin(dq_pin), .dqs_pin(dqs_pin),
+                .dq_pin(dq_pin), .dqs_pin(dqs_pin), .dm_pin(dm_v[g]),
                 .read_active(1'b0),
                 .mem_dq_o(mq_o), .mem_dq_oe(mq_oe), .mem_dqs_oe(mqs_oe), .mem_dqs_o(mqs_o),
                 .dq_error(e), .dq_error_msg(m)
@@ -81,13 +103,11 @@ module tb_ddr3_dq_window_rules;
             // peek() reads the model's internal store, so it has to be re-evaluated as that
             // changes - a continuous assign of a function of constants would not be.
             reg [7:0] pk;
-            always @(posedge clk) pk = MODEL.peek(3'd1, 16'h0123, 16'h000A);
+            always @(posedge clk) pk = MODEL.peek(3'd1, ROW, (g >= 11) ? COL2 : COL);
             assign peeked[8*g +: 8] = pk;
         end
     endgenerate
 
-    localparam [15:0] ROW = 16'h0123;
-    localparam [15:0] COL = 16'h000A;
 
     // the legal burst, as {dq_driven, byte, dqs} with dqs 0=low 1=high 2=z, at offset k from W
     function [10:0] legal(input integer k, input [7:0] byte_v);
@@ -169,7 +189,7 @@ module tb_ddr3_dq_window_rules;
             end else if (t == w) begin
                 cs_n <= {N{1'b0}}; ras_n <= {N{1'b1}}; cas_n <= {N{1'b0}};
                 for (i = 0; i < N; i = i + 1) begin
-                    ba[3*i +: 3] <= 3'd1; a[16*i +: 16] <= COL;
+                    ba[3*i +: 3] <= 3'd1; a[16*i +: 16] <= (i >= 11) ? COL2 : COL;
                     // instance 10: a READ instead of a WRITE - the burst that follows has no WRITE behind it
                     we_n[i] <= (i == 10) ? 1'b1 : 1'b0;
                 end
@@ -182,6 +202,10 @@ module tb_ddr3_dq_window_rules;
                     dqs_v[i]       <= (pv[1:0] == 2'd1);
                     dq_oe[i]       <= pv[10];
                     dq_v[8*i +: 8] <= pv[9:2];
+                    // 11: masks correctly (low only for half 1). 12: never masks (low for
+                    // both halves) - the byte reaches the neighbour column too.
+                    if (i == 11) dm_v[i] <= (t - w == 3) ? 1'b0 : 1'b1;
+                    if (i == 12) dm_v[i] <= (t - w == 3 || t - w == 4) ? 1'b0 : 1'b1;
                 end
             end
             // ---- command slot 1: always a deselect, as the PHY drives it ----
@@ -219,6 +243,22 @@ module tb_ddr3_dq_window_rules;
             $display("  FAIL a burst with no WRITE stored data anyway (got %02h)", peeked[8*10 +: 8]);
             errors = errors + 1;
         end else $display("  ok   a burst with no WRITE leaves the cell unwritten (x)");
+
+        // Part 22: the data mask. Both 11 and 12 are otherwise-legal bursts (the checks
+        // above already prove each holds its own byte); what differs is what happens at
+        // the OTHER column DM does or does not protect.
+        expect_legal(11, "DM correctly masking half 2: the addressed column still holds its byte");
+        expect_legal(12, "DM never masking (mutant): the addressed column still holds its byte");
+        if (M[11].MODEL.peek(3'd1, ROW, 16'h0009) !== 8'hxx) begin
+            $display("  FAIL DM correctly masking half 2: the neighbour column was written anyway (got %02h)",
+                     M[11].MODEL.peek(3'd1, ROW, 16'h0009));
+            errors = errors + 1;
+        end else $display("  ok   DM correctly masking half 2: the neighbour column stays unwritten (x)");
+        if (M[12].MODEL.peek(3'd1, ROW, 16'h0009) !== (8'hA0 + 12)) begin
+            $display("  FAIL DM never masking half 2: the neighbour column did not receive the burst's byte (got %02h, expected %02h)",
+                     M[12].MODEL.peek(3'd1, ROW, 16'h0009), 8'hA0 + 12);
+            errors = errors + 1;
+        end else $display("  ok   DM never masking half 2: the neighbour column receives the same byte - the real hazard, reproduced");
 
         $display("");
         $display("---------------------------------------------");

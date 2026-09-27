@@ -97,6 +97,32 @@
 // a burst (the preamble, the burst, the postamble) and high-Z otherwise, the
 // behavior `rtl/soc/ddr3_dqs_ecp5.v`'s own `READ0`/`READ1` gating depends on, not a
 // free-running clock.
+//
+// ---- Part 22: the data mask, and the hazard it exists to prevent ----
+// Through Part 21 nothing drove a data-mask pin at all, and this model's own write side
+// only ever stored from the first burst half - the second was "ignored, as if the data
+// mask covered them" (Part 17's own words). That was never checked: the model simply
+// never modeled the second half touching a column at all, so nothing could show whether
+// it actually would. It now does. Real BL8 sequential order from the addressed column c
+// wraps within the aligned block of 8, so the second sclk-visible half - at this design's
+// own sclk resolution, standing in for the other seven real UI, the same simplification
+// Part 18 uses for reads - lands on column {c[9:3], c[2:0]^3'b100}, the same neighbour
+// Part 18's read side already names. Measured, before any design change: with the second
+// half's DM pin unmasked, that neighbour column receives whatever byte the burst carries -
+// a real, previously undemonstrated hazard (`docs/roadmap.md`'s "A caveat on Part 15" had
+// named the risk; nothing had shown it happening). `rtl/soc/ddr3_dm_drv_ecp5.v` now drives
+// DM low only for the first half and high for the second, and this file's own write-burst
+// storage now honors it: the first half stores only if DM is not explicitly high there
+// (masking the very beat meant to write is a design defect - the byte is lost, not stored,
+// which a correctness check surfaces the same way Part 18's wrong-CL did); the second half
+// stores to the NEIGHBOUR column only if DM is explicitly low there (unmasked - the
+// corruption case). `dm_pin` left unconnected (`z`, what every testbench predating Part 22
+// does) means neither condition is ever true - the first half stores exactly as before, and
+// the second still touches nothing, so no existing test's behaviour changes.
+//
+// This is still not real per-UI BL8 fidelity: only two of the eight real UI have any
+// modeled effect, matching every other simplification in this file, and each is honestly
+// named rather than silently assumed.
 module ddr3_dq_model #(
     parameter DEPTH = 1024
 )(
@@ -121,6 +147,10 @@ module ddr3_dq_model #(
     // reg, on the other side of an inout - see sim/tb_ddr3_dq_window_rules.v.
     inout  wire [7:0] dq_pin,
     inout  wire       dqs_pin,
+    // Part 22: high = mask (do not write this beat), low = write it, `z` (left
+    // unconnected, as in every testbench predating Part 22) = no information - see the
+    // header for exactly what each of those three does and does not change.
+    input  wire       dm_pin,
 
     input  wire       read_active,
     output reg  [7:0] mem_dq_o,
@@ -209,27 +239,39 @@ module ddr3_dq_model #(
         end
     endfunction
 
-    task store_current(input [7:0] d);
+    task store_at(input [2:0] b, input [14:0] r, input [9:0] c, input [7:0] d);
         integer j;
         begin
-            if (!cur_valid) calib_data = d;
-            else begin
-                j = find(cur_bank, cur_row, cur_col);
-                if (j < 0) begin
-                    if (n_used >= DEPTH) begin
-                        overflowed = 1'b1;
-                        $display("ddr3_dq_model: store full (%0d locations) - raise DEPTH", DEPTH);
-                    end else begin
-                        j = n_used;
-                        n_used = n_used + 1;
-                        k_used[j] = 1'b1;
-                        k_bank[j] = cur_bank;
-                        k_row[j]  = cur_row;
-                        k_col[j]  = cur_col;
-                    end
+            j = find(b, r, c);
+            if (j < 0) begin
+                if (n_used >= DEPTH) begin
+                    overflowed = 1'b1;
+                    $display("ddr3_dq_model: store full (%0d locations) - raise DEPTH", DEPTH);
+                end else begin
+                    j = n_used;
+                    n_used = n_used + 1;
+                    k_used[j] = 1'b1;
+                    k_bank[j] = b;
+                    k_row[j]  = r;
+                    k_col[j]  = c;
                 end
-                if (j >= 0) k_data[j] = d;
             end
+            if (j >= 0) k_data[j] = d;
+        end
+    endtask
+
+    task store_current(input [7:0] d);
+        begin
+            if (!cur_valid) calib_data = d;
+            else store_at(cur_bank, cur_row, cur_col, d);
+        end
+    endtask
+
+    // Part 22: the neighbour column a write's second half lands on if DM does not mask
+    // it - the same column Part 18's read-side beat4_value reads from.
+    task store_neighbour(input [7:0] d);
+        begin
+            if (cur_valid) store_at(cur_bank, cur_row, {cur_col[9:3], cur_col[2:0] ^ 3'b100}, d);
         end
     endtask
 
@@ -314,8 +356,11 @@ module ddr3_dq_model #(
                             dq_fail("write burst: DQS not active in an expected burst cycle");
                         else if ((^dq_pin) === 1'bx)
                             dq_fail("write burst: DQ not driven while DQS is active");
-                        else if (wexp[cyc % 8] == 3'd2 && cur_valid)
-                            store_current(dq_pin);   // beats 4-7 (half 2) are ignored, see the header
+                        else if (wexp[cyc % 8] == 3'd2) begin
+                            if (dm_pin !== 1'b1 && cur_valid) store_current(dq_pin);
+                        end else begin   // half 2: not stored unless DM explicitly leaves it unmasked (Part 22)
+                            if (dm_pin === 1'b0) store_neighbour(dq_pin);
+                        end
                     end
                     3'd4: if (dqs_pin !== 1'b0)
                               dq_fail("write postamble: DQS not driven low after the burst");
