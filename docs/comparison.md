@@ -201,9 +201,13 @@ declaring a winner.
   a model of the data path that is not yet hardware-faithful,
   measured and recorded as such; real hardware bring-up is what remains
   open, not a board decision. Wishbone integration (Stage 2) has begun:
-  the maintainer's own 16-byte-burst interface decision is made, and a
-  standalone, mutation-tested `rtl/soc/wb_ddr.v` exists, not yet wired
-  into the SoC's own interconnect.
+  the maintainer's own 16-byte-burst interface decision is made, a
+  standalone, mutation-tested `rtl/soc/wb_ddr.v` exists, and it is now
+  wired into `rtl/soc/soc_top.v` for real (behind a new `DDR3_ENABLE`
+  gate, so every existing board build is unaffected) - a real CPU program
+  reaches DDR3 through the actual interconnect for the first time,
+  though only as a bare-metal, physical-address proof, not yet through
+  Linux or any paged caller.
 
 ## 7. Picking one
 

@@ -165,6 +165,12 @@ SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/pli
           rtl/soc/wb_spi.v rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v \
           rtl/soc/wb_sdram.v rtl/soc/wb_timer.v rtl/soc/wb_npu.v \
           rtl/soc/wb_fir.v \
+          rtl/soc/wb_ddr.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
+          rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v \
+          rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
+          rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v \
+          rtl/soc/ddr3_read_calib.v rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v \
+          rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v \
           rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
           rtl/soc/soc_top.v
 SOC_RTL = $(SOC_RTL_BASE) $(CORE_RTL)
@@ -207,7 +213,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -648,9 +654,9 @@ sim_soc: soc
 # bitstream and the RAM is 64 KB. Those are the two things that differed
 # between "passes in simulation" and "dies on hardware", and until now nothing
 # simulated them - so this testbench is that path, at that size.
-sim/sim_ramboot.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_ramboot.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"ramimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_ramboot: sim/bootrom_$(CORE).hex sim/ramimage.hex sim/sim_ramboot.out
 	@cd sim && $(VVP) sim_ramboot.out $(VVP_DUMP) 2>&1 | tee ramboot.log
@@ -707,9 +713,9 @@ sim_ramboot_2hart: sim/bootrom_$(CORE).hex sim/ramimage2hart.hex sim/sim_ramboot
 	@grep -q "RAMBOOT-2HART TEST PASSED" sim/ramboot_2hart.log || \
 	    { echo "sim_ramboot_2hart FAILED"; exit 1; }
 
-sim/sim_probe.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_probe.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_probe: sim/bootrom_$(CORE).hex sim/probeimage.hex sim/sim_probe.out
 	@cd sim && $(VVP) sim_probe.out $(VVP_DUMP) 2>&1 | tee probe.log
@@ -732,9 +738,9 @@ sim_probe: sim/bootrom_$(CORE).hex sim/probeimage.hex sim/sim_probe.out
 # The probe rather than the acceptance test, deliberately: the acceptance test
 # keeps its state in .bss, which _start has always zeroed, so it passes twice
 # either way and would not have caught this.
-sim/sim_rerun.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_rerun.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"probeimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' -DRERUN \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_rerun: sim/bootrom_$(CORE).hex sim/probeimage.hex sim/sim_rerun.out
 	@cd sim && $(VVP) sim_rerun.out $(VVP_DUMP) 2>&1 | tee rerun.log
@@ -751,9 +757,9 @@ sim/trapimage.hex: software/soc/trapcheck.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/trapcheck.bin > $@
 
-sim/sim_trap.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_trap.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"trapimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 trapcheck: sim/bootrom_$(CORE).hex sim/sim_trap.out
 	./sim/trapcheck.sh
@@ -980,6 +986,13 @@ lint-rtl-flat:
 lint-rtl-soc:
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL -Wno-SYNCASYNCNET \
 	    $(CORE_DEFINES) $(VERILATOR_LINT_FLAGS) \
+	    --top-module soc_top $(VERILATOR_PARAMS) \
+	    $(SOC_RTL) sim/verilator_soc.vlt
+	# Same, with rtl/soc/wb_ddr.v's own DDR3 slave actually instantiated
+	# (Phase 9 Stage 2) - the default build above only lints the disabled,
+	# tied-off stub every existing board still uses.
+	$(VERILATOR) --lint-only --timing -Wall -Wno-UNUSEDSIGNAL -Wno-SYNCASYNCNET \
+	    -DDDR3_ENABLE $(CORE_DEFINES) $(VERILATOR_LINT_FLAGS) \
 	    --top-module soc_top $(VERILATOR_PARAMS) \
 	    $(SOC_RTL) sim/verilator_soc.vlt
 
@@ -1601,9 +1614,9 @@ sim/uart16550image.hex: software/soc/uarttest.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/uarttest.bin > $@
 
-sim/sim_uart16550.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_uart16550.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uart16550image.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_uart16550: sim/bootrom_$(CORE).hex sim/uart16550image.hex sim/sim_uart16550.out
 	@cd sim && $(VVP) sim_uart16550.out $(VVP_DUMP) 2>&1 | tee uart16550.log
@@ -1627,9 +1640,9 @@ sim/plicimage.hex: software/soc/plictest.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/plictest.bin > $@
 
-sim/sim_plic.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_plic.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"plicimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_plic: sim/bootrom_$(CORE).hex sim/plicimage.hex sim/sim_plic.out
 	@cd sim && $(VVP) sim_plic.out $(VVP_DUMP) 2>&1 | tee plic.log
@@ -1678,9 +1691,9 @@ sim/pmptestimage.hex: software/soc/pmptest.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/pmptest.bin > $@
 
-sim/sim_pmptest.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_pmptest.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"pmptestimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_pmptest: sim/bootrom_$(CORE).hex sim/pmptestimage.hex sim/sim_pmptest.out
 	@cd sim && $(VVP) sim_pmptest.out $(VVP_DUMP) 2>&1 | tee pmptest.log
@@ -1705,9 +1718,9 @@ sim/uartirqimage.hex: software/soc/uartirq.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/uartirq.bin > $@
 
-sim/sim_uartirq.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_uartirq.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"uartirqimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_uartirq: sim/bootrom_$(CORE).hex sim/uartirqimage.hex sim/sim_uartirq.out
 	@cd sim && $(VVP) sim_uartirq.out $(VVP_DUMP) 2>&1 | tee uartirq.log
@@ -1733,9 +1746,9 @@ sim/div64testimage.hex: software/soc/div64test.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/div64test.bin > $@
 
-sim/sim_div64test.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_div64test.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"div64testimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_div64test: sim/bootrom_$(CORE).hex sim/div64testimage.hex sim/sim_div64test.out
 	@cd sim && $(VVP) sim_div64test.out $(VVP_DUMP) 2>&1 | tee div64test.log
@@ -1770,10 +1783,10 @@ sim/mmuimage.hex: software/soc/mmutest.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/mmutest.bin > $@
 
-sim/sim_mmusdram.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_mmusdram.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"mmuimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -DSDRAM_WORDS='((1<<23)+(1<<16))' \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_mmusdram: sim/bootrom_$(CORE).hex sim/mmuimage.hex sim/sim_mmusdram.out
 	@cd sim && $(VVP) sim_mmusdram.out $(VVP_DUMP) 2>&1 | tee mmusdram.log
@@ -1787,15 +1800,42 @@ sim_mmusdram: sim/bootrom_$(CORE).hex sim/mmuimage.hex sim/sim_mmusdram.out
 # fails loudly rather than passing a row test it never performed. It costs
 # memory in the simulator and nothing in time, because the sparse test does
 # 16,384 accesses however big the array is.
-sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+sim/sim_sdramcheck.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DRAM_IMAGE='"sdramcheckimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -DSDRAM_WORDS=16777216 \
-	    -o $@ sim/tb_ramboot.v sim/sdram_model.v $(SOC_RTL)
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
 
 sim_sdramcheck: sim/bootrom_$(CORE).hex sim/sdramcheckimage.hex sim/sim_sdramcheck.out
 	@cd sim && $(VVP) sim_sdramcheck.out $(VVP_DUMP) 2>&1 | tee sdramcheck.log
 	@grep -q "RAMBOOT TEST PASSED" sim/sdramcheck.log || \
 	    { echo "sim_sdramcheck FAILED"; exit 1; }
+
+# ---- DDR3, the real CPU-issued command path (Phase 9 Stage 2, Part 2) ----
+#
+# Same testbench and the same 64 KB block RAM as sim_ramboot - only the
+# preloaded program differs, and this one is the first to ever reach
+# DDR3_BASE from real, CPU-executed load/store instructions through the
+# real interconnect, not a raw Wishbone-master testbench tap
+# (sim/tb_wb_ddr.v, Stage 2 Part 1) or calibration's own direct-signal
+# injection (Stage 1).
+software/soc/ddrcheck.elf: $(SOCRT_SRCS) software/soc/ddrcheck.c \
+                            software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
+	    -o $@ $(SOCRT_SRCS) software/soc/ddrcheck.c
+
+sim/ddrcheckimage.hex: software/soc/ddrcheck.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/ddrcheck.elf software/soc/ddrcheck.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/ddrcheck.bin > $@
+
+sim/sim_ddrcheck.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DDDR3_ENABLE -DRAM_IMAGE='"ddrcheckimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+
+sim_ddrcheck: sim/bootrom_$(CORE).hex sim/ddrcheckimage.hex sim/sim_ddrcheck.out
+	@cd sim && $(VVP) sim_ddrcheck.out $(VVP_DUMP) 2>&1 | tee ddrcheck.log
+	@grep -q "RAMBOOT TEST PASSED" sim/ddrcheck.log || \
+	    { echo "sim_ddrcheck FAILED"; exit 1; }
 
 # ---- the JTAG debug path ----
 #
@@ -3205,7 +3245,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck ddr3_check \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck ddr3_check \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
@@ -3280,6 +3320,7 @@ clean:
 	       sim/ramimage.hex sim/probeimage.hex \
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
+	       sim/sim_ddrcheck.out sim/ddrcheckimage.hex \
 	       sim/sdramfullimage.hex sim/sdramfull.log \
 	       obj_dir_soc_ramboot \
 	       software/soc/sdramfull.elf software/soc/sdramfull.bin \
@@ -3303,6 +3344,7 @@ clean:
 	       tests/build/uartload_case.bin \
 	       software/soc/uartprog.elf software/soc/uartprog.bin \
 	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
+	       software/soc/ddrcheck.elf software/soc/ddrcheck.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \
 	       software/soc/bootrom_inorder.elf software/soc/bootrom_inorder.bin \

@@ -45,12 +45,19 @@ module ddr3_init_seq #(
 
     output reg         ready   // 1 once MR0-3 + ZQCL are done and their own waits have elapsed
 );
-    // ---- ns -> cycle conversion, matching wb_sdram.v's own NS2CYC macro ----
-    `define NS2CYC(ns) (((ns) * (CLK_HZ / 1000) + 999_999) / 1_000_000)
+    // ---- ns -> cycle conversion, the same rounding wb_sdram.v's own
+    // NS2CYC macro uses - prefixed, not reused: wb_sdram.v never `undef`s
+    // its own, so the two collided (Verilator's REDEFMACRO) the moment
+    // Stage 2 first put both files in one compilation (rtl/soc/soc_top.v,
+    // via rtl/soc/wb_ddr.v) - harmless today (each file's own use of the
+    // name completes before the other's), but exactly the kind of
+    // reordering-fragile latent bug this project's own -Wall gate exists
+    // to catch before it becomes a real one. ----
+    `define DDR3_NS2CYC(ns) (((ns) * (CLK_HZ / 1000) + 999_999) / 1_000_000)
 
     // Real JEDEC power-up timing this sequence must respect:
-    localparam RESET_CYC   = `NS2CYC(200_000);  // tRESET, RESET_n low, >=200 us
-    localparam XPR_CYC     = `NS2CYC(500);      // wait after CKE high before the first command (conservative - tXPR is one of the values not cross-checked against the primary datasheet, see header)
+    localparam RESET_CYC   = `DDR3_NS2CYC(200_000);  // tRESET, RESET_n low, >=200 us
+    localparam XPR_CYC     = `DDR3_NS2CYC(500);      // wait after CKE high before the first command (conservative - tXPR is one of the values not cross-checked against the primary datasheet, see header)
     localparam MRD_CYC     = 4;                 // tMRD is 4 nCK; counted here in sclk cycles = 8 CK (Part 16: CK is twice sclk) - twice the minimum, conservative, deliberately not recounted
     localparam ZQINIT_CYC  = 512;               // tZQinit/tDLLK is 512 nCK; counted here in sclk cycles = 1024 CK (Part 16) - twice the minimum, conservative, deliberately not recounted. Applies even under DLL-off since ZQCL calibrates independently
 
@@ -267,5 +274,5 @@ module ddr3_init_seq #(
         end
     end
 
-    `undef NS2CYC
+    `undef DDR3_NS2CYC
 endmodule

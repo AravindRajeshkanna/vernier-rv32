@@ -47,8 +47,11 @@
 // SDRAM controller rather than a second, independently-derived
 // constant for the same real interval. T_RFC (7 cycles = 280ns real
 // margin at 25 MHz, comfortably >= the real 260ns minimum) uses the
-// same `NS2CYC` ceiling-rounding macro `rtl/soc/ddr3_init_seq.v`'s own
-// header already establishes.
+// same ceiling-rounding `DDR3_NS2CYC` macro `rtl/soc/ddr3_init_seq.v`'s own
+// header already establishes (this file's own definition, `` `undef``'d
+// at the end, matching that file's own discipline - two independent local
+// copies of the same rounding, not one shared macro reaching across
+// files).
 //
 // ---- Scope: this proves the scheduler mechanism, not a full
 // integration yet ----
@@ -73,9 +76,9 @@ module ddr3_refresh_ctrl #(
     output reg  [2:0]  cmd_ba,
     output reg  [15:0] cmd_addr
 );
-    `define NS2CYC(ns) (((ns) * (CLK_HZ / 1000) + 999_999) / 1_000_000)
+    `define DDR3_NS2CYC(ns) (((ns) * (CLK_HZ / 1000) + 999_999) / 1_000_000)
     localparam T_REFI = CLK_HZ / 128_000;   // see header - exact, not an approximation
-    localparam T_RFC  = `NS2CYC(260);       // see header - real, primary-datasheet-verified (4Gb)
+    localparam T_RFC  = `DDR3_NS2CYC(260);       // see header - real, primary-datasheet-verified (4Gb)
 
     localparam [2:0] CMD_NOP = 3'b111;
     localparam [2:0] CMD_REF = 3'b001;   // RAS_n=0, CAS_n=0, WE_n=1 - real JEDEC REFRESH encoding
@@ -137,4 +140,5 @@ module ddr3_refresh_ctrl #(
             endcase
         end
     end
+    `undef DDR3_NS2CYC
 endmodule

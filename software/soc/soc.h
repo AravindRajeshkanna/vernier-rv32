@@ -48,6 +48,11 @@
  * immediately rather than aliasing back onto itself. */
 #define SDRAM_BASE  0x90000000u
 #define SDRAM_SIZE  0x02000000u
+/* DDR3 (Phase 9 Stage 2). 256 MB, not the part's real 512 MB: lane 1 does
+ * not carry real data yet (rtl/soc/wb_ddr.v's own header), so only lane 0's
+ * own address space is real. Mask 0xF0 - 16 x 16 MB windows, 0xA0-0xAF. */
+#define DDR3_BASE   0xA0000000u
+#define DDR3_SIZE   0x10000000u
 /* 64 KB. This is the size the *firmware* is built for, and it is
  * deliberately smaller than soc_top.v's 256 KB simulation default: 256 KB of
  * on-chip RAM costs 244 ECP5 block RAMs, more than the largest ECP5 has, so a
