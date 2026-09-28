@@ -5431,6 +5431,74 @@ controller - and the full existing verification suite (`make verify`,
 `make verify_ooo`) stays green with the new path present but unused by
 default.
 
+**Decided: 16-byte burst, not byte-granular** - the maintainer's own
+choice, made now, closing the question this file has named as open since
+the Part 14/15 survey. Every DDR3-side transaction moves a full,
+16-byte-aligned block, matching a real x16 BL8 burst's own transfer
+granularity, rather than one Wishbone word at a time. Part 1 below is the
+first real step.
+
+**Update, Part 1: `rtl/soc/wb_ddr.v` exists and passes its own standalone
+proof - not yet wired into `rtl/soc/soc_top.v`.** A Wishbone B4 classic
+slave, one 16-byte block held open at a time (the same "one open row, not
+four" simplification `wb_sdram.v`'s own header already reasons about, one
+level down: one open *block* here). Reads that miss the open block issue
+16 real, sequential single-byte `read_req` calls to the existing, entirely
+unchanged `rtl/soc/ddr3_ecp5_top.v` to fill it; writes go straight through
+immediately (a lone byte write, proven safe by Part 22's own DM masking
+regardless of how many separate calls target nearby columns) and update
+the cached copy if it is resident, so a later read of the same block never
+needs a redundant re-fill. This needed no change to Stage 1's own files at
+all: `sim/ddr3_dq_model.v`'s own `find(bank,row,col)` is a plain, linear
+lookup, so 16 independent single-byte controller calls already address 16
+independent real locations.
+
+Standalone testbench (`sim/tb_wb_ddr.v`), against the same real protocol
+checker and per-location DQ memory every Stage 1 integration test already
+uses: a store-then-load round trip through a real miss/fill; a second
+store to the same open block (a cache-hit-path store, not a re-fill) with
+the first word confirmed unchanged; a store to a different block evicting
+the first, and the first block's own two words both confirmed to survive
+a later re-fill exactly as written; and a partial-`wb_sel` store changing
+only the selected bytes. `make sim_wb_ddr` and `make verilator_wb_ddr`
+both pass; `make lint-rtl-ddr3` lints `wb_ddr` as its own top-module
+alongside `ddr3_ecp5_top`.
+
+Two real bugs found and fixed before this passed clean, both a real
+accept-pulse-then-busy race, not a design defect: a state that checked
+`!write_busy`/`!read_busy` in the very cycle after issuing the request
+pulse saw the *old*, still-low busy (busy itself only rises a cycle later)
+and wrongly concluded the call was already done - fixed with an explicit
+wait for busy to rise before waiting for it to fall, the same two-phase
+wait `sim/tb_ddr3_cmd_seq.v`'s own hand-written stimulus already uses
+driving this exact interface. Mutation-tested: removing the cache-coherency
+update in the store path (`block_buf` left stale after a hit-path store)
+was caught by two independent checks - the immediate re-read of the
+just-updated word, and the partial-`wb_sel` check - while a check relying
+on a later eviction-and-re-fill (which re-reads from the real DQ memory
+model, bypassing the broken update path entirely) did not catch it,
+confirming the direct-hit checks are the ones actually exercising that
+code path, not the eviction ones.
+
+**What this does not establish.** Not wired into `rtl/soc/soc_top.v` -
+address decode, `dts/soc.dts`, boot ROM/linker constants and the
+page-table walker's own range are all still ahead, and none of Stage 2's
+own "Done when" bar (a CPU executing real code from DDR) is met yet.
+Real capacity today is 256MB, not the plan's own 512MB: lane 1 does not
+carry real data (Part 24/25 wired its own calibration only), so this
+module's own address space is lane 0 alone - 8 banks x 32768 rows x 1024
+columns x 1 byte. Doubling that needs lane 1 wired for real data transfer,
+separate, later work. The real, still-open "data path is not yet
+hardware-faithful" Known Defect is unchanged: a real burst moves 16 real
+bytes in one electrical transaction, and this design still moves them as
+16 separate ACT+WR/RD command sequences - correct, and now genuinely
+block-granular from the Wishbone side, but not a claim of hardware-faithful
+burst timing, and not required by this stage's own bar. No caches, atomics
+or LR/SC re-verification attempted (nothing reaches this module through
+the interconnect yet to re-verify against). `make verify_ooo` was not run
+for this part - grep-confirmed that no CPU/SoC/board build file references
+`rtl/soc/wb_ddr.v`.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
