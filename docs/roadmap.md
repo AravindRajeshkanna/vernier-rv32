@@ -5787,7 +5787,45 @@ Two real explanations remain open and undistinguished: a single
 message would alone exceed even the extended budget; or whatever state
 this reaches costs the simulator disproportionately more per real cycle
 to evaluate than ordinary execution does, which would itself be worth
-finding the mechanism for. Root cause still not found.
+finding the mechanism for. Root cause still not found. **Banked here** -
+Parts 3 through 6 are a real, honest record of what has and has not been
+established, and the next step (measuring `UART_THR` writes directly,
+named in the memory note this investigation kept) remains available, but
+Stage 2 has other, unblocked items of its own to close first.
+
+**Update, Part 7: atomics against DDR3, real for the first time.**
+Stage 2's own plan named this explicitly - "Caches, atomics, and LR/SC
+get re-verified against the new controller's own latency profile, not
+assumed unaffected" - and nothing before this part had ever issued an
+AMO or an LR/SC pair against `rtl/soc/wb_ddr.v`; Part 2's own proof was a
+plain load/store round trip. `software/soc/ddratomics.c` mirrors
+`software/soc/main.c`'s own `test_amo_rmw`/`test_lr_sc_success`/
+`test_lr_sc_failure` exactly - same instructions, same expected values -
+against a real DDR3 physical address instead of RAM. The real question
+isn't new atomics semantics, it's whether an AMO's own read-modify-write,
+held together by `rtl/soc/wb_interconnect.v`'s own `amo_wrphase` lock
+(not anything DDR3-specific), survives a slave whose own read and write
+transactions each cost far more real bus cycles than RAM's ever did -
+up to ~320 cycles for a block-fill miss, ~80 for a four-byte
+write-through, against RAM's single-cycle response.
+
+Passed clean on the first real attempt, on both `CORE=inorder` and
+`CORE=ooo`: `AMOADD`/`AMOSWAP` read-modify-write correctly; `LR`/`SC`
+succeeds when uninterrupted; `SC` correctly fails when an intervening
+store breaks the reservation. Mutation-tested: corrupting one of the
+test's own expected values (`123` to `124`) was caught immediately,
+confirming the check itself is real, not vacuous.
+
+**What this does not establish.** This is single-hart - the reservation
+monitor's own cross-hart exclusion is untouched by this part, matching
+where Phase 13's own cross-hart atomicity work already stands
+independent of DDR3. Real capacity is still 256MB and the data path is
+still not hardware-faithful per-beat, both unchanged since Part 1.
+`make verify`/`make verify_ooo` were both run, since `sim_ddratomics` is
+now gated inside `verify` itself (unlike the paging investigation, which
+stays deliberately outside it) - no RTL changed, but a new test entering
+the shared gate graph gets the same confirmation any other addition to
+it would.
 
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
