@@ -5703,6 +5703,48 @@ walker and DDR3 both cleared as the immediate cause by a completed trace
 - not "the walker gets stuck," which was itself an artifact of reading
 an incomplete file. Root cause remains open.
 
+**Update, Part 5: execution proceeds much further than Part 4 observed -
+real UART register accesses, from S-mode, with translation bypassed for
+them - and the trace stops there, deliberately, before claiming a final
+resting state.** A third trace, watching `pc` and the stall/access
+signals unconditionally rather than only the MMU/walker ones Part 4
+already cleared, shows `s_mode_main` continuing well past where Part 4's
+own trace went quiet: real, advancing `pc` values reach code that
+repeatedly touches `0x0400_0014` (`UART_LSR`) and `0x0400_0000`
+(`UART_THR`/`UART_RBR`) - exactly the registers `put_char`'s own
+transmit-busy-wait polls. Part 4's own "no walk into the UART's own
+megapage is attempted" is not wrong, but incomplete: it did not run far
+enough to see the UART even get touched.
+
+**A genuinely new, previously-unexercised interaction, found by reading
+`rtl/cpu_core.v` directly rather than assumed: these UART accesses reach
+the bus with `need_translate=0` - untranslated - despite genuinely
+running S-mode code.** `need_translate = is_mem_op_now && !mem_misaligned
+&& satp_mode && (effective_priv_for_data != PRIV_M)`, and
+`effective_priv_for_data` is confirmed (by the same formula) to track the
+real current privilege whenever `mstatus.MPRV` is clear, which it is
+here. Untranslated access to `0x0400_0000` is not itself wrong - the
+address is its own physical address either way, so no translation
+ambiguity exists - but it means **`software/soc/mmutest.c`, the only
+prior proof this project had that a page-table walk works at all, never
+printed a single character from S-mode code with paging on**: its own
+`report()` calls all run from `main()`, in M-mode, before `satp` is ever
+written. This may be the first time any test in this project has asked
+S-mode code to reach the UART with paging active - a real, previously
+untested combination, and a plausible place for a real bug to have been
+sitting invisible until now.
+
+**This trace was also deliberately truncated (killed, to bound
+investigation time) - stated here up front, not discovered as a mistake
+afterward the way Part 3's was.** The last observed `pc` (`0x80001198`)
+was still advancing, not obviously stuck at one instruction, when the
+process was stopped - so this update does **not** claim to have found
+the actual final resting state, only that execution reaches further,
+real code than previously shown. Whether `put_char`'s own busy-wait ever
+sees its own transmit-empty bit go true through this untranslated path,
+and whether that path behaves any differently from an ordinary M-mode
+MMIO access, is the next real lead - not yet checked.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
@@ -9551,27 +9593,31 @@ project applies everywhere else.
 Open, unscheduled, and written down so they are not rediscovered.
 
 **OPEN - a page-table walk into DDR3 hangs the machine, cause not yet
-found; the walker itself is cleared (Phase 9, Stage 2, Parts 3-4).**
+found; the walker itself is cleared, and execution reaches real UART MMIO
+before the trace was cut off (Phase 9, Stage 2, Parts 3-5).**
 `software/soc/ddrmmutest.c` (`make sim_ddrmmutest`, not gated in
 `verify`) puts a Sv32 root table in DDR3 and maps one genuinely translated
 megapage onto a real DDR3 physical frame. The physical setup and readback
 before `satp` goes live all pass; after `mret` into S-mode the run hangs -
 no trap, no further output - until the testbench's own timeout. Execution
-genuinely enters S-mode and runs real code (Part 4, re-measured with a
-trace run to actual completion rather than a killed process's own
-truncated log, which is what made Part 3 wrongly blame `rtl/soc/wb_ptw.v`
-for a hang it does not have): the walker completes multiple real PTE
-reads from DDR3 correctly on both the instruction and data side, with
-real, valid addresses throughout, not the undefined one Part 3 reported.
-The actual hang is later and does not touch the walker or DDR3 in its own
-stuck state - `s_mode_main`'s own first UART message never transmits,
-confirmed directly against the decoded serial capture, and no walk into
-the UART's own (also-unmapped) megapage is ever attempted either, ruling
-out an unmapped-page fault storm as the mechanism. Root cause not found:
-wherever execution is actually stuck needs no new translation, so it is
-not yet known what it is. Reproduces identically on every attempt. See
-Phase 9 Stage 2's own "Update, Part 3" and "Update, Part 4" for the full
-account, including Part 4's own correction of Part 3's wrong diagnosis.
+genuinely enters S-mode and runs real code (Part 4): the walker completes
+multiple real PTE reads from DDR3 correctly on both the instruction and
+data side, with real, valid addresses throughout - not the undefined one
+Part 3 first (wrongly) reported, an artifact of reading a killed
+process's own truncated trace. Execution then proceeds further still
+(Part 5) into code repeatedly touching real UART registers
+(`UART_LSR`/`UART_THR`) - the same registers `put_char`'s own
+transmit-busy-wait polls - reached with translation genuinely bypassed
+(`need_translate=0`, confirmed against `rtl/cpu_core.v`'s own real
+formula) even though the CPU is genuinely in S-mode; a combination
+(S-mode code printing to the UART with paging active) no prior test in
+this project appears to have exercised, `software/soc/mmutest.c` included.
+Root cause not found: wherever execution is ultimately stuck needs no new
+address translation, and Part 5's own trace was itself deliberately
+stopped before confirming a final resting state (unlike Part 3, stated
+here rather than discovered as a mistake afterward). Reproduces
+identically on every attempt. See Phase 9 Stage 2's own "Update, Part 3"
+through "Update, Part 5" for the full account.
 
 **OPEN, narrowed - the data path of the DDR3 PHY is not yet hardware-faithful
 (Phase 9, Stage 1).** As first written this entry had three parts, all now
