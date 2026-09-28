@@ -1837,6 +1837,44 @@ sim_ddrcheck: sim/bootrom_$(CORE).hex sim/ddrcheckimage.hex sim/sim_ddrcheck.out
 	@grep -q "RAMBOOT TEST PASSED" sim/ddrcheck.log || \
 	    { echo "sim_ddrcheck FAILED"; exit 1; }
 
+# ---- Sv32 with the page table in DDR3 (Phase 9 Stage 2, Part 3 - a survey,
+# not a shipped feature) ----
+#
+# NOT in `verify` and NOT `.PHONY` - this reproduces a real, currently
+# unresolved hang, not a passing test. docs/roadmap.md's own Known Defects
+# section has the full account: the instruction-side page-table walker's own
+# real read of a PTE stored in DDR3 is observed to succeed once, and the
+# walker (rtl/soc/wb_ptw.v) is then found permanently `busy` with an
+# undefined (`x`) latched address on every subsequent cycle - a real hang,
+# not a fault (nothing reaches the trap handler; the machine never
+# retires another instruction). Reproduces the same way every time this was
+# tried. Root cause not yet found: rtl/soc/wb_ptw.v's own arbitration reads
+# as latency-agnostic by inspection, and rtl/soc/wb_interconnect.v's own
+# lock mechanism has no timeout either - both plausibly correct, and DDR3
+# is the only genuinely new, much-slower-than-SDRAM variable in the mix
+# that this exact combination (a page-table walker reading a PTE from it)
+# had never been tried against before. Same testbench and DDR3_ENABLE gate
+# as sim_ddrcheck otherwise. Runs to sim/tb_ramboot.v's own 400M-cycle
+# timeout if invoked - real wall-clock minutes, not a quick failure.
+software/soc/ddrmmutest.elf: $(SOCRT_SRCS) software/soc/ddrmmutest.c \
+                              software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
+	    -o $@ $(SOCRT_SRCS) software/soc/ddrmmutest.c
+
+sim/ddrmmutestimage.hex: software/soc/ddrmmutest.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/ddrmmutest.elf software/soc/ddrmmutest.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/ddrmmutest.bin > $@
+
+sim/sim_ddrmmutest.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DDDR3_ENABLE -DRAM_IMAGE='"ddrmmutestimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+
+sim_ddrmmutest: sim/bootrom_$(CORE).hex sim/ddrmmutestimage.hex sim/sim_ddrmmutest.out
+	@cd sim && $(VVP) sim_ddrmmutest.out $(VVP_DUMP) 2>&1 | tee ddrmmutest.log
+	@grep -q "RAMBOOT TEST PASSED" sim/ddrmmutest.log || \
+	    { echo "sim_ddrmmutest FAILED"; exit 1; }
+
 # ---- the JTAG debug path ----
 #
 # rtl/debug/jtag_tap.v + dmi_cdc.v + dm.v, driven the way a host drives them:
@@ -3321,6 +3359,7 @@ clean:
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
 	       sim/sim_ddrcheck.out sim/ddrcheckimage.hex \
+	       sim/sim_ddrmmutest.out sim/ddrmmutestimage.hex \
 	       sim/sdramfullimage.hex sim/sdramfull.log \
 	       obj_dir_soc_ramboot \
 	       software/soc/sdramfull.elf software/soc/sdramfull.bin \
@@ -3345,6 +3384,7 @@ clean:
 	       software/soc/uartprog.elf software/soc/uartprog.bin \
 	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
 	       software/soc/ddrcheck.elf software/soc/ddrcheck.bin \
+	       software/soc/ddrmmutest.elf software/soc/ddrmmutest.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \
 	       software/soc/bootrom_inorder.elf software/soc/bootrom_inorder.bin \

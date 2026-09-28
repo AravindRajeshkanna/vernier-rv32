@@ -5599,6 +5599,69 @@ changes `rtl/soc/soc_top.v` itself, a real CPU/SoC file every existing
 consumer of `$(SOC_RTL)` now compiles against, so skipping either gate
 would not have been honest.
 
+**Update, Part 3 (an attempt, and a real, unresolved finding - not a
+shipped feature): a paged access to DDR3 hangs, and the cause is not yet
+found.** Stage 2's own "Done when" bar was already met by Part 2 - a CPU
+executing real code from the new DDR path in simulation, physically
+addressed. This part went further, uninvited by that bar, to check
+whether a *paged* (Sv32 MMU-on) caller can reach DDR3 too, mirroring
+`software/soc/mmutest.c`'s own proof that the page-table walker reaches
+SDRAM. `software/soc/ddrmmutest.c` puts the root table itself in DDR3 -
+sparse, not a copy of `mmutest.c`'s own exhaustive sweep: only the two
+megapages the test actually walks into (the code/stack/result-word
+megapage, and one genuinely translated - not identity - megapage onto a
+real DDR3 physical frame) are ever written; the other 1022 root-table
+entries are never touched and never walked into either.
+
+**What was found.** The physical-addressing checks before `satp` goes
+live all pass: the DDR3 window is reachable, both PTEs read back exactly
+as written. After `csrw satp`/`sfence.vma`/`mret` into S-mode, the run
+hangs - no further output, no trap ("UNEXPECTED TRAP" is not printed;
+M-mode fetch is always untranslated, so the trap handler itself does not
+need paging to run, and it never runs), until `sim/tb_ramboot.v`'s own
+400M-cycle timeout. A temporary hierarchical trace
+(`DUT.CPU.itlb_*`/`DUT.iptw_*`/`DUT.PTW.*`/`DUT.DDR3.DDR.*`, added and
+removed for this investigation, not shipped) showed the instruction-side
+walker's own read of the code/stack megapage's PTE from DDR3 completing
+successfully (`iptw_gnt` arrives, `itlb_resolved` goes high) - and
+`rtl/soc/wb_ptw.v`'s own `busy` flag then staying asserted, with its own
+latched `adr_r` reading as an undefined (`x`) address, for effectively
+the rest of the run (over 97% of a 1,052,423-line, ~42ms trace). Not a
+fault, not a data-correctness error - a real hang, reproduced identically
+on every attempt.
+
+**Root cause not yet found, named plainly rather than guessed at.**
+Direct inspection cleared two real candidates rather than assuming them
+innocent: `rtl/soc/wb_ptw.v`'s own arbiter holds `busy`/`wb_cyc`/`wb_stb`
+until `wb_ack`, with no counter and no assumption about how long that
+takes (its own header: "it just waits longer for the grant"); the
+walker's own default `s_we = 1'b0` for its read-only requests is set
+unconditionally in `rtl/soc/wb_interconnect.v`, not left stale from a
+previous master. Its own bus-lock mechanism (`lock`/`lock_w` in the same
+file) clears only on `fin_ack`, with no timeout either. All three read as
+correct for arbitrary latency, by inspection - and DDR3's own real,
+much-longer-than-SDRAM latency is the only genuinely new variable this
+exact combination (a page-table walker reading a PTE from it) had ever
+been exercised against. Whether the actual defect is a narrower race
+this reading did not reach, or something the DDR3-specific latency
+merely makes practically reachable for the first time on hardware that
+was always capable of it, is exactly what is not yet known.
+
+**Filed as a Known Defect, not shipped as a passing test.**
+`software/soc/ddrmmutest.c` and its own `make sim_ddrmmutest` build exist
+in the tree as a real, working reproduction - deliberately **not** added
+to `make verify` and **not** `.PHONY`, since it currently hangs rather
+than fails quickly, and a hanging target inside the standard gate would
+cost every future run real wall-clock time for a known, already-recorded
+result. See the Known Defects section below for the standing entry.
+
+**What this does not establish.** Nothing about Stage 2's own "Done
+when" bar, which Part 2 already met and this part does not touch. Not a
+claim that paged DDR3 access is impossible - only that this specific
+attempt hangs, and why is not yet known. `dts/soc.dts` and the boot
+ROM/linker's own real memory-map constants remain untouched either way -
+this was a bare-metal, hand-built page table, not an OS-level path.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
@@ -9445,6 +9508,26 @@ project applies everywhere else.
 ## Known defects
 
 Open, unscheduled, and written down so they are not rediscovered.
+
+**OPEN - a page-table walk into DDR3 hangs the machine (Phase 9, Stage 2,
+Part 3).** `software/soc/ddrmmutest.c` (`make sim_ddrmmutest`, not gated in
+`verify`) puts a Sv32 root table in DDR3 and maps one genuinely translated
+megapage onto a real DDR3 physical frame. The physical setup and readback
+before `satp` goes live all pass; after `mret` into S-mode the run hangs -
+no trap, no further output - until the testbench's own 400M-cycle timeout.
+A temporary hierarchical trace showed `rtl/soc/wb_ptw.v`'s own instruction
+walker completing one real read from DDR3 successfully, then its own
+`busy` flag staying stuck asserted with an undefined (`x`) latched address
+for effectively the rest of the run. Direct inspection cleared
+`wb_ptw.v`'s own arbiter, `wb_interconnect.v`'s own default `s_we` for a
+read-only master, and that same file's own bus-lock mechanism - all read
+as latency-agnostic, with no counter or timeout anywhere in the path.
+Root cause not found: DDR3 is the only genuinely new, much-slower variable
+in the mix this exact combination had never been tried against before,
+and whether the defect is specific to DDR3's own latency or a narrower,
+pre-existing race this was simply the first thing slow enough to expose
+is not yet known. Reproduces identically on every attempt. See Phase 9
+Stage 2's own "Update, Part 3" for the full account.
 
 **OPEN, narrowed - the data path of the DDR3 PHY is not yet hardware-faithful
 (Phase 9, Stage 1).** As first written this entry had three parts, all now
