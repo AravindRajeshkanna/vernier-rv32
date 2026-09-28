@@ -5745,6 +5745,50 @@ sees its own transmit-empty bit go true through this untranslated path,
 and whether that path behaves any differently from an ordinary M-mode
 MMIO access, is the next real lead - not yet checked.
 
+**Update, Part 6: the busy-wait's own condition does eventually change -
+not a value stuck forever - and a real attempt to distinguish "slow" from
+"hung" did not settle the question either.** A trace watching the actual
+value read back from `UART_LSR` (not just its address) shows `put_char`'s
+own loop at one fixed `pc`, reading `0x00000000` (not ready) on every
+iteration, for roughly 1.3 million cycles - then reading `0x00000060`
+(bits 5 and 6 set, both real transmit-empty flags on a 16550) and
+correctly exiting the loop to proceed toward a `UART_THR` write. That
+flatly contradicts reading this as "the condition is wedged on one
+value forever" - it genuinely changes, and the branch genuinely takes the
+exit path when it does.
+
+**A real candidate hypothesis was checked directly and ruled out, not
+assumed innocent.** `rtl/soc/cpu_wb.v`'s own D-cache gates caching on
+`dc_cacheable = DCACHE_ENABLE && ((dmem_addr[31:24] == 8'h80) ||
+(dmem_addr[31:24] == 8'h00))` - UART's own address (`0x04...`) is
+excluded regardless of whether the access was translated, so a stale
+cached read is not the mechanism, whatever else this untranslated-MMIO
+path turns out to involve.
+
+**~1.3 million cycles for one busy-wait is nowhere near what this
+testbench's own real UART timing should need** (`CLKS_PER_BIT` is 4 in
+`sim/tb_ramboot.v`, so a full byte - start, 8 data, stop - is on the
+order of 40 cycles, not over a million) - so "just legitimately slow"
+does not explain this well either, without more evidence.
+
+**A direct test of "does it just need more time" did not resolve the
+question, and is reported as inconclusive rather than stretched into a
+conclusion it does not support.** `sim/tb_ramboot.v`'s own timeout was
+raised 10x (10,000,000 to 40,000,000 cycles) for one throwaway run, not
+shipped. It did not complete within 113 minutes of real CPU time - far
+longer than a mere 4x cycle-count increase should cost on this machine
+(the traced runs above covered tens of thousands of real cycles in under
+a minute of CPU time, even carrying heavy per-cycle `$display` overhead
+the extended-timeout run did not have) - and was stopped there rather
+than left running indefinitely against this investigation's own time
+budget.
+Two real explanations remain open and undistinguished: a single
+~1.3M-cycle busy-wait repeating once per character of a ~68-character
+message would alone exceed even the extended budget; or whatever state
+this reaches costs the simulator disproportionately more per real cycle
+to evaluate than ordinary execution does, which would itself be worth
+finding the mechanism for. Root cause still not found.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
@@ -9593,31 +9637,40 @@ project applies everywhere else.
 Open, unscheduled, and written down so they are not rediscovered.
 
 **OPEN - a page-table walk into DDR3 hangs the machine, cause not yet
-found; the walker itself is cleared, and execution reaches real UART MMIO
-before the trace was cut off (Phase 9, Stage 2, Parts 3-5).**
-`software/soc/ddrmmutest.c` (`make sim_ddrmmutest`, not gated in
-`verify`) puts a Sv32 root table in DDR3 and maps one genuinely translated
-megapage onto a real DDR3 physical frame. The physical setup and readback
-before `satp` goes live all pass; after `mret` into S-mode the run hangs -
-no trap, no further output - until the testbench's own timeout. Execution
-genuinely enters S-mode and runs real code (Part 4): the walker completes
-multiple real PTE reads from DDR3 correctly on both the instruction and
-data side, with real, valid addresses throughout - not the undefined one
-Part 3 first (wrongly) reported, an artifact of reading a killed
-process's own truncated trace. Execution then proceeds further still
-(Part 5) into code repeatedly touching real UART registers
-(`UART_LSR`/`UART_THR`) - the same registers `put_char`'s own
-transmit-busy-wait polls - reached with translation genuinely bypassed
-(`need_translate=0`, confirmed against `rtl/cpu_core.v`'s own real
-formula) even though the CPU is genuinely in S-mode; a combination
-(S-mode code printing to the UART with paging active) no prior test in
-this project appears to have exercised, `software/soc/mmutest.c` included.
-Root cause not found: wherever execution is ultimately stuck needs no new
-address translation, and Part 5's own trace was itself deliberately
-stopped before confirming a final resting state (unlike Part 3, stated
-here rather than discovered as a mistake afterward). Reproduces
+found; the walker itself is cleared, execution reaches real UART MMIO,
+and a real attempt to tell "slow" from "hung" did not settle it either
+(Phase 9, Stage 2, Parts 3-6).** `software/soc/ddrmmutest.c`
+(`make sim_ddrmmutest`, not gated in `verify`) puts a Sv32 root table in
+DDR3 and maps one genuinely translated megapage onto a real DDR3 physical
+frame. The physical setup and readback before `satp` goes live all pass;
+after `mret` into S-mode the run hangs - no trap, no further output -
+until the testbench's own timeout. Execution genuinely enters S-mode and
+runs real code (Part 4): the walker completes multiple real PTE reads
+from DDR3 correctly on both the instruction and data side, with real,
+valid addresses throughout - not the undefined one Part 3 first (wrongly)
+reported, an artifact of reading a killed process's own truncated trace.
+Execution then reaches real UART register accesses (Part 5) -
+`UART_LSR`/`UART_THR`, the registers `put_char`'s own transmit-busy-wait
+polls - reached with translation genuinely bypassed (`need_translate=0`,
+confirmed against `rtl/cpu_core.v`'s own real formula) even though the
+CPU is genuinely in S-mode; a combination no prior test in this project
+appears to have exercised, `software/soc/mmutest.c` included. The
+busy-wait's own condition (`UART_LSR`'s real value) does eventually
+change from not-ready to ready and the loop correctly exits (Part 6) -
+not a value stuck forever - after roughly 1.3 million cycles, far more
+than this testbench's own real UART timing (`CLKS_PER_BIT=4`, ~40 cycles
+per byte) should need. The D-cache was checked directly and ruled out as
+the mechanism (`rtl/soc/cpu_wb.v`'s own `dc_cacheable` correctly excludes
+UART's address regardless of translation). A direct test of "does it just
+need more time" (a throwaway 4x timeout extension) did not complete
+within 113 minutes of real CPU time - far longer than a mere 4x
+cycle-count increase should cost - and was stopped there rather than run
+indefinitely; whether one ~1.3M-cycle wait repeats per character of a
+~68-character message (exceeding even the extended budget) or the stuck
+state costs the simulator disproportionately more per cycle to evaluate
+are both still open, undistinguished. Root cause not found. Reproduces
 identically on every attempt. See Phase 9 Stage 2's own "Update, Part 3"
-through "Update, Part 5" for the full account.
+through "Update, Part 6" for the full account.
 
 **OPEN, narrowed - the data path of the DDR3 PHY is not yet hardware-faithful
 (Phase 9, Stage 1).** As first written this entry had three parts, all now
