@@ -208,6 +208,29 @@
         reg = <0x90000000 0x02000000>;
     };
 
+#ifdef DDR3_ENABLE
+    memory@a0000000 {
+        device_type = "memory";
+        /* Phase 9 Stage 2 (docs/roadmap.md). Real only when the SoC was
+         * built with DDR3_ENABLE (rtl/soc/soc_top.v's own header) - the
+         * default build described here does not have this slave at all,
+         * and describing it unconditionally would hand a kernel addresses
+         * that decode to no slave and read back as zeros, the same
+         * "over-declaring" hazard the SDRAM node above already names.
+         * `make dts/soc_$(CORE)_ddr3.dtb` is the only build that defines
+         * DDR3_ENABLE for this file; no existing sbiimage/linuximage
+         * target does.
+         *
+         * 256 MB, not the real part's full 512 MB: lane 1 does not carry
+         * real data yet (rtl/soc/wb_ddr.v's own header - Part 24/25 wired
+         * its own calibration only), so only lane 0's own address space is
+         * real. Duplicated in software/soc/soc.h (DDR3_BASE/DDR3_SIZE) and
+         * soc_top.v's own s_base/s_mask pair - docs/practices.md section
+         * 11's own duplication risk, same as the SDRAM node's. */
+        reg = <0xA0000000 0x10000000>;
+    };
+#endif
+
     soc {
         #address-cells = <1>;
         #size-cells = <1>;
