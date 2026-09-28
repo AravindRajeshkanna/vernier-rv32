@@ -5,17 +5,20 @@
  *
  * ---- This currently hangs, and is a real, open, unresolved finding, not
  * a passing test - docs/roadmap.md's own Known Defects section and Phase 9
- * Stage 2's "Update, Part 3" have the full account. Not in `make verify`. ----
+ * Stage 2's "Update, Part 3"/"Update, Part 4" have the full account. Not in
+ * `make verify`. ----
  * Every physical-addressing check below passes; after `mret` into S-mode
  * the run hangs with no trap and no further output, until
- * sim/tb_ramboot.v's own 400M-cycle timeout. A temporary hierarchical
- * trace (removed after this investigation) found rtl/soc/wb_ptw.v's own
- * `busy` flag stuck asserted, with an undefined latched address, after its
- * own instruction-side walker completed exactly one real read from DDR3
- * successfully. Root cause not found - wb_ptw.v's own arbiter,
- * wb_interconnect.v's own default `s_we` for a read-only master, and that
- * file's own bus-lock mechanism all read as correct for arbitrary latency
- * by direct inspection. Left in the tree as a real, working reproduction
+ * sim/tb_ramboot.v's own timeout. Part 3's own first trace (from a process
+ * killed mid-write) wrongly blamed rtl/soc/wb_ptw.v for the hang; Part 4
+ * re-measured with a trace run to actual completion and found the walker
+ * innocent - multiple real PTE reads from DDR3 complete correctly on both
+ * the instruction and data side, with real addresses throughout, and
+ * execution genuinely enters S-mode and runs real code. The real hang is
+ * later, needs no new translation, and does not touch DDR3 or the walker
+ * in its own stuck state - s_mode_main's own first UART message never
+ * transmits, confirmed against the decoded serial capture directly. Root
+ * cause still not found. Left in the tree as a real, working reproduction
  * for whoever continues this, not removed because it is inconvenient.
  *
 

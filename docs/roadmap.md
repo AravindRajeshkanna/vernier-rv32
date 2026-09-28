@@ -5619,7 +5619,8 @@ as written. After `csrw satp`/`sfence.vma`/`mret` into S-mode, the run
 hangs - no further output, no trap ("UNEXPECTED TRAP" is not printed;
 M-mode fetch is always untranslated, so the trap handler itself does not
 need paging to run, and it never runs), until `sim/tb_ramboot.v`'s own
-400M-cycle timeout. A temporary hierarchical trace
+`#400_000_000` (400,000,000 ns, 10,000,000 cycles at 40ns/cycle) timeout.
+A temporary hierarchical trace
 (`DUT.CPU.itlb_*`/`DUT.iptw_*`/`DUT.PTW.*`/`DUT.DDR3.DDR.*`, added and
 removed for this investigation, not shipped) showed the instruction-side
 walker's own read of the code/stack megapage's PTE from DDR3 completing
@@ -5661,6 +5662,46 @@ claim that paged DDR3 access is impossible - only that this specific
 attempt hangs, and why is not yet known. `dts/soc.dts` and the boot
 ROM/linker's own real memory-map constants remain untouched either way -
 this was a bare-metal, hand-built page table, not an OS-level path.
+
+**Update, Part 4: Part 3's own central claim was wrong - re-measured with
+a cleaner trace, corrected in place rather than left standing.** Part
+3's own "the walker's `busy` flag stays asserted with an undefined
+address for the rest of the run" came from a hierarchical trace captured
+from a process killed mid-write (`kill -9` against a still-writing log,
+to bound investigation time) - the trace file was real but truncated,
+and reading a stale tail of it as the final state was the actual mistake,
+not anything in the RTL. Redone with a print-on-*change* trace (one line
+per real transition, not one per cycle) run to genuine completion this
+time: `rtl/soc/wb_ptw.v` is not stuck at all. Multiple real PTE reads
+from DDR3 complete correctly, on both the instruction and data walker -
+`iptw_gnt`/`ptw_gnt` both arrive with real, valid data, `adr_r` holds a
+real address throughout (`0xA0000800`, `root[512]`'s own byte), never an
+undefined one. Execution genuinely enters `s_mode_main` (real, advancing
+`pc` values through its own compiled code, a real stack growing at
+`mem_addr_ex` near `BOOT_STACK_TOP`) - directly contradicting Part 3's
+own claim that the walker itself never lets execution past the M-to-S
+transition.
+
+**The real hang is later, and does not touch the page-table walker or
+DDR3 at all in its own stuck state.** `s_mode_main`'s own first message
+("fetch translated via the RAM megapage...") never reaches the UART - the
+literal text never appears in the decoded serial output, confirmed by
+grep against the full capture, not inferred - even though `pc` clearly
+progresses through addresses in that function's own range beforehand.
+No walk into the UART's own megapage (`0x04000000`, index 16 - also
+never mapped by this test's own sparse table) is ever attempted either,
+ruling out "stuck retrying a fault into an unmapped UART page" as the
+mechanism. Wherever execution is actually looping, it needs no new
+translation and touches neither DDR3 nor the walker - which also means
+Part 3's own Known Defect entry, filed against `wb_ptw.v`, named the
+wrong suspect.
+
+**Known Defect corrected below, not left naming a walker bug that direct
+re-measurement did not confirm.** The entry now describes what is
+actually established: paged access to DDR3 hangs, reproducibly, with the
+walker and DDR3 both cleared as the immediate cause by a completed trace
+- not "the walker gets stuck," which was itself an artifact of reading
+an incomplete file. Root cause remains open.
 
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
@@ -9509,25 +9550,28 @@ project applies everywhere else.
 
 Open, unscheduled, and written down so they are not rediscovered.
 
-**OPEN - a page-table walk into DDR3 hangs the machine (Phase 9, Stage 2,
-Part 3).** `software/soc/ddrmmutest.c` (`make sim_ddrmmutest`, not gated in
+**OPEN - a page-table walk into DDR3 hangs the machine, cause not yet
+found; the walker itself is cleared (Phase 9, Stage 2, Parts 3-4).**
+`software/soc/ddrmmutest.c` (`make sim_ddrmmutest`, not gated in
 `verify`) puts a Sv32 root table in DDR3 and maps one genuinely translated
 megapage onto a real DDR3 physical frame. The physical setup and readback
 before `satp` goes live all pass; after `mret` into S-mode the run hangs -
-no trap, no further output - until the testbench's own 400M-cycle timeout.
-A temporary hierarchical trace showed `rtl/soc/wb_ptw.v`'s own instruction
-walker completing one real read from DDR3 successfully, then its own
-`busy` flag staying stuck asserted with an undefined (`x`) latched address
-for effectively the rest of the run. Direct inspection cleared
-`wb_ptw.v`'s own arbiter, `wb_interconnect.v`'s own default `s_we` for a
-read-only master, and that same file's own bus-lock mechanism - all read
-as latency-agnostic, with no counter or timeout anywhere in the path.
-Root cause not found: DDR3 is the only genuinely new, much-slower variable
-in the mix this exact combination had never been tried against before,
-and whether the defect is specific to DDR3's own latency or a narrower,
-pre-existing race this was simply the first thing slow enough to expose
-is not yet known. Reproduces identically on every attempt. See Phase 9
-Stage 2's own "Update, Part 3" for the full account.
+no trap, no further output - until the testbench's own timeout. Execution
+genuinely enters S-mode and runs real code (Part 4, re-measured with a
+trace run to actual completion rather than a killed process's own
+truncated log, which is what made Part 3 wrongly blame `rtl/soc/wb_ptw.v`
+for a hang it does not have): the walker completes multiple real PTE
+reads from DDR3 correctly on both the instruction and data side, with
+real, valid addresses throughout, not the undefined one Part 3 reported.
+The actual hang is later and does not touch the walker or DDR3 in its own
+stuck state - `s_mode_main`'s own first UART message never transmits,
+confirmed directly against the decoded serial capture, and no walk into
+the UART's own (also-unmapped) megapage is ever attempted either, ruling
+out an unmapped-page fault storm as the mechanism. Root cause not found:
+wherever execution is actually stuck needs no new translation, so it is
+not yet known what it is. Reproduces identically on every attempt. See
+Phase 9 Stage 2's own "Update, Part 3" and "Update, Part 4" for the full
+account, including Part 4's own correction of Part 3's wrong diagnosis.
 
 **OPEN, narrowed - the data path of the DDR3 PHY is not yet hardware-faithful
 (Phase 9, Stage 1).** As first written this entry had three parts, all now
