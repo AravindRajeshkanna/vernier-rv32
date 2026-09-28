@@ -21,6 +21,10 @@
 //   0x0A00_0000  FIR        (streaming filter coprocessor - see wb_fir.v; Phase 11)
 //   0x8000_0000  Main RAM   (the conventional RISC-V DRAM base)
 //   0x9000_0000  External SDRAM (32 MB, mask 0xFE - see s_mask below)
+//   0xA000_0000  DDR3 (Phase 9 Stage 2 - 256 MB, mask 0xF0; lane 0 only
+//                 today, real capacity, not the part's full 512 MB - see
+//                 rtl/soc/wb_ddr.v's own header; present but unused by
+//                 default, the same as SDRAM's own precedent above)
 //
 // The CLINT/PLIC/UART bases are inherited unchanged from rtl/top.v so the
 // existing drivers in software/ keep working; RAM sits at 0x8000_0000 the
@@ -139,14 +143,34 @@ module soc_top #(
     output wire        sdram_dq_oe,
     input  wire [15:0] sdram_dq_i,
 
+    // ---- DDR3 (Phase 9 Stage 2) ----
+    // Real `inout` here, unlike SDRAM's own split: rtl/soc/ddr3_ecp5_top.v
+    // (wrapped by rtl/soc/wb_ddr.v) already puts real `BB` tristate pads on
+    // these pins itself (Part 21), so there is nothing left for a board
+    // wrapper to split - the same reason rtl/soc/wb_ddr.v's own header
+    // exposes them this way already. A simulation that does not model DDR3
+    // leaves every output unconnected and every inout floating, which is
+    // safe: nothing else in this file reads them.
+    output wire        ddr3_ck, ddr3_ck_n,
+    output wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
+    output wire [2:0]  ddr3_ba,
+    output wire [15:0] ddr3_a,
+    output wire        ddr3_cke, ddr3_reset_n, ddr3_odt,
+    inout  wire [7:0]  ddr3_dq,
+    inout  wire        ddr3_dqs,
+    output wire        ddr3_dm,
+    inout  wire [7:0]  ddr3_dqu,
+    inout  wire        ddr3_udqs,
+    output wire        ddr3_udm,
+
     output wire trap
 );
-    localparam NUM_SLAVES = 12;
+    localparam NUM_SLAVES = 13;
 
     // Slave index assignment (also the bit position in the vectors below).
     localparam S_ROM = 0, S_CLINT = 1, S_PLIC = 2, S_UART = 3,
                S_GPIO = 4, S_SPI = 5, S_FB = 6, S_RAM = 7, S_SDRAM = 8,
-               S_TIMER = 9, S_NPU = 10, S_FIR = 11;
+               S_TIMER = 9, S_NPU = 10, S_FIR = 11, S_DDR3 = 12;
 
     // addr[31:24] each slave answers to, and which of those bits are
     // compared, packed 8 bits per slave. A mask of 0xFF is one 16 MB window.
@@ -165,6 +189,7 @@ module soc_top #(
     // Widening the global decode instead would have shrunk every peripheral
     // window to buy this one slave more room.
     wire [NUM_SLAVES*8-1:0] s_base = {
+        8'hA0, // S_DDR3
         8'h0A, // S_FIR
         8'h09, // S_NPU
         8'h08, // S_TIMER
@@ -179,6 +204,7 @@ module soc_top #(
         8'h00  // S_ROM
     };
     wire [NUM_SLAVES*8-1:0] s_mask = {
+        8'hF0, // S_DDR3  0xA0-0xAF, 256 MB
         8'hFF, // S_FIR
         8'hFF, // S_NPU
         8'hFF, // S_TIMER
@@ -658,6 +684,71 @@ module soc_top #(
         .sdram_ready()
         /* verilator lint_on PINCONNECTEMPTY */
     );
+
+    // ---- DDR3, gated - `` `DDR3_ENABLE`` ----
+    //
+    // rtl/soc/ddr3_ecp5_top.v (wrapped by rtl/soc/wb_ddr.v) puts real `BB`
+    // tristate pads on its own DQ/DQS/DQM pins itself (Part 21) - unlike
+    // SDRAM's own o/oe/i split, which defers the only real IO buffer to
+    // fpga/ulx3s_top.v, nothing here can leave these unconnected on a real
+    // board build and expect synthesis to quietly optimise them away. Every
+    // BOARD= target except the bare, pinout-free default drops
+    // `--lpf-allow-unconstrained` specifically so an unplaced real pin is a
+    // build error, not a silently invented placement
+    // (fpga/synth/synth_ecp5.sh's own header) - and no existing board's own
+    // `.lpf` has ever named a `ddr3_*` pin, since ECPIX-5's own real pins
+    // (fpga/constraints/ecpix5_ddr3.lpf) exist only for
+    // fpga/ecpix5_ddr3_probe.v, a dedicated, DDR3-only top, not for
+    // fpga/ulx3s_top.v or fpga/soc_fpga.v. Instantiating rtl/soc/wb_ddr.v
+    // unconditionally here would make every existing board build fail to
+    // place a real primitive with nowhere to go - caught before it ever
+    // reached a synthesis run, by re-reading fpga/synth/synth_ecp5.sh's own
+    // header rather than assuming an unconnected `inout` is free.
+    //
+    // `DDR3_ENABLE` opts a build in - passed by `make sim_ddrcheck`
+    // (Phase 9 Stage 2, Part 2) and, later, whichever real ECPIX-5 SoC
+    // board target eventually needs it, matching `CORE_OOO`'s own opt-in
+    // shape. Undefined (every existing board and every existing test),
+    // this slave answers its own address range immediately with zero data
+    // rather than leaving the bus hanging - the same "unmapped space acks
+    // with zeros" behaviour `rtl/soc/wb_ram.v`'s own header already
+    // documents for an address nothing claims.
+`ifdef DDR3_ENABLE
+    // rtl/soc/wb_ddr.v's own observability outputs (calib_done etc.) are not
+    // exposed as soc_top.v ports - no other block here needs them, and a
+    // testbench that does can reach them by hierarchical reference through
+    // this instance, the same way fpga/ulx3s_sdram.v's own bring-up probe
+    // already reaches SDRAM's equivalent signals.
+    /* verilator lint_off PINCONNECTEMPTY */
+    wb_ddr DDR3 (
+        .clk(clk), .rst(rst_soc),
+        .wb_cyc(s_cyc), .wb_stb(s_stb[S_DDR3]), .wb_we(s_we), .wb_adr(s_adr),
+        .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        .wb_dat_r(s_dat_r[32*S_DDR3 +: 32]), .wb_ack(s_ack[S_DDR3]),
+        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
+        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
+        .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
+        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .pll_locked(), .dll_locked(), .init_ready(),
+        .calib_done(), .calib_readclksel(), .calib_error(),
+        .calib1_done(), .calib1_readclksel(), .calib1_error(),
+        .refresh_busy()
+    );
+    /* verilator lint_on PINCONNECTEMPTY */
+`else
+    assign s_dat_r[32*S_DDR3 +: 32] = 32'b0;
+    assign s_ack[S_DDR3]            = s_cyc & s_stb[S_DDR3];
+    assign ddr3_ck = 1'b0; assign ddr3_ck_n = 1'b1;
+    assign ddr3_cs_n = 1'b1; assign ddr3_ras_n = 1'b1;
+    assign ddr3_cas_n = 1'b1; assign ddr3_we_n = 1'b1;
+    assign ddr3_ba = 3'b0; assign ddr3_a = 16'b0;
+    assign ddr3_cke = 1'b0; assign ddr3_reset_n = 1'b0; assign ddr3_odt = 1'b0;
+    assign ddr3_dq = 8'bz; assign ddr3_dqs = 1'bz; assign ddr3_dm = 1'b1;
+    assign ddr3_dqu = 8'bz; assign ddr3_udqs = 1'bz; assign ddr3_udm = 1'b1;
+`endif
 
     // ---- CLINT behind a bridge ----
     wire [31:0] clint_addr, clint_wdata, clint_rdata;

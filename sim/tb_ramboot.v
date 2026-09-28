@@ -113,6 +113,67 @@ module tb_ramboot;
         .a(sd_a), .ba(sd_ba), .dqm(sd_dqm), .dq(dq)
     );
 
+    // ---- DDR3 (Phase 9 Stage 2) ----
+    // The wires are declared unconditionally - rtl/soc/soc_top.v's own
+    // ddr3_* ports always exist (its own DDR3 slave itself is what is
+    // gated - see that file's own header), so these are always validly
+    // driven by the DUT either way. Only the real protocol/memory models
+    // below are gated behind `DDR3_ENABLE` (`make sim_ddrcheck` alone
+    // passes it): `DUT.DDR3.DDR` does not exist to reach by hierarchical
+    // reference unless this exact compilation also enabled it, and every
+    // other check sharing this testbench (trapcheck, pmptest, uartirq and
+    // the rest) has never touched DDR3_BASE, so there is nothing here for
+    // them to gain from carrying it.
+    wire        ddr3_ck, ddr3_ck_n;
+    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire [2:0]  ddr3_ba;
+    wire [15:0] ddr3_a;
+    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [7:0]  ddr3_dq;
+    wire        ddr3_dqs;
+    wire        ddr3_dm;
+    wire [7:0]  ddr3_dqu;
+    wire        ddr3_udqs;
+    wire        ddr3_udm;
+
+`ifdef DDR3_ENABLE
+    wire        ddr3_model_error;
+    wire [511:0] ddr3_model_error_msg;
+    ddr3_model #(.CLK_HZ(25_000_000)) DDR3PROTO (
+        .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
+        .error(ddr3_model_error), .error_msg(ddr3_model_error_msg), .seq_done()
+    );
+
+    wire [7:0] ddr3_mem_dq_o;
+    wire       ddr3_mem_dq_oe, ddr3_mem_dqs_oe, ddr3_mem_dqs_o;
+    wire       ddr3_dq_error;
+    wire [511:0] ddr3_dq_error_msg;
+    ddr3_dq_model DDR3MEM (
+        .sclk(DUT.DDR3.DDR.sclk), .rst(DUT.DDR3.DDR.rst_all),
+        .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
+        .read_active(DUT.DDR3.DDR.read_active),
+        .mem_dq_o(ddr3_mem_dq_o), .mem_dq_oe(ddr3_mem_dq_oe),
+        .mem_dqs_oe(ddr3_mem_dqs_oe), .mem_dqs_o(ddr3_mem_dqs_o),
+        .dq_error(ddr3_dq_error), .dq_error_msg(ddr3_dq_error_msg)
+    );
+    genvar dqi;
+    generate
+        for (dqi = 0; dqi < 8; dqi = dqi + 1) begin : DDR3_DQ_BUS
+            assign ddr3_dq[dqi] = ddr3_mem_dq_oe ? ddr3_mem_dq_o[dqi] : 1'bz;
+        end
+    endgenerate
+    assign ddr3_dqs = ddr3_mem_dqs_oe ? ddr3_mem_dqs_o : 1'bz;
+    // Lane 1 carries no real data yet (rtl/soc/wb_ddr.v's own header) -
+    // nothing drives ddr3_dqu/ddr3_udqs here, the same as real silicon with
+    // nothing behind the upper byte lane.
+`endif
+
     soc_top #(
         .RAM_BYTES(RAM_BYTES),
         .ROM_INIT_FILE(`ROM_IMAGE),
@@ -134,6 +195,13 @@ module tb_ramboot;
         .sdram_ras_n(sd_ras_n), .sdram_cas_n(sd_cas_n), .sdram_we_n(sd_we_n),
         .sdram_a(sd_a), .sdram_ba(sd_ba), .sdram_dqm(sd_dqm),
         .sdram_dq_o(sd_dq_o), .sdram_dq_oe(sd_dq_oe), .sdram_dq_i(dq),
+        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
+        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
+        .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
+        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .trap(trap)
     );
 

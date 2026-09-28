@@ -5499,6 +5499,106 @@ the interconnect yet to re-verify against). `make verify_ooo` was not run
 for this part - grep-confirmed that no CPU/SoC/board build file references
 `rtl/soc/wb_ddr.v`.
 
+**Update, Part 2: wired into `rtl/soc/soc_top.v` for real, and a real CPU
+program reaches it - through the actual interconnect, not a testbench
+tap.** A new slave (`S_DDR3`, index 12, `NUM_SLAVES` 12 to 13), base
+`0xA0` mask `0xF0` (`0xA0_00_0000`-`0xAF_FF_FFFF`, the real 256MB
+Part 1 already established) - `rtl/soc/wb_ddr.v`'s own `wb_cyc`/
+`wb_stb[S_DDR3]`/`wb_we`/`wb_adr`/`wb_dat_w`/`wb_sel`/`wb_dat_r`/`wb_ack`
+into the shared bus, its real `ddr3_*` board pins passed straight through
+as new `soc_top.v` ports (a real `inout`, unlike SDRAM's own o/oe/i split
+- `ddr3_ecp5_top.v` already puts real `BB` tristate pads on these pins
+itself, Part 21, so there is nothing left for a board wrapper to split).
+Its own calibration/debug outputs are not exposed as `soc_top.v` ports -
+nothing else there needs them, and a testbench can still reach them by
+hierarchical reference, the same as SDRAM's own equivalent signals.
+
+**A real regression caught before it ever reached a synthesis run, by
+re-reading this project's own tooling rather than assuming an
+unconnected `inout` is free.** Unlike every existing slave, `wb_ddr.v`
+cannot simply be instantiated unconditionally: its own real `BB`
+tristate pads (inside `ddr3_ecp5_top.v`, Part 21) need a real package pin
+the moment real synthesis is attempted, and `fpga/synth/synth_ecp5.sh`'s
+own header already documents that every board target except the bare,
+pinout-free default drops `--lpf-allow-unconstrained` specifically so an
+unplaced real pin is a build error, not a silently invented placement -
+and no existing board's own `.lpf` has ever named a `ddr3_*` pin, since
+ECPIX-5's own real pins (`fpga/constraints/ecpix5_ddr3.lpf`) exist only
+for `fpga/ecpix5_ddr3_probe.v`, a dedicated, DDR3-only top, not for
+`fpga/ulx3s_top.v` or `fpga/soc_fpga.v`. Wiring `wb_ddr.v` in
+unconditionally, as first drafted, would have made every existing real
+board build fail to place a primitive with nowhere to go - found by
+re-checking `synth_ecp5.sh`'s own reasoning immediately after wiring the
+slave in, not by running a real synthesis and watching it fail. Fixed
+with a new `` `DDR3_ENABLE`` compile-time gate, matching `CORE_OOO`'s own
+opt-in shape: undefined (every existing board, every existing test),
+`rtl/soc/wb_ddr.v` is never instantiated at all - so `ddr3_ecp5_top.v`'s
+own body, `BB` pads included, is never elaborated either, regardless of
+whether its source file is on the compiler's own command line - and the
+slave answers its own address range immediately with zero data rather
+than leaving the bus hanging, the same "unmapped space acks with zeros"
+behaviour `rtl/soc/wb_ram.v`'s own header already documents. Only
+`make sim_ddrcheck` (below) defines it. `make lint-rtl-soc` now lints
+both configurations - the disabled stub every existing board still
+builds, and the enabled slave - not just the one this part happened to
+write first.
+
+**A real, previously-invisible bug found by this integration alone,
+before any test even ran:** `rtl/soc/wb_sdram.v` defines its own
+`` `NS2CYC`` macro and never `` `undef``s it; `rtl/soc/ddr3_init_seq.v`
+and `rtl/soc/ddr3_refresh_ctrl.v` each separately define the identical
+name. Nothing before this part ever compiled `wb_sdram.v` and any DDR3
+file together in one Verilog compilation unit (Stage 1's own
+`make lint-rtl-ddr3` never included `wb_sdram.v`; `make lint-rtl-soc`
+never included any DDR3 file) - `rtl/soc/soc_top.v` now does, and
+`make lint-rtl-soc` caught the collision immediately
+(Verilator `REDEFMACRO`). Harmless today by pure file-order luck (each
+file's own use of the name completes before the next file's redefinition
+touches it), but exactly the reordering-fragile latent bug a `` `define``
+with no matching `` `undef`` always risks - fixed by renaming the DDR3
+family's own macro to `` `DDR3_NS2CYC`` and giving `ddr3_refresh_ctrl.v`
+the `` `undef`` it was also missing.
+
+**A minimal, directed CPU-issued proof, not a sweep - `software/soc/
+ddrcheck.c`, run through `sim/tb_ramboot.v`, the same shared
+preloaded-RAM harness `sdramcheck.c` already uses (`make sim_ddrcheck`,
+mirroring `make sim_sdramcheck` exactly).** Deliberately not a memory
+sweep: every miss here costs a real 16-byte block fill (16 sequential
+single-byte controller calls, ~20 cycles each), so `sdramcheck.c`'s own
+hundreds-of-KB coverage sweep would be prohibitively slow against this
+stage's own current fidelity - a handful of directed word/byte accesses,
+mirroring `sim/tb_wb_ddr.v`'s own cases exactly but issued as real
+`sw`/`lw`/`sb`/`lb` instructions through `cpu_wb.v` and the real
+interconnect this time: a store-then-load real miss/fill; a second word
+in the same open block (a cache-hit-path store); a different block
+evicting the first, both of the first block's own words confirmed to
+survive a later re-fill; and a single-byte store/load proving the
+interconnect's own `wb_sel` plumbing reaches this slave correctly.
+Passed clean on the first real run, on both `CORE=inorder` and
+`CORE=ooo`.
+
+**Mutation-tested the wiring itself, not just re-running Part 1's own
+proof.** Feeding `S_DDR3` a wrong `s_base` (`0xB0` instead of `0xA0`)
+makes every check fail, reading back `0x00000000` for every access - the
+interconnect's own unmapped-address behavior (`rtl/soc/wb_ram.v`'s own
+header: unmapped space acks with zeros) - confirming this test genuinely
+exercises real address decode, not an accidental pass through some other
+slave. Reverted; clean re-run confirmed.
+
+**What this does not establish.** `dts/soc.dts`, boot ROM/linker
+memory-map constants and the Sv32 page-table walker's own range are all
+still untouched - this proves a bare-metal, physical-address, MMU-off
+program reaches DDR3 through the real bus, not that Linux or any
+paged/OS-level caller can. No caches, atomics or LR/SC re-verification
+attempted - `ddrcheck.c` is single-hart and touches no cached path
+(`HART_DCACHE_ENABLE` is unaffected by this slave existing). Real
+capacity is still 256MB, and the data path is still not hardware-faithful
+per-beat, both unchanged from Part 1. `make verify`/`make verify_ooo`
+**were** both run this time and stayed green - unlike Part 1, this part
+changes `rtl/soc/soc_top.v` itself, a real CPU/SoC file every existing
+consumer of `$(SOC_RTL)` now compiles against, so skipping either gate
+would not have been honest.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
