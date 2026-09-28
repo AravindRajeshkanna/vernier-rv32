@@ -212,7 +212,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
-        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb \
+        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
@@ -842,6 +842,19 @@ dts/soc_$(CORE).dtb: dts/soc.dts
 	cc -E -x assembler-with-cpp -P $(CORE_DEFINES) dts/soc.dts | dtc -I dts -O dtb -o $@
 	@echo "--- round-tripping back to source as a sanity check ---"
 	@dtc -I dtb -O dts $@ > /dev/null && echo "device tree OK"
+
+# The DDR3-enabled variant (Phase 9 Stage 2, Part 8) - a real, separate
+# target, not an env-var toggle on the rule above, the same "a different
+# build product, not a runtime flag" precedent software/soc/sdramfull.elf
+# already set. No existing sbiimage/linuximage target builds this dtb;
+# defining DDR3_ENABLE here does not change dts/soc_$(CORE).dtb at all.
+dtb_ddr3: dts/soc_$(CORE)_ddr3.dtb
+dts/soc_$(CORE)_ddr3.dtb: dts/soc.dts
+	cc -E -x assembler-with-cpp -P -DDDR3_ENABLE $(CORE_DEFINES) dts/soc.dts | dtc -I dts -O dtb -o $@
+	@echo "--- round-tripping back to source as a sanity check ---"
+	@dtc -I dtb -O dts $@ > /dev/null && echo "device tree OK"
+	@dtc -I dtb -O dts $@ | grep -q 'memory@a0000000' || \
+	    { echo "dts/soc_$(CORE)_ddr3.dtb: DDR3 memory node missing"; exit 1; }
 
 # =====================================================================
 # Verification
@@ -3307,7 +3320,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics ddr3_check \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics dtb_ddr3 ddr3_check \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
@@ -3425,6 +3438,7 @@ clean:
 	       software/soc/dtb_blob_hetero.h \
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc_inorder.dtb dts/soc_ooo.dtb dts/soc_hetero.dtb \
+	       dts/soc_inorder_ddr3.dtb dts/soc_ooo_ddr3.dtb dts/soc_hetero_ddr3.dtb \
 	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \
 	       software/bench/coremark.elf software/bench/coremark.bin \
 	       sim/sim_soc_2hart_coremark.out sim/coremark_dispatch.hex \

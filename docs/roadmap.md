@@ -5827,6 +5827,41 @@ stays deliberately outside it) - no RTL changed, but a new test entering
 the shared gate graph gets the same confirmation any other addition to
 it would.
 
+**Update, Part 8: a `dts/soc.dts` node for DDR3, gated the same way the
+RTL already is.** Stage 2's own plan named this too - "Address decode,
+`dts/soc.dts`, boot ROM/linker memory-map constants... all need to reach
+the new... span." Address decode (Part 2) and the C-side constants
+(`DDR3_BASE`/`DDR3_SIZE`, Part 1's own `software/soc/soc.h` addition)
+were already done; this closes the `dts/soc.dts` piece, the last one
+Part 6's own investigation didn't already cover.
+
+A new `memory@a0000000` node, guarded by `#ifdef DDR3_ENABLE` - not
+unconditional, the same "over-declaring hands a kernel addresses that
+decode to no slave" hazard the SDRAM node's own header already names,
+now doubly true since no existing board or OpenSBI/Linux image builds
+with `DDR3_ENABLE` at all. A new, separate build target,
+`make dtb_ddr3`, rather than an env-var toggle on the existing `dtb`
+target - the same "a different build product, not a runtime flag"
+precedent `software/soc/sdramfull.elf` already set - builds
+`dts/soc_$(CORE)_ddr3.dtb` with `-DDDR3_ENABLE` passed to the
+preprocessor, round-trips it back to source (the existing sanity check
+every `.dtb` build already has), and greps the round-tripped source for
+the new node by name, so a regression that silently drops it fails loud.
+
+**Confirmed the default path is genuinely untouched, not just
+assumed.** Rebuilding `dts/soc_$(CORE).dtb` (no `DDR3_ENABLE`) produces a
+byte-identical file to the one already in the tree - `git status` shows
+no diff after the rebuild - and a direct check confirms the new node is
+genuinely absent from that build, not merely unlisted.
+
+**What this does not establish.** No existing `sbiimage`/`linuximage`
+target builds with `DDR3_ENABLE` - nothing yet proves OpenSBI or Linux
+actually parses this node and does anything useful with it, only that
+the dts pipeline itself (preprocessor + `dtc`) accepts it. That is
+separate, later work, and probably downstream of the banked paging
+investigation in practice, since Linux's own use of a memory region
+goes through Sv32. No RTL changed.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
