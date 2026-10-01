@@ -17,6 +17,9 @@
 // $(CORE)-suffixed by the Makefile - see sim/tb_ramboot.v's own comment for
 // why a fixed "bootrom.hex" name is no longer safe now that the boot ROM's
 // embedded device tree varies with $(CORE).
+`ifndef UART_IMAGE
+`define UART_IMAGE "uartimage.hex"
+`endif
 `ifndef ROM_IMAGE
 `define ROM_IMAGE "bootrom.hex"
 `endif
@@ -38,7 +41,16 @@ module tb_uartload;
     // into ordinary console text. docs/practices.md section 36.
     localparam [7:0]  PROBE = 8'h55, ACK = 8'h06, NAK = 8'h15;
 
+`ifdef DDR3_ENABLE
+    // make sim_uartload_ddr3: the same protocol, the image lands in DDR3. The
+    // program then runs its stack and data there too, every store a
+    // write-through to a real DDR3 model, so the budget below is larger.
+    localparam [31:0] LOAD_ADDR = 32'hA000_0000;
+    localparam integer MAX_CYCLES = 12_000_000;
+`else
     localparam [31:0] LOAD_ADDR = 32'h9000_0000;
+    localparam integer MAX_CYCLES = 4_000_000;
+`endif
 
     reg clk = 0;
     reg rst = 1;
@@ -61,6 +73,20 @@ module tb_uartload;
     wire        sd_dq_oe;
     wire [15:0] dq;
     assign dq = sd_dq_oe ? sd_dq_o : 16'bz;
+
+    // DDR3 pins. Wired to nothing in the SDRAM variant, exactly as before this
+    // test knew about DDR3 (the slave is tied off without DDR3_ENABLE).
+    wire        ddr3_ck, ddr3_ck_n;
+    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire [2:0]  ddr3_ba;
+    wire [15:0] ddr3_a;
+    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [7:0]  ddr3_dq;
+    wire        ddr3_dqs;
+    wire        ddr3_dm;
+    wire [7:0]  ddr3_dqu;
+    wire        ddr3_udqs;
+    wire        ddr3_udm;
 
     soc_top #(
         .ROM_WORDS(4096),
@@ -91,6 +117,13 @@ module tb_uartload;
         .sdram_ras_n(sd_ras_n), .sdram_cas_n(sd_cas_n), .sdram_we_n(sd_we_n),
         .sdram_a(sd_a), .sdram_ba(sd_ba), .sdram_dqm(sd_dqm),
         .sdram_dq_o(sd_dq_o), .sdram_dq_oe(sd_dq_oe), .sdram_dq_i(dq),
+        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
+        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
+        .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
+        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .trap(trap)
     );
 
@@ -103,6 +136,46 @@ module tb_uartload;
         .ras_n(sd_ras_n), .cas_n(sd_cas_n), .we_n(sd_we_n),
         .a(sd_a), .ba(sd_ba), .dqm(sd_dqm), .dq(dq)
     );
+
+`ifdef DDR3_ENABLE
+    // Same models, same wiring as sim/tb_ramboot.v's DDR3_ENABLE block.
+    wire        ddr3_model_error;
+    wire [511:0] ddr3_model_error_msg;
+    ddr3_model #(.CLK_HZ(25_000_000)) DDR3PROTO (
+        .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
+        .error(ddr3_model_error), .error_msg(ddr3_model_error_msg), .seq_done()
+    );
+
+    wire [7:0] ddr3_mem_dq_o;
+    wire       ddr3_mem_dq_oe, ddr3_mem_dqs_oe, ddr3_mem_dqs_o;
+    wire       ddr3_dq_error;
+    wire [511:0] ddr3_dq_error_msg;
+    // DEPTH: the model stores one byte per location and the default 1024 is
+    // far short of a 4 KB image plus the program's own data, bss and stack
+    // (first run: "store full - raise DEPTH", repeated). Every access scans
+    // the list, so this is as small as it can be and still hold them.
+    ddr3_dq_model #(.DEPTH(8192)) DDR3MEM (
+        .sclk(DUT.DDR3.DDR.sclk), .rst(DUT.DDR3.DDR.rst_all),
+        .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
+        .read_active(DUT.DDR3.DDR.read_active),
+        .mem_dq_o(ddr3_mem_dq_o), .mem_dq_oe(ddr3_mem_dq_oe),
+        .mem_dqs_oe(ddr3_mem_dqs_oe), .mem_dqs_o(ddr3_mem_dqs_o),
+        .dq_error(ddr3_dq_error), .dq_error_msg(ddr3_dq_error_msg)
+    );
+    genvar dqi;
+    generate
+        for (dqi = 0; dqi < 8; dqi = dqi + 1) begin : DDR3_DQ_BUS
+            assign ddr3_dq[dqi] = ddr3_mem_dq_oe ? ddr3_mem_dq_o[dqi] : 1'bz;
+        end
+    endgenerate
+    assign ddr3_dqs = ddr3_mem_dqs_oe ? ddr3_mem_dqs_o : 1'bz;
+`endif
 
     // ---- the image the host is going to send ----
     localparam integer MAX_IMAGE = 262144;
@@ -207,7 +280,22 @@ module tb_uartload;
     localparam [31:0] RESULT_FAIL = 32'h4641494C;  // "FAIL"
 
     integer cycles = 0;
-    always @(posedge clk) cycles = cycles + 1;
+    // +progress=N: a heartbeat every N cycles, for telling a slow run from a
+    // hung one (cycle count, the data address on the bus, and in the DDR3
+    // variant how full the memory model is).
+    integer progress_every = 0;
+    initial if (!$value$plusargs("progress=%d", progress_every)) progress_every = 0;
+    always @(posedge clk) begin
+        cycles = cycles + 1;
+        if (progress_every != 0 && cycles % progress_every == 0)
+`ifdef DDR3_ENABLE
+            $display("[progress] cycle %0d, imem_addr 0x%08x, dmem_addr 0x%08x, trap %b, model locations used %0d",
+                     cycles, DUT.imem_addr[31:0], DUT.dmem_addr[31:0], trap, DDR3MEM.n_used);
+`else
+            $display("[progress] cycle %0d, imem_addr 0x%08x, dmem_addr 0x%08x, trap %b",
+                     cycles, DUT.imem_addr[31:0], DUT.dmem_addr[31:0], trap);
+`endif
+    end
 
     initial begin
     // Waveforms are opt-in: run with `+dump`, or `make <target> DUMP=1`.
@@ -225,7 +313,7 @@ module tb_uartload;
         end
         for (i = 0; i < MAX_IMAGE; i = i + 1) image[i] = 8'h00;
         #1;
-        $readmemh("uartimage.hex", image);
+        $readmemh(`UART_IMAGE, image);
         image_len = 0;
         for (i = MAX_IMAGE - 1; i >= 0 && image_len == 0; i = i - 1)
             if (image[i] !== 8'h00) image_len = i + 1;
@@ -305,7 +393,7 @@ module tb_uartload;
         // one just hides the reply that already said so.
         if (errors == 0) begin
             while (result_word !== RESULT_PASS && result_word !== RESULT_FAIL &&
-                   cycles < 4_000_000)
+                   cycles < MAX_CYCLES)
                 @(posedge clk);
         end
         repeat (200 * CLKS_PER_BIT * 10) @(posedge clk);
@@ -341,7 +429,11 @@ module tb_uartload;
     // documented CORE=ooo speculative-load hazard (docs/roadmap/phase-01-superscalar-ooo.md, "Stage
     // 1d was built anyway") reaching this watchdog by more than half.
     initial begin
+`ifdef DDR3_ENABLE
+        #480_000_000;
+`else
         #80_000_000;
+`endif
         $display("\nUARTLOAD TEST FAILED (timeout: the board stopped talking)");
         $display("  last state: transfer_active=%b, bytes sent=%0d of %0d",
                  transfer_active, sent, image_len);

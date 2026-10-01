@@ -213,7 +213,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -2706,6 +2706,40 @@ sim_uartload: sim/bootrom_$(CORE).hex sim/uartimage.hex sim/sim_uartload.out
 	@grep -q "UARTLOAD TEST PASSED" sim/uartload.log || \
 	    { echo "sim_uartload FAILED"; exit 1; }
 
+# ---- UART loader into DDR3 (Phase 9 Stage 2, Part 10) ----
+#
+# DDR3, like SDRAM, comes up empty on a board, so the boot ROM's loader is the
+# only way to put a program there. A ROM built with -DDDR3_ENABLE accepts
+# DDR3_BASE as a load address; the default ROM still refuses it, because on a
+# board without DDR3 that range is a tied-off slave. The embedded device tree
+# is the ordinary one (no DDR3 node), which this test does not read.
+software/soc/bootrom_$(CORE)_ddr3.elf: $(BOOTROM_SRCS) software/soc/link_rom.ld software/soc/soc.h \
+                                        software/soc/dtb_blob_$(CORE).h
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -DDDR3_ENABLE -DDTB_BLOB_HEADER='"dtb_blob_$(CORE).h"' \
+	    -T software/soc/link_rom.ld -o $@ $(BOOTROM_SRCS)
+
+sim/bootrom_$(CORE)_ddr3.hex: software/soc/bootrom_$(CORE)_ddr3.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/bootrom_$(CORE)_ddr3.elf software/soc/bootrom_$(CORE)_ddr3.bin
+	python3 software/bin2hex.py --word-size=4 software/soc/bootrom_$(CORE)_ddr3.bin > $@
+
+software/soc/uartprog_ddr3.elf: $(UARTPROG_SRCS) software/soc/link_ddr3.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -DUARTPROG_DDR3 -T software/soc/link_ddr3.ld \
+	    -o $@ $(UARTPROG_SRCS)
+
+sim/uartddr3image.hex: software/soc/uartprog_ddr3.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/uartprog_ddr3.elf software/soc/uartprog_ddr3.bin
+	python3 software/bin2hex.py --word-size=1 software/soc/uartprog_ddr3.bin > $@
+
+sim/sim_uartload_ddr3.out: sim/tb_uartload.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DDDR3_ENABLE -DUART_IMAGE='"uartddr3image.hex"' \
+	    -DROM_IMAGE='"bootrom_$(CORE)_ddr3.hex"' -o $@ \
+	    sim/tb_uartload.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+
+sim_uartload_ddr3: sim/bootrom_$(CORE)_ddr3.hex sim/uartddr3image.hex sim/sim_uartload_ddr3.out
+	@cd sim && $(VVP) sim_uartload_ddr3.out $(VVP_DUMP) 2>&1 | tee uartload_ddr3.log
+	@grep -q "UARTLOAD TEST PASSED" sim/uartload_ddr3.log || \
+	    { echo "sim_uartload_ddr3 FAILED"; exit 1; }
+
 # ---- external SDRAM (Phase 2) ----
 #
 # Two layers. sim_sdram drives rtl/soc/wb_sdram.v directly and is where a
@@ -3345,7 +3379,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec dtb_ddr3 ddr3_check \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 dtb_ddr3 ddr3_check \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
@@ -3421,7 +3455,7 @@ clean:
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
 	       sim/sim_ddrcheck.out sim/ddrcheckimage.hex \
-	       sim/sim_ddrexec.out sim/ddrexecimage.hex sim/sim_ddratomics.out sim/ddratomicsimage.hex \
+	       sim/sim_uartload_ddr3.out sim/uartddr3image.hex sim/bootrom_inorder_ddr3.hex sim/bootrom_ooo_ddr3.hex sim/bootrom_hetero_ddr3.hex sim/uartload_ddr3.log sim/sim_ddrexec.out sim/ddrexecimage.hex sim/sim_ddratomics.out sim/ddratomicsimage.hex \
 	       sim/sim_ddrmmutest.out sim/ddrmmutestimage.hex \
 	       sim/sdramfullimage.hex sim/sdramfull.log \
 	       obj_dir_soc_ramboot \
@@ -3447,7 +3481,7 @@ clean:
 	       software/soc/uartprog.elf software/soc/uartprog.bin \
 	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
 	       software/soc/ddrcheck.elf software/soc/ddrcheck.bin \
-	       software/soc/ddrexec.elf software/soc/ddrexec.bin software/soc/ddratomics.elf software/soc/ddratomics.bin \
+	       software/soc/uartprog_ddr3.elf software/soc/uartprog_ddr3.bin software/soc/bootrom_inorder_ddr3.elf software/soc/bootrom_inorder_ddr3.bin software/soc/bootrom_ooo_ddr3.elf software/soc/bootrom_ooo_ddr3.bin software/soc/bootrom_hetero_ddr3.elf software/soc/bootrom_hetero_ddr3.bin software/soc/ddrexec.elf software/soc/ddrexec.bin software/soc/ddratomics.elf software/soc/ddratomics.bin \
 	       software/soc/ddrmmutest.elf software/soc/ddrmmutest.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \

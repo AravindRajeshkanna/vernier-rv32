@@ -306,7 +306,7 @@ static uint32_t crc32_step(uint32_t crc, uint8_t b) {
     return crc;
 }
 
-/* Where an image is allowed to land. Block RAM and SDRAM only - a header that
+/* Where an image is allowed to land. Block RAM, SDRAM, and DDR3 when built for it - a header that
  * named the ROM, a peripheral or nothing at all would otherwise be obeyed,
  * and the failure would be a board that writes a UART register 100,000 times
  * and then jumps into space. */
@@ -317,6 +317,13 @@ static int uartload_addr_ok(uint32_t addr, uint32_t len) {
     if (end < addr) return 0;                                   /* wrapped */
     if (addr >= RAM_BASE   && end <= RAM_BASE   + RAM_SIZE)   return 1;
     if (addr >= SDRAM_BASE && end <= SDRAM_BASE + SDRAM_SIZE) return 1;
+#ifdef DDR3_ENABLE
+    /* Only in a ROM built for an SoC that has DDR3 (-DDDR3_ENABLE, the same
+     * define that gates rtl/soc/wb_ddr.v). Without it that range decodes to a
+     * tied-off slave, and accepting the header would be exactly the failure
+     * described above. */
+    if (addr >= DDR3_BASE  && end <= DDR3_BASE  + DDR3_SIZE)  return 1;
+#endif
     return 0;
 }
 

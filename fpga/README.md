@@ -1790,7 +1790,8 @@ names the likely cause when it sees a printable byte where an acknowledgement
 belongs. `docs/practices.md` §36.
 
 It sends a 16-byte header (magic, load address, length, CRC32), the ROM
-refuses any address outside RAM or SDRAM, and the CRC is checked before it
+refuses any address outside RAM or SDRAM (a ROM built with `-DDDR3_ENABLE`
+also accepts DDR3, in simulation only so far), and the CRC is checked before it
 jumps. Then the script hands the console over, so a load and its output are
 one command:
 
