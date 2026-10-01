@@ -1144,8 +1144,8 @@ sim/coremark.hex: software/bench/coremark.elf software/bin2hex.py Makefile
 	$(RISCV_OBJCOPY) -O binary software/bench/coremark.elf software/bench/coremark.bin
 	python3 software/bin2hex.py --word-size=4 software/bench/coremark.bin > $@
 
-sim/sim_bench.out: $(BENCH_TB) $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -o $@ $(BENCH_TB) $(SOC_RTL)
+sim/sim_bench.out: $(BENCH_TB) sim/bus_monitor.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ $(BENCH_TB) sim/bus_monitor.v $(SOC_RTL)
 
 coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
@@ -1198,8 +1198,8 @@ sim/coremark_dispatch.hex: software/bench/coremark_dispatch.elf software/bin2hex
 	$(RISCV_OBJCOPY) -O binary software/bench/coremark_dispatch.elf software/bench/coremark_dispatch.bin
 	python3 software/bin2hex.py --word-size=4 software/bench/coremark_dispatch.bin > $@
 
-sim/sim_soc_2hart_coremark.out: sim/tb_soc_2hart_coremark.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_coremark.v $(SOC_RTL)
+sim/sim_soc_2hart_coremark.out: sim/tb_soc_2hart_coremark.v sim/bus_monitor.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_coremark.v sim/bus_monitor.v $(SOC_RTL)
 
 sim_soc_2hart_coremark: sim/coremark_dispatch.hex sim/coremark_hart0.hex sim/coremark_hart1.hex \
                          sim/sim_soc_2hart_coremark.out

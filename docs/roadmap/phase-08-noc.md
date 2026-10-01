@@ -1,7 +1,8 @@
 # Phase 8 — Network-on-Chip interconnect
 
-**Not started - everything below is a plan, not an account, and nothing
-about it is blocked on a board.** `rtl/soc/wb_interconnect.v` is a real,
+**Stage 0 has begun (Part 1 below: the first bus measurements); Stage 1
+onward is a plan, not an account, and nothing about any of it is blocked on a
+board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
 `NUM_HARTS` (Phase 13's own real 2-hart configuration proves it), with a
@@ -35,6 +36,61 @@ alternatives if the measurements point that way instead. **Done when:** a
 written decision, backed by real baseline numbers measured on the current
 bus under real multi-master stress, not assumed from its own known
 shared-bus limits.
+
+**Update, Part 1: the first measurements of the shared bus, under two-hart
+CoreMark.** `sim/bus_monitor.v` is a passive observer of
+`rtl/soc/wb_interconnect.v`: it reads each master's request and grant and the
+slave strobes, drives nothing, and is not part of any synthesised design. Per
+master it counts cycles asked, granted, and asked-but-held-by-someone-else
+(waited); overall it counts cycles the bus was in use, and in use while a
+master waited. It is attached to `sim/tb_bench.v` (one hart, `make coremark`)
+and `sim/tb_soc_2hart_coremark.v` (two harts running separate CoreMark images
+at once, `make sim_soc_2hart_coremark`); both validate the CoreMark CRC. No RTL
+changed. All numbers are simulation cycles.
+
+| | Cycles (whole run) | Bus in use | In use with a master waiting | Fetch waited / asked | Data waited / asked |
+|---|---|---|---|---|---|
+| 1 hart, in-order | 529,414 | 19.9% | 0.45% | 0% | 4.6% |
+| 1 hart, wide | 461,382 | 23.3% | 2.4% | 12.2% | 5.4% |
+| 2 harts, in-order + in-order | 727,564 | 67.0% | 19.6% | 39.9% / 40.8% | 17.4% / 17.4% |
+| 2 harts, wide + wide | 673,368 | 78.5% | 35.0% | 58.2% / 54.6% | 25.0% / 20.2% |
+| 2 harts, in-order + wide | 696,894 | 71.6% | 27.2% | 23.9% / 57.5% | 13.6% / 32.4% |
+
+Time a hart spent waiting for the bus, as a share of the run: 0.45% (one
+in-order hart), 2.4% (one wide hart), 10.0% and 11.2% (two in-order harts), 20.5%
+and 18.8% (two wide harts). CoreMark's own cycle count per hart rose from
+419,621 (one in-order hart) to 502,529 and 534,774 (+19.8%, +27.4%), and from
+360,481 (one wide hart) to 440,467 and 470,994 (+22.2%, +30.7%).
+
+Two things stand out. **The bus is already contended at two harts**: a master
+is waiting in 20 to 35% of all cycles, against under 3% with one hart. And
+**about 96% of the cycles the bus is busy are accesses to one slave, the block
+RAM** (468,030 of 487,552 in-order; 503,760 of 528,424 wide; 478,122 of 498,683
+mixed); the UART is the only other slave with real traffic (about 2%).
+
+What this does and does not show. It is measured that two harts contend and
+that the traffic goes almost entirely to one slave. It is an inference, not a
+measurement, that a crossbar or network would not help much here: they let
+traffic to *different* slaves proceed in parallel, and nearly all of this goes
+to one single-port RAM, so the queue would move rather than vanish. It is also
+not isolated how much of the +20 to +30% is bus contention and how much is the
+second effect in this configuration: with more than one hart the data cache is
+bypassed (`HART_DCACHE_ENABLE` in `rtl/soc/soc_top.v`, because nothing snoops
+it), which by itself raises bus demand. One in-order hart with its data cache
+uses 19.9% of bus cycles; two harts without it use 33.5% each. A one-hart run
+with the data cache off is the comparison that separates the two, and has not
+been done. Extrapolating the 33.5% per hart, a third in-order hart would ask
+for more than the bus has; that is arithmetic on one workload, not a
+measurement.
+
+**This does not close Stage 0.** Its "Done when" asks for a written decision
+backed by baselines under real multi-master stress, and the plan names Linux
+SMP running and the NPU's DMA racing CPU traffic. Neither has been measured:
+the NPU DMA checks in `software/soc/main.c` run alone, and no Linux run has the
+monitor attached. The reading so far is only a direction to test: the measured
+bottleneck is one RAM slave plus the cache-bypass cost of having two harts, so
+the cheaper things to try first are a second RAM port or banking, and a
+coherent data cache, before a network.
 
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
@@ -114,10 +170,10 @@ None recorded against this phase. The common, cross-cutting entries are in the [
 
 *Physical board testing: what has and has not run on a real board.*
 
-Not started. Stage 5 (timing closed on a real target, a build-time choice that keeps both interconnects) is the hardware stage; nothing has been run on a board.
+Not started: nothing here has been run on a board. Stage 5 (timing closed on a real target, a build-time choice that keeps both interconnects) is the hardware stage.
 
 ## Software
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Not started. Stage 0 is a measurement of the existing shared bus under real multi-master load, which is the first simulation work and has not been done.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Part 1 records it under one- and two-hart CoreMark. Linux SMP and NPU DMA load are not yet measured, so Stage 0 is not closed. Stages 1 onward are a plan.
