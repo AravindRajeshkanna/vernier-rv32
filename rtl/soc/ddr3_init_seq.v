@@ -1,5 +1,5 @@
 // DDR3 initialization/mode-register sequence - Phase 9 Stage 1, Part 1
-// (docs/roadmap.md). Drives rtl/soc/ddr3_phy_ecp5.v's own command
+// (docs/roadmap/phase-09-ddr.md). Drives rtl/soc/ddr3_phy_ecp5.v's own command
 // interface through the real JEDEC power-up sequence for DLL-off,
 // CL=6, CWL=6 operation, then asserts `ready`. No read/write/refresh
 // path yet - that is a later, separate slice; this module's only job is

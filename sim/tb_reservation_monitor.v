@@ -1,5 +1,5 @@
 // Directed test for rtl/soc/reservation_monitor.v (Phase 13, the LR/SC
-// cross-hart coherence gap docs/roadmap.md names). Purely combinational
+// cross-hart coherence gap docs/roadmap/phase-13-multicore.md names). Purely combinational
 // logic, so this drives inputs and checks outputs each cycle rather than
 // exercising any bus timing - what needs proving here is the address
 // matching and the self-exclusion rule, not sequencing.

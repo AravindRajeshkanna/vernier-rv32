@@ -24,7 +24,7 @@
 // `haltreq`/`resumereq` are real now (`rtl/cpu_core.v`, `CORE=inorder`
 // only), but as "freeze the pipeline in place," not the spec's full model:
 // no debug mode, no `dcsr`-driven instruction stream, no debug ROM, no
-// `dret`. docs/roadmap.md's "Stage 1d was built anyway" section and
+// `dret`. docs/roadmap/phase-01-superscalar-ooo.md's "Stage 1d was built anyway" section and
 // rtl/cpu_core.v's own hart-control comment have the reasoning - the short
 // version is the same one that deferred this in the first place: the full
 // model lands on the fetch redirect and the register file write port of a

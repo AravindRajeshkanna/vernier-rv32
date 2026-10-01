@@ -2,7 +2,7 @@
 // The SoC running a program out of external SDRAM.
 //
 // sim/tb_sdram.v proves the controller against sim/sdram_model.v at the bus.
-// This proves the thing docs/roadmap.md's Phase 2 actually asks for: a CPU
+// This proves the thing docs/roadmap/phase-02-memory-ceiling.md's Phase 2 actually asks for: a CPU
 // fetching every instruction from SDRAM, through the instruction cache, over
 // the shared interconnect, running a program whose image is larger than the
 // entire block RAM it is not using.

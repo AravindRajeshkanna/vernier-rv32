@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 2 (docs/roadmap.md): one
+// Directed test for Phase 9 Stage 1, Part 2 (docs/roadmap/phase-09-ddr.md): one
 // byte lane's own DQ/DQS read-calibration and write-then-readback
 // round trip, against sim/ddr3_dq_model.v's own real behavioral
 // memory. Confirms rtl/soc/ddr3_read_calib.v's own real READCLKSEL

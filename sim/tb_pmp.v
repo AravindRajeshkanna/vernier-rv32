@@ -8,7 +8,7 @@
 //   1. Default rule when nothing matches: M allowed, S/U denied - the rule
 //      that makes turning PMP hardware *on* a hazard for every existing
 //      S/U-mode test the moment it's wired to an access path (see
-//      rtl/pmp.v's header and docs/roadmap.md).
+//      rtl/pmp.v's header and docs/roadmap/beyond-the-phases.md).
 //   2. NA4 - the minimum region size, and the one riscv-tests' own
 //      rv32mi-p-pmpaddr also assumes G=0 supports.
 //   3. NAPOT at a small size (8 bytes) - the smallest size NAPOT actually

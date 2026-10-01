@@ -1,4 +1,4 @@
-// Test for Phase 9 Stage 1, Part 18 (docs/roadmap.md): where a read burst lands
+// Test for Phase 9 Stage 1, Part 18 (docs/roadmap/phase-09-ddr.md): where a read burst lands
 // relative to its READ command, and what the DUT captures from it.
 //
 // Through Part 17 the memory model drove read data whenever the DUT said

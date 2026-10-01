@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 24 (docs/roadmap.md): the second byte lane's
+// Directed test for Phase 9 Stage 1, Part 24 (docs/roadmap/phase-09-ddr.md): the second byte lane's
 // own DQ/DQS read-calibration and write-then-readback round trip - the same real proof
 // sim/tb_ddr3_data.v (Part 2) gave lane 0 - run a second time on lane 1's own pins,
 // sharing the one real rtl/soc/ddr3_ddrdlla_ecp5.v instance real hardware has exactly one
@@ -28,7 +28,7 @@ module tb_ddr3_data_lane1;
     // between the two lanes' own signals show up: with both sweeps started at the
     // same instant, an identical FSM stepping in lockstep makes readclksel_0 and
     // readclksel_1 equal at every check regardless of which one either lane's own
-    // DQS instance actually reads (measured - see docs/roadmap.md, Part 24).
+    // DQS instance actually reads (measured - see docs/roadmap/phase-09-ddr.md, Part 24).
     reg rst1 = 1'b1;
     localparam LANE1_RST_STAGGER = 3;
     integer rst1_cnt;

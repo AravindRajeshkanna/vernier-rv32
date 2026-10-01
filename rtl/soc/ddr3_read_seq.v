@@ -1,5 +1,5 @@
 // DDR3 real command-level read sequencer - Phase 9 Stage 1, Part 7
-// (docs/roadmap.md). Issues a real ACTIVATE then a real READ command
+// (docs/roadmap/phase-09-ddr.md). Issues a real ACTIVATE then a real READ command
 // through rtl/soc/ddr3_phy_ecp5.v's own cmd_* interface, with a real
 // tRCD gap and a real CAS Latency (CL) wait before signaling that data
 // should be valid - the read-side twin of

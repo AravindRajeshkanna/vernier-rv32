@@ -4,7 +4,7 @@ for rtl/soc/wb_npu.v (Phase 14) - NPU_LAYER_OUT output neurons, each a
 NPU_VEC_LEN-wide signed int8 dot product against one shared activation
 vector. This is the smallest thing that is genuinely a "layer" (a real
 matrix-vector multiply) rather than the single dot product
-software/soc/main.c's own test_npu() already covers - docs/roadmap.md's
+software/soc/main.c's own test_npu() already covers - docs/roadmap/phase-14-npu.md's
 Phase 14 "Done when" bar asks for "a single small layer", not one MAC.
 
 The expected outputs below are computed here, in Python, independently

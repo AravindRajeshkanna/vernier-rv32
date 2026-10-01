@@ -1,9 +1,9 @@
 // Directed test for rtl/soc/cpu_wb.v's new DCACHE_ENABLE parameter (Phase
-// 13, docs/roadmap.md's coherence gap) - proves the actual scenario the
+// 13, docs/roadmap/phase-13-multicore.md's coherence gap) - proves the actual scenario the
 // parameter exists to close, not just "the knob doesn't crash anything":
 // a foreign write to the backing memory - standing in for a second hart's
 // own store to the same physical address, bypassing this adapter's cache
-// entirely, exactly the case docs/roadmap.md names as unsafe - is served
+// entirely, exactly the case docs/roadmap/phase-13-multicore.md names as unsafe - is served
 // stale with DCACHE_ENABLE=1 (the default, correct for today's genuinely
 // single-master SoC) and correctly seen fresh with DCACHE_ENABLE=0.
 //

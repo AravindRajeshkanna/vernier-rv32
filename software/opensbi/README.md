@@ -17,7 +17,7 @@ domain and hands off to a Linux kernel that reaches userspace.
 | Finds the console | ✅ `uart8250` — `rtl/uart.v` |
 | Finds the timer and IPI | ✅ `aclint-mtimer @ 25000000Hz`, `aclint-mswi` |
 | Finds the interrupt controller | ✅ the PLIC's 4 MB window appears as a domain region |
-| Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 16, enforced on this core's data path (`docs/roadmap.md`'s PMP entry) |
+| Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 16, enforced on this core's data path (`docs/roadmap/beyond-the-phases.md`'s PMP entry) |
 | **Prints its banner** | ✅ |
 | Hands off to an S-mode payload | ✅ `Next Address 0x9040_0000`, `Next Mode S-mode` |
 | A kernel to hand off *to* | ✅ Linux 6.18.45 rv32ima, to userspace — `software/linux/README.md` |
@@ -64,7 +64,7 @@ assumed: a full `make sim_linux` under this exact enforcement reaches
 `VERNIER-RV32-LINUX-BOOT-OK` with an identical trap profile to before
 enforcement existed (same first trap, `mcause=2` at the same `pc`, an
 unrelated firmware feature-probe) and zero access faults anywhere in the
-run. `docs/roadmap.md`'s PMP entry has the full account - both cores now
+run. `docs/roadmap/beyond-the-phases.md`'s PMP entry has the full account - both cores now
 enforce PMP on their data path and their instruction fetch.
 
 ## The five defects between "builds" and "boots"

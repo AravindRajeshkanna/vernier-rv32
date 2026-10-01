@@ -1,5 +1,5 @@
 // DDR3 DQ capture/drive SERDES, ECP5 - Phase 9 Stage 1, Part 2
-// (docs/roadmap.md). One byte lane (8 DQ bits, `DQ_WIDTH` default) of
+// (docs/roadmap/phase-09-ddr.md). One byte lane (8 DQ bits, `DQ_WIDTH` default) of
 // `IDDRX2DQA` (read capture, clocked by `rtl/soc/ddr3_dqs_ecp5.v`'s own
 // real DQS-derived `DQSR90`) and `ODDRX2DQA`/`TSHX2DQA` (write drive +
 // tristate enable, clocked by its own `DQSW270`) - a real `generate`

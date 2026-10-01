@@ -1,4 +1,4 @@
-// Integrated test for Phase 9 Stage 1, Part 11 (docs/roadmap.md): the
+// Integrated test for Phase 9 Stage 1, Part 11 (docs/roadmap/phase-09-ddr.md): the
 // real refresh-vs-write/read arbitration rtl/soc/ddr3_ecp5_top.v now
 // provides - rtl/soc/ddr3_refresh_ctrl.v's own real REFRESH command
 // must never contend with a real ACT/WR/RD for the shared `cmd_*` bus.

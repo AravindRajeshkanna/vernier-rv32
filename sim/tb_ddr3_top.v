@@ -1,4 +1,4 @@
-// Integrated test for Phase 9 Stage 1, Parts 3-5 (docs/roadmap.md):
+// Integrated test for Phase 9 Stage 1, Parts 3-5 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/ddr3_ecp5_top.v wired against BOTH sim models at once -
 // sim/ddr3_model.v (the real JEDEC command/timing protocol checker,
 // Part 1) on the command/address pins, and sim/ddr3_dq_model.v (the

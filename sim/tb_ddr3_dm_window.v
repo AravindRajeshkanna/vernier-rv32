@@ -1,4 +1,4 @@
-// Test for Phase 9 Stage 1, Part 22 (docs/roadmap.md): the data-mask (DM) waveform
+// Test for Phase 9 Stage 1, Part 22 (docs/roadmap/phase-09-ddr.md): the data-mask (DM) waveform
 // relative to a WRITE, from the real pin, and the correctness question DM exists to
 // answer - does an unmasked byte actually stay out of the column next to it.
 //

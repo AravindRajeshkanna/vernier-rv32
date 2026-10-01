@@ -68,7 +68,7 @@ module cpu_core #(
     parameter RESET_PC = 32'h0000_0000,
     // Passed straight through to csr_file.v's mhartid. Defaults to 0,
     // matching the one hart every instantiation of this core builds today -
-    // see docs/roadmap.md's Phase 13 entry.
+    // see docs/roadmap/phase-13-multicore.md's Phase 13 entry.
     parameter [31:0] HARTID = 32'h0
 )(
     input  wire        clk,
@@ -126,7 +126,7 @@ module cpu_core #(
     // correctly, with or without anything connected here (see the
     // reservation-update block below). These four ports are the missing
     // *cross*-hart half: rtl/soc/reservation_monitor.v (Phase 13,
-    // docs/roadmap.md) takes `resv_valid`/`resv_addr` from every hart and
+    // docs/roadmap/phase-13-multicore.md) takes `resv_valid`/`resv_addr` from every hart and
     // `store_fire`/`store_addr` from every hart, and feeds
     // `resv_invalidate_ext` back to each - nothing does that wiring yet,
     // so every existing instantiation ties `resv_invalidate_ext` to 0 and
@@ -196,7 +196,7 @@ module cpu_core #(
     // ---- hart control (rtl/debug/dm.v), simulation-only this round ----
     //
     // No debug ROM, no Program Buffer, no `dret` - halt is "freeze pipeline
-    // admission in place" and resume is "un-freeze". See docs/roadmap.md's
+    // admission in place" and resume is "un-freeze". See docs/roadmap/phase-06-debug.md's
     // "Phase 6" and rtl/debug/README.md for why the full RISC-V debug-spec
     // model (which needs a debug mode, dcsr, dpc, dret and a debug ROM the
     // core vectors into) is deliberately not what this is: that touches the
@@ -1158,7 +1158,7 @@ module cpu_core #(
     // documented rather than silent: page-table-walker reads (a PTE fetch
     // goes through mmu.v's own dedicated ptw_req/ptw_addr port, never
     // through this one) and instruction fetch (the timing-critical path
-    // Phase 3 spent so long on - see docs/roadmap.md's PMP entry for why
+    // Phase 3 spent so long on - see docs/roadmap/beyond-the-phases.md's PMP entry for why
     // that is its own, separately-measured round).
     wire pmp_pa_valid = !need_translate || (mmu_resolved && !mmu_fault);
     wire pmp_fault_raw;

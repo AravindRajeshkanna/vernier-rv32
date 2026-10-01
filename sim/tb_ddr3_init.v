@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 1 (docs/roadmap.md):
+// Directed test for Phase 9 Stage 1, Part 1 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/ddr3_init_seq.v + rtl/soc/ddr3_phy_ecp5.v against
 // sim/ddr3_model.v's own real protocol checker. Confirms the real
 // command sequence (MR2 -> MR3 -> MR1 -> MR0 -> ZQCL), the real

@@ -23,7 +23,7 @@ half; see dts/soc.dts's own header for why), and a single shared,
 CORE-independent dtb_blob.h would silently embed one CORE's compatible
 strings into every other CORE's boot ROM - undetectable by Make's own
 mtime-based rebuild tracking, since nothing about switching $(CORE)
-touches a file's mtime. docs/roadmap.md's Phase 15 entry has the full
+touches a file's mtime. docs/roadmap/phase-15-heterogeneous.md's Phase 15 entry has the full
 account of that hazard and why this script's own output path is
 $(CORE)-suffixed too (dtb_blob_$(CORE).h, chosen by the Makefile, not by
 this script).

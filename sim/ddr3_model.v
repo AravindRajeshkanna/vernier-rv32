@@ -1,5 +1,5 @@
 // Behavioral DDR3 protocol checker - Phase 9 Stage 1, Part 1
-// (docs/roadmap.md). Scoped to what Part 1's own init sequence
+// (docs/roadmap/phase-09-ddr.md). Scoped to what Part 1's own init sequence
 // exercises: reset/CKE timing, the real MR2->MR3->MR1->MR0->ZQCL
 // command order, and the real inter-command minimum waits (tMRD,
 // tZQinit). Not a memory array - no read/write data path exists yet to
@@ -78,7 +78,7 @@ module ddr3_model #(
     wire is_mrs      = cmd_present && !ras_n && !cas_n && !we_n;
     wire is_zqcl      = cmd_present &&  ras_n &&  cas_n && !we_n && a[10];
     wire is_nop       = cmd_present &&  ras_n &&  cas_n &&  we_n;
-    // Part 9 (docs/roadmap.md): real post-init ACT/WR/RD traffic from
+    // Part 9 (docs/roadmap/phase-09-ddr.md): real post-init ACT/WR/RD traffic from
     // rtl/soc/ddr3_write_seq.v/rtl/soc/ddr3_read_seq.v - the same
     // {ras_n,cas_n,we_n} convention those files themselves use,
     // checked independently here rather than trusted, matching this

@@ -11,7 +11,7 @@
 //
 // It didn't: this exact scenario - two harts hammering amoswap.w on one
 // shared word - deadlocked permanently within a handful of exchanges before
-// rtl/soc/wb_interconnect.v's own AMO-atomicity fix (docs/roadmap.md's
+// rtl/soc/wb_interconnect.v's own AMO-atomicity fix (docs/roadmap/phase-13-multicore.md's
 // Phase 13 Stage 1 entry, corrected in place) was replaced with an explicit
 // d_amo_wrphase-based mechanism. The old one was inferred from bus-level
 // timing and provably never actually engaged against real hardware

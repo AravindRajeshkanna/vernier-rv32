@@ -30,7 +30,7 @@
 #   make sim_probe    -> the newlib probe: which rung of libc actually fails
 #   make trapcheck    -> provoke known faults, check the trap reports come out
 #
-# External memory (docs/roadmap.md Phase 2). Two layers, in the order they
+# External memory (docs/roadmap/phase-02-memory-ceiling.md Phase 2). Two layers, in the order they
 # fail: the controller against an SDRAM model at the bus, then the whole SoC
 # running a 96 KB program out of it with block RAM untouched.
 #
@@ -43,7 +43,7 @@
 #   make sim_uart16550 -> the ns16550 map: DLAB, the divisor latch, IIR, and
 #                         the UART's interrupt arriving through PLIC source 1
 #   make sim_uartirq   -> a driver that actually uses that interrupt to send,
-#                         instead of polling THRE - docs/roadmap.md Phase 3
+#                         instead of polling THRE - docs/roadmap/phase-03-performance.md Phase 3
 #   make sim_uartload  -> the boot ROM's UART loader: a host sends a program
 #                         over the serial line and the SoC runs it from SDRAM
 #   make uartload-host -> the host script against a fake board on a pty
@@ -60,7 +60,7 @@
 IVERILOG      = iverilog
 # Which CPU to build the SoC around. `inorder` is rtl/cpu_core.v, the design
 # that has run on hardware; `ooo` is rtl/ooo/core_ooo.v, Phase 1 of
-# docs/roadmap.md. Both have the same port list and face the same suites:
+# docs/roadmap/phase-01-superscalar-ooo.md. Both have the same port list and face the same suites:
 #
 #   make verify            the in-order core
 #   make verify_ooo        the same suites against the wide core
@@ -548,7 +548,7 @@ soc: sim/bootrom_$(CORE).hex sim/card.hex
 # dtb_blob.h/bootrom.elf/bootrom.hex would let Make's own mtime-based rebuild
 # tracking miss a $(CORE) switch between two manual invocations - exactly how
 # `make verify` then `make verify_ooo` runs in this same tree, back to back,
-# every time. docs/roadmap.md's Phase 15 entry has the full account of why
+# every time. docs/roadmap/phase-15-heterogeneous.md's Phase 15 entry has the full account of why
 # this was deferred rather than shipped as a two-line rename the first time
 # it came up.
 software/soc/dtb_blob_$(CORE).h: dts/soc_$(CORE).dtb software/soc/gen_dtb_blob.py
@@ -804,7 +804,7 @@ sim_ulx3s: soc
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v
 	cd sim && $(VVP) sim_ulx3s.out
 
-# Same reasoning as sim_ulx3s above, for docs/roadmap.md's Phase 9
+# Same reasoning as sim_ulx3s above, for docs/roadmap/phase-09-ddr.md's Phase 9
 # entry's own Stage 0 board wrapper - fpga/ecpix5_top.v is real RTL no
 # other target would otherwise build.
 sim_ecpix5: soc
@@ -941,7 +941,7 @@ lint: lint-markdown lint-vale
 # UNUSEDSIGNAL, VARHIDDEN, PINCONNECTEMPTY, and friends), off by default
 # and never enabled by any real build target here - it had only ever been
 # run ad hoc, by hand, against individual files during specific stages
-# (docs/roadmap.md's work on cpu_core.v and plic.v, both resolved by fixing
+# (docs/roadmap/phase-06-debug.md's work on cpu_core.v and plic.v, both resolved by fixing
 # the RTL, not waiving). This was the first time it ran against the whole
 # $(RTL)/$(SOC_RTL) file lists in one pass, and it found something real:
 # rtl/top.v had a genuinely unconnected `itlb_wait_stall` output (harmless
@@ -965,7 +965,7 @@ lint: lint-markdown lint-vale
 #
 # Remaining PINCONNECTEMPTY findings (11, both cores) were all already
 # intentional, commented tie-offs (rtl/top.v's own resv_*/dbg_* ports, the
-# same class of "explicit rather than omitted" decision docs/roadmap.md's
+# same class of "explicit rather than omitted" decision docs/roadmap/phase-13-multicore.md's
 # Phase 13 stages document at length) - each now has its own scoped
 # `lint_off`/`lint_on PINCONNECTEMPTY` bracket right at the site, matching
 # WIDTHTRUNC/BLKSEQ's own precedent, rather than a second blanket flag.
@@ -1162,7 +1162,7 @@ coremark: sim/sim_bench.out sim/coremark.hex
 #
 # -DCOREMARK_DUAL_HART only ever reaches these three builds, never
 # software/bench/coremark.elf above - the existing single-hart baseline this
-# project has published numbers against (docs/roadmap.md, every phase since
+# project has published numbers against (docs/roadmap/phase-01-superscalar-ooo.md, every phase since
 # Phase 1) stays byte-for-byte unaffected by this stage's own new code.
 MC_CFLAGS = $(COREMARK_CFLAGS_COMMON) -DCOREMARK_DUAL_HART
 
@@ -1207,7 +1207,7 @@ sim_soc_2hart_coremark: sim/coremark_dispatch.hex sim/coremark_hart0.hex sim/cor
 	@grep -aq "SOC-2HART-COREMARK: PASS" sim/soc_2hart_coremark.log && echo "DUAL-HART COREMARK OK" || \
 	    { echo "FAILED: concurrent CoreMark on both harts (CORE=$(CORE))"; exit 1; }
 
-# ---- hardware bring-up (docs/roadmap.md Phase 2, on a board) ----
+# ---- hardware bring-up (docs/roadmap/phase-02-memory-ceiling.md Phase 2, on a board) ----
 #
 # Two steps, in the order they narrow the problem. Both have a simulation
 # here, because a diagnostic that arrives at a board untested turns "the
@@ -1669,7 +1669,7 @@ sim_plic: sim/bootrom_$(CORE).hex sim/plicimage.hex sim/sim_plic.out
 # offsets software/soc/soc.h's own macros expect and are independently
 # addressable, complementing formal/run.sh's "plic" target (which proves the
 # logical properties generically but does not independently check the
-# strided address arithmetic) - see docs/roadmap.md's Phase 13 entry.
+# strided address arithmetic) - see docs/roadmap/phase-13-multicore.md's Phase 13 entry.
 sim/sim_plic_4ctx.out: sim/tb_plic_4ctx.v rtl/plic.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_plic_4ctx.v rtl/plic.v
 
@@ -1688,11 +1688,11 @@ sim_plic_4ctx: sim/sim_plic_4ctx.out
 # sim_mmusdram) - NOT $(SOC_RTL_BASE), which this recipe hardcoded to
 # cpu_core.v when PMP enforcement was CORE=inorder only. Now that both
 # rtl/ooo/core_ooo.v and rtl/cpu_core.v enforce PMP on their data path *and*
-# instruction fetch (see docs/roadmap.md's PMP entry), this test should
+# instruction fetch (see docs/roadmap/beyond-the-phases.md's PMP entry), this test should
 # exercise whichever core is active, the same way every other directed test
 # does - a `make verify_ooo` run that never touched core_ooo.v's own
 # enforcement logic would leave exactly the same "verify_ooo passes" false
-# confidence docs/roadmap.md warned against, just for a different core.
+# confidence docs/roadmap/beyond-the-phases.md warned against, just for a different core.
 PMPTEST_SRCS = $(SOCRT_SRCS) software/soc/pmptest.c
 
 software/soc/pmptest.elf: $(PMPTEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
@@ -1742,7 +1742,7 @@ sim_uartirq: sim/bootrom_$(CORE).hex sim/uartirqimage.hex sim/sim_uartirq.out
 
 # ---- __div64_32, isolated ----
 #
-# docs/roadmap.md's "Stage 1d was built anyway" section ("Update 3") has why:
+# docs/roadmap/phase-01-superscalar-ooo.md's "Stage 1d was built anyway" section ("Update 3") has why:
 # sim_linux CORE=ooo was found permanently stuck inside this exact kernel
 # routine. software/soc/div64test.c is the same function, copied verbatim,
 # called with a spread of operands and checked against host-computed
@@ -1881,7 +1881,7 @@ sim_ddratomics: sim/bootrom_$(CORE).hex sim/ddratomicsimage.hex sim/sim_ddratomi
 # survey, not a shipped feature) ----
 #
 # NOT in `verify` and NOT `.PHONY` - this reproduces a real, currently
-# unresolved hang, not a passing test. docs/roadmap.md's own Known Defects
+# unresolved hang, not a passing test. docs/roadmap/phase-09-ddr.md's own Known Defects
 # section has the full account. Part 3's own first trace (from a process
 # killed mid-write) wrongly blamed rtl/soc/wb_ptw.v for the hang - Part 4
 # re-measured with a trace run to real completion and cleared it: multiple
@@ -1956,7 +1956,7 @@ sim_jtag: sim/jtagram.hex sim/sim_jtag.out
 #
 # Driven directly, no DMI/JTAG layer - see sim/tb_cpu_halt.v's own header for
 # why that split. CORE=inorder only: rtl/ooo/core_ooo.v has no hart-control
-# ports (docs/roadmap.md Phase 6), so this is a plain rtl/cpu_core.v build,
+# ports (docs/roadmap/phase-06-debug.md Phase 6), so this is a plain rtl/cpu_core.v build,
 # independent of $(CORE_RTL)/$(SOC_RTL).
 sim/sim_cpu_halt.out: sim/tb_cpu_halt.v rtl/regfile.v rtl/imem.v rtl/dmem.v \
                        rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/cpu_core.v
@@ -1972,7 +1972,7 @@ sim_cpu_halt: sim/sim_cpu_halt.out
 # resv_addr/store_fire/store_addr/resv_invalidate_ext) ----
 #
 # CORE=inorder only, same reasoning as sim_cpu_halt above: rtl/ooo/core_ooo.v
-# has not been given these ports yet (docs/roadmap.md Phase 13, stage 7 -
+# has not been given these ports yet (docs/roadmap/phase-13-multicore.md Phase 13, stage 7 -
 # "inorder first" precedent from the hart-control/PMP stages), so this is a
 # plain rtl/cpu_core.v build, independent of $(CORE_RTL)/$(SOC_RTL). See
 # sim/tb_cpu_resv_ports.v's own header for what this proves and why.
@@ -2429,7 +2429,7 @@ sim_soc_2hart_amoswap_hetero: sim/soc2hart_amoswap.hex sim/sim_soc_2hart_amoswap
 # ---- OOO CSR-write-timing hazard ----
 #
 # CORE_OOO hardcoded, not $(CORE_DEFINES)/$(CORE_RTL): this is specifically
-# about rtl/ooo/core_ooo.v's own retirement timing (docs/roadmap.md's
+# about rtl/ooo/core_ooo.v's own retirement timing (docs/roadmap/phase-01-superscalar-ooo.md's
 # "CORE=ooo has no Fmax" entry), not a general dual-core regression, so it
 # always builds the wide core regardless of what CORE= is set to. Driven
 # through rtl/top.v (the same zero-latency flat harness `make sim CORE=ooo`
@@ -2453,7 +2453,7 @@ sim_ooo_csr_hazard: sim/sim_ooo_csr_hazard.out
 # ---- PMP (Physical Memory Protection): CSR storage + matching, stage 1 ----
 #
 # Storage/WARL/lock semantics (csr_file.v) and the address-matching module
-# (rtl/pmp.v) only - see rtl/pmp.v's header and docs/roadmap.md for why
+# (rtl/pmp.v) only - see rtl/pmp.v's header and docs/roadmap/beyond-the-phases.md for why
 # nothing wires enforcement into a real access path yet. Board-independent,
 # like sim_tmds_encode: rtl/pmp.v takes no core, no bus, nothing but its own
 # inputs, so it is checked here before any pipeline integration exists to
@@ -2479,7 +2479,7 @@ sim_pmp_csr: sim/sim_pmp_csr.out
 # Both board-independent, like sim_pmp/sim_pmp_csr above: proves the new
 # HARTID/NUM_HARTS parameters actually reach independent storage per hart,
 # in isolation, before any second hart exists to wire them to for real - see
-# docs/roadmap.md's Phase 13 entry.
+# docs/roadmap/phase-13-multicore.md's Phase 13 entry.
 sim/sim_mhartid.out: sim/tb_mhartid.v rtl/csr_file.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_mhartid.v rtl/csr_file.v
 
@@ -2503,7 +2503,7 @@ sim_clint_multihart: sim/sim_clint_multihart.out
 # (cross-hart tier priority, per-hart AMO continuation) actually play out
 # over a real cycle-by-cycle trace against a real, multi-wait-state slave,
 # before any second hart exists to wire the new ports to for real - see
-# docs/roadmap.md's Phase 13 entry.
+# docs/roadmap/phase-13-multicore.md's Phase 13 entry.
 sim/sim_interconnect_multihart.out: sim/tb_interconnect_multihart.v rtl/soc/wb_interconnect.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_interconnect_multihart.v rtl/soc/wb_interconnect.v
 
@@ -2520,7 +2520,7 @@ sim_interconnect_multihart: sim/sim_interconnect_multihart.out
 # reaching the same physical address through a different bus master
 # entirely - is served stale with caching on and correctly fresh with it
 # off, before any second hart exists to need the escape hatch for real -
-# see docs/roadmap.md's Phase 13 entry.
+# see docs/roadmap/phase-13-multicore.md's Phase 13 entry.
 sim/sim_cpu_wb_dcache_bypass.out: sim/tb_cpu_wb_dcache_bypass.v rtl/soc/cpu_wb.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_wb_dcache_bypass.v rtl/soc/cpu_wb.v
 
@@ -2535,7 +2535,7 @@ sim_cpu_wb_dcache_bypass: sim/sim_cpu_wb_dcache_bypass.out
 # standalone module nothing else in this tree instantiates yet - proven on
 # its own before either core is wired to it, matching every earlier Phase
 # 13 stage's own "verify the hard piece in isolation" sequencing. See
-# docs/roadmap.md's Phase 13 entry.
+# docs/roadmap/phase-13-multicore.md's Phase 13 entry.
 sim/sim_reservation_monitor.out: sim/tb_reservation_monitor.v rtl/soc/reservation_monitor.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_reservation_monitor.v rtl/soc/reservation_monitor.v
 
@@ -2583,7 +2583,7 @@ sim_wb_fir: sim/sim_wb_fir.out
 # ---- TMDS encoder (Phase 4, stage 1) ----
 #
 # Board-independent on purpose: no PLL, no serializer, no LPF entry exists
-# yet (docs/roadmap.md Phase 4) - this checks only rtl/soc/tmds_encode.v's
+# yet (docs/roadmap/phase-04-video-out.md Phase 4) - this checks only rtl/soc/tmds_encode.v's
 # bit-level correctness against hand-derived vectors from the DVI 1.0 spec,
 # so it can be trusted before any of the board-facing pieces exist.
 sim/sim_tmds_encode.out: sim/tb_tmds_encode.v rtl/soc/tmds_encode.v
@@ -2616,7 +2616,7 @@ sim_video_pll: sim/sim_video_pll.out
 # fpga/underclock_pll.v's EHXPLLL body has no Icarus model, the same
 # situation as fpga/video_pll.v/fpga/sdram_clk_out.v above - a real
 # nextpnr-ecp5 run is what actually confirms it, recorded in
-# docs/roadmap.md's "CORE=ooo has no Fmax" entry, not something
+# docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has no Fmax" entry, not something
 # `make verify` can gate. This checks the simulation-mode fallback's own
 # divider logic gives the real 5:1 clk_25mhz:clk_soc ratio, and that
 # `locked` behaves like a real PLL's rather than being tied high.
@@ -2695,7 +2695,7 @@ sim_sdram: sim/sim_sdram.out
 	@grep -q "SDRAM TEST PASSED" sim/sdram.log || \
 	    { echo "sim_sdram FAILED"; exit 1; }
 
-# ---- DDR3 init sequence (Phase 9 Stage 1, Part 1, docs/roadmap.md) ----
+# ---- DDR3 init sequence (Phase 9 Stage 1, Part 1, docs/roadmap/phase-09-ddr.md) ----
 #
 # Command sequence and timing only - no read/write/refresh data path
 # exists yet, so this is not "sim_sdram for DDR3," it is the narrower
@@ -2712,7 +2712,7 @@ sim_ddr3_init: sim/sim_ddr3_init.out
 	@grep -q "DDR3 INIT SEQUENCE TEST PASSED" sim/ddr3_init.log || \
 	    { echo "sim_ddr3_init FAILED"; exit 1; }
 
-# ---- DDR3 DQ/DQS data path (Phase 9 Stage 1, Part 2, docs/roadmap.md) ----
+# ---- DDR3 DQ/DQS data path (Phase 9 Stage 1, Part 2, docs/roadmap/phase-09-ddr.md) ----
 #
 # One byte lane's own DQSBUFM-based read calibration and write-then-
 # readback round trip, against sim/ddr3_dq_model.v's own real
@@ -2731,7 +2731,7 @@ sim_ddr3_data: sim/sim_ddr3_data.out
 	@grep -q "DDR3 DATA PATH TEST PASSED" sim/ddr3_data.log || \
 	    { echo "sim_ddr3_data FAILED"; exit 1; }
 
-# ---- DDR3 PHY integration (Phase 9 Stage 1, Part 3, docs/roadmap.md) ----
+# ---- DDR3 PHY integration (Phase 9 Stage 1, Part 3, docs/roadmap/phase-09-ddr.md) ----
 #
 # rtl/soc/ddr3_ecp5_top.v wires Part 1 (init sequence + command/address)
 # and Part 2 (DQ/DQS data path) onto one real, shared, PLL-derived clock
@@ -2756,7 +2756,7 @@ sim_ddr3_top: sim/sim_ddr3_top.out
 	    { echo "sim_ddr3_top FAILED"; exit 1; }
 
 # ---- DDR3 real command-driven read/write round trip (Phase 9 Stage 1,
-# Part 9, docs/roadmap.md) ----
+# Part 9, docs/roadmap/phase-09-ddr.md) ----
 #
 # The first real ACT+WR followed by a real ACT+RD through
 # rtl/soc/ddr3_ecp5_top.v, not rtl/soc/ddr3_read_calib.v's own direct-
@@ -2779,7 +2779,7 @@ sim_ddr3_cmd_seq: sim/sim_ddr3_cmd_seq.out
 	@grep -q "DDR3 COMMAND-DRIVEN RW TEST PASSED" sim/ddr3_cmd_seq.log || \
 	    { echo "sim_ddr3_cmd_seq FAILED"; exit 1; }
 
-# ---- DDR3 refresh scheduler (Phase 9 Stage 1, Part 10, docs/roadmap.md) ----
+# ---- DDR3 refresh scheduler (Phase 9 Stage 1, Part 10, docs/roadmap/phase-09-ddr.md) ----
 #
 # rtl/soc/ddr3_refresh_ctrl.v's own real tREFI/tRFC timing - the first
 # real REFRESH command ever issued anywhere in this stage, closing a
@@ -2795,7 +2795,7 @@ sim_ddr3_refresh_ctrl: sim/sim_ddr3_refresh_ctrl.out
 	    { echo "sim_ddr3_refresh_ctrl FAILED"; exit 1; }
 
 # ---- DDR3 real refresh-vs-write/read arbitration (Phase 9 Stage 1,
-# Part 11, docs/roadmap.md) ----
+# Part 11, docs/roadmap/phase-09-ddr.md) ----
 #
 # rtl/soc/ddr3_refresh_ctrl.v (Part 10) wired into rtl/soc/ddr3_ecp5_top.v
 # - a real REFRESH command must never contend with a real ACT/WR/RD for
@@ -2819,7 +2819,7 @@ sim_ddr3_refresh_wire: sim/sim_ddr3_refresh_wire.out
 	    { echo "sim_ddr3_refresh_wire FAILED"; exit 1; }
 
 # ---- DDR3 reverse arbitration: requests vs refresh (Phase 9 Stage 1,
-# Part 12, docs/roadmap.md) ----
+# Part 12, docs/roadmap/phase-09-ddr.md) ----
 #
 # The direction Part 11 left unbuilt: a new write_req/read_req must never
 # start a transaction while a refresh is pending or running. Swept across
@@ -2844,7 +2844,7 @@ sim_ddr3_reverse_arb: sim/sim_ddr3_reverse_arb.out
 	    { echo "sim_ddr3_reverse_arb FAILED"; exit 1; }
 
 # ---- DDR3 one transaction at a time (Phase 9 Stage 1, Part 13,
-# docs/roadmap.md) ----
+# docs/roadmap/phase-09-ddr.md) ----
 #
 # Part 12's probe found a write and a read in flight together collide
 # silently. Every request must be fully accepted or fully ignored, counted
@@ -2869,7 +2869,7 @@ sim_ddr3_wr_excl: sim/sim_ddr3_wr_excl.out
 	    { echo "sim_ddr3_wr_excl FAILED"; exit 1; }
 
 # ---- DDR3 model bank-state rules, self-test (Phase 9 Stage 1, Part 14,
-# docs/roadmap.md) ----
+# docs/roadmap/phase-09-ddr.md) ----
 #
 # sim/ddr3_model.v tracks per-bank state now (ACTIVATE to an open bank,
 # READ/WRITE to a closed one, PRECHARGE before tRTP/write recovery,
@@ -2889,7 +2889,7 @@ sim_ddr3_model_banks: sim/sim_ddr3_model_banks.out
 	    { echo "sim_ddr3_model_banks FAILED"; exit 1; }
 
 # ---- DDR3 address path, decoded memory (Phase 9 Stage 1, Part 15,
-# docs/roadmap.md) ----
+# docs/roadmap/phase-09-ddr.md) ----
 #
 # sim/ddr3_dq_model.v was one stored byte through Part 14, so a bug in the
 # bank, row or column path would have passed every DDR3 test. It now decodes
@@ -2914,7 +2914,7 @@ sim_ddr3_addr: sim/sim_ddr3_addr.out
 	    { echo "sim_ddr3_addr FAILED"; exit 1; }
 
 # ---- DDR3 PHY clock and command phases (Phase 9 Stage 1, Part 16,
-# docs/roadmap.md) ----
+# docs/roadmap/phase-09-ddr.md) ----
 #
 # CK at the edge-clock rate (twice sclk), each command in exactly one CK
 # sample and always in the first of the two command slots per sclk - the
@@ -2940,7 +2940,7 @@ sim_ddr3_phy_phases: sim/sim_ddr3_phy_phases.out
 	    { echo "sim_ddr3_phy_phases FAILED"; exit 1; }
 
 # ---- DDR3 write burst window vs WRITE latency (Phase 9 Stage 1, Part 17,
-# docs/roadmap.md) ----
+# docs/roadmap/phase-09-ddr.md) ----
 #
 # Where a write burst lands relative to its WRITE command, from the real DQ and
 # DQS pins, by a monitor sharing nothing with the memory model's own checker.
@@ -3105,7 +3105,7 @@ sim_ddr3_dq_window_rules: sim/sim_ddr3_dq_window_rules.out
 # scope that resolves it, a z assigned to a reg - passes under one and not the
 # other. Measured when this was added: eleven of the eighteen DDR3 tests could not
 # be built at all (a tri-state net into an `input` port, which Verilator rejects),
-# and once they could, six failed for exactly these reasons (docs/roadmap.md,
+# and once they could, six failed for exactly these reasons (docs/roadmap/phase-09-ddr.md,
 # Part 19).
 #
 # What a pass here does NOT show: anything that needs an unknown value or a
@@ -3224,7 +3224,7 @@ synth_check_ddr3: $(DDR3_SYNTH_SRCS)
 	    echo "synth_check_ddr3 FAILED"; exit 1; }; \
 	echo "synth_check_ddr3: DDR3 synthesis branch elaborates (every primitive port resolves)"
 
-# ---- DDR3 DQS write-drive (Phase 9 Stage 1, Part 4, docs/roadmap.md) ----
+# ---- DDR3 DQS write-drive (Phase 9 Stage 1, Part 4, docs/roadmap/phase-09-ddr.md) ----
 #
 # rtl/soc/ddr3_dqs_write_ecp5.v's own real preamble/active/postamble
 # state sequencing, proven standalone - the same "narrow proof first"
@@ -3239,7 +3239,7 @@ sim_ddr3_dqs_write: sim/sim_ddr3_dqs_write.out
 	@grep -q "DDR3 DQS WRITE-DRIVE TEST PASSED" sim/ddr3_dqs_write.log || \
 	    { echo "sim_ddr3_dqs_write FAILED"; exit 1; }
 
-# ---- DDR3 write command sequencer (Phase 9 Stage 1, Part 6, docs/roadmap.md) ----
+# ---- DDR3 write command sequencer (Phase 9 Stage 1, Part 6, docs/roadmap/phase-09-ddr.md) ----
 #
 # rtl/soc/ddr3_write_seq.v's own real ACT->WR->write_start command
 # sequencing with real (measured, not assumed) tRCD/CWL timing, proven
@@ -3254,7 +3254,7 @@ sim_ddr3_write_seq: sim/sim_ddr3_write_seq.out
 	@grep -q "DDR3 WRITE SEQUENCER TEST PASSED" sim/ddr3_write_seq.log || \
 	    { echo "sim_ddr3_write_seq FAILED"; exit 1; }
 
-# ---- DDR3 read command sequencer (Phase 9 Stage 1, Part 7, docs/roadmap.md) ----
+# ---- DDR3 read command sequencer (Phase 9 Stage 1, Part 7, docs/roadmap/phase-09-ddr.md) ----
 #
 # rtl/soc/ddr3_read_seq.v's own real ACT->RD->read_start command
 # sequencing - the read-side twin of sim_ddr3_write_seq above. Proven
@@ -3268,7 +3268,7 @@ sim_ddr3_read_seq: sim/sim_ddr3_read_seq.out
 	    { echo "sim_ddr3_read_seq FAILED"; exit 1; }
 
 # ---- DDR3 read-burst active-window extender (Phase 9 Stage 1, Part 8,
-# docs/roadmap.md) ----
+# docs/roadmap/phase-09-ddr.md) ----
 #
 # rtl/soc/ddr3_read_burst_ext.v's own real read_active window, closing
 # the shape mismatch Part 7 named: ddr3_read_seq.v's own read_start

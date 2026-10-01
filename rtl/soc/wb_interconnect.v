@@ -13,7 +13,7 @@
 // this tree today - `rtl/soc/soc_top.v`) collapses every array below to
 // exactly one element per role, and the arbitration reduces to precisely
 // the original fixed order: debug > data > walker > fetch. Nothing has
-// been asked to instantiate a second hart yet - see docs/roadmap.md's
+// been asked to instantiate a second hart yet - see docs/roadmap/phase-13-multicore.md's
 // Phase 13 entry.
 //
 // ---- The third master role: page-table walks ----

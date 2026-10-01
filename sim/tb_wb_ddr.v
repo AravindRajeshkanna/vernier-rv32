@@ -1,4 +1,4 @@
-// Standalone proof for Phase 9 Stage 2, Part 1 (docs/roadmap.md):
+// Standalone proof for Phase 9 Stage 2, Part 1 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/wb_ddr.v against a real DDR3 protocol checker and a real
 // per-location memory model, driven by a plain Wishbone master - not yet
 // wired into rtl/soc/soc_top.v (that is later, separate work).

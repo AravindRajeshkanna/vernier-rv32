@@ -1,6 +1,6 @@
 // Wishbone B4 classic quantized-inference MAC engine (Phase 14): a fixed-
 // depth int8 dot product, one multiply-accumulate per cycle into a 32-bit
-// signed accumulator. docs/roadmap.md's Phase 14 entry names the open
+// signed accumulator. docs/roadmap/phase-14-npu.md's Phase 14 entry names the open
 // design question this answers - custom instructions versus a memory-mapped
 // peripheral - and picks the peripheral: a self-contained Wishbone slave,
 // matching Phase 10's blit engine and Phase 4's video path, that cannot
@@ -35,7 +35,7 @@
 //
 // ---- A third way to start DMA mode: reusing a cached activation vector ----
 //
-// A real cost this stage's own first measurement (docs/roadmap.md's Phase
+// A real cost this stage's own first measurement (docs/roadmap/phase-14-npu.md's Phase
 // 14 Stage 4) found: computing several neurons against the same shared
 // activation vector re-fetches that entire vector out of RAM once per
 // neuron, even though `A_ADDR` never changes between them. CTRL bit 2

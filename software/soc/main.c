@@ -359,7 +359,7 @@ static int test_npu(void) {
  * built entirely from the peripheral above with no RTL change: this is
  * the smallest thing that is genuinely "a single small layer" rather
  * than the one dot product test_npu() already covers, closing
- * docs/roadmap.md's Phase 14 "Done when" bar at this scale. Checked
+ * docs/roadmap/phase-14-npu.md's Phase 14 "Done when" bar at this scale. Checked
  * two independent ways against a third, independently-computed
  * reference (Python, software/soc/gen_npu_layer.py): once through
  * rtl/soc/wb_npu.v, once in plain RV32M-only C with no NPU access at
@@ -571,7 +571,7 @@ static int test_npu_dma_cache(void) {
 }
 
 /* Real trained-model weights, closing the one gap every earlier NPU
- * stage has named as still open (docs/roadmap.md's Phase 14 entry):
+ * stage has named as still open (docs/roadmap/phase-14-npu.md's Phase 14 entry):
  * software/soc/gen_npu_trained_layer.py trains a from-scratch linear
  * softmax classifier by gradient descent on a real cross-entropy loss
  * - the weights below are the OUTPUT of that training, not drawn from
@@ -661,7 +661,7 @@ static int test_fir(void) {
 /* A real 8-tap lowpass filter (software/soc/gen_fir_workload.py: a
  * windowed-sinc design, unity DC gain) applied to a 128-sample synthetic
  * signal (a low frequency component plus a higher one past the filter's
- * own cutoff) - closes docs/roadmap.md's Phase 11 "Done when" bar: a
+ * own cutoff) - closes docs/roadmap/phase-11-dsp.md's Phase 11 "Done when" bar: a
  * real DSP-shaped workload, checked bit-exact against an independently
  * computed (Python) reference, and measured, not estimated, against the
  * current soft-math (RV32M-only) baseline that same bar's own opening
@@ -742,7 +742,7 @@ static int test_timer(void) {
  * loading paths, and all three land here), not by inspecting crt0_ram.S's
  * own logic in isolation.
  *
- * hartid == 0 is this board's own single-hart reality (docs/roadmap.md's
+ * hartid == 0 is this board's own single-hart reality (docs/roadmap/phase-13-multicore.md's
  * Phase 13 entry), not a general claim - a real NUM_HARTS=2 build would
  * need this test to accept either. The device-tree checks are real
  * structural checks, not "nonzero": the address must land inside the

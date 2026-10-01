@@ -1,5 +1,5 @@
 // DDR3 real command-level write sequencer - Phase 9 Stage 1, Part 6
-// (docs/roadmap.md). Issues a real ACTIVATE then a real WRITE command
+// (docs/roadmap/phase-09-ddr.md). Issues a real ACTIVATE then a real WRITE command
 // through rtl/soc/ddr3_phy_ecp5.v's own cmd_* interface, with a real
 // (if conservative, reasoned-not-primary-datasheet-verified) tRCD gap
 // between them, then pulses `write_start` once the real CAS Write

@@ -1,5 +1,5 @@
 // Directed test for rtl/plic.v's NUM_CONTEXTS default (bumped to 4 for
-// Phase 13, docs/roadmap.md) - proves the two NEW contexts (2, 3: a second
+// Phase 13, docs/roadmap/phase-13-multicore.md) - proves the two NEW contexts (2, 3: a second
 // hart's own M-mode/S-mode, were one ever instantiated) land at exactly the
 // byte offsets software/soc/soc.h's own PLIC_ENABLE/PLIC_THRESHOLD/PLIC_CLAIM
 // macros compute, and are independently addressable from contexts 0/1 and

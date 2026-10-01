@@ -1,7 +1,7 @@
-// DDR3 DQS tracking, ECP5 - Phase 9 Stage 1, Part 2 (docs/roadmap.md).
+// DDR3 DQS tracking, ECP5 - Phase 9 Stage 1, Part 2 (docs/roadmap/phase-09-ddr.md).
 // `DDRDLLA` + one `DQSBUFM` per byte lane (one lane, matching this
 // slice's own narrow scope). Real hardware DQS tracking, not
-// UberDDR3's simpler fixed-delay scheme - see docs/roadmap.md's own
+// UberDDR3's simpler fixed-delay scheme - see docs/roadmap/phase-09-ddr.md's own
 // Stage 1 Part 2 account for the real research and the user's own
 // decision behind this choice.
 //

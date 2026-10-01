@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 10 (docs/roadmap.md):
+// Directed test for Phase 9 Stage 1, Part 10 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/ddr3_refresh_ctrl.v's own real tREFI/tRFC timing, measured
 // directly cycle-by-cycle against the real, primary-datasheet-verified
 // values that file's own header cites (195 cycles/7 cycles at 25 MHz),

@@ -8,7 +8,7 @@
 //
 // It does not exercise the controller and proves nothing about behaviour. What it does is
 // let synthesis, placement and routing look at the real PHY with the real pins:
-// ./fpga/synth/ddr3_pnr_probe.sh. Docs/roadmap.md, Part 21.
+// ./fpga/synth/ddr3_pnr_probe.sh. Docs/roadmap/phase-09-ddr.md, Part 21.
 module ecpix5_ddr3_probe (
     input  wire        clk,
     input  wire        rst,

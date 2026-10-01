@@ -1,5 +1,5 @@
 // Cross-hart LR/SC reservation invalidation - the second of the two real
-// coherence gaps docs/roadmap.md's Phase 13 assessment named (the first,
+// coherence gaps docs/roadmap/phase-13-multicore.md's Phase 13 assessment named (the first,
 // rtl/soc/cpu_wb.v's D-cache, was closed by a DCACHE_ENABLE bypass - a
 // reservation is a correctness primitive, not a performance feature, so
 // there is no equivalent "just disable it" option here).
@@ -57,7 +57,7 @@ module reservation_monitor #(
     // hart's currently-held reservation. A future wiring of this into
     // cpu_core.v/core_ooo.v would OR this into that core's own reservation-
     // clearing condition (`any_sc_this_cycle || any_successful_write` in
-    // cpu_core.v today) - not implemented here; see docs/roadmap.md's
+    // cpu_core.v today) - not implemented here; see docs/roadmap/phase-13-multicore.md's
     // Phase 13 entry for what remains open.
     output wire [NUM_HARTS-1:0]    resv_invalidate
 );

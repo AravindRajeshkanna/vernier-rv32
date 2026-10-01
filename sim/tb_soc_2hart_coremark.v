@@ -180,7 +180,7 @@ module tb_soc_2hart_coremark;
 `ifdef CORE_HETERO
         // Same rob_count-based module-identity proof every other Phase 15
         // testbench uses - cheap insurance that a published "CORE=hetero"
-        // number in docs/roadmap.md is honestly from a real mixed pair, not
+        // number in docs/roadmap/phase-15-heterogeneous.md is honestly from a real mixed pair, not
         // an accidentally-homogeneous one that happened to still validate
         // twice. Referencing rob_count against the wrong module is a hard
         // Icarus compile error, not a silent pass - core_ooo.v is the only

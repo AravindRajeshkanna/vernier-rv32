@@ -17,7 +17,7 @@
  * up holding nothing. Getting a program *into* SDRAM needs a loader (the SD path,
  * or a UART one), neither of which exists yet. `make sim_sdramboot` proves code
  * execution out of SDRAM in simulation, where the testbench can simply preload
- * the model. See docs/roadmap.md Phase 2.
+ * the model. See docs/roadmap/phase-02-memory-ceiling.md Phase 2.
  *
  * Result is reported twice, as everything here does it: printed for a human, and
  * written as a magic word to the address sim/tb_ramboot.v reads back, so the

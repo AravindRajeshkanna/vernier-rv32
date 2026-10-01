@@ -329,7 +329,7 @@ Opcode `0101111`, `funct3=010` (word-only, all this core implements).
 `AMOAND`(01100)/`AMOOR`(01000)/`AMOMIN`(10000)/`AMOMAX`(10100)/
 `AMOMINU`(11000)/`AMOMAXU`(11100); `aq`/`rl` are decoded but functionally
 ignored - this core itself has no fence protocol for them to invoke,
-regardless of how many of it a SoC instantiates. `docs/roadmap.md`'s
+regardless of how many of it a SoC instantiates. `docs/roadmap/phase-13-multicore.md`'s
 Phase 13 entry names this same limitation on the multi-hart side.
 `reservation_valid`/`reservation_addr` are mirrored outward as
 `resv_valid`/`resv_addr` ports, alongside a `store_fire`/`store_addr`
@@ -887,7 +887,7 @@ this two-master picture, but not once the interconnect grew a debug-module
 master, nor once it grew `NUM_HARTS`-many hart-indexed fetch/data/walker
 triples on top of that (`rtl/soc/wb_interconnect.v`'s own header has the
 current account) - a second hart's own data master is no longer just a
-future possibility to design around: `docs/roadmap.md`'s Phase 13 entry
+future possibility to design around: `docs/roadmap/phase-13-multicore.md`'s Phase 13 entry
 (Stage 3) already generalized and formally proved the arbitration for it,
 and (Stage 8) `rtl/soc/soc_top.v` now genuinely instantiates and drives a
 second hart's own fetch/data/walker triple at `NUM_HARTS=2`, proven by a

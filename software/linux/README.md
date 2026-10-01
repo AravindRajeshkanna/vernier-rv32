@@ -85,7 +85,7 @@ is simulation-only: no board build has ever asked for it. The boot ROM
 this specific boot never goes through it: `make sim_linux_2hart` resets
 straight into `software/opensbi/sbi_stub.S` at `0x9000_0000`, the same
 boot-ROM bypass every `sim_opensbi`/`sim_linux` target uses, single-hart
-or not. `docs/roadmap.md`'s Phase 13 entry has the full account of the
+or not. `docs/roadmap/phase-13-multicore.md`'s Phase 13 entry has the full account of the
 mailbox, including what closing that specific gap deliberately did not
 also close; its Phase 15 entry proves the same mailbox holds when the
 parked hart is a genuinely different microarchitecture from the one
@@ -116,7 +116,7 @@ spelling out what `a` decomposes into.
 
 **RESOLVED - root-caused and fixed; `make sim_linux CORE=ooo` now reaches
 `/init` and prints `VERNIER-RV32-LINUX-BOOT-OK`, all 6,335 UART bytes sent
-in order.** `docs/roadmap.md`'s "Stage 1d was built anyway" section,
+in order.** `docs/roadmap/phase-01-superscalar-ooo.md`'s "Stage 1d was built anyway" section,
 Update 15, has the full account - the failure point moved several times
 as each fix in this section's own history landed (past `execve` itself,
 to a supervisor store fault, to a corrupted `rwsem` word, and finally to

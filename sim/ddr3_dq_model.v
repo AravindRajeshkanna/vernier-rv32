@@ -1,5 +1,5 @@
 // Behavioral DDR3 data (DQ/DQS) model - Phase 9 Stage 1, Part 2, made
-// address-decoded in Part 15 (docs/roadmap.md).
+// address-decoded in Part 15 (docs/roadmap/phase-09-ddr.md).
 //
 // Through Part 14 this stored ONE byte at a fixed test location, so no test
 // could see a write land in the wrong bank, row or column: a bug anywhere in
@@ -109,7 +109,7 @@
 // Part 18 uses for reads - lands on column {c[9:3], c[2:0]^3'b100}, the same neighbour
 // Part 18's read side already names. Measured, before any design change: with the second
 // half's DM pin unmasked, that neighbour column receives whatever byte the burst carries -
-// a real, previously undemonstrated hazard (`docs/roadmap.md`'s "A caveat on Part 15" had
+// a real, previously undemonstrated hazard (`docs/roadmap/phase-09-ddr.md`'s "A caveat on Part 15" had
 // named the risk; nothing had shown it happening). `rtl/soc/ddr3_dm_drv_ecp5.v` now drives
 // DM low only for the first half and high for the second, and this file's own write-burst
 // storage now honors it: the first half stores only if DM is not explicitly high there

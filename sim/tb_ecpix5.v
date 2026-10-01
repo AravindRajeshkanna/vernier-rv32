@@ -1,5 +1,5 @@
 // Board-wrapper test for fpga/ecpix5_top.v - Stage 0 only
-// (docs/roadmap.md's Phase 9 entry): board bring-up, no DDR yet.
+// (docs/roadmap/phase-09-ddr.md's Phase 9 entry): board bring-up, no DDR yet.
 //
 // Same reason sim/tb_ulx3s.v exists: fpga/top_fpga.v sat in the tree for
 // months with unconnected ports because nothing built it. `make verify`

@@ -1,5 +1,5 @@
 // Directed test for wb_interconnect.v's new NUM_HARTS parameter (Phase 13
-// stage 3, docs/roadmap.md) - proves two of the arbitration behaviors
+// stage 3, docs/roadmap/phase-13-multicore.md) - proves two of the arbitration behaviors
 // formal/fv_interconnect.v proves in the abstract actually play out over a
 // real cycle-by-cycle trace: cross-hart priority (a lower-priority tier
 // from one hart must not preempt a higher-priority tier from another) and
@@ -16,7 +16,7 @@
 // one-cycle decode bubble drops the bus-level d_cyc for exactly one cycle
 // at the read-to-write transition regardless of what the core's own
 // dmem_is_amo does, so the inferred mechanism never actually engaged
-// against real hardware (docs/roadmap.md's Phase 13 Stage 1 entry has the
+// against real hardware (docs/roadmap/phase-13-multicore.md's Phase 13 Stage 1 entry has the
 // full correction). This file now drives the replacement directly -
 // d_amo_wrphase, a free-standing signal instead of something inferred from
 // d_cyc - the same way a real core does: asserted starting the cycle after

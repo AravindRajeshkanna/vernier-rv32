@@ -1,5 +1,5 @@
 // DDR3 read-calibration sweep - Phase 9 Stage 1, Part 2
-// (docs/roadmap.md). A real, bounded, one-shot boot-time sweep of
+// (docs/roadmap/phase-09-ddr.md). A real, bounded, one-shot boot-time sweep of
 // `READCLKSEL[2:0]` (8 discrete tap positions), matching Lattice's own
 // documented "READ Pulse Positioning" mechanism (FPGA-TN-02035) and
 // LiteDRAM's own real, proven use of it - not a continuous closed

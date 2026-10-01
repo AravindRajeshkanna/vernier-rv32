@@ -1,5 +1,5 @@
 // DDR3 real refresh scheduler - Phase 9 Stage 1, Part 10
-// (docs/roadmap.md). Closes a real, completely unaddressed gap in this
+// (docs/roadmap/phase-09-ddr.md). Closes a real, completely unaddressed gap in this
 // stage's own "Done when" bar: "standalone read/write/refresh tests" -
 // no refresh command has ever been issued anywhere in this stage
 // through Part 9. A real, free-running counter requests a REFRESH once

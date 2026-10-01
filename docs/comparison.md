@@ -132,7 +132,7 @@ declaring a winner.
   infrastructure.
 - **Two core implementations sharing one SoC.** `rtl/cpu_core.v` (in-order,
   proven on hardware) and `rtl/ooo/core_ooo.v` (superscalar/out-of-order,
-  `docs/roadmap.md` Phase 1) plug into the identical bus adapter, memory map
+  `docs/roadmap/phase-01-superscalar-ooo.md` Phase 1) plug into the identical bus adapter, memory map
   and peripheral set - `make verify CORE=ooo` runs the *same* regression
   suite against both. None of the peers above offer two independent
   microarchitectures behind one unchanged SoC boundary.
@@ -166,7 +166,7 @@ declaring a winner.
   their respective ecosystems) both span many more boards and, for the
   latter two, real silicon.
 - **Timing margin is presently the project's own bottleneck** -
-  `docs/roadmap.md` Phase 6 records `BOARD=ulx3s85` closing on some
+  `docs/roadmap/phase-06-debug.md` Phase 6 records `BOARD=ulx3s85` closing on some
   placement seeds and not others against a 25 MHz constraint, and names it
   as what is blocking further debug-infrastructure work. A dedicated
   microcontroller core like Ibex or SweRV, with no MMU and a much shorter
@@ -177,7 +177,7 @@ declaring a winner.
   CoreMark/MHz figure to set against SweRV's or Ibex's, certified or
   otherwise, and this file is not going to manufacture one.
 - **Video output is unbuilt; a Network-on-Chip interconnect is a plan
-  only; DDR is real, in-progress work.** `docs/roadmap.md` Phase 4 -
+  only; DDR is real, in-progress work.** `docs/roadmap/phase-04-video-out.md` Phase 4 -
   framebuffer logic exists and is verified in simulation, but nothing is
   routed to HDMI pins. Phase 8 (a Network-on-Chip fabric to replace
   `rtl/soc/wb_interconnect.v`'s own shared-bus arbitration) is not blocked

@@ -1,5 +1,5 @@
 // Directed test for csr_file.v's new HARTID parameter (Phase 13 stage 2,
-// docs/roadmap.md) - proves mhartid (CSR 0xF14) actually varies with the
+// docs/roadmap/phase-13-multicore.md) - proves mhartid (CSR 0xF14) actually varies with the
 // parameter instead of trusting the one-line diff by inspection. Two
 // instances, HARTID=0 (what every real instantiation in this tree builds
 // today - cpu_core.v, core_ooo.v, and this test's own DUT0 all default to

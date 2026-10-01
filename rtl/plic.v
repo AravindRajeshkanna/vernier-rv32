@@ -53,7 +53,7 @@
 module plic #(
     parameter NUM_SOURCES  = 8,     // must be <= 31: one bitmap word
     // 0 = hart0 M-mode, 1 = hart0 S-mode, [2]/[3] = a second hart's own
-    // M-mode/S-mode, were one ever instantiated (docs/roadmap.md's Phase 13
+    // M-mode/S-mode, were one ever instantiated (docs/roadmap/phase-13-multicore.md's Phase 13
     // entry) - the default here is that near-term target, proven by
     // formal/run.sh's "plic" target, which takes whatever this module
     // declares since it has no separate wrapper (see the `ifdef FORMAL

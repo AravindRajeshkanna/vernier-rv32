@@ -1,7 +1,7 @@
 /* 96 KB of read-only data, so that the program in software/soc/sdramtest.c
  * is one that cannot be linked into 64 KB of block RAM.
  *
- * That is the whole point of it. docs/roadmap.md's Phase 2 is "done when the
+ * That is the whole point of it. docs/roadmap/phase-02-memory-ceiling.md's Phase 2 is "done when the
  * SoC runs a program larger than 64 KB from external memory", and a test that
  * merely *writes* past 64 KB would not show it: block RAM's 16 MB window
  * aliases rather than faulting (see sim/tb_ramboot.v's header), so a sweep

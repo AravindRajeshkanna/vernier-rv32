@@ -83,7 +83,7 @@ _start:
      *
      * Every program linked against this file now runs under real PMP
      * enforcement the moment it drops to S-mode (rtl/cpu_core.v's PMP
-     * section, docs/roadmap.md's PMP entry): once any PMP hardware exists,
+     * section, docs/roadmap/beyond-the-phases.md's PMP entry): once any PMP hardware exists,
      * an S/U-mode access matching no entry is *denied* by default, and
      * none of software/soc/'s own test programs - mmutest.c, plictest.c,
      * uartirq.c, div64test.c - ever had a reason to configure PMP, since

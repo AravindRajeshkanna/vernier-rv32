@@ -1,5 +1,5 @@
 // Wishbone B4 classic slave in front of rtl/soc/ddr3_ecp5_top.v - Phase 9
-// Stage 2, Part 1 (docs/roadmap.md).
+// Stage 2, Part 1 (docs/roadmap/phase-09-ddr.md).
 //
 // ---- The maintainer's own decision, now made: 16-byte burst, not
 // byte-granular ----
@@ -29,7 +29,7 @@
 // ---- What this does not establish ----
 //
 // The real, still-open "data path is not yet hardware-faithful" Known
-// Defect (`docs/roadmap.md`) is unchanged by this: a real x16 BL8 burst
+// Defect (`docs/roadmap/phase-09-ddr.md`) is unchanged by this: a real x16 BL8 burst
 // moves 16 real, distinct bytes in one electrical transaction, and this
 // design still moves them as 16 separate ACT+WR/RD command sequences -
 // correct, and now genuinely block-granular from the Wishbone side, but

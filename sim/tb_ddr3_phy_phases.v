@@ -1,4 +1,4 @@
-// Test for Phase 9 Stage 1, Part 16 (docs/roadmap.md): the clock and
+// Test for Phase 9 Stage 1, Part 16 (docs/roadmap/phase-09-ddr.md): the clock and
 // command-phase architecture of rtl/soc/ddr3_phy_ecp5.v.
 //
 // Lattice's own reference DDR3 write side (FPGA-TN-02035, Figure 6.10 and

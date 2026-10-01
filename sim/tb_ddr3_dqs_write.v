@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 4 (docs/roadmap.md):
+// Directed test for Phase 9 Stage 1, Part 4 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/ddr3_dqs_write_ecp5.v's own real preamble/active/postamble
 // state sequencing, observed directly cycle-by-cycle rather than
 // trusted from a hand-trace - this project's own established practice

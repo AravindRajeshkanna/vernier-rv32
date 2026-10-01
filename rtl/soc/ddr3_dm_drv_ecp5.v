@@ -1,4 +1,4 @@
-// DDR3 data-mask (DM) drive, ECP5 - Phase 9 Stage 1, Part 22 (docs/roadmap.md).
+// DDR3 data-mask (DM) drive, ECP5 - Phase 9 Stage 1, Part 22 (docs/roadmap/phase-09-ddr.md).
 //
 // Through Part 21 this design had no data-mask pin at all: every write burst drove
 // all eight real UI with the same one byte (rtl/soc/ddr3_ecp5_top.v's `dq_data_hold`,

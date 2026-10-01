@@ -1,4 +1,4 @@
-// DDR3 PHY, ECP5 - Phase 9 Stage 1, Part 1 (docs/roadmap.md). Command/
+// DDR3 PHY, ECP5 - Phase 9 Stage 1, Part 1 (docs/roadmap/phase-09-ddr.md). Command/
 // address/clock generation only - no DQ/DQS data path yet, that is a
 // later, separate slice.
 //
