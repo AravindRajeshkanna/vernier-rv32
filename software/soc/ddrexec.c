@@ -77,8 +77,9 @@ int main(void)
 
     put_str("\n=== Code fetched from DDR3 (Phase 9 Stage 2, Part 9) ===\n\n");
 
-    for (uint32_t *s = _siddrtext, *e = _siddrtext + (_eddrtext - _sddrtext); s < e; s++)
-        *dst++ = *s;
+    uint32_t words = ((uintptr_t)_eddrtext - (uintptr_t)_sddrtext) / 4;
+    for (uint32_t i = 0; i < words; i++)
+        *dst++ = _siddrtext[i];
     __asm__ volatile ("fence.i" ::: "memory");
 
     uint32_t pc = ddr_pc();
