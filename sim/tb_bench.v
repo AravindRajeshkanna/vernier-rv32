@@ -53,6 +53,15 @@ module tb_bench;
         .trap(trap)
     );
 
+`ifdef NO_DCACHE
+    // make coremark_nodcache: the data cache off, as every build with more
+    // than one hart has it (soc_top.v's HART_DCACHE_ENABLE), so one hart can
+    // be compared with two on equal terms. No RTL changes; defparam reaches
+    // the bus adapter's own parameter.
+    defparam DUT.BUSADAPT.DCACHE_ENABLE = 1'b0;
+    initial $display("  (data cache disabled for this run)");
+`endif
+
     // Phase 8 Stage 0: a passive observer of the shared bus under this
     // single-hart load, the baseline sim/tb_soc_2hart_coremark.v is compared
     // against. See sim/bus_monitor.v.

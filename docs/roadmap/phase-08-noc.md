@@ -73,8 +73,8 @@ that the traffic goes almost entirely to one slave. It is an inference, not a
 measurement, that a crossbar or network would not help much here: they let
 traffic to *different* slaves proceed in parallel, and nearly all of this goes
 to one single-port RAM, so the queue would move rather than vanish. It is also
-not isolated how much of the +20 to +30% is bus contention and how much is the
-second effect in this configuration: with more than one hart the data cache is
+not isolated (Part 2 below does) how much of the +20 to +30% is bus contention
+and how much is the second effect in this configuration: with more than one hart the data cache is
 bypassed (`HART_DCACHE_ENABLE` in `rtl/soc/soc_top.v`, because nothing snoops
 it), which by itself raises bus demand. One in-order hart with its data cache
 uses 19.9% of bus cycles; two harts without it use 33.5% each. A one-hart run
@@ -91,6 +91,48 @@ monitor attached. The reading so far is only a direction to test: the measured
 bottleneck is one RAM slave plus the cache-bypass cost of having two harts, so
 the cheaper things to try first are a second RAM port or banking, and a
 coherent data cache, before a network.
+
+**Update, Part 2: the cache-bypass confounder, separated.** Part 1 could not
+say how much of the two-hart slowdown was the second hart and how much was the
+data cache every multi-hart build has to switch off. `make coremark_nodcache`
+runs the same single-hart CoreMark with the data cache disabled by `defparam`
+in the testbench (`sim/tb_bench.v`, `-DNO_DCACHE`), so there is no RTL change
+and one hart can be compared with two on equal terms. CoreMark validates on both
+cores.
+
+| One hart | CoreMark cycles | Bus in use | In use with a master waiting |
+|---|---|---|---|
+| in-order, data cache on | 419,621 | 19.9% | 0.45% |
+| in-order, data cache off | 474,504 | 37.9% | 0.96% |
+| wide, data cache on | 360,481 | 23.3% | 2.4% |
+| wide, data cache off | 397,216 | 46.5% | 4.8% |
+
+Taking Part 1's two-hart CoreMark cycles (in-order 502,529 and 534,774; wide
+440,467 and 470,994) against these:
+
+| | Total slowdown, one hart with cache to two harts | Of which, losing the data cache | Of which, the second hart |
+|---|---|---|---|
+| in-order | +19.8% and +27.4% | +13.1% | +5.9% and +12.7% |
+| wide | +22.2% and +30.7% | +10.2% | +10.9% and +18.6% |
+
+(The factors multiply: 1.131 x 1.059 is the 1.198 above.) So **roughly half to
+two thirds of the two-hart slowdown is the data cache being off, not the second
+hart.** The cache bypass also **about doubles the bus traffic of a single hart**
+(19.9% to 37.9% of bus cycles in-order, 23.3% to 46.5% wide), which is where
+most of the 67% to 78% bus use with two harts comes from. The contention
+between harts is real but smaller than Part 1 suggested: a master is waiting in
+20 to 35% of cycles with two harts, against 1 to 5% with one hart and no cache,
+about twenty times as much in-order.
+
+This sharpens the reading, and still only points a direction. Measured: the
+second hart costs 6 to 19% on this workload, and turning the data cache off
+costs 10 to 13% and doubles bus traffic. Inference, not measured: a coherent
+data cache would roughly halve each hart's bus demand, and if so the shared bus
+would saturate at about five harts instead of about three (arithmetic on 19.9%
+and 37.9% per hart, ignoring the slowdown feedback). Either way the evidence so
+far argues for fixing coherence and the single RAM port before building a
+network, and does not yet show a case for the network. Stage 0 is still not
+closed: Linux SMP and the NPU's DMA are not measured.
 
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
@@ -176,4 +218,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Part 1 records it under one- and two-hart CoreMark. Linux SMP and NPU DMA load are not yet measured, so Stage 0 is not closed. Stages 1 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 and 2 record it under one- and two-hart CoreMark, with and without the data cache. Linux SMP and NPU DMA load are not yet measured, so Stage 0 is not closed. Stages 1 onward are a plan.
