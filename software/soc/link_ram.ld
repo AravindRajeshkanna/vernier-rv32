@@ -71,6 +71,18 @@ SECTIONS
         _edata = .;
     } > RUN AT> LOAD
 
+    /* Code that runs from DDR3 (software/soc/ddrexec.c). Empty, and so dropped
+     * from the output, in every other program. It is carried in LOAD after
+     * .data's initial values because nothing loads DDR3: the program copies it
+     * across itself. */
+    .ddrtext 0xA0000000 : {
+        _sddrtext = .;
+        *(.ddrtext*)
+        . = ALIGN(4);
+        _eddrtext = .;
+    } AT> LOAD
+    _siddrtext = LOADADDR(.ddrtext);
+
     _sidata = LOADADDR(.data);
     _eidata = LOADADDR(.data) + SIZEOF(.data);
 

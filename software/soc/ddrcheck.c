@@ -14,9 +14,9 @@
  * fill (16 sequential single-byte controller calls, ~20 cycles each -
  * rtl/soc/wb_ddr.v's own header), so a handful of directed word accesses
  * mirroring sim/tb_wb_ddr.v's own cases - not sdramcheck.c's own
- * hundreds-of-KB sweep - is what this stage's own "Done when" bar (a CPU
- * executing real code out of the new DDR path) actually needs: reachable
- * and correct, not yet a coverage sweep. A real full-part sweep is later,
+ * hundreds-of-KB sweep - is what a first data-path check needs: reachable
+ * and correct, not yet a coverage sweep. (Instruction fetch from DDR3, which
+ * is what Stage 2's "Done when" asks for, is software/soc/ddrexec.c.) A real full-part sweep is later,
  * separate work, the same way sdramcheck.c's own 32 MB sweep was split
  * from its 256 KB default.
  *

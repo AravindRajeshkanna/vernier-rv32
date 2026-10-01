@@ -16,9 +16,10 @@ tested data mask for lane 0, the untouched upper lane held safely inert, and a s
 byte lane's own hardware proven to calibrate independently, now wired into the real
 design and running at boot) - but
 neither is done. Stage 2's own "Done when" bar is met in simulation (Part 2:
-a CPU executes real code out of DDR3 through `rtl/soc/wb_ddr.v`, which is
-wired into `rtl/soc/soc_top.v` behind `DDR3_ENABLE` so every existing build is
-untouched); Stage 2's Parts 3 to 6, a paged (Sv32) access to DDR3, are an
+a CPU reads and writes DDR3 as data through `rtl/soc/wb_ddr.v`, wired into
+`rtl/soc/soc_top.v` behind `DDR3_ENABLE` so every existing build is untouched;
+Part 9: it fetches and executes instructions from DDR3, which Part 2 had not
+done); Stage 2's Parts 3 to 6, a paged (Sv32) access to DDR3, are an
 open, banked investigation, recorded under Known defects, and Parts 7 and 8
 (atomics, the device-tree node) shipped. Stage 3 through Stage 5 remain
 entirely a plan, not an account. Nothing past each stage's own "Update"
@@ -2245,7 +2246,8 @@ code path, not the eviction ones.
 **What this does not establish.** Not wired into `rtl/soc/soc_top.v` -
 address decode, `dts/soc.dts`, boot ROM/linker constants and the
 page-table walker's own range are all still ahead, and none of Stage 2's
-own "Done when" bar (a CPU executing real code from DDR) is met yet.
+own "Done when" bar (a CPU executing real code from DDR) is met yet (it was
+met by Part 9, not by Part 2).
 Real capacity today is 256MB, not the plan's own 512MB: lane 1 does not
 carry real data (Part 24/25 wired its own calibration only), so this
 module's own address space is lane 0 alone - 8 banks x 32768 rows x 1024
@@ -2363,9 +2365,10 @@ would not have been honest.
 
 **Update, Part 3 (an attempt, and a real, unresolved finding - not a
 shipped feature): a paged access to DDR3 hangs, and the cause is not yet
-found.** Stage 2's own "Done when" bar was already met by Part 2 - a CPU
+found.** ~~Stage 2's own "Done when" bar was already met by Part 2 - a CPU
 executing real code from the new DDR path in simulation, physically
-addressed. This part went further, uninvited by that bar, to check
+addressed.~~ **Corrected in Part 9:** Part 2 ran from block RAM and used DDR3
+only as data, so it had not met that bar; Part 9 did. This part went further, uninvited by that bar, to check
 whether a *paged* (Sv32 MMU-on) caller can reach DDR3 too, mirroring
 `software/soc/mmutest.c`'s own proof that the page-table walker reaches
 SDRAM. `software/soc/ddrmmutest.c` puts the root table itself in DDR3 -
@@ -2624,6 +2627,35 @@ separate, later work, and probably downstream of the banked paging
 investigation in practice, since Linux's own use of a memory region
 goes through Sv32. No RTL changed.
 
+**Update, Part 9: a CPU fetches and executes instructions from DDR3,
+which is what Stage 2's "Done when" actually asks for.** Parts 2 and 7 ran
+from block RAM and used DDR3 as data memory, so the claim made in Part 3
+(and in this phase's opening) that Part 2 had met the bar was wrong, and is
+corrected above. `software/soc/ddrexec.c` (`make sim_ddrexec`, in `verify`)
+links four small functions to run at `0xA0000000` (a new `.ddrtext` section
+in `software/soc/link_ram.ld`, empty and so dropped in every other program;
+`ddratomics.bin` and `ddrcheck.bin` are byte-identical before and after),
+copies them into DDR3 with ordinary stores, executes `fence.i`, and calls
+them. It checks that the code runs at a DDR3 address (an `auipc`), and that
+a loop with a nested call and a return, run cold and then warm in the
+instruction cache and with a different trip count, gives the same result as
+the same code running from RAM.
+
+It passed on the first run. To check it can fail, the copy was changed to
+write zeros: the run then traps with an illegal instruction at `0xA0000070`,
+inside DDR3, and times out with no result word, so the test does depend on
+what is in DDR3. (A first attempt at that mutation did not compile and
+proved nothing; it was redone.) `make verify` passed (exit 0, 7 formal
+proofs, riscv-tests 82/0/2 xfail, Linux boot to userspace). `make verify_ooo` also passed (exit 0, riscv-tests 82/0/2 xfail, co-simulation 84/84, 7 formal proofs, Linux boot to userspace), with `DDR3 EXEC TEST PASSED` on both cores.
+
+**What this does not establish.** The program is a few hundred bytes, so the
+fetch path is exercised for a handful of 16-byte blocks, not a large image
+or a full-part sweep. Nothing loads DDR3 except the program itself: there is
+no boot ROM or UART loader path to DDR3, so a `sim_sdramboot` equivalent
+(reset straight into DDR3) is still not done. Paged execution out of DDR3
+is still blocked on the banked investigation above. No hardware: this is
+the simulation DQ model only.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
@@ -2752,4 +2784,4 @@ Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorde
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck` and `sim_ddratomics` in `make verify`. `sim_ddrmmutest` is deliberately not in `make verify` because the paged access hangs (Known defects).
+The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics` and `sim_ddrexec` (instruction fetch from DDR3, Part 9) in `make verify`. `sim_ddrmmutest` is deliberately not in `make verify` because the paged access hangs (Known defects).

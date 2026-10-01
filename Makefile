@@ -213,7 +213,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi \
@@ -1850,6 +1850,31 @@ sim_ddrcheck: sim/bootrom_$(CORE).hex sim/ddrcheckimage.hex sim/sim_ddrcheck.out
 	@grep -q "RAMBOOT TEST PASSED" sim/ddrcheck.log || \
 	    { echo "sim_ddrcheck FAILED"; exit 1; }
 
+# ---- Instruction fetch from DDR3 (Phase 9 Stage 2, Part 9) ----
+#
+# Stage 2's "Done when" is a CPU executing code out of DDR3. Parts 2 and 7
+# only used it as data memory. This program copies a few functions into DDR3
+# (software/soc/link_ram.ld's .ddrtext links them to run at 0xA0000000) and calls
+# them. Same testbench and DDR3_ENABLE gate as sim_ddrcheck.
+software/soc/ddrexec.elf: $(SOCRT_SRCS) software/soc/ddrexec.c \
+                           software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
+	    -o $@ $(SOCRT_SRCS) software/soc/ddrexec.c
+
+sim/ddrexecimage.hex: software/soc/ddrexec.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/ddrexec.elf software/soc/ddrexec.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/ddrexec.bin > $@
+
+sim/sim_ddrexec.out: sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DDDR3_ENABLE -DRAM_IMAGE='"ddrexecimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/sdram_model.v sim/ddr3_model.v sim/ddr3_dq_model.v $(SOC_RTL)
+
+sim_ddrexec: sim/bootrom_$(CORE).hex sim/ddrexecimage.hex sim/sim_ddrexec.out
+	@cd sim && $(VVP) sim_ddrexec.out $(VVP_DUMP) 2>&1 | tee ddrexec.log
+	@grep -q "RAMBOOT TEST PASSED" sim/ddrexec.log || \
+	    { echo "sim_ddrexec FAILED"; exit 1; }
+
 # ---- Atomics against DDR3 (Phase 9 Stage 2, Part 7) ----
 #
 # Stage 2's own plan named this explicitly: caches, atomics and LR/SC need
@@ -3320,7 +3345,7 @@ verify_ooo:
 	rm -f sim/*.out
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics dtb_ddr3 ddr3_check \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec dtb_ddr3 ddr3_check \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
@@ -3396,7 +3421,7 @@ clean:
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
 	       sim/sim_ddrcheck.out sim/ddrcheckimage.hex \
-	       sim/sim_ddratomics.out sim/ddratomicsimage.hex \
+	       sim/sim_ddrexec.out sim/ddrexecimage.hex sim/sim_ddratomics.out sim/ddratomicsimage.hex \
 	       sim/sim_ddrmmutest.out sim/ddrmmutestimage.hex \
 	       sim/sdramfullimage.hex sim/sdramfull.log \
 	       obj_dir_soc_ramboot \
@@ -3422,7 +3447,7 @@ clean:
 	       software/soc/uartprog.elf software/soc/uartprog.bin \
 	       sim/wave_ulx3s_sdram.vcd software/soc/sdramcheck.elf software/soc/sdramcheck.bin \
 	       software/soc/ddrcheck.elf software/soc/ddrcheck.bin \
-	       software/soc/ddratomics.elf software/soc/ddratomics.bin \
+	       software/soc/ddrexec.elf software/soc/ddrexec.bin software/soc/ddratomics.elf software/soc/ddratomics.bin \
 	       software/soc/ddrmmutest.elf software/soc/ddrmmutest.bin \
 	       sim/wave_sdram.vcd sim/wave_sdramboot.vcd \
 	       software/soc/sdramtest.elf software/soc/sdramtest.bin \
