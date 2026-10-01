@@ -1,6 +1,6 @@
 ## ECPIX-5 (LambdaConcept), LFE5UM5G-45F or -85F, package 8BG554I.
 ##
-## Stage 0 only (docs/roadmap.md's Phase 9 entry) - board bring-up, no DDR
+## Stage 0 only (docs/roadmap/phase-09-ddr.md's Phase 9 entry) - board bring-up, no DDR
 ## controller yet. (The DDR3 pins are in fpga/constraints/ecpix5_ddr3.lpf, used by
 ## the place-and-route probe fpga/synth/ddr3_pnr_probe.sh; nothing has been built for
 ## the board with them.) This file has NOT been run on a board: no ECPIX-5 is

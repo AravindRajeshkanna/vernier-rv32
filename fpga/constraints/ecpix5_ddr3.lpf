@@ -20,7 +20,7 @@
 ## (masked), so this design's own lane-0 writes can never touch the upper byte.
 ## Pins the design has and the board DOES NOT: CS# and RESET#. Neither source lists
 ## them, so the FPGA cannot drive either on this board (CS# is presumably tied low
-## and RESET# handled on the board; neither is confirmed). Docs/roadmap.md's Part 21
+## and RESET# handled on the board; neither is confirmed). Docs/roadmap/phase-09-ddr.md's Part 21
 ## account has what that means for the controller.
 ## CK# and DQS# are the negative halves of differential pairs (J3, and U5); a differential
 ## I/O standard locates only the positive pad, so neither appears below.

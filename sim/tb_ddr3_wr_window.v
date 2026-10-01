@@ -1,4 +1,4 @@
-// Test for Phase 9 Stage 1, Part 17 (docs/roadmap.md): where a write burst
+// Test for Phase 9 Stage 1, Part 17 (docs/roadmap/phase-09-ddr.md): where a write burst
 // lands relative to its WRITE command, judged from the real DQ and DQS pins by
 // a monitor that shares nothing with sim/ddr3_dq_model.v's own checker.
 //

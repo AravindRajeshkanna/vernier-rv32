@@ -1,4 +1,4 @@
-// DDR3 PHY edge-clock PLL - Phase 9 Stage 1, Part 2 (docs/roadmap.md).
+// DDR3 PHY edge-clock PLL - Phase 9 Stage 1, Part 2 (docs/roadmap/phase-09-ddr.md).
 //
 // ---- Why a second, DDR3-PHY-scoped PLL, rather than reusing the SoC's
 // own existing clock ----

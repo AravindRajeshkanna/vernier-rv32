@@ -1,6 +1,6 @@
 // Checks fpga/underclock_pll.v's simulation-mode fallback, not the real
 // EHXPLLL hardware primitive - that has no Icarus model and is checked
-// instead by an actual nextpnr-ecp5 run (docs/roadmap.md's "CORE=ooo has
+// instead by an actual nextpnr-ecp5 run (docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has
 // no Fmax" entry records whether that closed timing). What this proves:
 // the fallback's own divider gives the real 5:1 input-to-output ratio the
 // eventual board test depends on, and `locked` behaves like a real PLL's

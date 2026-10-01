@@ -1,11 +1,11 @@
-// Integrated test for Phase 9 Stage 1, Part 15 (docs/roadmap.md): a write
+// Integrated test for Phase 9 Stage 1, Part 15 (docs/roadmap/phase-09-ddr.md): a write
 // lands in the cell it was asked to, and a read comes from it. Until
 // sim/ddr3_dq_model.v was made address-decoded this could not be seen at
 // all - the memory was one byte, so a bug in the bank, row or column path
 // would have passed every DDR3 test.
 //
 // Three independent ways to see an address bug, because each misses cases
-// the others catch (measured, see docs/roadmap.md's Part 15 account):
+// the others catch (measured, see docs/roadmap/phase-09-ddr.md's Part 15 account):
 //   1. Read-back through the DUT. Distinct data is written to a spread of
 //      locations and every one is read back. This catches aliasing (two
 //      requests landing in one cell) and any write/read disagreement - but
@@ -218,7 +218,7 @@ module tb_ddr3_addr;
     // `<= #1`, 1 ns after the clock edge it follows: Verilator 5.020 (Ubuntu 24.04's
     // package) lets a testbench's non-blocking assignment reach the DUT at that same
     // edge, which moves the request one cycle earlier, into a refresh that had closed the
-    // gate. See Part 19 in docs/roadmap.md.
+    // gate. See Part 19 in docs/roadmap/phase-09-ddr.md.
     integer pin_fails = 0;
     task op(input is_wr, input integer idx, input [7:0] wdata, input [255:0] phase);
         integer act0, col0, r0, guard;

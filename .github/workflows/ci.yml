@@ -141,14 +141,14 @@ jobs:
     # cycles of full-SoC simulation on its own, and the wide core's leg of
     # this job was already at 21 minutes. Briefly raised again, 45 to 60,
     # while stage 1d's out-of-order load port could speculatively lose a
-    # real UART byte (docs/roadmap.md, "Stage 1d was built anyway"): the
+    # real UART byte (docs/roadmap/phase-01-superscalar-ooo.md, "Stage 1d was built anyway"): the
     # wide core's UART loader test spent real wall-clock minutes reaching
     # sim/tb_uartload.v's own hang-detection watchdog before it could fail,
     # a cost a passing run never paid. Back to 45, then, once that bug was
     # fixed.
     #
     # Raised again, 45 to 90, when sim_uartirq/sim_probe/sim_div64test were
-    # added to this job (docs/roadmap.md's "Known defects" - they existed
+    # added to this job (docs/roadmap/index.md's "Known defects" - they existed
     # and passed already, just were never gated in CI). Measured directly on
     # a real run, not estimated: `CORE=inorder` passed at 44m53s - seven
     # seconds under the old 45-minute budget - and `CORE=ooo` was still
@@ -178,7 +178,7 @@ jobs:
       - uses: ./.github/actions/riscv-toolchain
 
       # The boot ROM has embedded this project's own dts/soc_$(CORE).dtb
-      # since the device-tree hand-off change (docs/roadmap.md's Phase 13,
+      # since the device-tree hand-off change (docs/roadmap/phase-13-multicore.md's Phase 13,
       # Stage 13) - `make soc` below now reaches `make dtb`, which this job
       # never needed dtc for before.
       - uses: ./.github/actions/dtc
@@ -221,7 +221,7 @@ jobs:
 
       # The newlib probe: which rung of libc actually works, preloaded the
       # same way sim_ramboot is. Existed in `make verify` already but was
-      # never wired into CI - docs/roadmap.md's "Known defects" named this
+      # never wired into CI - docs/roadmap/index.md's "Known defects" named this
       # gap explicitly: a regression here would have shown every check
       # above green.
       - name: newlib probe
@@ -229,7 +229,7 @@ jobs:
       - name: Check probe verdict
         run: grep -q "RAMBOOT TEST PASSED" probe.log
 
-      # docs/roadmap.md Phase 2: the SoC executing a 99 KB program out of
+      # docs/roadmap/phase-02-memory-ceiling.md Phase 2: the SoC executing a 99 KB program out of
       # external SDRAM, with block RAM present but holding nothing but the
       # verdict word. Matrixed over both cores like everything else here -
       # the fetch path through the instruction cache to a slave that takes
@@ -292,7 +292,7 @@ jobs:
       - name: Check SDRAM check verdict
         run: grep -q "RAMBOOT TEST PASSED" sdramcheck.log
 
-      # docs/roadmap.md Phase 5: Sv32 page tables living in external SDRAM,
+      # docs/roadmap/phase-05-third-party-software.md Phase 5: Sv32 page tables living in external SDRAM,
       # walked from S-mode, with the root table above the old 16 MB decode
       # ceiling. Two RTL changes make it possible - the walkers became a bus
       # master (rtl/soc/wb_ptw.v) and the interconnect decode grew a per-slave
@@ -323,13 +323,13 @@ jobs:
 
       # An interrupt-driven UART TX driver, not the polled one everything
       # above uses - and, like sim_probe below, in `make verify` already but
-      # never wired into CI (docs/roadmap.md's "Known defects").
+      # never wired into CI (docs/roadmap/index.md's "Known defects").
       - name: Interrupt-driven UART TX driver
         run: make sim_uartirq | tee uartirq.log
       - name: Check UART IRQ verdict
         run: grep -q "RAMBOOT TEST PASSED" uartirq.log
 
-      # __div64_32, isolated - docs/roadmap.md's "Stage 1d was built anyway"
+      # __div64_32, isolated - docs/roadmap/phase-01-superscalar-ooo.md's "Stage 1d was built anyway"
       # section has the story: CORE=ooo was once found permanently stuck
       # inside this exact kernel routine, and this is the fast, deterministic
       # regression for it, without a 90-million-cycle Linux boot in the way.
@@ -354,7 +354,7 @@ jobs:
       # the boot ROM waited forever for a byte that already arrived and was
       # lost - and this step was briefly split per-core, checking for that
       # exact failure line on `CORE=ooo` rather than requiring PASS. Fixed
-      # (docs/roadmap.md, "Stage 1d was built anyway"; the out-of-order
+      # (docs/roadmap/phase-01-superscalar-ooo.md, "Stage 1d was built anyway"; the out-of-order
       # load-issue scan now excludes side-effecting addresses the same way
       # `cpu_wb.v`'s D-cache already does), so back to one check for both.
       - name: Check UART loader verdict
@@ -457,7 +457,7 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------
-  # Dual-hart CoreMark (Phase 15 Stage 5, docs/roadmap.md): both harts run
+  # Dual-hart CoreMark (Phase 15 Stage 5, docs/roadmap/phase-15-heterogeneous.md): both harts run
   # CoreMark concurrently, not one after the other, checking a shared
   # counter's own read-modify-store comes out at exactly 2x the iteration
   # count - a real cross-hart-atomicity proof (see sim/tb_soc_2hart_coremark.v

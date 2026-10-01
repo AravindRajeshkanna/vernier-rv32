@@ -15,7 +15,7 @@
 // instantiation in this tree today) collapses this back to exactly the
 // fixed offsets this module used to hardcode; nothing outside this module
 // has been asked to instantiate more than one hart yet - see
-// docs/roadmap.md's Phase 13 entry.
+// docs/roadmap/phase-13-multicore.md's Phase 13 entry.
 module clint #(
     parameter NUM_HARTS = 1
 ) (

@@ -39,7 +39,7 @@
 module csr_file #(
     // mhartid's value for this instance. Every existing instantiation
     // (cpu_core.v, core_ooo.v) defaults this to 0, matching the one hart
-    // that exists in any build today - see docs/roadmap.md's Phase 13
+    // that exists in any build today - see docs/roadmap/phase-13-multicore.md's Phase 13
     // entry for why this can vary and nothing that reads mhartid does.
     parameter [31:0] HARTID = 32'h0
 ) (
@@ -173,7 +173,7 @@ module csr_file #(
 
     // ---- PMP (Physical Memory Protection): pmpcfg0-3, pmpaddr0-15 ----
     // Storage and WARL/lock semantics only - nothing here is consulted by any
-    // access path yet. See docs/roadmap.md's PMP entry for why: wiring
+    // access path yet. See docs/roadmap/beyond-the-phases.md's PMP entry for why: wiring
     // enforcement in changes the *default* rule for every S/U-mode memory
     // access (an unmatched address denies at S/U the moment any PMP entry
     // is real), and that is a hazard to every existing S/U-mode test

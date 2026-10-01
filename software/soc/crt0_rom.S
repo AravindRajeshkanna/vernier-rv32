@@ -47,7 +47,7 @@ halt:
  * a simulation-only mechanism, matching `NUM_HARTS>1` itself: no real
  * board build has ever asked for a second hart. See
  * software/soc/bootrom.c's own comment on `hart_release_addr` and
- * docs/roadmap.md's Phase 13 entry.
+ * docs/roadmap/phase-13-multicore.md's Phase 13 entry.
  */
 park_hart:
     la t1, hart_release_addr

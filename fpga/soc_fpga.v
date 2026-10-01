@@ -89,7 +89,7 @@ module soc_fpga #(
     // A plain pixel stream - this module itself does no PLL/TMDS work, that
     // is one level up in a board wrapper. fpga/ulx3s_top.v routes it for
     // real (encoder, PLL, serializer, real GPDI pins) behind the opt-in
-    // `WITH_VIDEO` (docs/roadmap.md's Phase 4 entry has the full account,
+    // `WITH_VIDEO` (docs/roadmap/phase-04-video-out.md's Phase 4 entry has the full account,
     // including the real timing cost that makes it opt-in rather than the
     // default). Left unconnected on a plain build, synthesis strips the
     // scan-out path and the framebuffer costs only its block RAM - which is

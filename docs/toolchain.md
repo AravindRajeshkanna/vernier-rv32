@@ -394,7 +394,7 @@ when that line was written and 2026-08-31, with no project change
 responsible for it - `brew upgrade`/`brew install` moves the formula
 forward or (via a reinstall) back independently of anything in this repo.
 That is a real, evidenced mechanism behind at least one investigation here:
-`docs/roadmap.md`'s resolved sdramboot `verilator_check` discrepancy
+`docs/roadmap/index.md`'s resolved sdramboot `verilator_check` discrepancy
 bisected to "same commit, same RTL, different result," which a version
 change in Icarus specifically - not in this project's code - explains
 cleanly. Anyone chasing a simulation result that will not reproduce should

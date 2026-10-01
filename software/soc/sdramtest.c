@@ -1,7 +1,7 @@
 /* The Phase 2 acceptance test: a program that runs entirely out of external
  * SDRAM and is too big to have been a block RAM program.
  *
- * docs/roadmap.md's Phase 2 is "done when the SoC runs a program larger than
+ * docs/roadmap/phase-02-memory-ceiling.md's Phase 2 is "done when the SoC runs a program larger than
  * 64 KB from external memory, and sim_ramboot's 64 KB assumption is no longer
  * the binding constraint". Each of those is checked here rather than asserted:
  *

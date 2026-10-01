@@ -28,7 +28,7 @@
  * embedded device tree's two cpu `compatible` strings) is too, and a fixed
  * "dtb_blob.h" name would let Make's own mtime-based rebuild tracking miss a
  * $(CORE) switch between two manual invocations (see dts/soc.dts's header
- * and docs/roadmap.md's Phase 15 entry, Stage 3). The literal default below
+ * and docs/roadmap/phase-15-heterogeneous.md's Phase 15 entry, Stage 3). The literal default below
  * is only for a manual, no-Makefile compile against a hand-generated flat
  * dtb_blob.h, matching gen_dtb_blob.py's own default argument. */
 #ifndef DTB_BLOB_HEADER

@@ -1,6 +1,6 @@
 // Wishbone B4 classic general-purpose timer, with a PWM output built from
 // the same counter/compare datapath - not a second peripheral. See
-// docs/roadmap.md's Phase 12 entry for why this is a genuinely separate
+// docs/roadmap/phase-12-peripherals.md's Phase 12 entry for why this is a genuinely separate
 // need from rtl/clint.v's own mtime: CLINT is one hart's fixed-purpose
 // scheduling clock, entirely spoken for by OpenSBI/Linux, and repurposing
 // it for anything else means fighting the kernel's own tick for a
@@ -28,7 +28,7 @@
 //
 // Zero wait states.
 //
-// One channel, deliberately - docs/roadmap.md's Phase 12 entry names
+// One channel, deliberately - docs/roadmap/phase-12-peripherals.md's Phase 12 entry names
 // "how many channels" as the real open question this stage answers, and
 // a single channel is enough to prove the mechanism (counter, period,
 // compare, wraparound interrupt, PWM output) without the added

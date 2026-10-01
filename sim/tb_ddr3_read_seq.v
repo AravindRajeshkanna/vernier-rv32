@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 7 (docs/roadmap.md):
+// Directed test for Phase 9 Stage 1, Part 7 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/ddr3_read_seq.v's own real ACT->RD->read_start command
 // sequencing, measured directly cycle-by-cycle rather than assumed
 // identical to rtl/soc/ddr3_write_seq.v's own already-measured

@@ -1,4 +1,4 @@
-// Integrated test for Phase 9 Stage 1, Part 25 (docs/roadmap.md): lane 1's own
+// Integrated test for Phase 9 Stage 1, Part 25 (docs/roadmap/phase-09-ddr.md): lane 1's own
 // calibration, DQ/DQS write-drive and UDM masking, wired into the real
 // rtl/soc/ddr3_ecp5_top.v and run through its real, shared clock/reset tree - the
 // same proof sim/tb_ddr3_top.v (Parts 3-5) gave lane 0, mirrored for lane 1, plus

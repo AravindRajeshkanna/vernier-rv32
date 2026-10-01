@@ -1,7 +1,7 @@
 #!/bin/sh
 # Synthesis and place-and-route of the DDR3 PHY on the ECPIX-5's device, with the board's
 # real DDR3 pins - a probe of whether the PHY's structure is legal on an ECP5, not a
-# bring-up build. Docs/roadmap.md, Parts 21-25 (25 gives lane 1 its own real DQSBUFM,
+# bring-up build. Docs/roadmap/phase-09-ddr.md, Parts 21-25 (25 gives lane 1 its own real DQSBUFM,
 # sharing the one DDRDLLA lane 0 already had - Part 23's own tie-off is gone), plus a later
 # survey, no RTL change, that probes this same flow with deliberate cross-lane mutations
 # to find out precisely what it does and does not catch.
@@ -23,7 +23,7 @@
 # it to a constant passed, Part 21). READCLKSEL[2:0] carries no physical locality
 # constraint either: cross-wiring lane 1's own DQSBUFM to lane 0's own calibrated
 # READCLKSEL places and routes without complaint - simulation cannot show this either
-# (docs/roadmap.md, Part 24), so a READCLKSEL cross-wire between lanes is a real,
+# (docs/roadmap/phase-09-ddr.md, Part 24), so a READCLKSEL cross-wire between lanes is a real,
 # currently open gap neither layer of proof this project has closes. It also says nothing
 # about behaviour, or about timing at the DDR clock, or about the four ports that have no
 # pin on this board (fpga/constraints/ecpix5_ddr3_probe.lpf parks them on throwaway pins).

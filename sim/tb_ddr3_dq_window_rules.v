@@ -1,5 +1,5 @@
 // Self-test for the write-burst rules added to sim/ddr3_dq_model.v in Phase 9
-// Stage 1, Part 17 (docs/roadmap.md). Same discipline as
+// Stage 1, Part 17 (docs/roadmap/phase-09-ddr.md). Same discipline as
 // sim/tb_ddr3_model_banks.v: a checker whose rules cannot be shown to fire is
 // not a checker, and the real design, once aligned, never breaks them - so each
 // rule gets its own directed stream on its own model instance, driven straight

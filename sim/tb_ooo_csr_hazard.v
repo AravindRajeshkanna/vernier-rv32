@@ -1,6 +1,6 @@
 // Directed test: does rtl/ooo/core_ooo.v's register-form CSR write ever
 // assert csr_file's `we` before its source operand is actually registered
-// ready? docs/roadmap.md's "CORE=ooo has no Fmax" entry (round 2) traced
+// ready? docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has no Fmax" entry (round 2) traced
 // every consumer of headS_op1/headS_op2's cdbB/cdbL bypass arms against the
 // registered `headS_ready` and found five gated correctly - and one that
 // is not: csr_file's `.we` port is gated by `head_ex_commit`, which does

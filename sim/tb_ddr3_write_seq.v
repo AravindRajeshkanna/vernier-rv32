@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 6 (docs/roadmap.md):
+// Directed test for Phase 9 Stage 1, Part 6 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/ddr3_write_seq.v's own real ACT->WR->write_start command
 // sequencing, measured directly cycle-by-cycle rather than trusted
 // from the module's own header arithmetic - this project's own

@@ -30,7 +30,7 @@ retries seeds and stops at the first close — the normal build closes by seed
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
 | **Fmax with I/O constrained** | ⚠️ **23.18–25.92 MHz** (85F, six placement seeds, with the registered ack) — **4 of 6 land under the board's 25 MHz**. Margin is thin; `synth_ecp5.sh` retries seeds and normally closes by seed 3 (confirmed 2026-08-26: seed 3, 25.96 MHz routed). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
 | **`CORE=ooo` synthesis** | ✅ **runs, real numbers** — 78 DP16KD (37%, essentially unchanged from in-order's 80/38%), 52,042 TRELLIS_COMB (**62%**, ~3x in-order), 12 MULT18X18D. First time this core has been synthesized at all — `synth_ecp5.sh` had no `CORE=` knob before this. |
-| **`CORE=ooo` Fmax** | ⚠️ **8.68 MHz at the board's real 25 MHz target** — place-and-route's static timing analysis used to fail outright, deterministically, with `ERROR: Timing analysis failed due to combinational loops`; that closed (`docs/roadmap.md`'s "CORE=ooo has no Fmax" entry, Round 6), and the real number underneath still falls well short of 25 MHz. An SDC multicycle/false-path exception on the traced critical path was the first idea considered for Round 7, but checked directly against nextpnr-ecp5's own upstream source before spending a build on it and found not viable — `set_multicycle_path` isn't implemented at all, and `set_false_path` is a documented no-op ("does not do anything(yet)"); see `docs/roadmap.md`'s own "Round 7" account for the full citation. The real gap is still open, with no current candidate beyond an RTL-level change. |
+| **`CORE=ooo` Fmax** | ⚠️ **8.68 MHz at the board's real 25 MHz target** — place-and-route's static timing analysis used to fail outright, deterministically, with `ERROR: Timing analysis failed due to combinational loops`; that closed (`docs/roadmap/phase-01-superscalar-ooo.md`'s "CORE=ooo has no Fmax" entry, Round 6), and the real number underneath still falls well short of 25 MHz. An SDC multicycle/false-path exception on the traced critical path was the first idea considered for Round 7, but checked directly against nextpnr-ecp5's own upstream source before spending a build on it and found not viable — `set_multicycle_path` isn't implemented at all, and `set_false_path` is a documented no-op ("does not do anything(yet)"); see `docs/roadmap/phase-01-superscalar-ooo.md`'s own "Round 7" account for the full citation. The real gap is still open, with no current candidate beyond an RTL-level change. |
 | **`CORE=ooo`, underclocked, on a board** | ✅ **a real, timing-closed bitstream exists** — `BOARD=ulx3s85-underclock` (`fpga/underclock_pll.v`, an `EHXPLLL` deriving 5 MHz from the board's own 25 MHz oscillator) closes at **10.17 MHz achieved against a 5 MHz target**, first attempt, no seed retries. `fpga/build/ulx3s85-underclock.bit` is real and flashable; not yet loaded onto a board this session. |
 | `constraints/generic.lpf` | ❌ still placeholders — superseded by `ulx3s.lpf` |
 | `synth/vivado.tcl` | ❌ never executed |
@@ -42,7 +42,7 @@ retries seeds and stops at the first close — the normal build closes by seed
 | **All 32 MB of SDRAM** | ✅ **confirmed on silicon** — every one of 8192 rows, 8M unique words, 4,031 ms measured retention. `BOARD=ulx3s85-sdramfull` |
 | **SDRAM as data, on a board** | ✅ **`SDRAM-CHECK: PASS`** — failed first at one word in a thousand; see the clock-phase diagnosis below |
 | Running *code* from SDRAM on a board | ✅ **`SDRAM-TEST: PASS`** — a 99 KB program sent over UART, run from SDRAM |
-| Video scan-out on a board | ⚠️ **wired, not yet run against a monitor** — encoder, PLL, serializer and real GPDI pins all done and gated in `make verify` (`sim_ulx3s_video`); opt-in via `BOARD=ulx3s85-video` since it costs this board's already-thin timing margin (see `docs/roadmap.md`'s Phase 4 entry) |
+| Video scan-out on a board | ⚠️ **wired, not yet run against a monitor** — encoder, PLL, serializer and real GPDI pins all done and gated in `make verify` (`sim_ulx3s_video`); opt-in via `BOARD=ulx3s85-video` since it costs this board's already-thin timing margin (see `docs/roadmap/phase-04-video-out.md`'s Phase 4 entry) |
 | **Sv32 MMU on a board** | ✅ **confirmed on silicon** — Linux runs its whole linear map through it |
 | **PLIC on a board** | ⚠️ **probed, not fired** — Linux maps 8 interrupts over 2 contexts; no interrupt has been *delivered* on silicon. `BOARD=ulx3s85-plictest` now covers both the GPIO's and the **UART's** source and settles it in one flash |
 | **ns16550 console on a board** | ✅ **confirmed on silicon** — `ttyS0 ... is a 16450`, and the handover from the SBI earlycon is clean |
@@ -84,7 +84,7 @@ Domain0 Next Mode           : S-mode
 **`Boot HART PMP Count : 0` above predates PMP entirely** - this capture
 is from before `rtl/csr_file.v` gained real `pmpcfg`/`pmpaddr` storage.
 `software/opensbi/README.md` has the re-capture showing `16` once that
-CSR work landed, and `docs/roadmap.md`'s PMP entry has the full account
+CSR work landed, and `docs/roadmap/beyond-the-phases.md`'s PMP entry has the full account
 of enforcement on both cores' data path and instruction fetch since -
 none of it has been re-verified on this specific board, only in
 simulation, and this transcript has not been re-run to reflect it.
@@ -841,7 +841,7 @@ it does. What it does mean: the simplest variant, which for over a year read
 as "changing this hangs the boot," was never a fetch-path defect at all. It
 was the SEIP latch-up, observed through whichever unrelated change happened
 to be reshuffling timing that week - fetch-path variants included, and
-[Phase 6's own history](../docs/roadmap.md) is one more entry on that list.
+[Phase 6's own history](../docs/roadmap/phase-06-debug.md) is one more entry on that list.
 
 **Timing: closes, and the gate isn't the reason either way.** `BOARD=ulx3s85`
 with this change: seed 1 24.66 MHz, seed 2 24.10 MHz, seed 3 24.91 MHz, seed
@@ -894,7 +894,7 @@ distribution already documented to span multiple MHz between seeds with
 so this is not distinguishable from that same noise. It is also not
 nothing: PR #79's `dbg_halt_admit_block` term is the only `CORE=inorder`
 RTL change since 2026-08-26, it was never synthesized before this round
-despite docs/roadmap.md asserting since PR #79 that it "does not touch the
+despite docs/roadmap/phase-06-debug.md asserting since PR #79 that it "does not touch the
 timing-critical fetch-redirect path," and this is the first time that
 claim has actually been checked against a build. It holds in the sense that
 matters most: the term only ever gates `pc_freeze`, and four of the six

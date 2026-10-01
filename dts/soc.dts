@@ -12,7 +12,7 @@
  * what lets the two `compatible` strings under cpus/ below vary with
  * $(CORE_DEFINES): see the comment at each one for why that has to be a real,
  * $(CORE)-suffixed build product (dts/soc_$(CORE).dtb) rather than a single
- * shared dts/soc.dtb, and docs/roadmap.md's Phase 15 entry (Stage 3) for the
+ * shared dts/soc.dtb, and docs/roadmap/phase-15-heterogeneous.md's Phase 15 entry (Stage 3) for the
  * staleness hazard that made it so.
  *
  * What this is and isn't: it is an accurate description of the hardware in
@@ -20,7 +20,7 @@
  * to be handed. It compiles to dts/soc_$(CORE).dtb, which
  * software/opensbi/mkimage.py packs into every image `make sim_opensbi`/
  * `sim_linux` boot and OpenSBI genuinely parses at runtime - this stopped
- * being aspirational once that integration landed (docs/roadmap.md's OpenSBI
+ * being aspirational once that integration landed (docs/roadmap/phase-05-third-party-software.md's OpenSBI
  * phase). The boot ROM and software/soc/main.c's own RAM program still have
  * the memory map compiled in via software/soc/soc.h instead of reading this,
  * since both predate the device tree and have no reason to add a parser for
@@ -135,7 +135,7 @@
          * index by position, and rtl/cpu_core.v's own HARTID parameter -
          * all three must agree, the same "nothing checks these match"
          * caution every other duplicated constant in this file already
-         * carries. docs/roadmap.md's Phase 13 entry has the full account. */
+         * carries. docs/roadmap/phase-13-multicore.md's Phase 13 entry has the full account. */
         cpu1: cpu@1 {
             device_type = "cpu";
             reg = <1>;
@@ -211,7 +211,7 @@
 #ifdef DDR3_ENABLE
     memory@a0000000 {
         device_type = "memory";
-        /* Phase 9 Stage 2 (docs/roadmap.md). Real only when the SoC was
+        /* Phase 9 Stage 2 (docs/roadmap/phase-09-ddr.md). Real only when the SoC was
          * built with DDR3_ENABLE (rtl/soc/soc_top.v's own header) - the
          * default build described here does not have this slave at all,
          * and describing it unconditionally would hand a kernel addresses
@@ -381,7 +381,7 @@
          * SoC generically and cannot know, at authoring time, whether a
          * given build actually routed the pixel stream to real pins - that
          * is opt-in (`WITH_VIDEO`, `fpga/ulx3s_top.v`) since it costs this
-         * board's own timing margin (docs/roadmap.md's Phase 4 entry), not
+         * board's own timing margin (docs/roadmap/phase-04-video-out.md's Phase 4 entry), not
          * the default. The encoder, PLL and TMDS serializer all exist and
          * are gated in `make verify`; only a real monitor hasn't confirmed
          * it yet. The buffer itself is readable and writable regardless.
@@ -396,7 +396,7 @@
         };
 
         /* General-purpose timer / PWM (rtl/soc/wb_timer.v). One channel -
-         * docs/roadmap.md's Phase 12 entry has the reasoning. No real
+         * docs/roadmap/phase-12-peripherals.md's Phase 12 entry has the reasoning. No real
          * kernel driver binds "riscv-fpga-cpu,timer0", matching gpio0/
          * spi0's own custom compatible strings above - these nodes are
          * informational, not yet a live Linux capability.

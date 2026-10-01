@@ -1,4 +1,4 @@
-// DDR3 DQS write-drive, ECP5 - Phase 9 Stage 1, Part 4 (docs/roadmap.md).
+// DDR3 DQS write-drive, ECP5 - Phase 9 Stage 1, Part 4 (docs/roadmap/phase-09-ddr.md).
 // `ODDRX2DQSB` + `TSHX2DQSA`, generating a real write preamble/active-
 // toggle/postamble DQS waveform for one byte lane - closing the gap
 // Part 3 named explicitly: `rtl/soc/ddr3_dq_serdes_ecp5.v` can already

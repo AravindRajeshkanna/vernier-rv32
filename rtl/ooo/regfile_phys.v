@@ -27,7 +27,7 @@
 // comparison could never produce a different answer - not "usually
 // correct", structurally incapable of differing, since the two checks
 // share their inputs. That redundant copy was also part of a combinational
-// loop `nextpnr` could not analyze (docs/roadmap.md's "CORE=ooo has no
+// loop `nextpnr` could not analyze (docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has no
 // Fmax" entry, round 4): `wdata1`/`wdata2` here are `cdbB_val`/`cdbL_val`
 // directly, and removing the arms that read them here is what a real
 // synthesis run confirmed actually changes the netlist's cycle structure.

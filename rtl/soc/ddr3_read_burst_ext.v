@@ -1,5 +1,5 @@
 // DDR3 read-burst active-window extender - Phase 9 Stage 1, Part 8
-// (docs/roadmap.md). Converts `rtl/soc/ddr3_read_seq.v`'s own single-
+// (docs/roadmap/phase-09-ddr.md). Converts `rtl/soc/ddr3_read_seq.v`'s own single-
 // cycle `read_start` pulse into a real, held-high `read_active` signal
 // spanning this design's own real burst-length-8 duration -
 // reconciling a real mismatch Part 7's own header named explicitly:

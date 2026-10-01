@@ -2,7 +2,7 @@
  * stuck inside, run standalone against known-correct answers, in three
  * phases of increasing fidelity to how Linux actually reaches it.
  *
- * docs/roadmap.md's "Stage 1d was built anyway" section ("Update 3" through
+ * docs/roadmap/phase-01-superscalar-ooo.md's "Stage 1d was built anyway" section ("Update 3" through
  * "Update 5") has the full trail: bisecting `sim_linux CORE=ooo` on
  * `+maxcycles` and widening `sim/verilator_soc.cpp`'s control-flow-transfer
  * ring found the boot permanently stuck inside `lib/math/div64.c`'s
@@ -352,7 +352,7 @@ int main(void)
 
     trap_install();
 
-    put_str("\n=== __div64_32 isolated (docs/roadmap.md 'Update 3') ===\n");
+    put_str("\n=== __div64_32 isolated (docs/roadmap/phase-01-superscalar-ooo.md 'Update 3') ===\n");
     put_dec(N_CASES);
     put_str(" cases\n");
 

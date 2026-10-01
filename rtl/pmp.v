@@ -1,7 +1,7 @@
 // Physical Memory Protection: address matching + permission resolution
 // against the 16 pmpcfg/pmpaddr entries csr_file.v stores. Pure combinational
 // logic, standalone - nothing instantiates this module yet. See
-// docs/roadmap.md's PMP entry for why wiring enforcement into an actual
+// docs/roadmap/beyond-the-phases.md's PMP entry for why wiring enforcement into an actual
 // access path is a separate, more hazardous round (it changes the *default*
 // rule for every S/U-mode memory access the moment any entry is real) and is
 // deliberately not part of this one. This module exists now, verified in
@@ -43,7 +43,7 @@
 // restricted it), S/U-mode is denied. That default flips the moment any
 // PMP hardware exists, spec-mandated - real firmware (OpenSBI's generic
 // PMP init) is expected to configure an open region during boot for exactly
-// this reason. See docs/roadmap.md for why that firmware-side dependency is
+// this reason. See docs/roadmap/beyond-the-phases.md for why that firmware-side dependency is
 // what keeps this module unwired for now.
 module pmp (
     input  wire [127:0] pmpcfg,   // 16 x 8-bit pmpNcfg: pmpcfg[8*i +: 8] = pmp[i]cfg

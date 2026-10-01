@@ -1,6 +1,6 @@
 /* An interrupt-driven UART transmitter.
  *
- * docs/roadmap.md Phase 3 has flagged "the interrupt is already wired to the
+ * docs/roadmap/phase-03-performance.md Phase 3 has flagged "the interrupt is already wired to the
  * PLIC; the driver simply polls" as a backlog item, and until this file that
  * was exactly true: every put_char in this repository (software/soc/console.c)
  * spins on LSR.THRE before every single byte. rtl/uart.v has had a working

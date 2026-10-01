@@ -246,7 +246,7 @@ by hand outside that bracket: a one-off `python3 tests/cosim.py --core=ooo`
 after switching `CORE`, run without first confirming `sim/sim_isa.out` was
 rebuilt, silently re-graded whatever core happened to be sitting in that
 file. It produced a real false result — `rv32si-p-dirty` briefly reported as
-newly matching Spike on `CORE=ooo` (`docs/roadmap.md`'s "Stage 1d was built
+newly matching Spike on `CORE=ooo` (`docs/roadmap/phase-01-superscalar-ooo.md`'s "Stage 1d was built
 anyway" section, "Update 6"), retracted one gate cycle later when the
 ordinary `make verify_ooo` → `make verify` sequence reproduced the original
 divergence (same section, "Update 7"). Nothing else about the RTL or the

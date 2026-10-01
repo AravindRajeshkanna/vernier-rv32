@@ -1,6 +1,6 @@
 // Wishbone B4 classic framebuffer: a block-RAM pixel buffer the CPU writes
 // into, scanned out by video_timing.v - plus a small fill/copy/line engine,
-// Phase 10 stages 1-3 (docs/roadmap.md).
+// Phase 10 stages 1-3 (docs/roadmap/phase-10-gpu.md).
 //
 // This was a *display controller*, not a GPU in the compute sense: no
 // drawing engine, no blitter, no second core - the CPU wrote every pixel
@@ -10,7 +10,7 @@
 // untouched." The engine below keeps that promise - it is entirely
 // internal to this module's existing Wishbone slave port, reusing the
 // same address window rather than adding a new slave or a new master.
-// docs/roadmap.md's Phase 10 entry has the reasoning for why *this* is
+// docs/roadmap/phase-10-gpu.md's Phase 10 entry has the reasoning for why *this* is
 // the first increment (peripheral-sized, not core-sized) and what a
 // real 3D pipeline would cost beyond it.
 //
@@ -185,7 +185,7 @@ module wb_framebuffer #(
     // default) crashes yosys's own CHECK pass during real FPGA
     // synthesis - not a simulator issue, and not this project's own
     // logic bug: a raw std::out_of_range C++ exception from inside
-    // yosys itself. docs/roadmap.md's "wb_framebuffer.v crashes yosys"
+    // yosys itself. docs/roadmap/phase-04-video-out.md's "wb_framebuffer.v crashes yosys"
     // entry (Updates 1-8) traces this to any wide, non-trivial COMPUTED
     // write address (this module has three: blit_word_addr,
     // copy_src_word_addr, and a_addr) driving a large array; two

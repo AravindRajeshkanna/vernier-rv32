@@ -23,7 +23,7 @@
 // k's own ack fired last cycle, and it is still asking this cycle") proved
 // correct here, against this file's own unconstrained `d_cyc` input - and
 // was still wrong about the real system once a genuine two-hart AMO
-// contention test finally existed to check it (docs/roadmap.md's Phase 13
+// contention test finally existed to check it (docs/roadmap/phase-13-multicore.md's Phase 13
 // Stage 1 account has the full correction): `rtl/soc/cpu_wb.v` sits between
 // every core and this file, and its own one-cycle decode bubble drops the
 // real, bus-level `d_cyc` for exactly one cycle at an AMO's read-to-write

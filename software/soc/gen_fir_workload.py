@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generates software/soc/fir_workload_data.h: a real 8-tap lowpass FIR
 filter (rtl/soc/wb_fir.v, Phase 11) applied to a synthetic signal -
-docs/roadmap.md's Phase 11 "Done when" bar's own obvious candidate,
+docs/roadmap/phase-11-dsp.md's Phase 11 "Done when" bar's own obvious candidate,
 "an audio FIR filter... with an existing reference implementation to
 check correctness against."
 

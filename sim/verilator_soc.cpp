@@ -83,7 +83,7 @@
 //                     RF.regs[0..31] directly, as CORE=inorder's dump does,
 //                     would return whichever physical registers happen to
 //                     occupy the first 32 of 64 slots, not the
-//                     architectural values (docs/roadmap.md's "Stage 1d was
+//                     architectural values (docs/roadmap/phase-01-superscalar-ooo.md's "Stage 1d was
 //                     built anyway", Update 10).
 //   +checkreads       compare every SDRAM read the interconnect completes
 //                     against what the modelled part actually holds, and

@@ -90,7 +90,7 @@ EXPECTED_DIVERGENCE = {
         "not, so the write to tselect traps here and does not there.",
     "rv32si-p-dirty":
         "a real, narrower, still-unresolved Sv32 dirty-bit semantic "
-        "difference from Spike, one instruction wide - see docs/roadmap.md's "
+        "difference from Spike, one instruction wide - see docs/roadmap/phase-01-superscalar-ooo.md's "
         "'Stage 1d was built anyway' section. Documented there as accepted "
         "since it first became visible, but never registered here, so "
         "`cosim --all` has been exiting 1 on every clean run since. Briefly "
@@ -163,7 +163,7 @@ def spike_trace(elf, limit):
     # defaults to (`spike --help`) - matching defaults rather than pinning a
     # number on either side, so a future change to either one's default is
     # what would need a second look here, not a silent mismatch. Enforcement
-    # is not wired in on the RTL side yet (docs/roadmap.md's PMP entry), so
+    # is not wired in on the RTL side yet (docs/roadmap/beyond-the-phases.md's PMP entry), so
     # this is only pmpcfg/pmpaddr CSR read/write/WARL agreement for now, not
     # fault-taking agreement - the two will only fully overlap once it is.
     out = subprocess.run(

@@ -53,7 +53,7 @@ module soc_top #(
     // ports so cross-hart LR/SC is coherent, software/soc/bootrom.c's own
     // mailbox parks every non-zero hart until hart 0 releases it, and
     // dts/soc.dts declares both - all proven for the homogeneous case
-    // (both harts the same core type), see docs/roadmap.md's Phase 13
+    // (both harts the same core type), see docs/roadmap/phase-13-multicore.md's Phase 13
     // entry for the full account. `-DCORE_HETERO` (Phase 15) makes the two
     // harts genuinely different types instead of copies of each other -
     // hart 0 is always `cpu_core.v` and every hart from 1 upward is
@@ -177,7 +177,7 @@ module soc_top #(
     //
     // SDRAM sits at 0x90 rather than replacing block RAM at 0x80, which is a
     // staging decision: keeping both memories meant external DRAM landed as
-    // an addition that could not regress anything. See docs/roadmap.md
+    // an addition that could not regress anything. See docs/roadmap/phase-02-memory-ceiling.md
     // Phase 2.
     //
     // Its window is **32 MB**, which is the size of the part actually on the
@@ -329,12 +329,12 @@ module soc_top #(
     assign dbg_reg_err   = dbg_reg_err_h[hartsel_idx];
 
     // Which core. -DCORE_OOO picks the wide/out-of-order one in rtl/ooo/.
-    // See docs/roadmap.md Phase 1 - the in-order core stays the proven
+    // See docs/roadmap/phase-01-superscalar-ooo.md Phase 1 - the in-order core stays the proven
     // default, and `make verify CORE=ooo` runs the whole suite against the
     // other one. The two no longer have an identical port list: hart
     // control (rtl/debug/dm.v's haltreq/resumereq, `dbg_*` below) is
     // in-order-only this round - see the tie-off right after this
-    // instantiation for why, and rtl/debug/README.md/docs/roadmap.md
+    // instantiation for why, and rtl/debug/README.md/docs/roadmap/phase-06-debug.md
     // Phase 6 for the full reasoning.
 
     // Correctness-first D-cache bypass (rtl/soc/cpu_wb.v's DCACHE_ENABLE,
@@ -420,7 +420,7 @@ module soc_top #(
     // not yet observable at this module's boundary). Every hart's own
     // reservation ports and hart control (dm.v's own hartsel, wired below)
     // DO connect for every hart, and cross-hart LR/SC coherence is real
-    // (rtl/soc/reservation_monitor.v, Phase 13) - see docs/roadmap.md's
+    // (rtl/soc/reservation_monitor.v, Phase 13) - see docs/roadmap/phase-13-multicore.md's
     // Phase 13 entry for the full account of what closed there.
     //
     // Which module each hart gets: CORE=inorder builds every hart as
@@ -515,7 +515,7 @@ module soc_top #(
         end
     endgenerate
 
-    // Closes the cross-hart LR/SC gap docs/roadmap.md's Phase 13 entry
+    // Closes the cross-hart LR/SC gap docs/roadmap/phase-13-multicore.md's Phase 13 entry
     // named from Stage 6 onward: every hart's own resv_valid/resv_addr/
     // store_fire/store_addr feeds this, and its per-hart resv_invalidate
     // feeds back into that same hart's own resv_invalidate_ext above.
@@ -616,7 +616,7 @@ module soc_top #(
     // to exactly one bit/word, connected to exactly hart 0's own fetch/
     // data/walker signals - see rtl/soc/wb_interconnect.v's own header for
     // why that is precisely the original 4-master shape, and
-    // docs/roadmap.md's Phase 13 entry for hart 1's own instantiation above
+    // docs/roadmap/phase-13-multicore.md's Phase 13 entry for hart 1's own instantiation above
     // and what still isn't wired to it.
     wb_interconnect #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS)) BUS (
         .clk(clk), .rst(rst_soc),
@@ -793,7 +793,7 @@ module soc_top #(
     // S-mode - hart 0's pair (0, 1) is what dts/soc.dts declares in
     // `interrupts-extended` and what every stock PLIC driver assumes; a
     // second hart's own pair (2, 3) exists in hardware once NUM_HARTS>1 but
-    // dts/soc.dts does not describe it yet (docs/roadmap.md's Phase 13
+    // dts/soc.dts does not describe it yet (docs/roadmap/phase-13-multicore.md's Phase 13
     // entry).
     plic #(.NUM_SOURCES(NUM_IRQ), .NUM_CONTEXTS(2*NUM_HARTS)) PLIC (
         .clk(clk), .rst(rst_soc),
@@ -873,7 +873,7 @@ module soc_top #(
 
     // Phase 14: a quantized-inference MAC engine, not wired to either core's
     // own ISA - see rtl/soc/wb_npu.v's own header for why this shape, and
-    // docs/roadmap.md's Phase 14 entry for the decision it closes. Its own
+    // docs/roadmap/phase-14-npu.md's Phase 14 entry for the decision it closes. Its own
     // DMA master port (npu_m_*) reaches rtl/soc/wb_interconnect.v's new
     // lowest-priority tier above, not the CPU-facing slave bus.
     wb_npu NPU (
@@ -887,7 +887,7 @@ module soc_top #(
 
     // Phase 11: a streaming FIR filter coprocessor, not wired to either
     // core's own ISA - see rtl/soc/wb_fir.v's own header for why this
-    // shape, and docs/roadmap.md's Phase 11 entry for the decision it
+    // shape, and docs/roadmap/phase-11-dsp.md's Phase 11 entry for the decision it
     // closes.
     wb_fir FIR (
         .clk(clk), .rst(rst_soc),

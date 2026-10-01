@@ -1,5 +1,5 @@
 // Directed test for clint.v's new NUM_HARTS parameter (Phase 13 stage 2,
-// docs/roadmap.md) - proves the standard per-hart-strided msip/mtimecmp
+// docs/roadmap/phase-13-multicore.md) - proves the standard per-hart-strided msip/mtimecmp
 // addressing (hart h: msip at 0x0000+4h, mtimecmp at 0x4000+8h) actually
 // reaches independent storage per hart and that mtime stays a single,
 // shared counter, rather than trusting the address-math by inspection.

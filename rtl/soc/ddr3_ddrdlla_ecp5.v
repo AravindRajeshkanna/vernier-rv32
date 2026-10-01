@@ -1,4 +1,4 @@
-// DDR3 shared DLL, ECP5 - Phase 9 Stage 1, Part 24 (docs/roadmap.md).
+// DDR3 shared DLL, ECP5 - Phase 9 Stage 1, Part 24 (docs/roadmap/phase-09-ddr.md).
 //
 // One `DDRDLLA` per FPGA side, not one per byte lane: its `DDRDEL` output fans out to
 // every `DQSBUFM` in that half of the device, confirmed directly against LiteDRAM's own

@@ -1,10 +1,10 @@
-// core_ooo.v - the wide/out-of-order core. Phase 1 of docs/roadmap.md.
+// core_ooo.v - the wide/out-of-order core. Phase 1 of docs/roadmap/phase-01-superscalar-ooo.md.
 //
 // ---- Stage 1d: renaming, a reorder buffer, out-of-order issue ----
 //
 // Stages 1a-1c (git history) built a parallel core, a decoupled fetch
 // buffer with narrow dual issue, and out-of-order completion via a store
-// buffer and a load-completion buffer. docs/roadmap.md's Phase 1 section
+// buffer and a load-completion buffer. docs/roadmap/phase-01-superscalar-ooo.md's Phase 1 section
 // root-caused what was actually worth building next: renaming and a
 // scoreboard are worth nothing on their own (WAR/WAW are already
 // impossible under in-order issue), a reorder-buffer-only completion slot
@@ -53,7 +53,7 @@
 //     register to the mapping it overwrote - which the entry already
 //     carries, for exactly this purpose - and freeing the physical
 //     register it had allocated. This is the "or rollback" half of
-//     docs/roadmap.md's "RAT checkpointing or rollback": no separate
+//     docs/roadmap/phase-01-superscalar-ooo.md's "RAT checkpointing or rollback": no separate
 //     checkpoint storage, because the ROB's own entries are already an
 //     undo log, in the order that undoes them correctly.
 //
@@ -87,7 +87,7 @@
 // jumps the queue. A load that needs address translation is held at the
 // ROB head rather than given a second concurrent MMU walk (this core has
 // one data-MMU walker). Every one of these is a disclosed simplification
-// of "1d as designed," not an omission - docs/roadmap.md records what each
+// of "1d as designed," not an omission - docs/roadmap/phase-01-superscalar-ooo.md records what each
 // one costs against the measured ceiling it was scoped from.
 //
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ module core_ooo #(
     parameter RESET_PC = 32'h0000_0000,
     // Passed straight through to csr_file.v's mhartid. Defaults to 0,
     // matching the one hart every instantiation of this core builds today -
-    // see docs/roadmap.md's Phase 13 entry.
+    // see docs/roadmap/phase-13-multicore.md's Phase 13 entry.
     parameter [31:0] HARTID = 32'h0
 )(
     input  wire        clk,
@@ -152,7 +152,7 @@ module core_ooo #(
 
     // ---- LR/SC reservation: exposed for cross-hart snooping ----
     // Same contract rtl/cpu_core.v's own identically-named ports already
-    // have (Phase 13, docs/roadmap.md) - `reservation_valid`/
+    // have (Phase 13, docs/roadmap/phase-13-multicore.md) - `reservation_valid`/
     // `reservation_addr` themselves are unchanged, so every existing
     // single-hart instantiation keeps today's behavior exactly by tying
     // `resv_invalidate_ext` to 0 and ignoring the three outputs.
@@ -1054,7 +1054,7 @@ module core_ooo #(
                     // same-cycle bypass read here could only ever match a
                     // value `rob_r1_val[issL_scan_idx]` already equals, by
                     // construction - it was found and removed while
-                    // investigating docs/roadmap.md's "CORE=ooo has no
+                    // investigating docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has no
                     // Fmax" entry, whose own Round 4 first named this arm a
                     // real forwarding candidate rather than checking it
                     // against this same argument.
@@ -1188,7 +1188,7 @@ module core_ooo #(
     // clocked block - so a same-cycle bypass read here could only ever
     // match a value `rob_r1_val[issB_idx]`/`rob_r2_val[issB_idx]` already
     // equals, by construction. Found and removed the same investigation
-    // that removed issL_scan_addr's own arms - docs/roadmap.md's "CORE=ooo
+    // that removed issL_scan_addr's own arms - docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo
     // has no Fmax" entry named this pair as the second half of a closing
     // loop's own two arms, alongside headS_op1's now-removed cdbB arm.
     wire [31:0] issB_a_reg =
@@ -1281,7 +1281,7 @@ module core_ooo #(
     // bypass arm here could only ever matter on a cycle headS_ready is
     // still false, and nothing that reads headS_op1/headS_op2 does anything
     // observable on such a cycle. That was proven two ways, not assumed:
-    // docs/roadmap.md's "CORE=ooo has no Fmax" entry traced every reader
+    // docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has no Fmax" entry traced every reader
     // (cdbS_valid, interrupt_taken, head_redirect_valid, btb_train_en,
     // amo_active, and csr_file's `.we`) against headS_ready by hand, and
     // sim/tb_ooo_csr_hazard.v confirms the one reader (csr_file's `.we`)
@@ -1783,7 +1783,7 @@ module core_ooo #(
     // never got its matching `complete` write (the instruction that was
     // meant to issue it ran off a since-corrupted register state instead),
     // leaving it `in_service` forever and the interrupt permanently unable
-    // to re-arm - `docs/roadmap.md`'s Known Defects entry for
+    // to re-arm - `docs/roadmap/phase-01-superscalar-ooo.md`'s Known Defects entry for
     // `sim_uartirq CORE=ooo`.
     wire loadL_can_start = issL_found && !issL_misaligned && !issL_pmp_fault && !port_owned_by_store &&
                            !loadL_active && !dmem_mmu_active && !head_load_owns_port;

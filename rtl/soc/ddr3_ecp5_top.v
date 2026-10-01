@@ -1,5 +1,5 @@
 // DDR3 PHY integration, ECP5 - Phase 9 Stage 1, Parts 3-5 and 9
-// (docs/roadmap.md). Wires Part 1 (rtl/soc/ddr3_init_seq.v +
+// (docs/roadmap/phase-09-ddr.md). Wires Part 1 (rtl/soc/ddr3_init_seq.v +
 // rtl/soc/ddr3_phy_ecp5.v, the real JEDEC power-up sequence and SDR
 // command/address/CK generation), Part 2 (rtl/soc/ddr3_eclk_pll.v +
 // rtl/soc/ddr3_dqs_ecp5.v + rtl/soc/ddr3_dq_serdes_ecp5.v +
@@ -224,7 +224,7 @@
 // Still not attempted: bank-state tracking in the controller (this design
 // still opens and closes a bank around every access rather than
 // exploiting open rows), lane 1's own command-driven read/write, and real hardware
-// bring-up - see docs/roadmap.md's own Part 9/10/11/12/13/14/25 accounts for
+// bring-up - see docs/roadmap/phase-09-ddr.md's own Part 9/10/11/12/13/14/25 accounts for
 // the full list of what this does not establish.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)

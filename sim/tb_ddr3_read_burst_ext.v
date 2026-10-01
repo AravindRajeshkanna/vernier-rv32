@@ -1,4 +1,4 @@
-// Directed test for Phase 9 Stage 1, Part 8 (docs/roadmap.md):
+// Directed test for Phase 9 Stage 1, Part 8 (docs/roadmap/phase-09-ddr.md):
 // rtl/soc/ddr3_read_burst_ext.v's own real read_active window,
 // measured directly cycle-by-cycle rather than trusted from a hand-
 // trace - this project's own established practice after

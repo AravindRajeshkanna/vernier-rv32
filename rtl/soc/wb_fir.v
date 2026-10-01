@@ -1,6 +1,6 @@
 // Wishbone B4 classic streaming FIR filter coprocessor (Phase 11): a fixed-
 // depth finite impulse response filter, one multiply-accumulate per cycle
-// into a saturating signed accumulator. docs/roadmap.md's Phase 11 entry
+// into a saturating signed accumulator. docs/roadmap/phase-11-dsp.md's Phase 11 entry
 // names the open design question this answers - hardware float, packed
 // SIMD, or a dedicated coprocessor - and picks the coprocessor: a
 // self-contained Wishbone slave, matching Phase 14's own wb_npu.v and

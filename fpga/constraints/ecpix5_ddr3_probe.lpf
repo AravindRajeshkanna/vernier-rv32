@@ -6,7 +6,7 @@
 ## the design while a DDR-style output (which CS# and CK# are) has no pin. So that
 ## place-and-route can go on to look at everything else, this file parks those four on
 ## unrelated left-edge pins in banks 6 and 7, and gives the harness's three control pins
-## somewhere to sit. What those four ports need, on this board, is in docs/roadmap.md
+## somewhere to sit. What those four ports need, on this board, is in docs/roadmap/phase-09-ddr.md
 ## (Part 21): they should not exist.
 ##
 ## Used by:  ./fpga/synth/ddr3_pnr_probe.sh

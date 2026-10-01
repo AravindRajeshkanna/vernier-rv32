@@ -2,12 +2,12 @@
 // soc_top.v's vid_* ports) to the four GPDI channels: encode
 // (rtl/soc/tmds_encode.v) then serialize (fpga/tmds_serialize.v) per
 // channel, plus a fourth serializer alone for the fixed clock-channel
-// pattern DVI requires. Stage 4 of Phase 4 - see docs/roadmap.md.
+// pattern DVI requires. Stage 4 of Phase 4 - see docs/roadmap/phase-04-video-out.md.
 //
 // ---- Clocking: deliberately not video_pll.v's clk_pixel tap ----
 //
 // `clk` here is the SoC's own clock - the same net `wb_framebuffer.v` is
-// clocked from - not `video_pll.v`'s `clk_pixel` output. docs/roadmap.md's
+// clocked from - not `video_pll.v`'s `clk_pixel` output. docs/roadmap/phase-04-video-out.md's
 // Phase 4 section has the full argument: `clk_pixel` and the SoC's `clk`
 // are both nominally 25 MHz but are two different nets related by a fixed,
 // unverifiable-in-simulation PLL delay, and unlike the 5:1 `clk_bit`:

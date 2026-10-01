@@ -4,7 +4,7 @@
 //
 // ---- Why this exists ----
 //
-// docs/roadmap.md's "CORE=ooo has no Fmax" entry, Round 6: the
+// docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has no Fmax" entry, Round 6: the
 // combinational loop that made real synthesis fail outright is closed,
 // but the real Fmax it uncovered underneath - 8.68 MHz - still fails the
 // board's 25 MHz requirement by a wide margin. Flashing a design clocked

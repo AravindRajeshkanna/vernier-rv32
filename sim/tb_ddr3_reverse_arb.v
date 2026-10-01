@@ -1,4 +1,4 @@
-// Integrated test for Phase 9 Stage 1, Part 12 (docs/roadmap.md): the
+// Integrated test for Phase 9 Stage 1, Part 12 (docs/roadmap/phase-09-ddr.md): the
 // reverse arbitration direction in rtl/soc/ddr3_ecp5_top.v - a new
 // write_req/read_req must never start a transaction while a refresh is
 // pending or running (Micron MT41K256M16 datasheet, Figure 40, note 5:
@@ -244,7 +244,7 @@ module tb_ddr3_reverse_arb;
     // non-blocking assignment made at an edge should reach clocked logic only after
     // that edge, but Verilator 5.020 (Ubuntu 24.04's package) lets it reach the DUT at
     // the same edge, which moves a request one cycle earlier and changes what a sweep
-    // over request offsets measures. See Part 19 in docs/roadmap.md.
+    // over request offsets measures. See Part 19 in docs/roadmap/phase-09-ddr.md.
     task write_round(input integer k, input polite, input [7:0] data);
         integer acc0, ign0, done0, bnd0;
         reg [7:0] stored0;

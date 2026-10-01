@@ -2,7 +2,7 @@
 // The boot ROM's UART loader, end to end: a host sends a program over the
 // serial line, the ROM writes it into external SDRAM, and the program runs.
 //
-// This is the last link in docs/roadmap.md Phase 2. `make sim_sdramboot`
+// This is the last link in docs/roadmap/phase-02-memory-ceiling.md Phase 2. `make sim_sdramboot`
 // proves a program *executing* from SDRAM by having the testbench preload the
 // model, which is a machine no board is - a bitstream initialises block RAM
 // at FPGA configuration time and SDRAM comes up holding nothing. This proves
@@ -338,7 +338,7 @@ module tb_uartload;
     // not reached it when the job's own 45-minute budget ran out. 2,000,000
     // cycles (2.7x the passing run) keeps the same generous margin a legitimate
     // slow CI day might need while cutting the wall-clock cost of the known,
-    // documented CORE=ooo speculative-load hazard (docs/roadmap.md, "Stage
+    // documented CORE=ooo speculative-load hazard (docs/roadmap/phase-01-superscalar-ooo.md, "Stage
     // 1d was built anyway") reaching this watchdog by more than half.
     initial begin
         #80_000_000;

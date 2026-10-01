@@ -109,7 +109,7 @@ module top #(
         .mtime_in(mtime),
         .fence_i(), // no instruction buffer on this top level - nothing to flush
         .trap(trap),
-        // Both cores expose these now (Phase 13, docs/roadmap.md): no
+        // Both cores expose these now (Phase 13, docs/roadmap/phase-13-multicore.md): no
         // second hart's rtl/soc/reservation_monitor.v exists to wire this
         // to, and `resv_invalidate_ext` is an input - tied low explicitly
         // rather than omitted, for the same X-poisoning reason the dbg_*

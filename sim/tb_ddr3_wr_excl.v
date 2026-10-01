@@ -1,4 +1,4 @@
-// Integrated test for Phase 9 Stage 1, Part 13 (docs/roadmap.md): at most
+// Integrated test for Phase 9 Stage 1, Part 13 (docs/roadmap/phase-09-ddr.md): at most
 // one DDR3 transaction in flight. Part 12's own probe found that a
 // write_req and read_req presented together run in lockstep - the command
 // mux's fixed priority lets the write's ACT/WR reach the pins, the read's

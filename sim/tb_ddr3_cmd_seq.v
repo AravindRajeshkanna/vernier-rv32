@@ -1,4 +1,4 @@
-// Integrated test for Phase 9 Stage 1, Part 9 (docs/roadmap.md): the
+// Integrated test for Phase 9 Stage 1, Part 9 (docs/roadmap/phase-09-ddr.md): the
 // first real, command-driven write-then-read round trip through
 // rtl/soc/ddr3_ecp5_top.v - a real ACT+WR (rtl/soc/ddr3_write_seq.v)
 // followed by a real ACT+RD (rtl/soc/ddr3_read_seq.v), not

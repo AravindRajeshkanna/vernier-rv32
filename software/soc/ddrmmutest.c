@@ -4,7 +4,7 @@
  * one, reaches DDR3 through the real interconnect.
  *
  * ---- This currently hangs, and is a real, open, unresolved finding, not
- * a passing test - docs/roadmap.md's own Known Defects section and Phase 9
+ * a passing test - docs/roadmap/phase-09-ddr.md's own Known Defects section and Phase 9
  * Stage 2's "Update, Part 3"/"Update, Part 4" have the full account. Not in
  * `make verify`. ----
  * Every physical-addressing check below passes; after `mret` into S-mode

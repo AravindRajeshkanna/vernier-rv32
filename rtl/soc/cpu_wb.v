@@ -36,7 +36,7 @@
 // that assumption is safe, but it is an assumption.
 module cpu_wb #(
     // Disables the data cache entirely (every access reaches the bus, every
-    // cycle) without removing it - docs/roadmap.md's Phase 13 entry names
+    // cycle) without removing it - docs/roadmap/phase-13-multicore.md's Phase 13 entry names
     // this write-through cache as "correct only in a single-master system":
     // nothing snoops the bus for a *second* master's writes to a line this
     // one has cached, so a value changed by another hart's own store can be
@@ -117,7 +117,7 @@ module cpu_wb #(
     // touching the bus at all.
     //
     // That is the right first shape here because of what the stall counters
-    // say. `docs/roadmap.md` records 111,520 cycles of fetch starvation on
+    // say. `docs/roadmap/phase-03-performance.md` records 111,520 cycles of fetch starvation on
     // CoreMark, a benchmark that is almost entirely loops, and a word-granular
     // cache is a few dozen lines against a fill FSM's few hundred. Whether
     // spatial locality is worth adding on top is a question with a number
@@ -275,7 +275,7 @@ module cpu_wb #(
     // Data cache
     // =====================================================================
     // Same shape as the instruction cache above - direct-mapped, one word per
-    // line, asynchronously read - and for the same reason: `docs/roadmap.md`
+    // line, asynchronously read - and for the same reason: `docs/roadmap/phase-03-performance.md`
     // measures 65,069 cycles of *load* bus-wait on CoreMark against a total
     // of 482,674, and this is what reaches them. The other 1,233 cycles of
     // data-bus stall are stores, which the wide core's store buffer already
@@ -371,7 +371,7 @@ module cpu_wb #(
     // completes; `dc_hit_latched` is that access's `load_hit`, captured on
     // the cycle it started rather than used to gate anything combinationally
     // that same cycle. The cost, measured on CoreMark before this shipped
-    // (docs/roadmap.md's Phase 3 section): roughly 13% more cycles, since a
+    // (docs/roadmap/phase-03-performance.md's Phase 3 section): roughly 13% more cycles, since a
     // hit that used to cost nothing now costs the same one cycle a miss
     // already did. Stores and AMOs always see `dc_hit_latched` false -
     // `load_hit` is already false for them (`dmem_re` is low), so they fall

@@ -1,5 +1,5 @@
 // Self-test for the per-bank rules added to sim/ddr3_model.v in Phase 9
-// Stage 1, Part 14 (docs/roadmap.md). The model is test infrastructure;
+// Stage 1, Part 14 (docs/roadmap/phase-09-ddr.md). The model is test infrastructure;
 // a checker whose rules cannot be shown to fire is not a checker, and two
 // of these rules cannot be triggered by the real design at all (a design
 // that follows them never breaks them), so they need their own directed

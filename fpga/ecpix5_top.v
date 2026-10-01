@@ -1,6 +1,6 @@
 // Board wrapper for the ECPIX-5 (LambdaConcept), LFE5UM5G-45F or -85F.
 //
-// Stage 0 only (docs/roadmap.md's Phase 9 entry) - board bring-up, no DDR
+// Stage 0 only (docs/roadmap/phase-09-ddr.md's Phase 9 entry) - board bring-up, no DDR
 // controller yet. This file has NOT been run on a board: no ECPIX-5 is
 // attached to this project's own development session, unlike
 // fpga/ulx3s_top.v, which has. Every pin/frequency claim traces to a

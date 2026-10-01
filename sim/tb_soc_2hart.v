@@ -36,7 +36,7 @@
 // one, and the DCACHE_ENABLE=0 bypass this stage forces at NUM_HARTS>1
 // doesn't break an ordinary word store. It deliberately does not exercise
 // LR/SC cross-hart coherence: rtl/soc/reservation_monitor.v is still wired
-// to nothing (docs/roadmap.md's Phase 13 entry), so that remains a
+// to nothing (docs/roadmap/phase-13-multicore.md's Phase 13 entry), so that remains a
 // separate, later directed test once a later stage connects it.
 module tb_soc_2hart;
     reg clk = 0;

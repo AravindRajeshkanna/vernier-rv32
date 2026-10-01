@@ -169,7 +169,7 @@ static void s_mode_main(void)
      *         (rtl/ooo/core_ooo.v) carries the same PMP_FETCH instance and
      *         fault-priority ordering CORE=inorder's IF/ID pipeline already
      *         had, closing the asymmetry the previous round of this file
-     *         (and docs/roadmap.md's PMP entry) documented as still open. */
+     *         (and docs/roadmap/beyond-the-phases.md's PMP entry) documented as still open. */
     trap_arm(1);
     {
         register uint32_t a0_reg asm("a0") = 0xDEADBEEFu;

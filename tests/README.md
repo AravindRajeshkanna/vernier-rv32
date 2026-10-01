@@ -118,7 +118,7 @@ exercise rather than a way of dodging it:
   `zihpm` (hpmcounter3-31), which this core does not implement.
 
 No `--pmpregions` override: this core now implements the same 16 regions
-Spike defaults to (see docs/roadmap.md's PMP entry) — the pmpcfg/pmpaddr
+Spike defaults to (see docs/roadmap/beyond-the-phases.md's PMP entry) — the pmpcfg/pmpaddr
 storage is real and matches Spike trace for trace, and both cores now
 enforce it against their data path and instruction fetch, not just store
 and read it back.
@@ -141,7 +141,7 @@ implements debug triggers and this core does not.
 
 **This section is history, not current behavior.** It describes stage
 1b/1c's fixed slot-0/slot-1 dual dispatch. Stage 1d replaced that design
-with register renaming and an age-ordered ROB (`docs/roadmap.md`'s "Stage 1d
+with register renaming and an age-ordered ROB (`docs/roadmap/phase-01-superscalar-ooo.md`'s "Stage 1d
 was built anyway"): the core now dispatches and retires one instruction
 wide, "slot 1" is not a concept it has, and `vernier-p-pairing` retires 0
 in slot 1 unconditionally — see `tests/dual-issue-floor.txt`'s "stage 1d:
@@ -356,7 +356,7 @@ working.
 `make verify` runs everything against `rtl/cpu_core.v`, the in-order design
 that has run on hardware. `make verify_ooo` runs the identical suites against
 `rtl/ooo/core_ooo.v`, the wide core being built for Phase 1 of
-`docs/roadmap.md`.
+`docs/roadmap/phase-01-superscalar-ooo.md`.
 
 Both must be green. The point of running one suite against two cores is that a
 regression in either cannot hide behind the other, and co-simulation is what

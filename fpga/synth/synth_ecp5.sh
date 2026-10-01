@@ -54,7 +54,7 @@ BUILD=fpga/build
 # full-scale build is completely unaffected. FB_WIDTH/FB_HEIGHT were
 # added to work around rtl/soc/wb_framebuffer.v's own long-running,
 # separately-tracked yosys CHECK-pass crash at its real 320x240 scale
-# (docs/roadmap.md's own account has the full investigation) - shrinking
+# (docs/roadmap/phase-04-video-out.md's own account has the full investigation) - shrinking
 # them let synthesis proceed past that crash entirely for a build that
 # did not care about the framebuffer's own real behavior, the same
 # substitution that investigation's own "Update 1" already validated as
@@ -79,7 +79,7 @@ FB_HEIGHT=${FB_HEIGHT:-}
 #
 #   BOARD=ulx3s85-video ./fpga/synth/synth_ecp5.sh   ulx3s85, GPDI wired in.
 #     Opt-in, not the default: measurably costs Fmax margin (0 of 16 seeds
-#     close 25 MHz, against 1 of 6 for plain ulx3s85 - see docs/roadmap.md's
+#     close 25 MHz, against 1 of 6 for plain ulx3s85 - see docs/roadmap/phase-04-video-out.md's
 #     Phase 4 section), so the primary board target does not build it by
 #     default.
 #
@@ -178,7 +178,7 @@ case "$BOARD" in
         # the program still runs from block RAM, because nothing can preload
         # SDRAM - a bitstream initialises block RAM at configuration time and
         # SDRAM comes up empty. Running *code* out of SDRAM needs a loader
-        # that does not exist yet; see docs/roadmap.md Phase 2.
+        # that does not exist yet; see docs/roadmap/phase-02-memory-ceiling.md Phase 2.
         DEVICE=${DEVICE:-85k}
         TOP=${TOP:-ulx3s_top}
         LPF=${LPF:-fpga/constraints/ulx3s.lpf}
@@ -313,7 +313,7 @@ case "$BOARD" in
         BOARD_RTL="fpga/ulx3s_top.v fpga/sdram_clk_out.v"
         ;;
     ecpix5)
-        # docs/roadmap.md's Phase 9 entry, Stage 0 - board bring-up only,
+        # docs/roadmap/phase-09-ddr.md's Phase 9 entry, Stage 0 - board bring-up only,
         # no DDR controller yet. LFE5UM5G-85F, package CABGA554 (the real
         # package name nextpnr-ecp5/prjtrellis use internally for this
         # part's 554-ball BGA - confirmed against this toolchain's own
@@ -343,7 +343,7 @@ case "$BOARD" in
         # rather than the default, because it measurably is not free: 0 of
         # 16 placement seeds close 25 MHz with this built in, against 1 of 6
         # without it, and the shift is consistent across every seed tried,
-        # not one unlucky draw. docs/roadmap.md's Phase 4 section has the
+        # not one unlucky draw. docs/roadmap/phase-04-video-out.md's Phase 4 section has the
         # full measurement. This project's primary board target
         # (`ulx3s85`) should not pay that cost by default; this variant
         # exists so the cost can still be measured and the feature still
@@ -361,7 +361,7 @@ case "$BOARD" in
         # wired in to run the SoC itself off a real, derived clock slower
         # than the board's raw 25 MHz oscillator - not a smaller/different
         # design, the same one, timed to what it can actually meet.
-        # Exists specifically because docs/roadmap.md's "CORE=ooo has no
+        # Exists specifically because docs/roadmap/phase-01-superscalar-ooo.md's "CORE=ooo has no
         # Fmax" entry (Round 6) found a real, closed timing report of only
         # 8.68 MHz for that core - too slow for the board's own 25 MHz
         # requirement, but real enough to target directly once derived

@@ -1,6 +1,6 @@
 /* Linker script for a program that runs entirely out of external SDRAM.
  *
- * The point of docs/roadmap.md's Phase 2 is that 64 KB of block RAM is what
+ * The point of docs/roadmap/phase-02-memory-ceiling.md's Phase 2 is that 64 KB of block RAM is what
  * stands between this SoC and anything larger, so this script exists to place
  * a program that *cannot* fit there: software/soc/sdramtable.S alone is 96 KB
  * of .rodata, and the linker will refuse the build rather than let it

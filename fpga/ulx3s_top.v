@@ -225,7 +225,7 @@ module ulx3s_top #(
         // Deliberately not routed to a real pin yet - every `gn`/`gp` site
         // this header exposes is already spoken for (16 for GPIO, 4 for
         // JTAG), the same "encode/PLL/serialize first, real pins as a later
-        // stage" sequencing docs/roadmap.md's Phase 4 entry already used for
+        // stage" sequencing docs/roadmap/phase-04-video-out.md's Phase 4 entry already used for
         // video out. Left unconnected: synthesis strips the whole timer's
         // PWM output logic (the counter/compare/interrupt path stays, since
         // nothing else here is conditioned on this port), which is
@@ -263,7 +263,7 @@ module ulx3s_top #(
     // 0 of 16 placement seeds close 25 MHz with this wired in unconditionally
     // (was 1 of 6 without it, and every one of the 16 seeds routed lower than
     // every seed in that baseline - not seed-to-seed noise, a real shift).
-    // docs/roadmap.md has the full measurement. video_out.v's own logic is
+    // docs/roadmap/phase-04-video-out.md has the full measurement. video_out.v's own logic is
     // nowhere on the resulting critical path - it is still the same
     // dc_tag-sourced chain this file's Phase 3 history already describes -
     // so this is ordinary added-die-area routing congestion, not a new

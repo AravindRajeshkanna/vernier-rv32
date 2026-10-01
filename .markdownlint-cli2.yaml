@@ -78,7 +78,7 @@ config:
   MD018: false
 
   # This project uses a deliberate double blank line before a `---` section
-  # break in a few long documents (docs/roadmap.md) as extra visual
+  # break in a few long documents (docs/roadmap/) as extra visual
   # separation in an already very long file - a formatting preference, not
   # a mistake.
   MD012: false

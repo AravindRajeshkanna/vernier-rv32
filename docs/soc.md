@@ -298,7 +298,7 @@ second port, so this adds **no bus master**.
 `fpga/video_pll.v` (an `EHXPLLL`-based PLL) and `fpga/tmds_serialize.v` (a
 5:1 `ODDRX1F`-based DDR serializer) turn the pixel stream into TMDS and
 drive it out `fpga/ulx3s_top.v`'s `gpdi_dp[3:0]` pins — see
-`docs/roadmap.md`'s Phase 4. Unconditionally wiring it into
+`docs/roadmap/phase-04-video-out.md`'s Phase 4. Unconditionally wiring it into
 `fpga/soc_fpga.v`/`fpga/ulx3s_top.v` regressed the default
 `BOARD=ulx3s85` target's timing closure (routing congestion, not video
 logic on the critical path), so the whole path is gated behind
@@ -377,7 +377,7 @@ One channel: a free-running counter, a period register it wraps against,
 and a compare register that drives both a PWM output and a wraparound
 interrupt (PLIC source 3) - the same datapath serves both duties, not two
 separate peripherals. Distinct from `clint`'s own `mtime`, which OpenSBI
-and Linux already treat as spoken for; see `docs/roadmap.md`'s Phase 12
+and Linux already treat as spoken for; see `docs/roadmap/phase-12-peripherals.md`'s Phase 12
 entry for why repurposing it was never a real option. Zero wait states.
 
 | Offset | Register | Access | Notes |
@@ -393,7 +393,7 @@ One channel deliberately - `rtl/soc/wb_timer.v`'s own header comment has
 the reasoning. The PWM output (`pwm_out` at the SoC level) is not yet
 routed to a real pin: every site on the ULX3S's own header is already
 spoken for (16 for GPIO, 4 for JTAG), and wiring one needs the same real
-board-specific work `docs/roadmap.md`'s Phase 4 (video out) sequenced as
+board-specific work `docs/roadmap/phase-04-video-out.md`'s Phase 4 (video out) sequenced as
 its own later stage rather than bundling it with proving the datapath
 correct. The counter/compare/interrupt logic underneath is fully proven
 in simulation (`make sim_soc`'s acceptance test) regardless.
@@ -403,7 +403,7 @@ in simulation (`make sim_soc`'s acceptance test) regardless.
 Two ways to reach the same int8 MAC engine, one multiply-accumulate per
 cycle into a signed 32-bit accumulator - `rtl/muldiv_div.v`'s own
 sequential-not-combinational shape, not a wide parallel multiply-add
-tree. `docs/roadmap.md`'s Phase 14 entry has the design decisions this
+tree. `docs/roadmap/phase-14-npu.md`'s Phase 14 entry has the design decisions this
 closes: a memory-mapped peripheral, not custom RISC-V instructions, and
 (a later stage) a genuine bus-master port rather than only the original
 MMIO-loaded path.
@@ -426,7 +426,7 @@ Zero wait states on the register interface; the DMA master's own reads
 take as many cycles as the bus does, like any other master here.
 
 **Cached-A DMA start** (a later stage still): a real measurement at DMA
-scale (`docs/roadmap.md`'s Phase 14 Stage 4) found that computing several
+scale (`docs/roadmap/phase-14-npu.md`'s Phase 14 Stage 4) found that computing several
 neurons against one shared activation vector re-fetches that whole
 vector out of RAM once per neuron, even though `A_ADDR` never changes
 between them. Every ordinary DMA run (CTRL bit 1) that fits within
@@ -463,7 +463,7 @@ internal register and **saturates** (clamps to `INT32_MIN`/`INT32_MAX`)
 rather than silently wrapping into the 32-bit OUTPUT register - the same
 behavior every real fixed-point audio path implements, to avoid a
 wraparound producing a far worse artifact than a clipped-but-recognizable
-one. `docs/roadmap.md`'s Phase 11 entry has the design decision this
+one. `docs/roadmap/phase-11-dsp.md`'s Phase 11 entry has the design decision this
 closes (a memory-mapped coprocessor, not a core ISA extension) and what
 this stage deliberately does not build. Zero wait states.
 

@@ -1,6 +1,6 @@
 // Wishbone B4 classic slave in front of a 16-bit SDR SDRAM.
 //
-// This is the module docs/roadmap.md's Phase 2 calls for: `wb_ram.v` is 64 KB
+// This is the module docs/roadmap/phase-02-memory-ceiling.md's Phase 2 calls for: `wb_ram.v` is 64 KB
 // of block RAM on the board because 256 KB costs 244 ECP5 block RAMs and no
 // ECP5 has them, and the ULX3S carries 32 MB of SDRAM that nothing could
 // reach. Everything above this speaks Wishbone and knows only a base address
