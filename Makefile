@@ -223,7 +223,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality coremark_nodcache \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1149,6 +1149,15 @@ sim/sim_bench.out: $(BENCH_TB) sim/bus_monitor.v $(SOC_RTL)
 
 coremark: sim/sim_bench.out sim/coremark.hex
 	cd sim && $(VVP) sim_bench.out +hex=coremark.hex
+
+# The same single-hart CoreMark with the data cache off - the comparison that
+# separates the bus cost of the cache bypass multi-hart builds need from true
+# contention between harts (Phase 8 Stage 0). Not a CI job.
+sim/sim_bench_nodcache.out: $(BENCH_TB) sim/bus_monitor.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DNO_DCACHE -o $@ $(BENCH_TB) sim/bus_monitor.v $(SOC_RTL)
+
+coremark_nodcache: sim/sim_bench_nodcache.out sim/coremark.hex
+	cd sim && $(VVP) sim_bench_nodcache.out +hex=coremark.hex
 
 # ---- CoreMark, both harts running it concurrently (Phase 15 Stage 5) ----
 #
@@ -3498,7 +3507,7 @@ clean:
 	       software/soc/newlibprobe.elf software/soc/newlibprobe.bin \
 	       dts/soc_inorder.dtb dts/soc_ooo.dtb dts/soc_hetero.dtb \
 	       dts/soc_inorder_ddr3.dtb dts/soc_ooo_ddr3.dtb dts/soc_hetero_ddr3.dtb \
-	       sim/sim_isa.out sim/sim_bench.out sim/coremark.hex \
+	       sim/sim_isa.out sim/sim_bench_nodcache.out sim/sim_bench.out sim/coremark.hex \
 	       software/bench/coremark.elf software/bench/coremark.bin \
 	       sim/sim_soc_2hart_coremark.out sim/coremark_dispatch.hex \
 	       sim/coremark_hart0.hex sim/coremark_hart1.hex \
