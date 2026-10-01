@@ -2651,10 +2651,69 @@ proofs, riscv-tests 82/0/2 xfail, Linux boot to userspace). `make verify_ooo` al
 **What this does not establish.** The program is a few hundred bytes, so the
 fetch path is exercised for a handful of 16-byte blocks, not a large image
 or a full-part sweep. Nothing loads DDR3 except the program itself: there is
-no boot ROM or UART loader path to DDR3, so a `sim_sdramboot` equivalent
-(reset straight into DDR3) is still not done. Paged execution out of DDR3
+no boot ROM or UART loader path to DDR3 (Part 10 adds the UART loader), so
+a `sim_sdramboot` equivalent (reset straight into DDR3) is still not done. Paged execution out of DDR3
 is still blocked on the banked investigation above. No hardware: this is
 the simulation DQ model only.
+
+**Update, Part 10: the boot ROM's UART loader can put a program into
+DDR3, and getting there found a real bug in `wb_ddr.v`: a request made
+before calibration was silently dropped and acknowledged anyway.** DDR3 comes up empty on a board, like SDRAM, so the loader is the
+only way a program gets there. `software/soc/bootrom.c`'s `uartload_addr_ok`
+accepted block RAM and SDRAM only; built with `-DDDR3_ENABLE` it now accepts
+`DDR3_BASE`..`DDR3_BASE + DDR3_SIZE` too. It is a compile-time choice, not
+always on, because on a board without DDR3 that range is the tied-off slave
+and accepting the header would write nowhere and then jump into zeros, the
+failure the check exists to prevent. `make sim_uartload_ddr3` (in `verify`)
+builds that ROM (`bootrom_$(CORE)_ddr3`), links `software/soc/uartprog.c`
+with `-DUARTPROG_DDR3` at `0xA0000000` (`software/soc/link_ddr3.ld`, a twin of
+`link_sdram.ld`, with its stack and data in DDR3 as well), and reuses
+`sim/tb_uartload.v` with `DDR3_ENABLE` for the DDR3 model.
+
+Result: the 4,192-byte image goes over the UART into DDR3, the CRC32 matches,
+the program runs from DDR3 and reports that it is there, that its table
+arrived intact and that block RAM still works, in 931,529 cycles.
+Fail-first: the same testbench with the stock ROM is refused
+(`0xA0000000 is not inside RAM or SDRAM`, a NAK) and fails, so the ROM change
+is what makes the load possible. The first run also hit a model limit, not a
+loader bug: `sim/ddr3_dq_model.v` stores one byte per location with a default
+`DEPTH` of 1024 and printed "store full - raise DEPTH"; this test raises it to
+8192 for itself, and since every access scans the list that is as small as it
+can be.
+
+**The bug.** The first version of this test passed on the in-order core and
+hung on the wide one (`make verify_ooo`: no instruction ever retired in
+DDR3, 77 minutes of simulation and the testbench watchdog still had not
+fired). Measured, in order: all 4,192 image bytes reached `wb_ddr.v` with the
+right address and data (checked against the image); yet the model held 4,191
+locations, and the missing one was column 0 of row 0, the first byte ever
+written (`0x13`), on both cores; the first `write_req` pulse went out at
+cycle 2,797 while `init_ready` rose at 5,571 and `calib_done` at 5,601. The
+controller holds its command sequencers in reset until `calib_done`, so the
+pulse was lost, and `wb_ddr.v`, which never looked at `calib_done`, waited
+for a `write_busy` that calibration's own activity then raised, and
+acknowledged a store that never happened. The first instruction word of the
+loaded program therefore had unknown bits. The in-order core got away with
+it; the wide core's pipeline took the unknown into its control state
+(`retire_fire` unknown) and stopped.
+
+Every earlier DDR3 test touched DDR3 long after calibration, so none of them
+could see it: any access in the first ~5,600 cycles after reset was
+affected, reads included. Fix: `S_IDLE` accepts a request only when
+`calib_done` is high, so an early access waits instead of being lost.
+`sim/tb_wb_ddr.v` gained a store issued right after reset release, with a
+monitor that latches any acknowledgement while `calib_done` is low. Fail
+first: against the unfixed module that case reads back `0x0badf0xx`, the same
+lost low byte; with the fix it reads `0x0badf00d` and the monitor stays
+clear. With the fix `make sim_uartload_ddr3` passes on both cores
+(813,330 cycles on the wide core, 931,325 in-order).
+
+**What this does not establish.** Only the ROM variant built for simulation
+exists; no board build uses `-DDDR3_ENABLE` or the ROM's embedded device tree
+with a DDR3 node, so wiring the loader into a real `BOARD=ecpix5` build is
+still ahead. The image is 4 KB: this is the protocol and the write path, not a
+large transfer, and the 8192-deep model would not hold one. Nothing here is
+on hardware.
 
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
@@ -2784,4 +2843,4 @@ Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorde
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics` and `sim_ddrexec` (instruction fetch from DDR3, Part 9) in `make verify`. `sim_ddrmmutest` is deliberately not in `make verify` because the paged access hangs (Known defects).
+The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` is deliberately not in `make verify` because the paged access hangs (Known defects).

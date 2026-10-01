@@ -207,7 +207,14 @@ module wb_ddr (
 
             case (state)
                 S_IDLE: begin
-                    if (wb_cyc && wb_stb) begin
+                    // Not before the controller is calibrated: its command
+                    // sequencers are held in reset until calib_done, so a
+                    // request pulse sent earlier is dropped, while this state
+                    // machine would wait on a busy that calibration's own
+                    // activity raises and then acknowledge a transfer that
+                    // never happened. A boot loader writing DDR3 right after
+                    // reset lost the first byte of its image that way.
+                    if (wb_cyc && wb_stb && calib_done) begin
                         if (wb_we) begin
                             // Write-through: correct regardless of whether
                             // the block is resident (Part 22's DM masking

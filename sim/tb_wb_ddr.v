@@ -129,6 +129,10 @@ module tb_wb_ddr;
         end
     endtask
 
+    // Latches if the slave ever acknowledges while calib_done is still low.
+    reg early_ack = 1'b0;
+    always @(posedge clk) if (wb_ack && !calib_done) early_ack <= 1'b1;
+
     reg [31:0] got;
 
     initial begin
@@ -138,6 +142,16 @@ module tb_wb_ddr;
 
         repeat (4) @(posedge clk);
         rst = 1'b0;
+
+        // ---- a store issued before calibration is done ----
+        // The controller's command sequencers are held in reset until
+        // calib_done, so a request pulse sent to them earlier is lost. A boot
+        // ROM loading a program into DDR3 does exactly this, and it showed up
+        // as the first byte of the image missing. The access has to wait, not
+        // be acknowledged.
+        wb_access(1'b1, 32'h0000_0020, 32'h0BAD_F00D, 4'b1111, got);
+        check("nothing was acknowledged before calibration finished",
+              {31'b0, early_ack}, 32'b0);
 
         while (!(calib_done || calib_error) && $time < 400_000) @(posedge clk);
         check("lane 0 calibration completed (not errored)", {31'b0, calib_error}, 32'b0);
@@ -155,6 +169,9 @@ module tb_wb_ddr;
         check("store-then-load, word 1 of block 0 (cache hit path)", got, 32'h1234_5678);
         wb_access(1'b0, 32'h0000_0000, 32'b0, 4'b1111, got);
         check("word 0 of block 0 unchanged by word 1's own store", got, 32'hDEAD_BEEF);
+
+        wb_access(1'b0, 32'h0000_0020, 32'b0, 4'b1111, got);
+        check("the store issued before calibration landed", got, 32'h0BAD_F00D);
 
         // ---- a different block evicts the open one; the first block must
         // still read back correctly once it is re-filled later ----

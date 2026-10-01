@@ -29,6 +29,16 @@
 
 extern char _start[];
 
+/* The same program checks the SDRAM load and, built with -DUARTPROG_DDR3, the
+ * DDR3 one (make sim_uartload_ddr3). */
+#ifdef UARTPROG_DDR3
+#define MEM_NAME "DDR3"
+#define MEM_BASE DDR3_BASE
+#else
+#define MEM_NAME "SDRAM"
+#define MEM_BASE SDRAM_BASE
+#endif
+
 /* Each word holds its own index, so a byte that arrived wrong, a halfword in
  * the wrong SDRAM column, or an image loaded at the wrong offset all produce
  * a word that does not match. 256 words is enough to cross a row boundary
@@ -50,16 +60,16 @@ int main(void)
 
     trap_install();
 
-    put_str("\n=== loaded over UART, running from SDRAM ===\n");
+    put_str("\n=== loaded over UART, running from " MEM_NAME " ===\n");
     put_str("_start is at ");
     put_hex((uint32_t)(uintptr_t)_start);
     put_str("\n\n");
 
-    if ((uint32_t)(uintptr_t)_start < SDRAM_BASE) {
-        put_str("  running from SDRAM        FAILED\n");
+    if ((uint32_t)(uintptr_t)_start < MEM_BASE) {
+        put_str("  running from " MEM_NAME "        FAILED\n");
         failures++;
     } else {
-        put_str("  running from SDRAM        ok\n");
+        put_str("  running from " MEM_NAME "        ok\n");
     }
 
     for (i = 0; i < TABLE_WORDS; i++) {
