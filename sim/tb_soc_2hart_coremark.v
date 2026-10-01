@@ -70,6 +70,22 @@ module tb_soc_2hart_coremark;
         .trap(trap)
     );
 
+    // Phase 8 Stage 0: a passive observer of the shared bus under this
+    // sustained two-hart load. See sim/bus_monitor.v.
+    localparam MON_SLAVES = 13;   // must equal soc_top.v's NUM_SLAVES; checked below
+    initial #1 if (DUT.NUM_SLAVES != MON_SLAVES) begin
+        $display("  FAIL bus monitor built for %0d slaves, soc_top has %0d", MON_SLAVES, DUT.NUM_SLAVES);
+        $finish;
+    end
+    bus_monitor #(.NUM_HARTS(2), .NUM_SLAVES(MON_SLAVES)) MON (
+        .clk(clk), .rst(rst),
+        .f_cyc(DUT.BUS.f_cyc), .d_cyc(DUT.BUS.d_cyc), .w_cyc(DUT.BUS.w_cyc),
+        .dbg_cyc(DUT.BUS.dbg_cyc), .n_cyc(DUT.BUS.n_cyc),
+        .sel_f(DUT.BUS.sel_f), .sel_d(DUT.BUS.sel_d), .sel_w(DUT.BUS.sel_w),
+        .sel_dbg(DUT.BUS.sel_dbg), .sel_n(DUT.BUS.sel_n),
+        .s_cyc(DUT.BUS.s_cyc), .s_stb(DUT.BUS.s_stb)
+    );
+
     always #5 clk = ~clk;
 
     integer cycles = 0;
@@ -169,6 +185,8 @@ module tb_soc_2hart_coremark;
         // be misread as "how long the pair took" - that is the wall-clock
         // number above, from genuinely concurrent execution.
         $display("sum of both harts' own reported cycles (total work done, not wall-clock): %0d", result0 + result1);
+
+        MON.report;
 
         check("both harts validated their own CoreMark results",
               validated_count, 2);
