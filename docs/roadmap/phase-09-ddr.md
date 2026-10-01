@@ -21,7 +21,10 @@ a CPU reads and writes DDR3 as data through `rtl/soc/wb_ddr.v`, wired into
 Part 9: it fetches and executes instructions from DDR3, which Part 2 had not
 done); Stage 2's Parts 3 to 6, a paged (Sv32) access to DDR3, are an
 open, banked investigation, recorded under Known defects, and Parts 7 and 8
-(atomics, the device-tree node) shipped. Stage 3 through Stage 5 remain
+(atomics, the device-tree node) shipped; Part 10 added a UART loader path into
+DDR3 and, with it, fixed a bug in `rtl/soc/wb_ddr.v` that every earlier test
+had missed (a request made before calibration was dropped and acknowledged
+anyway). Stage 3 through Stage 5 remain
 entirely a plan, not an account. Nothing past each stage's own "Update"
 paragraph below should be read as a completed claim the way the "Stage N:"
 entries in every phase above this one are. Stage 0's "Done when" bar (real hardware,
