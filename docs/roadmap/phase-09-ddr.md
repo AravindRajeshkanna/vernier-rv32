@@ -2191,11 +2191,17 @@ constants, and the Sv32 page-table walker's own range all need to reach
 the new 512 MB span - a real, checkable list, not a vague "update the
 memory map." Caches, atomics, and LR/SC get re-verified against the new
 controller's own latency profile, not assumed unaffected. **Done when:**
-a CPU executes real code out of the new DDR path in simulation - the DDR
+~~a CPU executes real code out of the new DDR path in simulation - the DDR
 equivalent of what `sim_sdramboot` already proves for the current SDRAM
 controller - and the full existing verification suite (`make verify`,
 `make verify_ooo`) stays green with the new path present but unused by
-default.
+default.~~ **Closed, in simulation, at this scale.** A CPU fetches and
+executes code out of DDR3 (Part 9, `make sim_ddrexec`), the program gets
+there through the boot ROM's UART loader (Part 10, `make sim_uartload_ddr3`),
+and `make verify` and `make verify_ooo` are green with the path present but
+off by default (`DDR3_ENABLE`). This is Stage 2's bar only: the phase's own
+bar (Linux to userspace from DDR on a real ECPIX-5) is not met, and "at this
+scale" means a 256 MB lane-0 window and 4 KB loads, not the full part.
 
 **Decided: 16-byte burst, not byte-granular** - the maintainer's own
 choice, made now, closing the question this file has named as open since
