@@ -39,7 +39,7 @@ runs:
   steps:
     - name: Cache oss-cad-suite
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/oss-cad-suite
         key: oss-cad-suite-${{ inputs.version }}-linux-x64

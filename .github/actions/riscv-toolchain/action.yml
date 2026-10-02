@@ -39,7 +39,7 @@ runs:
   steps:
     - name: Cache toolchain
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/riscv
         key: xpack-riscv-none-elf-gcc-${{ inputs.version }}-linux-x64

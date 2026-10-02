@@ -136,8 +136,11 @@ routing-dominated shape every measurement of this design has had.
 | **GNU Make** | 3.81 | macOS system |
 | **git** | 2.54.0 | — |
 | **oss-cad-suite** | `20260821` | YosysHQ prebuilt bundle |
-| **cppcheck** | 2.13.0-2ubuntu3 | apt, `ubuntu-24.04` (CI pins the runner OS, not the package - see `.github/workflows/ci.yml`'s `code-quality` job) |
-| **ruff** | 0.16.6 | pinned binary download from ruff's own GitHub releases (CI only; not a runtime dependency of any script here) |
+| **cppcheck** | 2.22.0 | CI builds this release from source and caches it (`.github/workflows/ci.yml`'s `code-quality` job asserts the version); locally Homebrew `cppcheck`. Until the 2.22.0 bump it was 2.13.0 from apt, nine minor versions behind. |
+| **ruff** | 0.16.10 | pinned binary download from ruff's own GitHub releases (CI); locally Homebrew `ruff`. Not a runtime dependency of any script here. |
+| **Vale** | 3.24.0 | pinned binary download from Vale's own GitHub releases (CI); locally Homebrew `vale`. |
+| **markdownlint-cli2** | 0.23.3 | pinned in the `Makefile` (`npx markdownlint-cli2@0.23.3`) |
+| **GitHub Actions** | `actions/checkout@v7`, `actions/upload-artifact@v7`, `actions/cache@v6` | floating major tags, as before; checked against each major's release notes for changes that touch these workflows (none do: `pull_request`/`push` triggers only) |
 
 ### Two Yosys installations, and why it matters
 
@@ -307,7 +310,7 @@ never be explained away by "upstream changed".
 
 | Project | Commit | Fetched by |
 |---|---|---|
-| riscv-tests | `6de71edb142be36319e380ce782c3d1830c65d68` | `make isa-fetch` |
+| riscv-tests | `3cf82492ee5e6c0acec786e0e2670969a4041a41` | `make isa-fetch` (the pin lives in `tests/fetch.sh`; this row used to name a different commit, `6de71edb`, that was never the script's pin) |
 | CoreMark | `1f483d5b8316753a742cbf5590caf5bd0a4e4777` | `make coremark-fetch` |
 | OpenSBI | tracks upstream `master` | `software/opensbi/build-opensbi.sh` |
 

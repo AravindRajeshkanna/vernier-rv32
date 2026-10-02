@@ -144,7 +144,7 @@ run: it counts what software writes to `THR` against what the receiver decodes
 off the wire, and needs no baseline, because a discarded write is a defect on
 its own terms. Before, `6336 written, 470 dropped by the transmitter`, naming
 the first twelve by value — `r`,`e`,`e`,`i`,`n`,`g`,` `,`u`,`n`,`u`,`s`,`e`,
-the tail of "F*reeing unuse*d", 48 cycles apart where a character takes 2,240.
+the middle of `Freeing unused`, 48 cycles apart where a character takes 2,240.
 After, `6335 written, all 6335 sent, in order`. It runs in
 `make verilator_check` and in `make sim_linux`. docs/practices.md section 32.
 

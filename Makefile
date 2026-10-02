@@ -917,13 +917,13 @@ formal:
 # (something fetched, where it would not have).
 #
 # Versions pinned in both targets (matching docs/toolchain.md's own
-# practice for the RTL toolchain): 0.23.2 for markdownlint-cli2, whatever
+# practice for the RTL toolchain): 0.23.3 for markdownlint-cli2, whatever
 # `vale` resolves to on PATH (installed at a pinned version by CI's own
 # setup step - see .github/workflows/ci.yml). An unpinned `npx ...@latest`
 # means a future upstream release can add a new rule and turn this red
 # with no change in this repo at all.
 lint-markdown:
-	npx --yes markdownlint-cli2@0.23.2 $$(git ls-files '*.md')
+	npx --yes markdownlint-cli2@0.23.3 $$(git ls-files '*.md')
 
 lint-vale:
 	vale $$(git ls-files '*.md')

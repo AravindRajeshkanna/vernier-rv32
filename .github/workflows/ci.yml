@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/iverilog
 
@@ -169,7 +169,7 @@ jobs:
     env:
       CORE: ${{ matrix.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/iverilog
 
@@ -374,7 +374,7 @@ jobs:
     env:
       CORE: ${{ matrix.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/iverilog
 
@@ -430,7 +430,7 @@ jobs:
     env:
       CORE: ${{ matrix.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/iverilog
 
@@ -483,7 +483,7 @@ jobs:
     env:
       CORE: ${{ matrix.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/iverilog
 
@@ -512,7 +512,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/oss-cad-suite
 
@@ -560,7 +560,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/iverilog
 
@@ -587,7 +587,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/iverilog
 
@@ -600,13 +600,13 @@ jobs:
         run: make bom
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: bom/sbom.json
 
       - name: Upload HBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hbom
           path: bom/hbom.json
@@ -625,7 +625,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: markdownlint
         run: make lint-markdown
@@ -638,7 +638,7 @@ jobs:
       # not assumed from the naming convention.
       - name: Install Vale
         env:
-          VALE_VERSION: 3.20.0
+          VALE_VERSION: 3.24.0
         run: |
           set -euo pipefail
           URL="https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
@@ -674,7 +674,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/verilator
 
       - name: Verilator lint, rtl/top.v (in-order core)
@@ -686,25 +686,47 @@ jobs:
       - name: Verilator lint, soc_top.v (wide core)
         run: make lint-rtl-soc CORE=ooo
 
-      # apt rather than a curl+tarball+cache build from a pinned source
-      # tag (the riscv-toolchain/oss-cad-suite treatment): unlike those
-      # two, nothing this project publishes depends on cppcheck's exact
-      # version, and building from source costs real minutes for a tool
-      # that isn't the system under test. What actually matters - a
-      # future apt bump silently changing what "clean" means - is caught
-      # by asserting the version below, the same "fail loud" shape every
-      # apt action here already uses for a down mirror.
+      # A pinned release built from source and cached, not apt. This used to
+      # be apt (ubuntu-24.04's cppcheck, asserted at 2.13.0) on the grounds
+      # that nothing this project publishes depends on cppcheck's exact
+      # version and a build costs real minutes. Both still hold, but apt is
+      # a release frozen at the runner image's date: it was nine minor
+      # versions behind, so a contributor on a current cppcheck and CI could
+      # disagree about what is clean (software/soc/newlibprobe.c already
+      # records a finding that exists only on 2.13.0). The build is 23
+      # seconds on a laptop and is cached by version, so after the first run
+      # it costs a cache restore. The version is asserted below, the same
+      # "fail loud" shape the other installs here use. Bump the cache key and
+      # CPPCHECK_VERSION together.
+      - name: Cache cppcheck
+        uses: actions/cache@v6
+        with:
+          path: ~/cppcheck-bin
+          key: cppcheck-2.22.0-linux-x64
       - name: Install cppcheck
+        env:
+          CPPCHECK_VERSION: 2.22.0
         run: |
           set -euo pipefail
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y --no-install-recommends cppcheck
-          got="$(cppcheck --version | awk '{print $2}')"
-          want="2.13.0"
-          if [ "$got" != "$want" ]; then
-            echo "::error::cppcheck resolved to $got, expected $want (docs/toolchain.md)."
-            echo "::error::ubuntu-24.04's apt cppcheck moved - update the pin in"
-            echo "::error::docs/toolchain.md and this check once you've looked at what changed."
+          if [ ! -x "$HOME/cppcheck-bin/cppcheck" ]; then
+            URL="https://github.com/danmar/cppcheck/archive/refs/tags/${CPPCHECK_VERSION}.tar.gz"
+            echo "Building cppcheck from $URL"
+            if ! curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/cppcheck.tar.gz; then
+              echo "::error::Could not download cppcheck ${CPPCHECK_VERSION}."
+              echo "::error::  https://github.com/danmar/cppcheck/releases/tag/${CPPCHECK_VERSION}"
+              exit 1
+            fi
+            mkdir -p /tmp/cppcheck-src
+            tar xzf /tmp/cppcheck.tar.gz -C /tmp/cppcheck-src --strip-components=1
+            make -C /tmp/cppcheck-src -j"$(nproc)" MATCHCOMPILER=yes CXXFLAGS="-O2"
+            mkdir -p "$HOME/cppcheck-bin"
+            cp /tmp/cppcheck-src/cppcheck "$HOME/cppcheck-bin/"
+            cp -r /tmp/cppcheck-src/cfg /tmp/cppcheck-src/platforms "$HOME/cppcheck-bin/"
+          fi
+          echo "$HOME/cppcheck-bin" >> "$GITHUB_PATH"
+          got="$("$HOME/cppcheck-bin/cppcheck" --version | awk '{print $2}')"
+          if [ "$got" != "$CPPCHECK_VERSION" ]; then
+            echo "::error::cppcheck is $got, expected $CPPCHECK_VERSION (docs/toolchain.md)."
             exit 1
           fi
       - name: cppcheck
@@ -719,7 +741,7 @@ jobs:
       # its own for this particular tool.
       - name: Install ruff
         env:
-          RUFF_VERSION: 0.16.6
+          RUFF_VERSION: 0.16.10
         run: |
           set -euo pipefail
           URL="https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz"
@@ -780,7 +802,7 @@ jobs:
     env:
       CORE: ${{ matrix.core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/verilator
       - uses: ./.github/actions/riscv-toolchain
 
@@ -808,7 +830,7 @@ jobs:
         run: make verilator_coverage_report
 
       - name: Upload coverage data and summary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.core }}
           path: |
