@@ -347,6 +347,7 @@ module wb_framebuffer #(
     wire [11:0] copy_src_cur_y = blit_src_y_r + copy_rel_y;
     wire [31:0] copy_src_pixel_index =
         (copy_src_cur_y * FB_WIDTH) + {20'd0, copy_src_cur_x};
+    reg [31:0]    a_q;
     wire [AW-1:0] copy_src_word_addr = copy_src_pixel_index[AW+1:2];
     wire [1:0]    copy_src_byte_lane = copy_src_pixel_index[1:0];
     // Same explicit-intermediate-then-slice pattern as eng_bank/eng_sub_addr
@@ -419,7 +420,6 @@ module wb_framebuffer #(
     wire a_en = wb_cyc && wb_stb && (!blit_busy_r || is_status_read);
 
     reg        ack_r;
-    reg [31:0] a_q;
     reg        blit_region_q;
     reg [3:0]  blit_reg_sel_q;
 

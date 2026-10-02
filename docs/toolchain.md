@@ -116,31 +116,41 @@ routing-dominated shape every measurement of this design has had.
 
 | Tool | Version | Source |
 |---|---|---|
-| **Icarus Verilog** | 12.0 (stable) | Homebrew `icarus-verilog` |
-| **Verilator** | 5.050, `2026-07-01` | Homebrew `verilator` |
-| **Yosys** (formal) | 0.67+post, `b8e7da6f` | Homebrew `yosys` |
+| **Icarus Verilog** | 13.0 (stable) | Homebrew `icarus-verilog` |
+| **Verilator** | 5.052, `2026-09-05` | Homebrew `verilator` |
+| **Yosys** (formal) | 0.69+post, `143eb14f` | Homebrew `yosys` |
 | **Yosys** (synthesis) | 0.68+118, `144c707b7-dirty` | oss-cad-suite |
 | **nextpnr-ecp5** | `nextpnr-0.11.1-8-g7c0c1c40` | oss-cad-suite |
 | **ecppack** (Project Trellis) | 1.4-82-g3afe7b5 | oss-cad-suite |
 | **riscv64-unknown-elf-gcc** | 15.1.0 (`g1b306039a`) | Homebrew `riscv-gnu-toolchain` |
 | **Spike** | 1.1.1-dev | Homebrew `riscv-isa-sim` |
-| **z3** | 4.15.4 (64-bit) | Homebrew `z3` |
+| **z3** | 5.1.0 (64-bit) | Homebrew `z3` |
 | **boolector** | 3.2.4 | oss-cad-suite; **not in Homebrew**. `make formal` needs it for `ddr3_ecp5_top` (z3 is about ninety times slower on that target at depth 40, measured) and stops with a message if it is missing |
 | **Surfer** | 0.7.0 | Homebrew `surfer` |
-| **dtc** | installed | Homebrew `dtc` |
+| **dtc** | 1.8.1 | Homebrew `dtc` |
 | **openFPGALoader** | installed | Homebrew `openfpgaloader` |
-| **LLVM `ld.lld`** | 21.1.8 | Homebrew `lld`. Used *only* to build the Linux kernel: the vDSO needs `-shared` and `riscv64-unknown-elf-ld` cannot do it, the same shape of problem as OpenSBI's `-pie`. |
+| **LLVM `ld.lld`** | 23.1.2 | Homebrew `lld`. Used *only* to build the Linux kernel: the vDSO needs `-shared` and `riscv64-unknown-elf-ld` cannot do it, the same shape of problem as OpenSBI's `-pie`. |
 | **GNU sed (`gsed`)** | installed | Homebrew `gnu-sed`. Required for a kernel build, not optional: `arch/riscv/kernel/vdso/gen_vdso_offsets.sh` uses `\\+`, which BSD sed does not support, and the result is an *empty* generated header rather than an error. |
-| **QEMU** | 10.2.0 | Homebrew `qemu`. `qemu-system-riscv32` is how a kernel is separated from this SoC: if it boots there and not here, the software is not the problem. |
-| **Python** | 3.12.12 | system |
+| **QEMU** | 11.1.2 | Homebrew `qemu`. `qemu-system-riscv32` is how a kernel is separated from this SoC: if it boots there and not here, the software is not the problem. |
+| **Linux kernel** | 6.18.54 (long-term line) | `cdn.kernel.org`, checksum pinned in `software/linux/build-linux.sh`. The hardware boot transcripts in `fpga/README.md` are of 6.18.45, the version that ran on the board, and are left as recorded. |
+| **Python** | 3.12.12 | pyenv (the machine-wide default, not Homebrew's `python@3.12`, which is at 3.12.15). 3.12.15 is a patch release and is left alone: changing it changes every project on the machine |
 | **GNU Make** | 3.81 | macOS system |
-| **git** | 2.54.0 | — |
+| **git** | 2.56.0 | Homebrew `git` |
 | **oss-cad-suite** | `20260821` | YosysHQ prebuilt bundle |
 | **cppcheck** | 2.22.0 | CI builds this release from source and caches it (`.github/workflows/ci.yml`'s `code-quality` job asserts the version); locally Homebrew `cppcheck`. Until the 2.22.0 bump it was 2.13.0 from apt, nine minor versions behind. |
 | **ruff** | 0.16.10 | pinned binary download from ruff's own GitHub releases (CI); locally Homebrew `ruff`. Not a runtime dependency of any script here. |
 | **Vale** | 3.24.0 | pinned binary download from Vale's own GitHub releases (CI); locally Homebrew `vale`. |
 | **markdownlint-cli2** | 0.23.3 | pinned in the `Makefile` (`npx markdownlint-cli2@0.23.3`) |
 | **GitHub Actions** | `actions/checkout@v7`, `actions/upload-artifact@v7`, `actions/cache@v6` | floating major tags, as before; checked against each major's release notes for changes that touch these workflows (none do: `pull_request`/`push` triggers only) |
+
+CI gets Icarus, Verilator and dtc from the runner's apt on purpose, and does
+not pin them (see `.github/actions/verilator`, `.github/actions/iverilog`):
+the two simulators are checked against each other, so a front end that behaves
+differently shows up as a disagreement worth seeing. The cost is that CI and a
+developer's machine run different versions (Ubuntu 24.04 ships Verilator 5.020
+and Icarus 12.0), which is the cross-version coverage that choice buys.
+Icarus 13.0 rejects a signal used before it is declared, which 12.0 accepted;
+the RTL and testbenches now declare before use, so they elaborate on both.
 
 ### Two Yosys installations, and why it matters
 

@@ -378,11 +378,11 @@ module cpu_wb #(
     // straight into the bus path below on the cycle after they start,
     // matching the write-through policy's own requirement that every write
     // reach the bus regardless of `dc_present`.
-    wire access_start = want && !dc_pending;
-    wire hit_deliver   = dc_pending && dc_hit_latched;
-
     reg dc_pending;
     reg dc_hit_latched;
+
+    wire access_start = want && !dc_pending;
+    wire hit_deliver   = dc_pending && dc_hit_latched;
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin

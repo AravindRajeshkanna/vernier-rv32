@@ -109,6 +109,8 @@ module tb_ddr3_read_seq;
     reg [2:0] act_ba_seen, rd_ba_seen;
     reg [15:0] act_addr_seen, rd_addr_seen;
 
+    reg stray_cmd_seen = 1'b0;
+
     initial begin
         $display("=== DDR3 read command sequencer (Phase 9 Stage 1, Part 7) ===");
         repeat (4) @(posedge clk);
@@ -221,7 +223,6 @@ module tb_ddr3_read_seq;
     // should appear - a real DDR3 part must see NOP during the tRCD
     // wait, not another command. Watches every cycle of the whole run.
     reg act_pending = 1'b0;
-    reg stray_cmd_seen = 1'b0;
     always @(posedge clk) begin
         if (rst) begin
             act_pending    <= 1'b0;

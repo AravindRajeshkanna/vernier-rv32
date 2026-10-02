@@ -20,7 +20,7 @@ domain and hands off to a Linux kernel that reaches userspace.
 | Detects the hart | ✅ `rv32ima`, priv `v1.11`, PMP count 16, enforced on this core's data path (`docs/roadmap/beyond-the-phases.md`'s PMP entry) |
 | **Prints its banner** | ✅ |
 | Hands off to an S-mode payload | ✅ `Next Address 0x9040_0000`, `Next Mode S-mode` |
-| A kernel to hand off *to* | ✅ Linux 6.18.45 rv32ima, to userspace — `software/linux/README.md` |
+| A kernel to hand off *to* | ✅ Linux 6.18.54 rv32ima, to userspace — `software/linux/README.md` |
 
 ```
 OpenSBI v1.9-11-gc0f87f10

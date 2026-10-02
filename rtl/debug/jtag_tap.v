@@ -199,6 +199,8 @@ module jtag_tap #(
 
     reg [DMI_BITS-1:0] dr;
 
+    reg [6:0] dmi_addr_r;
+
     // What Capture-DR loads, by instruction.
     reg [DMI_BITS-1:0] dr_capture;
     always @(*) begin
@@ -229,8 +231,6 @@ module jtag_tap #(
             default:   dr_len = 6'd1;    // BYPASS
         endcase
     end
-
-    reg [6:0] dmi_addr_r;
 
     always @(posedge tck) begin
         if (state == TEST_LOGIC_RESET) begin

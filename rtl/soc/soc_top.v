@@ -345,6 +345,12 @@ module soc_top #(
     // nothing here watches for a foreign write into either hart's cache.
     localparam HART_DCACHE_ENABLE = (NUM_HARTS > 1) ? 0 : 1;
 
+    // The reset every core and peripheral sees: the pad reset, plus the debugger's
+    // own (see the note where `dbg_ndmreset` is driven, below). Declared here,
+    // ahead of its first use.
+    wire        dbg_ndmreset;
+    wire        rst_soc = rst || dbg_ndmreset;
+
     // ---- hart 0 ----
 `ifdef CORE_OOO
     core_ooo #(.RESET_PC(RESET_PC), .HARTID(0)) CPU (
@@ -540,7 +546,6 @@ module soc_top #(
     wire        dbg_cyc, dbg_stb, dbg_we, dbg_ack;
     wire [31:0] dbg_adr, dbg_dat_w, dbg_dat_r;
     wire [3:0]  dbg_sel;
-    wire        dbg_ndmreset;
 
     // ---- the NPU's own DMA master (rtl/soc/wb_npu.v <-> the interconnect's
     // new lowest-priority tier), Phase 14 ----
@@ -558,8 +563,6 @@ module soc_top #(
     // that issued the reset would find the bus wedged. rtl/debug/dm.v holds
     // its own bus access off while `ndmreset` is asserted so there is nothing
     // in flight to lose.
-    wire rst_soc = rst || dbg_ndmreset;
-
     wire [6:0]  tck_dmi_addr;
     wire [31:0] tck_dmi_wdata, tck_dmi_rdata;
     wire [1:0]  tck_dmi_op, tck_dmi_resp;
