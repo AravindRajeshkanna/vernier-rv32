@@ -119,9 +119,9 @@ routing-dominated shape every measurement of this design has had.
 | **Icarus Verilog** | 13.0 (stable) | Homebrew `icarus-verilog` |
 | **Verilator** | 5.052, `2026-09-05` | Homebrew `verilator` |
 | **Yosys** (formal) | 0.69+post, `143eb14f` | Homebrew `yosys` |
-| **Yosys** (synthesis) | 0.68+118, `144c707b7-dirty` | oss-cad-suite |
-| **nextpnr-ecp5** | `nextpnr-0.11.1-8-g7c0c1c40` | oss-cad-suite |
-| **ecppack** (Project Trellis) | 1.4-82-g3afe7b5 | oss-cad-suite |
+| **Yosys** (synthesis) | 0.69+185, `fb1a2fdae-dirty` | oss-cad-suite |
+| **nextpnr-ecp5** | `nextpnr-0.11.1-47-ge2fe86b3` | oss-cad-suite |
+| **ecppack** (Project Trellis) | 1.4-83-g65fe191 | oss-cad-suite |
 | **riscv64-unknown-elf-gcc** | 15.1.0 (`g1b306039a`) | Homebrew `riscv-gnu-toolchain` |
 | **Spike** | 1.1.1-dev | Homebrew `riscv-isa-sim` |
 | **z3** | 5.1.0 (64-bit) | Homebrew `z3` |
@@ -136,7 +136,7 @@ routing-dominated shape every measurement of this design has had.
 | **Python** | 3.12.12 | pyenv (the machine-wide default, not Homebrew's `python@3.12`, which is at 3.12.15). 3.12.15 is a patch release and is left alone: changing it changes every project on the machine |
 | **GNU Make** | 3.81 | macOS system |
 | **git** | 2.56.0 | Homebrew `git` |
-| **oss-cad-suite** | `20260821` | YosysHQ prebuilt bundle |
+| **oss-cad-suite** | `20261002` | YosysHQ prebuilt bundle; CI's default (`.github/actions/oss-cad-suite`) is `2026-10-02` to match. The previous `20260821` is kept at `~/tools/oss-cad-suite-20260821` for A/B comparison |
 | **cppcheck** | 2.22.0 | CI builds this release from source and caches it (`.github/workflows/ci.yml`'s `code-quality` job asserts the version); locally Homebrew `cppcheck`. Until the 2.22.0 bump it was 2.13.0 from apt, nine minor versions behind. |
 | **ruff** | 0.16.10 | pinned binary download from ruff's own GitHub releases (CI); locally Homebrew `ruff`. Not a runtime dependency of any script here. |
 | **Vale** | 3.24.0 | pinned binary download from Vale's own GitHub releases (CI); locally Homebrew `vale`. |
@@ -365,6 +365,11 @@ RTL, which is twice what the design change measured alongside it cost. A
 place-and-route number compared against one from a different bundle is not a
 comparison. Re-measure the baseline on the same tools, or say which bundle
 each figure came from; docs/practices.md §20.
+
+Moving on to `20261002` (yosys `0.68+118` → `0.69+185`, nextpnr `0.11.1-8` →
+`0.11.1-47`) was measured the same way and cost **0.41 MHz on average** over six
+paired seeds (range -0.96 to +0.07), within placement noise; the table and what
+else it found are in `fpga/README.md`, "Re-measured 2026-10-02".
 
 ## 8. Installed but not used by this project
 

@@ -46,6 +46,19 @@ Work that sits outside the phase order is in [Beyond the phases](beyond-the-phas
 
 Open, unscheduled, and written down so they are not rediscovered. These entries cut across phases (the verification flow, the simulators and CI); defects that belong to one phase are in that phase's file.
 
+**HEAD no longer closes 25 MHz, and real-scale synthesis no longer finishes.**
+Measured 2026-10-02 while bumping the synthesis bundle, and not attributed.
+At current HEAD, with the framebuffer shrunk to 8x8, no placement seed of
+either oss-cad-suite bundle closes 25 MHz (17.4 to 19.1 MHz); the same method
+on the 2026-08-26 commit `efee7bf` gave 23.8 to 24.3 MHz, so the drop is in the
+RTL since then, not the toolchain. The critical path is routing-dominated
+(11.78 ns logic, 40.52 ns routing) from the `ex_mem_rd` forwarding register
+through the MMU address adder to the CSR file. Separately, full-scale
+(320x240) synthesis does not finish within an hour: Yosys is converting
+`wb_framebuffer.v` memories to registers. Next step: bisect between
+`efee7bf` and HEAD for both. Detail in
+[fpga/README.md](../../fpga/README.md#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause).
+
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
 distinction is the whole reason [practices.md](../practices.md) §7 uses this

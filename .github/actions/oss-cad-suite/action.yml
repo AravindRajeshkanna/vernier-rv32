@@ -32,7 +32,7 @@ inputs:
   version:
     description: oss-cad-suite-build release date, YYYY-MM-DD
     required: false
-    default: '2026-08-16'
+    default: '2026-10-02'
 
 runs:
   using: composite

@@ -19,16 +19,18 @@ registered ack back in the tree (re-landed after the mip.SEIP fix, see
 does"](#one-of-them-did-not-build-and-now-does)), a full six-seed sweep of
 this design closes on only 2 of 6 seeds (23.18–25.92 MHz). `synth_ecp5.sh`
 retries seeds and stops at the first close — the normal build closes by seed
-3. See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number).
+3. That is the 2026-08-26 design: re-measured on 2026-10-02, **no seed closes
+25 MHz at today's HEAD** — see
+[Re-measured 2026-10-02](#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number).
 
 | Artifact | Status |
 |---|---|
-| Full SoC synthesis (yosys) | ✅ **runs, ~19 s** |
+| Full SoC synthesis (yosys) | ✅ **runs, ~19 s** as of August; at today's HEAD the real-scale build does not finish in an hour, see [Re-measured 2026-10-02](#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause) |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs** — 4 min on an 85F, 11 min on a 45F |
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
-| Resource usage | ✅ **measured** — 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F; the 45F figures are stale |
+| Resource usage | ✅ **measured** — 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F (August; at HEAD, with the framebuffer shrunk to 8x8, 36,817 TRELLIS_COMB / 44%); the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
-| **Fmax with I/O constrained** | ⚠️ **23.18–25.92 MHz** (85F, six placement seeds, with the registered ack) — **4 of 6 land under the board's 25 MHz**. Margin is thin; `synth_ecp5.sh` retries seeds and normally closes by seed 3 (confirmed 2026-08-26: seed 3, 25.96 MHz routed). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
+| **Fmax with I/O constrained** | ⚠️ **23.18–25.92 MHz as of 2026-08-26** (HEAD measures 17.4–19.1 MHz, see below) (85F, six placement seeds, with the registered ack) — **4 of 6 land under the board's 25 MHz**. Margin is thin; `synth_ecp5.sh` retries seeds and normally closes by seed 3 (confirmed 2026-08-26: seed 3, 25.96 MHz routed). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
 | **`CORE=ooo` synthesis** | ✅ **runs, real numbers** — 78 DP16KD (37%, essentially unchanged from in-order's 80/38%), 52,042 TRELLIS_COMB (**62%**, ~3x in-order), 12 MULT18X18D. First time this core has been synthesized at all — `synth_ecp5.sh` had no `CORE=` knob before this. |
 | **`CORE=ooo` Fmax** | ⚠️ **8.68 MHz at the board's real 25 MHz target** — place-and-route's static timing analysis used to fail outright, deterministically, with `ERROR: Timing analysis failed due to combinational loops`; that closed (`docs/roadmap/phase-01-superscalar-ooo.md`'s "CORE=ooo has no Fmax" entry, Round 6), and the real number underneath still falls well short of 25 MHz. An SDC multicycle/false-path exception on the traced critical path was the first idea considered for Round 7, but checked directly against nextpnr-ecp5's own upstream source before spending a build on it and found not viable — `set_multicycle_path` isn't implemented at all, and `set_false_path` is a documented no-op ("does not do anything(yet)"); see `docs/roadmap/phase-01-superscalar-ooo.md`'s own "Round 7" account for the full citation. The real gap is still open, with no current candidate beyond an RTL-level change. |
 | **`CORE=ooo`, underclocked, on a board** | ✅ **a real, timing-closed bitstream exists** — `BOARD=ulx3s85-underclock` (`fpga/underclock_pll.v`, an `EHXPLLL` deriving 5 MHz from the board's own 25 MHz oscillator) closes at **10.17 MHz achieved against a 5 MHz target**, first attempt, no seed retries. `fpga/build/ulx3s85-underclock.bit` is real and flashable; not yet loaded onto a board this session. |
@@ -167,6 +169,61 @@ register map and claimed its contexts. Nothing in that boot proves an
 interrupt was ever *taken* — the 8250 console path polls `THRE`, and `/init`
 does not wait on anything. `make sim_plic` delivers one to S-mode in
 simulation; silicon has not.
+
+## Re-measured 2026-10-02: the bundle bump, and a regression it did not cause
+
+Moving the synthesis toolchain from oss-cad-suite `20260821` to `20261002`
+(Yosys `0.68+118` to `0.69+185`, nextpnr `0.11.1-8` to `0.11.1-47`, ecppack
+`1.4-82` to `1.4-83`) meant re-measuring, because a place-and-route number from
+a different bundle is not a comparison (`docs/practices.md` §20). That found
+something larger than the bump.
+
+**The bump, on identical RTL.** Current HEAD, `BOARD=ulx3s85`, the same six
+placement seeds on both bundles, framebuffer shrunk to 8x8 (reason below).
+Seed 0 is nextpnr's default; the others are `--seed N`.
+
+| Seed | `20260821` | `20261002` | Difference |
+|---|---|---|---|
+| 0 | 19.12 | 18.17 | -0.95 |
+| 1 | 18.39 | 17.43 | -0.96 |
+| 2 | 18.43 | 17.94 | -0.49 |
+| 3 | 18.04 | 18.01 | -0.03 |
+| 4 | 19.07 | 19.14 | +0.07 |
+| 5 | 18.13 | 18.01 | -0.12 |
+| mean | 18.53 | 18.12 | -0.41 |
+
+The new bundle is about 0.4 MHz slower on average, but the paired differences
+run from -0.96 to +0.07 and a bundle's own seeds spread over 1.1 to 1.7 MHz,
+so this is about two standard errors: suggestive, not established. Utilisation is the same
+to within a few hundred LUTs (11,517 FF and 42 DP16KD on both; 36,817 against
+36,001 TRELLIS_COMB). `make formal` passes on the new bundle (7 proved).
+
+**What the bump did not cause.** Every one of the twelve runs fails the
+board's 25 MHz constraint (17.4 to 19.1 MHz). As a control, the old bundle on
+the 2026-08-26 commit (`efee7bf`), full scale, three seeds, gave 23.80, 24.28
+and 23.81 MHz, inside the range recorded elsewhere in this file, so the method
+reproduces the published numbers. The drop of about 5 MHz is therefore in the
+RTL between then and now, and **it has not been attributed**. Logic grew too:
+36,817 TRELLIS_COMB (44% of an 85F) against 17,435 (20%) in August, though the
+two are not measured at the same framebuffer scale. The critical path (seed 0,
+`20260821`) is 52.3 ns, 11.78 ns of logic and 40.52 ns of routing, from the
+`ex_mem_rd` forwarding register through the MMU's address adder to a
+clock-enable inside the CSR file.
+
+**Why 8x8.** At full scale (320x240) the current RTL does not finish
+synthesis: Yosys was still running after more than an hour on each bundle,
+converting the framebuffer's memories to registers (51 "Replacing memory ...
+with list of registers" warnings from `rtl/soc/wb_framebuffer.v`) and pushing
+the 11 GB build machine's swap to 10.4 GB, and was stopped. The "~19 s" in the table at the top
+does not hold for HEAD. This is the same family as the Phase 4 Known defects
+entry about this file, now seen as a hang rather than a crash. `FB_WIDTH=8
+FB_HEIGHT=8` is the repo's own diagnostic substitution, as used for the
+`CORE=ooo` numbers. It changes the framebuffer, not the CPU path, but its
+effect on Fmax was not isolated.
+
+**Not re-measured:** `ulx3s85-ram`, `CORE=ooo`, the 45F, the video targets and
+the underclocked bitstream. Their figures stand as recorded and name the bundle
+they came from.
 
 ## Fmax is a distribution, not a number
 
