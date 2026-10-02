@@ -548,7 +548,7 @@ The rest is genuinely board-dependent:
 
 This section opened, for most of this project's life, with "**this core (or a
 beginner-scale core like it) cannot run Linux**". That was the honest reading
-at the time and it is now wrong: `make sim_linux` boots Linux 6.18.45 rv32ima
+at the time and it is now wrong: `make sim_linux` boots Linux 6.18.54 rv32ima
 to userspace on this SoC, through OpenSBI, out of external SDRAM, with `/init`
 printing back the ISA string the kernel parsed from `dts/soc.dts`.
 

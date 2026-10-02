@@ -6,7 +6,7 @@ under Verilator.
 
 ```sh
 ./software/opensbi/build-opensbi.sh   # once
-./software/linux/build-linux.sh       # once: fetches and builds Linux 6.18.45
+./software/linux/build-linux.sh       # once: fetches and builds Linux 6.18.54
 make linuximage                       # pack stub + device tree + OpenSBI + Image
 make sim_linux                        # boot it
 ```
@@ -23,7 +23,7 @@ Freeing unused kernel image (initmem) memory: 152K
 Run /init as init process
 
 === VERNIER-RV32: USERSPACE ===
-kernel  : Linux 6.18.45
+kernel  : Linux 6.18.54
 machine : riscv32
 pid     : 1
 

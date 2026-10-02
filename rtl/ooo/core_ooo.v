@@ -286,6 +286,17 @@ module core_ooo #(
     localparam FB_DEPTH = 4;
     localparam FB_AW    = 2;
 
+    // Declared ahead of their first use, which the standard requires and
+    // Icarus 13 enforces (Icarus 12 accepted a later declaration). Each is
+    // assigned, or driven by an instance, where it used to be declared.
+    wire [1:0]   effective_priv_for_data;
+    wire [31:0]  head_mem_addr_virt;
+    wire [127:0] csr_pmpcfg;
+    wire [511:0] csr_pmpaddr;
+    wire         amo_done;
+    reg          loadL_active;
+    wire         head_load_owns_port;
+
     // =======================================================================
     // IF stage - unchanged from stage 1c
     // =======================================================================
@@ -1224,7 +1235,7 @@ module core_ooo #(
     // register value. Found via `rob_count` itself going X a few cycles
     // later (every arithmetic update after that point poisoned the next),
     // traced back through the CDB to a load's own completion.
-    wire [1:0] effective_priv_for_data = (current_priv == PRIV_M && csr_mstatus_mprv) ? csr_mstatus_mpp : current_priv;
+    assign effective_priv_for_data = (current_priv == PRIV_M && csr_mstatus_mprv) ? csr_mstatus_mpp : current_priv;
     wire dmem_mmu_active = satp_mode && (effective_priv_for_data != PRIV_M);
     // The ROB-head-specific counterpart of the out-of-order scan's own
     // address-range exclusion above (same reasoning, same `dc_cacheable`-
@@ -1298,7 +1309,7 @@ module core_ooo #(
     wire [31:0] headS_op2 =
         (rob_r2_tag[rob_head] == {PW{1'b0}}) ? 32'b0 : rob_r2_val[rob_head];
 
-    wire [31:0] head_mem_addr_virt = headS_op1 + rob_imm[rob_head];
+    assign head_mem_addr_virt = headS_op1 + rob_imm[rob_head];
     wire [31:0] head_jalr_target   = (headS_op1 + rob_imm[rob_head]) & ~32'h1;
     wire [31:0] head_jal_target    = rob_pc[rob_head] + rob_imm[rob_head];
     wire [31:0] head_branch_target = rob_pc[rob_head] + rob_imm[rob_head];
@@ -1435,8 +1446,6 @@ module core_ooo #(
     wire [31:0] csr_mtvec, csr_stvec, csr_mepc, csr_sepc;
     wire        csr_trap_to_s;
     wire [31:0] csr_mie, csr_mip, csr_mideleg;
-    wire [127:0] csr_pmpcfg;
-    wire [511:0] csr_pmpaddr;
     wire        csr_mstatus_mie, csr_sstatus_sie;
     wire [31:0] csr_op_operand = rob_csr_imm_form[rob_head] ? rob_zimm[rob_head] : headS_op1;
     reg  [31:0] csr_new_value;
@@ -1720,11 +1729,9 @@ module core_ooo #(
                       !port_taken_by_load && !port_taken_by_store;
     reg [31:0] amo_new_value;
     wire amo_writes = (rob_is_amo[rob_head] && !head_is_lr_ex && !head_is_sc_ex) || sc_success;
-    wire amo_done   = amo_active && (amo_wr_phase ? !dbus_wait
+    assign amo_done   = amo_active && (amo_wr_phase ? !dbus_wait
                                                   : (dmem_rvalid && !amo_writes));
     wire amo_stall  = headS_valid && rob_is_amo[rob_head] && headS_ready && !amo_done;
-
-    reg        loadL_active;
     reg [ROB_AW-1:0] loadL_rob_idx;
     reg [31:0] loadL_addr_phys;
     reg [2:0]  loadL_funct3;
@@ -1838,7 +1845,7 @@ module core_ooo #(
     // higher-priority (an in-flight out-of-order load, a draining store
     // buffer write) already owns it. `load_via_head` alone would also be
     // true before that - this only asserts once it can actually go.
-    wire head_load_owns_port = load_via_head && headS_ready &&
+    assign head_load_owns_port = load_via_head && headS_ready &&
                                !head_mmu_wait_stall && !head_mmu_fault_now &&
                                !head_mem_misaligned && !head_pmp_fault_now &&
                                !port_taken_by_load && !sb_valid;

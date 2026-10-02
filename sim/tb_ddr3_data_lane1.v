@@ -30,6 +30,7 @@ module tb_ddr3_data_lane1;
     // readclksel_1 equal at every check regardless of which one either lane's own
     // DQS instance actually reads (measured - see docs/roadmap/phase-09-ddr.md, Part 24).
     reg rst1 = 1'b1;
+    wire eclk, sclk, pll_locked;
     localparam LANE1_RST_STAGGER = 3;
     integer rst1_cnt;
     always @(posedge sclk or posedge rst) begin
@@ -38,7 +39,6 @@ module tb_ddr3_data_lane1;
         else                  rst1 <= 1'b0;
     end
 
-    wire eclk, sclk, pll_locked;
     ddr3_eclk_pll #(.CLK_PERIOD_NS(CLK_PERIOD)) PLL (
         .clk(clk), .eclk(eclk), .sclk(sclk), .locked(pll_locked)
     );

@@ -203,6 +203,11 @@ module ulx3s_top #(
     wire jtag_tdo;
     assign gn[5] = jtag_tdo;
 
+`ifdef WITH_VIDEO
+    wire [7:0] vid_r, vid_g, vid_b;
+    wire       vid_de, vid_hsync, vid_vsync;
+`endif
+
     soc_fpga #(
         .CLK_HZ(CLK_HZ),
         .BAUD_RATE(115_200),
@@ -277,9 +282,6 @@ module ulx3s_top #(
     // reset costs a frame or two of garbage right after power-on at worst,
     // not the persistent, silent picture defect the clocking choice in
     // fpga/video_out.v's own header exists to avoid.
-    wire [7:0] vid_r, vid_g, vid_b;
-    wire       vid_de, vid_hsync, vid_vsync;
-
     video_out VIDEO (
         .clk(clk_25mhz), .clk_25mhz(clk_25mhz), .rst(~rst_n),
         .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),

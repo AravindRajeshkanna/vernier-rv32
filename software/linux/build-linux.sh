@@ -50,8 +50,8 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 
-KVER=${KVER:-6.18.45}
-KSHA=30fa4a56579ca614ac125a12614f7f6466f87ab1278aef7b951dd74156deab33
+KVER=${KVER:-6.18.54}
+KSHA=9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac
 KURL=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz
 
 CROSS=${CROSS_COMPILE:-riscv64-unknown-elf-}

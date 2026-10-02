@@ -287,6 +287,7 @@ printf
 prjtrellis
 pty
 pulldown
+pyenv
 raiseable
 rasterization
 rasterizer
