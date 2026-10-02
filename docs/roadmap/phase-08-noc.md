@@ -176,6 +176,68 @@ at two cache-less harts or a cache-less wide hart plus the NPU, the traffic is
 almost all to one RAM, and the cheaper fixes to try before a network are a
 second RAM port or banking and a coherent data cache.
 
+**Update, Part 4: the shared bus under Linux, one hart and two, and what
+Stage 0 now says.** The monitor is ported into the Verilator harness
+(`sim/verilator_soc.cpp`, `+busmon`, and `+busmon_every=N` for a line per
+window) so a boot can be measured at Verilator speed. `make busmon_check` runs
+the SDRAM boot under both Icarus and Verilator and requires the two monitors to
+agree; they agree to three decimal places on every counter (cycle counts one
+apart). The runs are `make sim_linux` and `make sim_linux_2hart` with
+`SIM_EXTRA='+busmon +busmon_every=25000000'`, to the userspace marker, both
+cores. Simulation cycles, ULX3S-style SDR SDRAM model.
+
+| | Cycles to userspace | Bus in use | A master waiting | SDRAM's share of busy cycles |
+|---|---|---|---|---|
+| 1 hart, in-order | 226.5 M | 89.7% | 12.6% | 99.5% |
+| 1 hart, wide | 226.0 M | 91.3% | 37.3% | 99.5% |
+| 2 harts, in-order | 286.2 M (+26%) | 99.6% | 87.2% | 99.8% |
+| 2 harts, wide | 312.5 M (+38%) | 99.7% | 89.7% | 99.8% |
+
+Contention grows through the boot: the share of cycles with a master waiting
+rises from 5.9% to 16% (one in-order hart), 22% to 47% (one wide hart), 69% to
+97% (two in-order harts) and 73% to 98% (two wide harts), first window to last.
+With two harts, hart 1's instruction fetch is granted 17.6 M of the 159.6 M
+cycles it asks for (11%; it waits in 89% of its requests, 91% on the wide core),
+while hart 0's fetch waits in 33 to 43%. That is the arbiter's fixed priority at
+work (the lower hart index wins), and it is a fairness cost, not a deadlock:
+both harts reach userspace.
+
+What the numbers support. **The shared bus is the limit for Linux SMP**: two
+harts keep it busy on 99.6 to 99.7% of cycles and one hart already uses about
+90%. This also contradicts the opening of this phase, which expected the
+current bus to be the right choice at one or two cores with modest
+accelerators; at two harts running Linux it is saturated. **But almost all of
+that traffic is to one slave**: 99.5 to 99.8% of busy cycles are the SDRAM's
+strobe (and 95 to 96% were the RAM's under CoreMark in Parts 1 and 2). "Bus in use"
+is occupancy, not bandwidth: the classic bus is held for the whole of each
+access, including the SDRAM's own latency, so a saturated bus here mostly
+means a saturated memory.
+
+What follows from that is an inference, and is labelled as one. A network gives
+parallel paths between different endpoints. This workload has one endpoint, so
+a faster fabric would move the queue and not remove it; the levers the data
+points at are less traffic (a coherent data cache: Part 2 showed that losing the
+cache roughly doubles a hart's bus demand, which suggests, but does not
+show, that a coherent one would roughly halve it), more memory bandwidth (the DDR3 of Phase 9, or a
+second RAM port or banking), fairer arbitration, and overlapping memory latency
+with several requests in flight. That last one is the one thing a network or a
+pipelined bus could offer here, and whether the SDRAM controller could use it
+has not been measured.
+
+**Stage 0, written down.** Measured across Parts 1 to 4: two harts already
+contend heavily under every load tried (CoreMark, an NPU DMA job, Linux), the
+contention knee sits at about two thirds of the bus in use, and in every
+workload 95 to 99.8% of the traffic goes to a single memory slave. The decision
+this supports is **not to start Stage 1** (the network interface), and instead to
+work the levers above, in the order of what each would remove: coherent data
+cache first, then memory bandwidth, then arbitration fairness. Revisit when
+there are several memory endpoints, or accelerators with high-bandwidth DMA to
+different slaves, which is also this phase's own stated trigger. That is a
+decision about whether a phase gets built, so it is the maintainer's to confirm;
+until they do, Stage 0's "Done when" (a written decision backed by baselines
+measured under real multi-master stress) is met in content and not marked
+closed, and Stages 1 to 5 stay a plan.
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
@@ -260,4 +322,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 3 record it under one- and two-hart CoreMark, with and without the data cache, and under an NPU DMA job racing a CPU loop. Linux SMP is not yet measured, so Stage 0 is not closed. Stages 1 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4, awaiting the maintainer's confirmation. Stages 1 onward are a plan.
