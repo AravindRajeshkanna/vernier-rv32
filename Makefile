@@ -223,7 +223,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality coremark_nodcache \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1884,6 +1884,42 @@ sim_ddrexec: sim/bootrom_$(CORE).hex sim/ddrexecimage.hex sim/sim_ddrexec.out
 	@grep -q "RAMBOOT TEST PASSED" sim/ddrexec.log || \
 	    { echo "sim_ddrexec FAILED"; exit 1; }
 
+# ---- The NPU's DMA racing the CPU, with the bus monitor (Phase 8 Stage 0) ----
+#
+# software/soc/npuload.c times a bus-heavy CPU loop and a long NPU DMA job
+# alone and then together; sim/tb_ramboot.v built with -DBUS_MONITOR reports
+# the shared bus per phase. A measurement that also checks both results, not
+# a CI job.
+software/soc/npuload.elf: $(SOCRT_SRCS) software/soc/npuload.c \
+                          software/soc/link_ram.ld $(SOC_HDRS)
+	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
+	    -o $@ $(SOCRT_SRCS) software/soc/npuload.c
+
+sim/npuloadimage.hex: software/soc/npuload.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/soc/npuload.elf software/soc/npuload.bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/npuload.bin > $@
+
+sim/sim_npuload.out: sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DBUS_MONITOR -DRAM_IMAGE='"npuloadimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+
+sim_npuload: sim/bootrom_$(CORE).hex sim/npuloadimage.hex sim/sim_npuload.out
+	@cd sim && $(VVP) sim_npuload.out $(VVP_DUMP) 2>&1 | tee npuload.log
+	@grep -q "RAMBOOT TEST PASSED" sim/npuload.log || \
+	    { echo "sim_npuload FAILED"; exit 1; }
+
+# The same with the data cache off, which is how any build with more than one
+# hart runs, so the CPU loop's bus traffic roughly doubles.
+sim/sim_npuload_nodcache.out: sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DBUS_MONITOR -DNO_DCACHE -DRAM_IMAGE='"npuloadimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	    -o $@ sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+
+sim_npuload_nodcache: sim/bootrom_$(CORE).hex sim/npuloadimage.hex sim/sim_npuload_nodcache.out
+	@cd sim && $(VVP) sim_npuload_nodcache.out $(VVP_DUMP) 2>&1 | tee npuload_nodcache.log
+	@grep -q "RAMBOOT TEST PASSED" sim/npuload_nodcache.log || \
+	    { echo "sim_npuload_nodcache FAILED"; exit 1; }
+
 # ---- Atomics against DDR3 (Phase 9 Stage 2, Part 7) ----
 #
 # Stage 2's own plan named this explicitly: caches, atomics and LR/SC need
@@ -3464,7 +3500,7 @@ clean:
 	       sim/sim_sdram.out sim/sim_sdramboot.out sim/sdramimage.hex \
 	       sim/sim_sdramprobe.out sim/sim_sdramcheck.out sim/sdramcheckimage.hex \
 	       sim/sim_ddrcheck.out sim/ddrcheckimage.hex \
-	       sim/sim_uartload_ddr3.out sim/uartddr3image.hex sim/bootrom_inorder_ddr3.hex sim/bootrom_ooo_ddr3.hex sim/bootrom_hetero_ddr3.hex sim/uartload_ddr3.log sim/sim_ddrexec.out sim/ddrexecimage.hex sim/sim_ddratomics.out sim/ddratomicsimage.hex \
+	       sim/sim_uartload_ddr3.out sim/uartddr3image.hex sim/bootrom_inorder_ddr3.hex sim/bootrom_ooo_ddr3.hex sim/bootrom_hetero_ddr3.hex sim/uartload_ddr3.log sim/sim_npuload_nodcache.out sim/sim_npuload.out sim/npuloadimage.hex software/soc/npuload.elf software/soc/npuload.bin sim/sim_ddrexec.out sim/ddrexecimage.hex sim/sim_ddratomics.out sim/ddratomicsimage.hex \
 	       sim/sim_ddrmmutest.out sim/ddrmmutestimage.hex \
 	       sim/sdramfullimage.hex sim/sdramfull.log \
 	       obj_dir_soc_ramboot \

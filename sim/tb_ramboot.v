@@ -209,6 +209,43 @@ module tb_ramboot;
     localparam CLK_PERIOD = 40;
     always #(CLK_PERIOD / 2) clk = ~clk;
 
+`ifdef BUS_MONITOR
+    // Phase 8 Stage 0: a passive observer of the shared bus, reported once per
+    // phase of the program under test. The program marks a phase boundary by
+    // writing GPIO_OUT: 0x00FF clears the counters (start of the measured
+    // region), any other value N reports the phase that has just ended and
+    // clears again. See sim/bus_monitor.v and software/soc/npuload.c.
+    localparam MON_SLAVES = 13;   // must equal soc_top.v's NUM_SLAVES; checked below
+    initial #1 if (DUT.NUM_SLAVES != MON_SLAVES) begin
+        $display("  FAIL bus monitor built for %0d slaves, soc_top has %0d", MON_SLAVES, DUT.NUM_SLAVES);
+        $finish;
+    end
+    bus_monitor #(.NUM_HARTS(1), .NUM_SLAVES(MON_SLAVES)) MON (
+        .clk(clk), .rst(rst),
+        .f_cyc(DUT.BUS.f_cyc), .d_cyc(DUT.BUS.d_cyc), .w_cyc(DUT.BUS.w_cyc),
+        .dbg_cyc(DUT.BUS.dbg_cyc), .n_cyc(DUT.BUS.n_cyc),
+        .sel_f(DUT.BUS.sel_f), .sel_d(DUT.BUS.sel_d), .sel_w(DUT.BUS.sel_w),
+        .sel_dbg(DUT.BUS.sel_dbg), .sel_n(DUT.BUS.sel_n),
+        .s_cyc(DUT.BUS.s_cyc), .s_stb(DUT.BUS.s_stb)
+    );
+`ifdef NO_DCACHE
+    // The data cache off, as every multi-hart build has it (soc_top.v's
+    // HART_DCACHE_ENABLE), so a single hart's bus traffic is what it would be
+    // there. No RTL changes; defparam reaches the bus adapter's own parameter.
+    defparam DUT.BUSADAPT.DCACHE_ENABLE = 1'b0;
+    initial $display("  (data cache disabled for this run)");
+`endif
+    always @(gpio_out) if (!rst) begin
+        if (gpio_out === 16'h00FF) begin
+            MON.clear;
+        end else if (^gpio_out !== 1'bx) begin
+            $display("[bus] phase %0d complete", gpio_out);
+            MON.report;
+            MON.clear;
+        end
+    end
+`endif
+
     // ---- UART receiver: decode the TX line back into characters ----
     integer i;
     reg [7:0] rx_byte;

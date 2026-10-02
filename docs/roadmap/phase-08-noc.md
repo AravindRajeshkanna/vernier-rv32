@@ -134,6 +134,48 @@ far argues for fixing coherence and the single RAM port before building a
 network, and does not yet show a case for the network. Stage 0 is still not
 closed: Linux SMP and the NPU's DMA are not measured.
 
+**Update, Part 3: the NPU's DMA master racing a CPU loop.** Stage 0 names this
+load and the earlier parts did not generate it: the NPU DMA checks in
+`software/soc/main.c` run the NPU alone. `software/soc/npuload.c`
+(`make sim_npuload`, and `make sim_npuload_nodcache` with the data cache off as
+every multi-hart build has it) times a CPU loop that re-reads a 1 KB buffer and
+one 32768-element NPU DMA job over static RAM, first each alone, then together,
+with `sim/bus_monitor.v` reporting each phase through a GPIO marker
+(`sim/tb_ramboot.v` with `-DBUS_MONITOR`; without the define the preprocessed
+testbench is unchanged, so no other test sees it). The NPU result and the CPU
+checksum are checked in all three phases. Single hart, simulation cycles.
+
+| | CPU loop alone | CPU loop, NPU running | Bus in use | A master waiting | NPU bus-request cycles per grant |
+|---|---|---|---|---|---|
+| in-order, data cache on | 115,084 | 115,101 (+0.015%) | 28.5% | 0.00% | 1.000 |
+| in-order, data cache off | 131,468 | 131,484 (+0.012%) | 49.9% | 0.05% | 1.002 |
+| wide, data cache on | 98,894 | 98,907 (+0.013%) | 33.4% | 0.05% | 1.001 |
+| wide, data cache off | 98,894 | 98,954 (+0.06%) | 66.4% | 16.2% | 1.247 |
+
+The NPU job alone takes about 66,200 cycles and holds the bus on every other
+cycle (32,768 granted bus cycles). The NPU sits lowest in the arbitration
+order by design, and it shows: the CPU barely notices it, and where there is
+contention the NPU absorbs it. Only the last row has any: with the wide core's
+loads all going to the bus, the two together ask for two thirds of the bus,
+the CPU's data master waits in 19.5% of its requests (it cannot pre-empt a
+transfer already under way) and the NPU job needs 40,867 request cycles to do
+32,768 cycles of work, about a quarter longer. The wide core hides the delay
+(+0.06%); the in-order core would not, but its combined load never reached
+that level here.
+
+Putting the three parts together, the measured pattern is that waiting stays
+negligible up to about half the bus in use (0.00 to 0.05% at 28 to 50%) and
+rises steeply at about two thirds (16 to 20% waiting at 66 to 67%, in both the
+NPU and the two-hart runs). That is one workload per point, a rule of thumb
+and not a model, but it is consistent across three different loads.
+
+**Not yet measured, so Stage 0 is still not closed: Linux SMP.** No Linux run
+has the monitor attached. Until it does, the reading stays a direction and not
+the written decision the "Done when" asks for: the shared bus is a real limit
+at two cache-less harts or a cache-less wide hart plus the NPU, the traffic is
+almost all to one RAM, and the cheaper fixes to try before a network are a
+second RAM port or banking and a coherent data cache.
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
@@ -218,4 +260,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 and 2 record it under one- and two-hart CoreMark, with and without the data cache. Linux SMP and NPU DMA load are not yet measured, so Stage 0 is not closed. Stages 1 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 3 record it under one- and two-hart CoreMark, with and without the data cache, and under an NPU DMA job racing a CPU loop. Linux SMP is not yet measured, so Stage 0 is not closed. Stages 1 onward are a plan.
