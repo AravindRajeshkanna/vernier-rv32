@@ -181,7 +181,7 @@ int main(void) {
         // byte count is the standard idiom. cppcheck has no way to know
         // they mark one region rather than being two genuinely distinct
         // objects - flagged as `comparePointers` on 2.13.0 (this project's
-        // own CI pin, see docs/toolchain.md) and renamed to
+        // CI pin until it moved to 2.22.0, see docs/toolchain.md) and renamed to
         // `subtractPointers` by 2.21.0, so both are suppressed here rather
         // than whichever one happened to be on hand locally.
         // cppcheck-suppress comparePointers

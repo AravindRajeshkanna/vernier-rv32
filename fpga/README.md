@@ -865,7 +865,7 @@ Re-measured 2026-08-31/09-01 on `BOARD=ulx3s85`, same toolchain as the
 from that measurement is attributable to the RTL, not the tools. Everything
 that landed on `CORE=inorder` since 2026-08-26 is PR #79's hart-control
 halt/resume/register-access work (one new term, `dbg_halt_admit_block`,
-added to `pc_freeze`); PRs #80-#88 either touch only `rtl/debug/dm.v`/
+added to `pc_freeze`); pull requests #80-#88 either touch only `rtl/debug/dm.v`/
 simulation, or are `CORE=ooo`-only and do not change `CORE=inorder`'s
 netlist at all.
 

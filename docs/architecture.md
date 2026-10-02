@@ -159,7 +159,7 @@ hazard**. This core resolves it a few ways:
   drives `id_ex`'s hold/bubble logic (`id_ex_stall` =
   `load_use_stall || ex_busy_stall`) would silently double-execute an
   instruction. Here's why: `if_stall` is about whether *IF* has something
-  new to hand to `id_ex`; `id_ex_stall` is about whether *id_ex* is free
+  new to hand to `id_ex`; `id_ex_stall` is about whether `id_ex` is free
   to accept whatever `if_id` currently holds. Those can disagree — a fetch
   can be mid-walk while `id_ex` is completely free to advance this cycle —
   and if `if_id`'s "hold vs. bubble" decision used the same combined

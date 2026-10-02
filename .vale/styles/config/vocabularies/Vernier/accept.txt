@@ -1,3 +1,4 @@
+ACT's
 AMO
 AMOs
 Ack
@@ -22,6 +23,7 @@ DDR
 DFFs
 DMA'd
 DQ's
+DRAM's
 DRs
 DSPs
 DUT
@@ -30,6 +32,7 @@ EBRs
 ECALL
 EEMBC
 EEPROMs
+EX's
 Endianness
 FB's
 FFs
@@ -74,12 +77,13 @@ PMP's
 PRF
 PTE
 PTEs
+PWM's
 Pipelining
 Preload
-PWM's
 QEMU
 Quartus
 RD's
+READ's
 ROB
 RTL's
 RXDATA
@@ -197,6 +201,7 @@ hardcodes
 hardcoding
 hardwires
 hotpluggable
+iCEBreaker
 idempotency
 ident
 initramfs

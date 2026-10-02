@@ -402,8 +402,7 @@ compares it against what the receiver decodes off the wire. Before:
 UART bytes written to THR: 6336, **470 dropped by the transmitter**, 5866 sent
 ```
 
-`r`,`e`,`e`,`i`,`n`,`g`,` `,`u`,`n`,`u`,`s`,`e` — the tail of `F`*reeing
-unuse*`d`, forty-eight cycles apart where a character takes 2,240. After:
+`r`,`e`,`e`,`i`,`n`,`g`,` `,`u`,`n`,`u`,`s`,`e` — the middle of `Freeing unused`, forty-eight cycles apart where a character takes 2,240. After:
 `6335 written, all 6335 sent, in order`. It runs in `make verilator_check`
 (part of `make verify`) and in `make sim_linux`.
 

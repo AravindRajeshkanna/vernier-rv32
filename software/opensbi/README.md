@@ -158,7 +158,7 @@ either lacked or got wrong. All of these are now implemented and covered by
 
 ## The one build wrinkle worth knowing
 
-Modern OpenSBI hard-errors unless the linker can produce PIEs, and
+Modern OpenSBI hard-errors unless the linker can produce position-independent executables, and
 `riscv64-unknown-elf-ld` cannot — it targets bare-metal ELF, not Linux, and
 answers `-pie not supported`. The firmware doesn't need to be
 position-independent here, so `build-opensbi.sh` makes the PIE flags
