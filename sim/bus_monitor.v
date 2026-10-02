@@ -69,6 +69,19 @@ module bus_monitor #(
         end
     end
 
+    // Zero every counter, so a testbench can report one phase of a program at
+    // a time.
+    task clear;
+        integer k;
+        begin
+            total = 0; busy = 0; busy_contended = 0;
+            for (k = 0; k < NM; k = k + 1) begin
+                n_req[k] = 0; n_gnt[k] = 0; n_wait[k] = 0;
+            end
+            for (k = 0; k < NUM_SLAVES; k = k + 1) n_slave[k] = 0;
+        end
+    endtask
+
     function [8*10-1:0] role(input integer m);
         begin
             if      (m < NUM_HARTS)     role = "fetch";
