@@ -43,6 +43,11 @@
 //   +ram=FILE         block RAM image, one 32-bit word per line
 //   +sdram_words=N    16-bit words of modelled SDRAM (default 2^21 = 4 MB)
 //   +maxcycles=N      give up after this many cycles
+//   +busmon           count the shared bus's use and contention, as
+//                     sim/bus_monitor.v does under Icarus, and print a total at
+//                     the end (Phase 8 Stage 0).
+//   +busmon_every=N   also print a line per window of N cycles, to see how it
+//                     changes over a boot.
 //   +stopon=TEXT      stop once TEXT has come out of the UART, then drain.
 //                     The verdict word in block RAM is how a bare-metal
 //                     program here says it is finished, and software this
@@ -209,6 +214,13 @@
 #include <vector>
 #include <deque>
 #include <chrono>
+
+// Harts the interconnect was built for; the 2-hart rule in the Makefile sets it.
+#ifndef BUSMON_HARTS
+#define BUSMON_HARTS 1
+#endif
+#define BUSMON_NM (3 * BUSMON_HARTS + 2)
+#define BUSMON_NS 16
 
 #include "Vsoc_top.h"
 #include "Vsoc_top___024root.h"
@@ -821,6 +833,74 @@ static long plusarg_long(int argc, char **argv, const char *name, long dflt) {
 }
 
 // ---------------------------------------------------------------------------
+// Counts, per cycle, which masters asked for the shared bus, which one held
+// it, and which asked and were held off - the same quantities as
+// sim/bus_monitor.v. Masters are numbered fetch[0..H-1], data, walker, debug,
+// NPU DMA, matching the interconnect's own tiers.
+struct BusMon {
+    uint64_t total = 0, busy = 0, contended = 0;
+    uint64_t req[BUSMON_NM] = {}, gnt[BUSMON_NM] = {}, wait[BUSMON_NM] = {};
+    uint64_t slave[BUSMON_NS] = {};
+
+    void clear() { *this = BusMon(); }
+
+    void sample(Vsoc_top___024root *r) {
+        const unsigned H = BUSMON_HARTS;
+        const uint32_t m = (1u << H) - 1u;
+        uint32_t rq = (r->soc_top__DOT__BUS__DOT__f_cyc & m)
+                    | ((r->soc_top__DOT__BUS__DOT__d_cyc & m) << H)
+                    | ((r->soc_top__DOT__BUS__DOT__w_cyc & m) << (2 * H))
+                    | ((uint32_t)(r->soc_top__DOT__BUS__DOT__dbg_cyc & 1) << (3 * H))
+                    | ((uint32_t)(r->soc_top__DOT__BUS__DOT__n_cyc & 1) << (3 * H + 1));
+        uint32_t gr = (r->soc_top__DOT__BUS__DOT__sel_f & m)
+                    | ((r->soc_top__DOT__BUS__DOT__sel_d & m) << H)
+                    | ((r->soc_top__DOT__BUS__DOT__sel_w & m) << (2 * H))
+                    | ((uint32_t)(r->soc_top__DOT__BUS__DOT__sel_dbg & 1) << (3 * H))
+                    | ((uint32_t)(r->soc_top__DOT__BUS__DOT__sel_n & 1) << (3 * H + 1));
+        uint32_t bk = rq & ~gr;
+        total++;
+        if (r->soc_top__DOT__BUS__DOT__s_cyc) busy++;
+        if (r->soc_top__DOT__BUS__DOT__s_cyc && bk) contended++;
+        for (unsigned i = 0; i < BUSMON_NM; i++) {
+            req[i]  += (rq >> i) & 1;
+            gnt[i]  += (gr >> i) & 1;
+            wait[i] += (bk >> i) & 1;
+        }
+        uint32_t st = r->soc_top__DOT__BUS__DOT__s_stb;
+        for (unsigned i = 0; i < BUSMON_NS; i++) slave[i] += (st >> i) & 1;
+    }
+
+    static const char *role(unsigned m, int *hart) {
+        const unsigned H = BUSMON_HARTS;
+        *hart = (m < 3 * H) ? (int)(m % H) : -1;
+        if (m < H) return "fetch";
+        if (m < 2 * H) return "data";
+        if (m < 3 * H) return "walker";
+        if (m == 3 * H) return "debug";
+        return "npu dma";
+    }
+
+    void report(const char *label) const {
+        if (!total) return;
+        printf("\n---- bus monitor: %s (%" PRIu64 " cycles) ----\n", label, total);
+        printf("  bus in use:                   %" PRIu64 " cycles (%.2f%%)\n",
+               busy, 100.0 * busy / total);
+        printf("  in use with a master waiting: %" PRIu64 " cycles (%.2f%%)\n",
+               contended, 100.0 * contended / total);
+        printf("  master            hart   asked    granted   waited   waited/asked\n");
+        for (unsigned m = 0; m < BUSMON_NM; m++) {
+            if (!req[m]) continue;
+            int hart;
+            const char *nm = role(m, &hart);
+            printf("  %-10s  %6d  %9" PRIu64 " %9" PRIu64 " %9" PRIu64 "   %.2f%%\n",
+                   nm, hart, req[m], gnt[m], wait[m], 100.0 * wait[m] / req[m]);
+        }
+        for (unsigned s2 = 0; s2 < BUSMON_NS; s2++)
+            if (slave[s2]) printf("  slave %u strobe up:  %" PRIu64 " cycles\n", s2, slave[s2]);
+        printf("---- end bus monitor ----\n");
+    }
+};
+
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
 
@@ -1072,6 +1152,11 @@ int main(int argc, char **argv) {
     uint32_t     result     = 0;
     double       now_ns     = 0.0;
 
+    BusMon       busmon_total, busmon_win;
+    const bool   busmon_on    = plusarg(argc, argv, "busmon") != nullptr;
+    long         busmon_every = 0;
+    if (const char *v = plusarg(argc, argv, "busmon_every")) busmon_every = strtol(v, nullptr, 0);
+
     for (;;) {
         // ---- the controller's rising edge ----
         now_ns = CLK_HALF_NS + CLK_PERIOD_NS * (double)cycles;
@@ -1086,6 +1171,19 @@ int main(int argc, char **argv) {
         if (cycles == 4) top->rst = 0;
 
         uart.sample(top->uart_tx != 0);
+
+        if (busmon_on && cycles > 4) {
+            busmon_total.sample(root);
+            if (busmon_every) {
+                busmon_win.sample(root);
+                if (busmon_win.total >= (uint64_t)busmon_every) {
+                    char lbl[64];
+                    snprintf(lbl, sizeof lbl, "window ending at cycle %ld", cycles);
+                    busmon_win.report(lbl);
+                    busmon_win.clear();
+                }
+            }
+        }
 
         // ---- and the other end of the same wire ----
         //
@@ -1693,6 +1791,7 @@ int main(int argc, char **argv) {
     printf("SDRAM read setup margin: %.1f ns\n", sdram.ac_setup_ns());
     printf("result word (expect \"PASS\"): 0x%08x\n", result);
     printf("wall clock: %.2f s  (%.0f cycles/s)\n", secs, secs > 0 ? cycles / secs : 0.0);
+    if (busmon_on) busmon_total.report("whole run");
     // A program that ends by *printing* never writes the verdict word, so
     // "no verdict" and "timed out" are not the same outcome and this used to
     // call both of them a failure - printing "VERILATOR SOC TEST FAILED

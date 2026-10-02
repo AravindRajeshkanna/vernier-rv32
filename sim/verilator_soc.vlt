@@ -150,6 +150,18 @@ public_flat_rd -module "wb_interconnect" -var "fin_ack"
 public_flat_rd -module "wb_interconnect" -var "fin_dat"
 public_flat_rd -module "wb_interconnect" -var "sel_d"
 public_flat_rd -module "wb_interconnect" -var "sel_w"
+// +busmon: the request, grant and slave-strobe signals sim/bus_monitor.v
+// reads in Icarus, read here per cycle (Phase 8 Stage 0).
+public_flat_rd -module "wb_interconnect" -var "f_cyc"
+public_flat_rd -module "wb_interconnect" -var "d_cyc"
+public_flat_rd -module "wb_interconnect" -var "w_cyc"
+public_flat_rd -module "wb_interconnect" -var "dbg_cyc"
+public_flat_rd -module "wb_interconnect" -var "n_cyc"
+public_flat_rd -module "wb_interconnect" -var "sel_f"
+public_flat_rd -module "wb_interconnect" -var "sel_dbg"
+public_flat_rd -module "wb_interconnect" -var "sel_n"
+public_flat_rd -module "wb_interconnect" -var "s_cyc"
+public_flat_rd -module "wb_interconnect" -var "s_stb"
 
 // And the instruction the core actually consumes, which the bus check above
 // cannot see: a fetch that hits in the I-cache never reaches the bus at all,

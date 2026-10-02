@@ -31,7 +31,7 @@ Defects that are not tied to one phase are in [Common known defects](#common-kno
 | 5 | [Run software this project did not write](phase-05-third-party-software.md) | OpenSBI and Linux. Booted to userspace on a ULX3S. |
 | 6 | [Debug infrastructure](phase-06-debug.md) | JTAG, debug transport and system bus access. Half done; timing margin on the primary board is the gating issue. |
 | 7 | [Close the boot path](phase-07-boot-path.md) | Boot from an SD card. Open; the SD card has never answered on hardware. |
-| 8 | [Network-on-Chip interconnect](phase-08-noc.md) | Stage 0 begun: the shared bus is measured under two-hart CoreMark; the rest is a plan. |
+| 8 | [Network-on-Chip interconnect](phase-08-noc.md) | Stage 0 measured under CoreMark, an NPU DMA job and Linux SMP: two harts saturate the bus, almost all of it to one memory. Recommended not to build a network yet; the maintainer's confirmation is pending. The rest is a plan. |
 | 9 | [DDR](phase-09-ddr.md) | A hand-written DDR3 PHY and controller for the ECPIX-5. Stage 2's "Done when" is closed in simulation, at this scale; the phase's own bar (Linux from DDR3 on a real ECPIX-5) is not met, and no real DDR3 chip has seen it. |
 | 10 | [GPU](phase-10-gpu.md) | A 2D fill, copy and line engine in the framebuffer. Stages 1 to 3 shipped in simulation. |
 | 11 | [DSP](phase-11-dsp.md) | A fixed-point FIR peripheral. Done in simulation. |

@@ -223,7 +223,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -246,6 +246,8 @@ VIEWER = surfer
 # below set it for you; nothing else should need it unless you are actually
 # looking at a waveform.
 DUMP ?=
+# Extra plusargs for the Verilator Linux runs, e.g. SIM_EXTRA='+busmon +busmon_every=25000000'.
+SIM_EXTRA ?=
 ifeq ($(DUMP),1)
 VVP_DUMP = +dump
 else
@@ -1428,7 +1430,7 @@ VERILATOR_2HART_BIN  = $(VERILATOR_2HART_MDIR)/Vsoc_top
 # not record which core it was built with, so an in-order and an ooo
 # 2-hart build must not share one output directory.
 $(VERILATOR_2HART_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
-	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O2 $(CORE_DEFINES)" \
+	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O2 $(CORE_DEFINES) -DBUSMON_HARTS=2" \
 	    --top-module soc_top $(CORE_DEFINES) $(VERILATOR_LINT_FLAGS) \
 	    -GRAM_BYTES=65536 -GRESET_PC=0x90000000 -GNUM_HARTS=2 \
 	    --Mdir $(VERILATOR_2HART_MDIR) \
@@ -1557,7 +1559,7 @@ linux_trapdiff: sim/linuximage_inorder.hex
 sim_linux: sim/linuximage_$(CORE).hex $(VERILATOR_BIN)
 	@cd sim && ../$(VERILATOR_BIN) +sdram=linuximage_$(CORE).hex +uart_clks=224 \
 	    +sdram_words=16777216 +maxcycles=400000000 +checkuart \
-	    +stopon=$(LINUX_MARKER) | tee linux.log
+	    +stopon=$(LINUX_MARKER) $(SIM_EXTRA) | tee linux.log
 # The `===` are load-bearing and this gate was wrong without them. The
 # harness reports what +stopon was looking for - `stopon "MARKER": never seen
 # in 400000000 cycles` - so a grep for the bare marker matches the harness
@@ -1610,7 +1612,7 @@ sim_linux: sim/linuximage_$(CORE).hex $(VERILATOR_BIN)
 sim_linux_2hart: sim/linuximage_$(CORE).hex $(VERILATOR_2HART_BIN)
 	@cd sim && ../$(VERILATOR_2HART_BIN) +sdram=linuximage_$(CORE).hex +uart_clks=224 \
 	    +sdram_words=16777216 +maxcycles=400000000 +checkuart \
-	    +stopon=$(LINUX_MARKER) | tee linux_2hart.log
+	    +stopon=$(LINUX_MARKER) $(SIM_EXTRA) | tee linux_2hart.log
 	@grep -aq "dropped by the transmitter" sim/linux_2hart.log && \
 	    { echo "LINUX 2-HART BOOT FAILED - the console did not send every byte"; \
 	      exit 1; } || true
@@ -3405,6 +3407,19 @@ sdramimage: sim/sdramimage.hex
 
 sim/sim_sdramboot.out: sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_sdramboot.v sim/sdram_model.v $(SOC_RTL)
+
+# The bus monitor (Phase 8 Stage 0) exists twice - sim/bus_monitor.v under
+# Icarus and a port in sim/verilator_soc.cpp (+busmon) - so the Linux runs can
+# be measured at Verilator speed. `busmon_check` runs the same program, the
+# SDRAM boot, under both and requires the two to agree, the way
+# `verilator_check` does for cycle counts.
+sim/sim_sdramboot_busmon.out: sim/tb_sdramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DBUS_MONITOR -o $@ sim/tb_sdramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+
+busmon_check: sim/sdramimage.hex sim/sim_sdramboot_busmon.out $(VERILATOR_BIN)
+	@cd sim && $(VVP) sim_sdramboot_busmon.out > busmon_icarus.log 2>&1
+	@cd sim && ../$(VERILATOR_BIN) +sdram=sdramimage.hex +busmon > busmon_verilator.log 2>&1 || true
+	python3 tests/busmon_compare.py sim/busmon_icarus.log sim/busmon_verilator.log
 
 # The log is kept because `verilator_check` compares against it rather than
 # running Icarus a second time - this test is three minutes and `verify` runs
