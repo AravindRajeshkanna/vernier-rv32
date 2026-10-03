@@ -210,6 +210,35 @@ two are not measured at the same framebuffer scale. The critical path (seed 0,
 `ex_mem_rd` forwarding register through the MMU's address adder to a
 clock-enable inside the CSR file.
 
+**Where it went (bisected 2026-10-03; old bundle, seed 0, FB 8x8).** The 8x8
+framebuffer does not move Fmax: `efee7bf` gives 23.80 MHz at 8x8 and at full
+scale. Probing the 156 first-parent commits between `efee7bf` and HEAD:
+
+| Commit (date) | Fmax | TRELLIS_COMB |
+|---|---|---|
+| `efee7bf` (2026-08-26) | 23.80 | 17,814 |
+| `5ff8079` (2026-09-03, before PMP stage 1) | 22.43 | 17,512 |
+| `da07e87` (2026-09-20) | 17.64 | 36,593 |
+| `80485a3` (2026-09-25) | 16.98 | 35,758 |
+| HEAD `f0a382a` | 19.12 | 36,817 |
+
+The drop falls between 2026-09-03 and 2026-09-20 and the LUT doubling with
+it. **It cannot be pinned to one commit by bisection**: probes at commits 58,
+78, 88 and `e66b80a` aborted inside Yosys (the `wb_framebuffer.v` crash that
+`311716b` fixed on 2026-09-22) and the one at `4ec71e8` sat in ABC9 for over
+80 minutes, so that whole window is cannot be built on this bundle.
+
+Per-module LUT counts (`synth_ecp5 -noflatten`, `efee7bf` against HEAD) say
+where the area went: the PMP unit 0 to 7,698, the NPU 0 to 2,848, `csr_file`
+1,023 to 2,880, the framebuffer 1,566 to 3,031, the FIR filter 652 and the
+timer 590, both new. Stubbing the PMP's fault output to 0 at HEAD (a
+measurement, not a change kept) gave **20.70 MHz and 23,882 TRELLIS_COMB**:
+the PMP is about 13,000 LUTs of the 19,000 added, but one seed's 1.6 MHz is
+inside the seed spread, and the stubbed design is still 3 MHz short of
+August. Only 1.62 ns of the HEAD critical path's 52 ns is in PMP nets, so if
+it costs timing it does so through routing congestion, which was not tested.
+So the regression has several causes, none individually established.
+
 **Why 8x8.** At full scale (320x240) the current RTL does not finish
 synthesis: Yosys was still running after more than an hour on each bundle,
 converting the framebuffer's memories to registers (51 "Replacing memory ...
