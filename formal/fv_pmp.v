@@ -19,7 +19,7 @@
 //      access from every privilege is allowed, regardless of what any other
 //      entry says - proves priority (entry 0 is consulted first) and
 //      totality (NAPOT's maximal encoding really does cover all 2^32 bytes,
-//      the exact case rtl/pmp.v's 33-bit base/top exists for) together.
+//      the exact case rtl/pmp.v's 31-bit word-space top exists for) together.
 //   3. The same region, but locked with all-zero permissions: every access
 //      from every privilege, M included, is denied - proves the lock bit
 //      really does withdraw M-mode's usual bypass, not just S/U's default.

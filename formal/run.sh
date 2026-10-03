@@ -36,8 +36,8 @@ mkdir -p "$BUILD"
 # cannot reach in any reasonable time and boolector does in about a minute and a half.
 DDR3_SOLVER="${DDR3_SOLVER:-boolector}"
 DDR3_DEPTH="${DDR3_DEPTH:-250}"
-solver_for() { case "$1" in ddr3_ecp5_top) echo "$DDR3_SOLVER" ;; *) echo "$SOLVER" ;; esac; }
-depth_for()  { case "$1" in ddr3_ecp5_top) echo "$DDR3_DEPTH"  ;; *) echo "$DEPTH"  ;; esac; }
+solver_for() { case "$1" in ddr3_ecp5_top) echo "$DDR3_SOLVER" ;; fv_pmp_equiv) echo boolector ;; *) echo "$SOLVER" ;; esac; }
+depth_for()  { case "$1" in ddr3_ecp5_top) echo "$DDR3_DEPTH"  ;; fv_pmp_equiv) echo 2 ;; *) echo "$DEPTH"  ;; esac; }
 
 # What to check: "<top module> <verilog files>".
 #
@@ -55,6 +55,7 @@ TARGETS=(
     "fv_interconnect $ROOT/rtl/soc/wb_interconnect.v $HERE/fv_interconnect.v"
     "fv_regfile_wide $ROOT/rtl/ooo/regfile_wide.v $HERE/fv_regfile_wide.v"
     "fv_pmp          $ROOT/rtl/pmp.v $HERE/fv_pmp.v"
+    "fv_pmp_equiv    $ROOT/rtl/pmp.v $HERE/pmp_ref.v $HERE/fv_pmp_equiv.v"
     "ddr3_ecp5_top   $ROOT/rtl/soc/ddr3_ecp5_top.v $ROOT/rtl/soc/ddr3_write_seq.v $ROOT/rtl/soc/ddr3_read_seq.v $ROOT/rtl/soc/ddr3_read_burst_ext.v $ROOT/rtl/soc/ddr3_refresh_ctrl.v $HERE/ddr3_stubs.v"
 )
 
