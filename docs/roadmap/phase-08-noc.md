@@ -374,6 +374,61 @@ both ranges they pass. So cross-hart atomics and a mutex-protected shared
 counter are now directed-tested in the memory Linux uses, not just booted on.
 Still not covered: DDR3, a larger cache, and a proof.
 
+**Update, Part 7: where the bus time goes now, and what the instruction side
+would buy.** With the data cache on and covering SDRAM, the two-hart in-order
+Linux boot (199.4 M cycles, Part 6) spends its bus time mostly on instruction
+fetch: hart 0 and hart 1 fetches are granted 102.8 M and 16.3 M cycles of about
+185 M busy, against 31.5 M and 24.3 M for data and 9.3 M and 1.2 M for the
+page-table walkers. The instruction cache (`ic_*` in `rtl/soc/cpu_wb.v`) is 256
+words, word-granular, with no spatial locality: straight-line code always
+misses. So the instruction side is the biggest remaining lever, and the first
+question is how big, measured as a ceiling by enlarging that cache on a copy of
+the tree and booting the same two-hart Linux (nothing committed):
+
+| Instruction cache | Cycles to userspace | Bus in use | A master waiting | Hart 0 fetch granted |
+|---|---|---|---|---|
+| 256 words (today) | 199.4 M | 93.0% | 74.0% | 102.8 M |
+| 1024 words | 167.4 M (-16.0%) | 90.6% | 69.4% | 68.2 M |
+| 4096 words | 136.6 M (-31.5%) | 84.8% | 51.7% | 36.3 M |
+
+Both enlarged builds reach userspace. The ceiling is real and large. **But the
+cheap way to get it costs the wrong things.** The cache is distributed LUT RAM,
+read asynchronously (its own comment explains why a block RAM would add a wait
+state to every hit). Synthesised for the ULX3S 85F at the framebuffer's
+diagnostic 8x8 size, three placement seeds each, the same tool bundle: today's
+tree gives 33,130 TRELLIS_COMB and 20.56 / 19.87 / 20.67 MHz (mean 20.37); the
+1024-word cache gives 42,070 TRELLIS_COMB (+8,940, +27%) and 16.45 / 18.02 /
+17.26 MHz (mean 17.24, -3.1 MHz), worse on every seed. That is about 11.6 LUTs a
+word, several times the "256 entries is roughly 900 LUT4s" in the cache's own
+comment (a number this measurement contradicts; the comment is not changed
+here). The design already misses 25 MHz, and the instruction-cache tag compare
+is on its critical path (Part 5's path reading), so a bigger LUT-RAM cache
+spends area and clock for cycles. Both figures are for one hart's cache; with
+two harts the area doubles.
+
+What this supports, as an inference and not a measurement: a bigger plain
+LUT-RAM instruction cache is the wrong trade, and the lever is a different
+instruction-side design - spatial locality (fetching several words per bus
+access, which also needs the SDRAM controller to burst more than the word it
+does now) or a block-RAM cache that fetches ahead to hide the synchronous
+read. Either is a design project, not a parameter, and neither is measured here.
+
+**Arbitration fairness, re-measured and left alone.** Part 4's fairness cost is
+unchanged by the caches: hart 1's instruction fetch is granted 16.3 M of the
+128.2 M cycles it asks for (12.7%, against 13.2% before) and waits on 87% of its
+requests, because the arbiter's fixed priority puts hart 1's fetch last. Whether
+to change it is not clear from these numbers. A fairer arbiter gives hart 1 bus
+cycles that hart 0 then does not get, and during an SMP boot hart 1 is mostly in
+its idle loop (this is a hypothesis; instructions retired per hart were not
+measured), so the cycles may be worth more to hart 0. A CoreMark pair, where
+both harts do real work, is already nearly even (iterations of 434,074 and
+451,483 cycles). There is no workload here on which a fairness change has been
+shown to help, so none is proposed.
+
+Not established: area and clock for the 4096-word cache (not synthesised), any
+change to the data cache's size, the SDRAM controller's burst length, anything
+on a board.
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
