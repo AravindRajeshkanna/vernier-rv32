@@ -1,7 +1,7 @@
 # Phase 8 — Network-on-Chip interconnect
 
-**Stage 0 has begun (Part 1 below: the first bus measurements); Stage 1
-onward is a plan, not an account, and nothing about any of it is blocked on a
+**Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
+decision: no network yet); Stage 1 onward is a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -238,6 +238,13 @@ until they do, Stage 0's "Done when" (a written decision backed by baselines
 measured under real multi-master stress) is met in content and not marked
 closed, and Stages 1 to 5 stay a plan.
 
+**Update: confirmed, Stage 0 closed.** The maintainer confirmed this decision
+on 2026-10-03: do not start Stage 1, and work the levers above in the order
+given. Stage 0's "Done when" is met and closed, in simulation, at this scale.
+Stages 1 to 5 remain a plan, now explicitly behind the trigger above (several
+memory endpoints, or high-bandwidth DMA to different slaves). The levers
+themselves are not yet started; the first is a coherent data cache.
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
@@ -322,4 +329,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4, awaiting the maintainer's confirmation. Stages 1 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stages 1 onward are a plan.
