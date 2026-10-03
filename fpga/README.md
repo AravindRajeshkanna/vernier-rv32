@@ -263,6 +263,24 @@ the 23.8 MHz of 2026-08-26 is not recovered: the remaining 3 to 4 MHz sits in
 the NPU, the CSR file, the framebuffer and the rest of the area growth listed
 above. The critical path was not re-read after this change.
 
+**What limits it after the PMP change (2026-10-03; seed 1, 20.23 MHz, bundle
+`20261002`).** The critical path is 49.4 ns, 12.4 ns of logic and 37.0 ns of
+routing, one chain from a CPU flop back to a CPU flop. Yosys names the nets
+after whatever drove them, so most of the chain is unreadable
+(`id_ex_is_mret_..._CCU2C_...`, a carry chain, accounts for 17.1 ns), but the
+parts that do carry a module name are telling: the instruction-side MMU
+(`CPU.IMMU`) 3.1 ns, then the instruction cache's tag compare in `cpu_wb.v`
+(`BUSADAPT.ic_tag`, `fetch_hit_raw`) 7.9 ns, then nets named for the memory
+stall and hazard network (`ex_mem_mem_we`, 10.5 ns), with a PLIC acknowledge
+net (`PLIC_BR.ack_r`, 0.5 ns) in the middle. The PMP no longer appears in it.
+
+That reads as an address computed in the execute stage, translated, checked
+against the I-cache tags, and the hit or miss fed into the stall that gates
+the rest of the pipeline, all in one cycle. That is inferred from net names,
+not traced through the RTL, and one seed's path is one path. Shortening it
+means registering part of that chain, which trades a cycle of latency
+somewhere and is a pipeline decision, not a clean-up.
+
 **Why 8x8.** At full scale (320x240) the current RTL does not finish
 synthesis: Yosys was still running after more than an hour on each bundle,
 converting the framebuffer's memories to registers (51 "Replacing memory ...
