@@ -348,9 +348,9 @@ What this does and does not show. **Linux's own atomics and shared kernel data
 now go through a cache that has to be coherent, and the evidence is the
 directed test above plus these boots, not a proof**: a boot reaching userspace
 would not necessarily notice a stale line. The directed test covers plain loads
-and stores across the two harts in SDRAM; cross-hart LR/SC and AMOs are still
-tested in block RAM only (`sim_soc_2hart_lrsc`, `_amoswap`), so atomics in SDRAM
-rest on the boots. Reading a one-hart run's own gain (-17%) as the cost of
+and stores across the two harts in SDRAM; cross-hart LR/SC and AMOs were at
+first tested in block RAM only (`sim_soc_2hart_lrsc`, `_amoswap`), so atomics
+in SDRAM rested on the boots until the follow-up after this paragraph. Reading a one-hart run's own gain (-17%) as the cost of
 SDRAM latency on a hart that was never contended is an inference. Not covered:
 the DDR3 window (`0xA0`) is still uncached, a cache bigger than 256 words (a
 larger one would help more and costs block RAM), anything on a board, the area
@@ -360,6 +360,19 @@ though with less urgency than Part 4 showed. One measurement note: the control
 run of the one-hart in-order boot printed the marker line split by a bus-monitor
 window and so failed the gate's grep on it; the boot itself finished (`stopon`
 seen), so it is counted here.
+
+**Follow-up to Part 6: the atomics tests, run with the data in SDRAM.**
+`sim_soc_2hart_amoswap_sdram` and `sim_soc_2hart_lrsc_sdram` (each with a
+`_hetero` build) re-run the two existing programs with their one base-register
+word changed from `0x8000_0000` to `0x9000_0000`, the SDRAM model attached, and
+the testbench reading the words back from the model. With SDRAM uncached all
+four pass. With SDRAM cacheable but the snoop still limited to block RAM, the
+AMO test loses updates (counter 102, expected 200: its plain read-modify-write
+of the shared counter reads a stale line) and the LR/SC test lets hart 0's SC
+succeed when the cross-hart write should have failed it, on both pairs; with
+both ranges they pass. So cross-hart atomics and a mutex-protected shared
+counter are now directed-tested in the memory Linux uses, not just booted on.
+Still not covered: DDR3, a larger cache, and a proof.
 
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
