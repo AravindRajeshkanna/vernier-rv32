@@ -33,8 +33,9 @@
 //
 // This proves the hardware wiring - both harts fetch, execute and reach the
 // shared bus independently, arbitration doesn't starve or corrupt either
-// one, and the DCACHE_ENABLE=0 bypass this stage forces at NUM_HARTS>1
-// doesn't break an ordinary word store. It deliberately does not exercise
+// one, and the data cache this stage had to bypass at NUM_HARTS>1 (it is
+// on now, with a snoop path - see sim/tb_soc_2hart_coherence.v) doesn't
+// break an ordinary word store. It deliberately does not exercise
 // LR/SC cross-hart coherence: rtl/soc/reservation_monitor.v is still wired
 // to nothing (docs/roadmap/phase-13-multicore.md's Phase 13 entry), so that remains a
 // separate, later directed test once a later stage connects it.

@@ -595,8 +595,9 @@ this; nothing before this stage ever asked for more than 2). Hart 0's own
 instantiation is otherwise unchanged, just reindexed onto slice 0 of each
 now-`NUM_HARTS`-wide wire.
 
-The D-cache bypass Stage 5 built stops being a knob nothing exercises and
-starts being load-bearing: a new `HART_DCACHE_ENABLE` localparam forces
+(Update: Phase 8 Part 5 later turned the data cache back on at any hart count,
+with a snoop path in place of the bypass.) The D-cache bypass Stage 5 built
+stops being a knob nothing exercises and starts being load-bearing: a new `HART_DCACHE_ENABLE` localparam forces
 every hart's `DCACHE_ENABLE` to 0 the moment `NUM_HARTS>1`, since two real
 masters now genuinely share memory and nothing here snoops a foreign
 write into either one's cache - `NUM_HARTS=1` keeps today's

@@ -4,8 +4,10 @@
 // a foreign write to the backing memory - standing in for a second hart's
 // own store to the same physical address, bypassing this adapter's cache
 // entirely, exactly the case docs/roadmap/phase-13-multicore.md names as unsafe - is served
-// stale with DCACHE_ENABLE=1 (the default, correct for today's genuinely
-// single-master SoC) and correctly seen fresh with DCACHE_ENABLE=0.
+// stale with DCACHE_ENABLE=1 and no snoop (both instances here tie the
+// snoop port low, so this is the cache as it was before Phase 8 Part 5 gave
+// the SoC a real one - sim/tb_soc_2hart_coherence.v tests that) and
+// correctly seen fresh with DCACHE_ENABLE=0.
 //
 // A real, word-addressable RAM slave on the data Wishbone port (1-cycle
 // ack, matching wb_ram.v's own timing), writable both through the DUT's
@@ -48,7 +50,7 @@ module tb_cpu_wb_dcache_bypass;
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we),
         .dmem_re(dmem_re), .dmem_is_amo(1'b0), .dmem_size(dmem_size),
         .dmem_rdata(dmem_rdata_en), .dmem_rvalid(dmem_rvalid_en), .dbus_wait(dbus_wait_en),
-        .fence_i(1'b0),
+        .fence_i(1'b0), .snoop_wr(1'b0), .snoop_adr(32'b0),
         .iwb_cyc(), .iwb_stb(), .iwb_adr(), .iwb_dat_r(32'b0), .iwb_ack(1'b0),
         .dwb_cyc(dwb_cyc_en), .dwb_stb(dwb_stb_en), .dwb_we(dwb_we_en),
         .dwb_adr(dwb_adr_en), .dwb_dat_w(dwb_dat_w_en), .dwb_sel(dwb_sel_en),
@@ -61,7 +63,7 @@ module tb_cpu_wb_dcache_bypass;
         .dmem_addr(dmem_addr), .dmem_wdata(dmem_wdata), .dmem_we(dmem_we),
         .dmem_re(dmem_re), .dmem_is_amo(1'b0), .dmem_size(dmem_size),
         .dmem_rdata(dmem_rdata_dis), .dmem_rvalid(dmem_rvalid_dis), .dbus_wait(dbus_wait_dis),
-        .fence_i(1'b0),
+        .fence_i(1'b0), .snoop_wr(1'b0), .snoop_adr(32'b0),
         .iwb_cyc(), .iwb_stb(), .iwb_adr(), .iwb_dat_r(32'b0), .iwb_ack(1'b0),
         .dwb_cyc(dwb_cyc_dis), .dwb_stb(dwb_stb_dis), .dwb_we(dwb_we_dis),
         .dwb_adr(dwb_adr_dis), .dwb_dat_w(dwb_dat_w_dis), .dwb_sel(dwb_sel_dis),

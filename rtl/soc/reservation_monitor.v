@@ -1,8 +1,9 @@
 // Cross-hart LR/SC reservation invalidation - the second of the two real
 // coherence gaps docs/roadmap/phase-13-multicore.md's Phase 13 assessment named (the first,
-// rtl/soc/cpu_wb.v's D-cache, was closed by a DCACHE_ENABLE bypass - a
-// reservation is a correctness primitive, not a performance feature, so
-// there is no equivalent "just disable it" option here).
+// rtl/soc/cpu_wb.v's D-cache, was closed first by a DCACHE_ENABLE bypass and
+// then by a snoop path (Phase 8 Part 5) - a reservation is a correctness
+// primitive, not a performance feature, so there is no equivalent "just
+// disable it" option here).
 //
 // Each hart's own LR/SC reservation (rtl/cpu_core.v's `reservation_valid`/
 // `reservation_addr`, and the same shape in rtl/ooo/core_ooo.v) is a

@@ -229,9 +229,9 @@ module tb_ramboot;
         .s_cyc(DUT.BUS.s_cyc), .s_stb(DUT.BUS.s_stb)
     );
 `ifdef NO_DCACHE
-    // The data cache off, as every multi-hart build has it (soc_top.v's
-    // HART_DCACHE_ENABLE), so a single hart's bus traffic is what it would be
-    // there. No RTL changes; defparam reaches the bus adapter's own parameter.
+    // The data cache off, as every multi-hart build had it until Phase 8
+    // Part 5 (soc_top.v's HART_DCACHE_ENABLE), so a single hart's bus traffic is
+    // what it was there. No RTL changes; defparam reaches the bus adapter's own parameter.
     defparam DUT.BUSADAPT.DCACHE_ENABLE = 1'b0;
     initial $display("  (data cache disabled for this run)");
 `endif

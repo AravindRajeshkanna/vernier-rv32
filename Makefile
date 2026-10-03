@@ -2132,6 +2132,33 @@ sim_soc_2hart: sim/soc2hart.hex sim/sim_soc_2hart.out
 	@grep -aq "SOC-2HART-TEST: PASS" sim/soc_2hart.log && echo "SOC 2-HART HARDWARE OK" || \
 	    { echo "FAILED: rtl/soc/soc_top.v's NUM_HARTS=2"; exit 1; }
 
+# ---- Phase 8, the first lever Stage 0 named: data-cache coherence between harts ----
+#
+# sim/gen_soc2hart_coh.py's program crosses three words between two harts,
+# each already resident in the reader's data cache; sim/tb_soc_2hart_coherence.v
+# fails if a hart keeps serving a line the other hart overwrote. The hetero
+# build is a separate target for the reason sim_soc_2hart_hetero above is one:
+# it hardcodes -DCORE_HETERO and its own file list, so it builds the same way
+# whichever $(CORE) the surrounding verify uses.
+sim/soc2hart_coh.hex: sim/gen_soc2hart_coh.py
+	python3 sim/gen_soc2hart_coh.py > $@
+
+sim/sim_soc_2hart_coherence.out: sim/tb_soc_2hart_coherence.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_coherence.v $(SOC_RTL)
+
+sim_soc_2hart_coherence: sim/soc2hart_coh.hex sim/sim_soc_2hart_coherence.out
+	cd sim && $(VVP) sim_soc_2hart_coherence.out $(VVP_DUMP) | tee soc_2hart_coherence.log
+	@grep -aq "SOC-2HART-COHERENCE-TEST: PASS" sim/soc_2hart_coherence.log && echo "SOC 2-HART DATA-CACHE COHERENCE OK" || \
+	    { echo "FAILED: a hart's data cache served a line the other hart had overwritten"; exit 1; }
+
+sim/sim_soc_2hart_coherence_hetero.out: sim/tb_soc_2hart_coherence.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -o $@ sim/tb_soc_2hart_coherence.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_coherence_hetero: sim/soc2hart_coh.hex sim/sim_soc_2hart_coherence_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_coherence_hetero.out $(VVP_DUMP) | tee soc_2hart_coherence_hetero.log
+	@grep -aq "SOC-2HART-COHERENCE-TEST: PASS" sim/soc_2hart_coherence_hetero.log && echo "SOC HETEROGENEOUS 2-HART DATA-CACHE COHERENCE OK" || \
+	    { echo "FAILED: a hart's data cache served a line the other hart had overwritten (hetero)"; exit 1; }
+
 # ---- Phase 15 stage 1: hart 0 = cpu_core.v, hart 1 = core_ooo.v, at once -
 # a real heterogeneous elaboration, not just two of the same core ----
 #
@@ -3448,6 +3475,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_ooo_halt \
         sim_soc_2hart \
         sim_soc_2hart_hetero \
+        sim_soc_2hart_coherence \
+        sim_soc_2hart_coherence_hetero \
         sim_soc_2hart_lrsc \
         sim_soc_2hart_lrsc_hetero \
         sim_soc_2hart_lrsc_swap_hetero \

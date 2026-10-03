@@ -248,7 +248,19 @@ module wb_interconnect #(
     // whether this is a real data access, as opposed to fetch, a walker, or
     // the debug module (see `dbg_ack`'s own property in
     // formal/fv_interconnect.v for why debug must never assert this).
-    output wire                      s_data_master
+    output wire                      s_data_master,
+
+    // ---- write snoop, for the harts' data caches ----
+    // A write completing on the shared bus this cycle, its address, and
+    // which hart's data master (if any) issued it: a hart's own writes are
+    // not a reason for its own cache to drop anything, and a write from
+    // anything else - the other hart, the debug module - is. The harts'
+    // `cpu_wb.v` caches are write-through, so every write to memory crosses
+    // this bus, and watching it here is the whole of what keeps a cached
+    // copy from outliving the write that made it wrong.
+    output wire                      snoop_wr,
+    output wire [31:0]               snoop_adr,
+    output wire [NUM_HARTS-1:0]      snoop_src_d
 );
     // ---- per-hart AMO write-phase exclusivity ----
     //
@@ -408,6 +420,12 @@ module wb_interconnect #(
             assign w_ack[g] = sel_w[g] && fin_ack;
         end
     endgenerate
+    // `fin_ack` is already gated by `cur_stb`, and `cur_we` is only ever set
+    // by a data or debug master, so this is exactly "a write was acked".
+    assign snoop_wr    = s_we && fin_ack;
+    assign snoop_adr   = s_adr;
+    assign snoop_src_d = sel_d;
+
     assign dbg_dat_r = fin_dat;
     assign dbg_ack   = sel_dbg && fin_ack;
     assign n_dat_r   = fin_dat;
