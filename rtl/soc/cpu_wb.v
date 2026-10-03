@@ -334,11 +334,15 @@ module cpu_wb #(
     reg [DC_ENTRIES-1:0]  dc_valid;
 
     // Which addresses may be cached, from the slave table in
-    // `rtl/soc/soc_top.v`: RAM at 0x80_000000 and the boot ROM at
-    // 0x00_000000. Everything between them is a peripheral, where a read has
-    // a side effect or a value that changes without a write - a UART status
-    // register, `mtime`. Caching those would not be slow, it would be wrong.
-    //
+    // `rtl/soc/soc_top.v`: RAM at 0x80_000000, the boot ROM at 0x00_000000 and
+    // the SDRAM window at 0x90_000000-0x91_FFFFFF (the 0xFE mask: both). Linux
+    // runs in SDRAM, and until it was cached the whole of a two-hart boot ran
+    // with the bus saturated (Phase 8 Part 6). Everything else is a
+    // peripheral, where a read has a side effect or a value that changes
+    // without a write - a UART status register, `mtime`. Caching those would
+    // not be slow, it would be wrong. The DDR3 window (0xA0) is not cached yet.
+    // `snoop_cacheable` below must name the same ranges: a range the cache
+    // fills but the snoop ignores is a range that goes stale.
     // `DCACHE_ENABLE` gates this rather than the individual fill/store/hit
     // sites below, so disabling it is provably equivalent to the cache never
     // having anything resident: `dc_present` (and so `load_hit`) is always
@@ -346,7 +350,8 @@ module cpu_wb #(
     // `dc_store` (both already conditioned on `dc_cacheable`) never write
     // the arrays at all.
     wire dc_cacheable = DCACHE_ENABLE && ((dmem_addr[31:24] == 8'h80) ||
-                                           (dmem_addr[31:24] == 8'h00));
+                                           (dmem_addr[31:24] == 8'h00) ||
+                                           (dmem_addr[31:25] == 7'h48));
 
     wire [DC_IDX_BITS-1:0] dc_idx     = dmem_addr[DC_IDX_BITS+1:2];
     wire [DC_TAG_BITS-1:0] dc_tag_now = dmem_addr[31:DC_IDX_BITS+2];
@@ -469,7 +474,8 @@ module cpu_wb #(
     // Last in the block, so it wins over a same-cycle `dc_update`; the two
     // cannot actually coincide (this hart's own ack and another master's
     // write ack are never the same cycle), but the order costs nothing.
-    wire snoop_cacheable = (snoop_adr[31:24] == 8'h80) || (snoop_adr[31:24] == 8'h00);
+    wire snoop_cacheable = (snoop_adr[31:24] == 8'h80) || (snoop_adr[31:24] == 8'h00) ||
+                           (snoop_adr[31:25] == 7'h48);
     wire [DC_IDX_BITS-1:0] snoop_idx = snoop_adr[DC_IDX_BITS+1:2];
 
     always @(posedge clk or posedge rst) begin

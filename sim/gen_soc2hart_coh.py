@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Program for sim/tb_soc_2hart_coherence.v: two harts, each polling a word the
-other writes, so a stale cached copy shows up as a hang or an old value.
+"""Program for sim/tb_soc_2hart_coherence.v: python3 gen_soc2hart_coh.py [DATA_HI20].
 
-Words are at RAM base + 0x200: X (+0), flag (+4), done (+8), result (+12),
+Two harts, each polling a word the other writes, so a stale cached copy shows up as a hang or an old value.
+
+The shared words are at DATA_BASE + 0x200, where DATA_BASE is 0x80000000 (block
+RAM, the default) or, with DATA_HI20 = 0x90000, the SDRAM window. Code always
+runs from block RAM, and each hart mirrors what it observed into block RAM at
+0x80000300.. so the testbench reads one place for both variants. Words are at
+DATA_BASE + 0x200: X (+0), flag (+4), done (+8), result (+12),
 Z (+16), go2 (+20), result2 (+24).
   hart 0: X = OLD; read X (cached); flag = 1; poll done until nonzero;
           read X; result = X; then Z = NEW2; go2 = 1
@@ -14,6 +19,8 @@ that has to drop a line. A cache that does not leaves hart 0 spinning on
 done or reading OLD, or hart 1 spinning on go2 or reading Z as 0.
 """
 import sys
+
+DATA_HI20 = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0x80000
 
 def i_type(imm, rs1, f3, rd, op):
     return ((imm & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | ((f3 & 7) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F)
@@ -63,9 +70,12 @@ hart0 = [
     BEQ(7, 0, -4),         #    until nonzero
     LW(8, 0, 2),           # read X again: must be NEW
     SW(8, 12, 2),          # result = X
+    SW(8, 0x300, 11),      # mirror: what hart 0 read for X, into block RAM
     LUI(9, 0x33333),       # NEW2 = 0x33333000
     SW(9, 16, 2),          # Z = NEW2
     SW(6, 20, 2),          # go2 = 1
+    LUI(12, 0xAAAA1),
+    SW(12, 0x308, 11),     # mirror: hart 0 finished
     SPIN,
 ]
 hart1 = [
@@ -81,11 +91,15 @@ hart1 = [
     BEQ(7, 0, -4),         #    until nonzero
     LW(10, 16, 2),         # read Z again: must be NEW2
     SW(10, 24, 2),         # result2 = Z
+    SW(10, 0x304, 11),     # mirror: what hart 1 read for Z, into block RAM
+    LUI(12, 0xBBBB1),
+    SW(12, 0x30C, 11),     # mirror: hart 1 finished
     SPIN,
 ]
 head = [
     i_type(0xF14, 0, 2, 1, 0x73),  # csrrs x1, mhartid, x0
-    LUI(2, 0x80000),               # x2 = RAM base
+    LUI(2, DATA_HI20),             # x2 = data base
+    LUI(11, 0x80000),              # x11 = block RAM base, for the mirror stores
 ]
 bne_at = len(head)
 words = head + [None] + hart0

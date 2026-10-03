@@ -2159,6 +2159,27 @@ sim_soc_2hart_coherence_hetero: sim/soc2hart_coh.hex sim/sim_soc_2hart_coherence
 	@grep -aq "SOC-2HART-COHERENCE-TEST: PASS" sim/soc_2hart_coherence_hetero.log && echo "SOC HETEROGENEOUS 2-HART DATA-CACHE COHERENCE OK" || \
 	    { echo "FAILED: a hart's data cache served a line the other hart had overwritten (hetero)"; exit 1; }
 
+# The same program with the shared words in the SDRAM window (data-cache
+# coverage of SDRAM, Phase 8 Part 6), the SDRAM model attached.
+sim/soc2hart_coh_sdram.hex: sim/gen_soc2hart_coh.py
+	python3 sim/gen_soc2hart_coh.py 0x90000 > $@
+
+sim/sim_soc_2hart_coherence_sdram.out: sim/tb_soc_2hart_coherence.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DSDRAM_DATA -DCOH_HEX='"soc2hart_coh_sdram.hex"' -o $@ sim/tb_soc_2hart_coherence.v sim/sdram_model.v $(SOC_RTL)
+
+sim_soc_2hart_coherence_sdram: sim/soc2hart_coh_sdram.hex sim/sim_soc_2hart_coherence_sdram.out
+	cd sim && $(VVP) sim_soc_2hart_coherence_sdram.out $(VVP_DUMP) | tee soc_2hart_coherence_sdram.log
+	@grep -aq "SOC-2HART-COHERENCE-TEST: PASS" sim/soc_2hart_coherence_sdram.log && echo "SOC 2-HART DATA-CACHE COHERENCE OK (shared data in SDRAM)" || \
+	    { echo "FAILED: a hart's data cache served a line the other hart had overwritten (SDRAM)"; exit 1; }
+
+sim/sim_soc_2hart_coherence_sdram_hetero.out: sim/tb_soc_2hart_coherence.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -DSDRAM_DATA -DCOH_HEX='"soc2hart_coh_sdram.hex"' -o $@ sim/tb_soc_2hart_coherence.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_coherence_sdram_hetero: sim/soc2hart_coh_sdram.hex sim/sim_soc_2hart_coherence_sdram_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_coherence_sdram_hetero.out $(VVP_DUMP) | tee soc_2hart_coherence_sdram_hetero.log
+	@grep -aq "SOC-2HART-COHERENCE-TEST: PASS" sim/soc_2hart_coherence_sdram_hetero.log && echo "SOC HETEROGENEOUS 2-HART DATA-CACHE COHERENCE OK (shared data in SDRAM)" || \
+	    { echo "FAILED: a hart's data cache served a line the other hart had overwritten (SDRAM, hetero)"; exit 1; }
+
 # ---- Phase 15 stage 1: hart 0 = cpu_core.v, hart 1 = core_ooo.v, at once -
 # a real heterogeneous elaboration, not just two of the same core ----
 #
@@ -3477,6 +3498,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_hetero \
         sim_soc_2hart_coherence \
         sim_soc_2hart_coherence_hetero \
+        sim_soc_2hart_coherence_sdram \
+        sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_lrsc \
         sim_soc_2hart_lrsc_hetero \
         sim_soc_2hart_lrsc_swap_hetero \

@@ -292,7 +292,8 @@ cycles with the bus in use, 88.59% with a master waiting). The data cache only
 covers block RAM and the boot ROM (`dc_cacheable` in `rtl/soc/cpu_wb.v`:
 `addr[31:24]` of `0x80` or `0x00`), and Linux's memory is the SDRAM window, which
 no data cache here covers. So the coherent cache helps the workloads that run
-from block RAM and does nothing for the one that showed saturation. That
+from block RAM and does nothing for the one that showed saturation (Part 6 below
+extends it to SDRAM). That
 changes the order of the levers: for Linux the cache would first have to cover
 the SDRAM range, which is a larger and separately measured step (the cache is
 256 words), and the memory-bandwidth and arbitration levers are not behind it.
@@ -310,6 +311,55 @@ Not established here: the mixed in-order and wide pair under CoreMark, the
 area and clock cost of the snoop path (it is one more write to a flag vector per
 hart and a few gates; not synthesised), anything on a board, and a formal proof
 of coherence (the evidence is directed simulation with mutations).
+
+**Update, Part 6: the cache covers SDRAM, and Linux gets the benefit.** Part 5
+found that the data cache covered only block RAM and the boot ROM, so Linux
+(which runs in the SDRAM window) never touched it. The cacheable predicate in
+`rtl/soc/cpu_wb.v` (`dc_cacheable`) and the snoop's matching one
+(`snoop_cacheable`) now also cover `0x90` and `0x91`, the 32 MB SDRAM window; the
+cache itself is unchanged (256 words, direct-mapped, write-through). That is the
+whole RTL change.
+
+The test came first again. `make sim_soc_2hart_coherence_sdram` (and
+`_sdram_hetero`) is the same program with the shared words in SDRAM at
+`0x9000_0200` and the SDRAM model attached; code still runs from block RAM, and
+each hart mirrors what it observed into block RAM so one set of checks serves
+both variants. With SDRAM uncached it passes; with SDRAM cacheable but the
+snoop still limited to block RAM it fails four checks (both harts stall on a
+stale cached word); with both it passes.
+
+Two-hart and one-hart Linux boots to userspace, `+busmon` as in Part 4, against
+the same tree without the change (simulation cycles, ULX3S-style SDR SDRAM
+model):
+
+| | Cycles, before | Cycles, after | Bus in use, before to after | A master waiting, before to after |
+|---|---|---|---|---|
+| 1 hart, in-order | 225.5 M | 186.5 M (-17.3%) | 89.7% to 81.1% | 12.5% to 8.3% |
+| 1 hart, wide | 224.4 M | 184.4 M (-17.8%) | 91.3% to 83.2% | 37.2% to 24.9% |
+| 2 harts, in-order | 376.2 M | 199.4 M (-47.0%) | 99.7% to 93.0% | 88.6% to 74.0% |
+| 2 harts, wide | 379.2 M | 223.5 M (-41.1%) | 99.8% to 94.3% | 90.6% to 78.3% |
+
+All four reach userspace, both harts in the two-hart runs. The second hart
+now costs about 7% more cycles to boot (in-order: 199.4 M against 186.5 M)
+where it cost 67% before (376.2 M against 225.5 M), and the bus is no longer
+saturated, with a margin of about 6 to 7% of cycles.
+
+What this does and does not show. **Linux's own atomics and shared kernel data
+now go through a cache that has to be coherent, and the evidence is the
+directed test above plus these boots, not a proof**: a boot reaching userspace
+would not necessarily notice a stale line. The directed test covers plain loads
+and stores across the two harts in SDRAM; cross-hart LR/SC and AMOs are still
+tested in block RAM only (`sim_soc_2hart_lrsc`, `_amoswap`), so atomics in SDRAM
+rest on the boots. Reading a one-hart run's own gain (-17%) as the cost of
+SDRAM latency on a hart that was never contended is an inference. Not covered:
+the DDR3 window (`0xA0`) is still uncached, a cache bigger than 256 words (a
+larger one would help more and costs block RAM), anything on a board, the area
+and clock cost of the wider predicate. The bus is still 93 to 94% busy with two
+harts, so the other two levers (memory bandwidth, arbitration fairness) remain,
+though with less urgency than Part 4 showed. One measurement note: the control
+run of the one-hart in-order boot printed the marker line split by a bus-monitor
+window and so failed the gate's grep on it; the boot itself finished (`stopon`
+seen), so it is counted here.
 
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
