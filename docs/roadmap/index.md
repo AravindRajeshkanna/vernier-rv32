@@ -60,8 +60,11 @@ through the MMU address adder to the CSR file. Separately, full-scale
 stalls), and the PMP accounts for about 13,000 of the 19,000 LUTs added.
 The PMP match was then rewritten in word space (proved equal to the original):
 33,218 LUTs and +1.67 MHz on average over six seeds, still short of 25 MHz.
-Next step: the rest of the area growth (NPU, `csr_file`, framebuffer); the
-full account is in [fpga/README.md](../../fpga/README.md#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause).
+After that, the critical path is one combinational chain: execute-stage
+address, instruction-side MMU, I-cache tag compare, the memory stall network.
+Shortening it means registering part of that chain, a pipeline-timing
+decision for the maintainer. The area growth in the NPU, `csr_file` and
+framebuffer is the other lever. The full account is in [fpga/README.md](../../fpga/README.md#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause).
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
