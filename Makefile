@@ -2546,6 +2546,53 @@ sim_soc_2hart_amoswap_hetero: sim/soc2hart_amoswap.hex sim/sim_soc_2hart_amoswap
 	@grep -aq "SOC-2HART-AMOSWAP-TEST: PASS" sim/soc_2hart_amoswap_hetero.log && echo "CROSS-HART AMO ATOMICITY OK (hetero)" || \
 	    { echo "FAILED: rtl/soc/wb_interconnect.v's own cross-hart AMO atomicity under CORE=hetero"; exit 1; }
 
+# ---- cross-hart atomics with the shared data in SDRAM (Phase 8 Part 6) ----
+#
+# The data cache covers SDRAM, so Linux's atomics and shared kernel data go
+# through it; the tests above run in block RAM. These re-run the same programs
+# with the data base register changed from 0x8000_0000 to 0x9000_0000 (the
+# `lui` that loads it is one fixed word in each hex file), the SDRAM model
+# attached, and the testbenches reading the words back from the model.
+sim/soc2hart_amoswap_sdram.hex: sim/soc2hart_amoswap.hex
+	sed '2s/^80000137$$/90000137/' $< > $@
+	@cmp -s $< $@ && { echo "error: $@ is identical to $<: the base-register word was not found"; rm -f $@; exit 1; } || true
+
+sim/soc2hart_lrsc_sdram.hex: sim/soc2hart_lrsc.hex
+	sed '2s/^800000B7$$/900000B7/' $< > $@
+	@cmp -s $< $@ && { echo "error: $@ is identical to $<: the base-register word was not found"; rm -f $@; exit 1; } || true
+
+sim/sim_soc_2hart_amoswap_sdram.out: sim/tb_soc_2hart_amoswap.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DSDRAM_DATA -DAMO_HEX='"soc2hart_amoswap_sdram.hex"' -o $@ sim/tb_soc_2hart_amoswap.v sim/sdram_model.v $(SOC_RTL)
+
+sim_soc_2hart_amoswap_sdram: sim/soc2hart_amoswap_sdram.hex sim/sim_soc_2hart_amoswap_sdram.out
+	cd sim && $(VVP) sim_soc_2hart_amoswap_sdram.out $(VVP_DUMP) | tee soc_2hart_amoswap_sdram.log
+	@grep -aq "SOC-2HART-AMOSWAP-TEST: PASS" sim/soc_2hart_amoswap_sdram.log && echo "CROSS-HART AMO ATOMICITY OK (shared data in SDRAM)" || \
+	    { echo "FAILED: cross-hart amoswap with the shared data in SDRAM"; exit 1; }
+
+sim/sim_soc_2hart_amoswap_sdram_hetero.out: sim/tb_soc_2hart_amoswap.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -DSDRAM_DATA -DAMO_HEX='"soc2hart_amoswap_sdram.hex"' -o $@ sim/tb_soc_2hart_amoswap.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_amoswap_sdram_hetero: sim/soc2hart_amoswap_sdram.hex sim/sim_soc_2hart_amoswap_sdram_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_amoswap_sdram_hetero.out $(VVP_DUMP) | tee soc_2hart_amoswap_sdram_hetero.log
+	@grep -aq "SOC-2HART-AMOSWAP-TEST: PASS" sim/soc_2hart_amoswap_sdram_hetero.log && echo "CROSS-HART AMO ATOMICITY OK (shared data in SDRAM) (hetero)" || \
+	    { echo "FAILED: cross-hart amoswap with the shared data in SDRAM (hetero)"; exit 1; }
+
+sim/sim_soc_2hart_lrsc_sdram.out: sim/tb_soc_2hart_lrsc.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DSDRAM_DATA -DLRSC_HEX='"soc2hart_lrsc_sdram.hex"' -o $@ sim/tb_soc_2hart_lrsc.v sim/sdram_model.v $(SOC_RTL)
+
+sim_soc_2hart_lrsc_sdram: sim/soc2hart_lrsc_sdram.hex sim/sim_soc_2hart_lrsc_sdram.out
+	cd sim && $(VVP) sim_soc_2hart_lrsc_sdram.out $(VVP_DUMP) | tee soc_2hart_lrsc_sdram.log
+	@grep -aq "SOC-2HART-LRSC-TEST: PASS" sim/soc_2hart_lrsc_sdram.log && echo "CROSS-HART LR/SC OK (shared data in SDRAM)" || \
+	    { echo "FAILED: cross-hart lrsc with the shared data in SDRAM"; exit 1; }
+
+sim/sim_soc_2hart_lrsc_sdram_hetero.out: sim/tb_soc_2hart_lrsc.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+	$(IVERILOG) -g2012 -DCORE_HETERO -DSDRAM_DATA -DLRSC_HEX='"soc2hart_lrsc_sdram.hex"' -o $@ sim/tb_soc_2hart_lrsc.v sim/sdram_model.v $(SOC_RTL_BASE) rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim_soc_2hart_lrsc_sdram_hetero: sim/soc2hart_lrsc_sdram.hex sim/sim_soc_2hart_lrsc_sdram_hetero.out
+	cd sim && $(VVP) sim_soc_2hart_lrsc_sdram_hetero.out $(VVP_DUMP) | tee soc_2hart_lrsc_sdram_hetero.log
+	@grep -aq "SOC-2HART-LRSC-TEST: PASS" sim/soc_2hart_lrsc_sdram_hetero.log && echo "CROSS-HART LR/SC OK (shared data in SDRAM) (hetero)" || \
+	    { echo "FAILED: cross-hart lrsc with the shared data in SDRAM (hetero)"; exit 1; }
+
 # ---- OOO CSR-write-timing hazard ----
 #
 # CORE_OOO hardcoded, not $(CORE_DEFINES)/$(CORE_RTL): this is specifically
@@ -3500,6 +3547,10 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence_hetero \
         sim_soc_2hart_coherence_sdram \
         sim_soc_2hart_coherence_sdram_hetero \
+        sim_soc_2hart_amoswap_sdram \
+        sim_soc_2hart_amoswap_sdram_hetero \
+        sim_soc_2hart_lrsc_sdram \
+        sim_soc_2hart_lrsc_sdram_hetero \
         sim_soc_2hart_lrsc \
         sim_soc_2hart_lrsc_hetero \
         sim_soc_2hart_lrsc_swap_hetero \
