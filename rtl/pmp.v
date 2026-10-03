@@ -1,6 +1,7 @@
 // Physical Memory Protection: address matching + permission resolution
 // against the 16 pmpcfg/pmpaddr entries csr_file.v stores. Pure combinational
-// logic, standalone - nothing instantiates this module yet. See
+// logic, no state. (Written standalone and instantiated later - cpu_core.v and
+// core_ooo.v now enforce through it; what follows is the original account.) See
 // docs/roadmap/beyond-the-phases.md's PMP entry for why wiring enforcement into an actual
 // access path is a separate, more hazardous round (it changes the *default*
 // rule for every S/U-mode memory access the moment any entry is real) and is
@@ -59,19 +60,25 @@ module pmp (
 );
     localparam [1:0] PRIV_M = 2'b11;
 
-    // Access byte range, as an exclusive [lo, hi) pair. One bit wider than
-    // the address so a full 4 GiB region (base 0, top exactly 2^32) does
-    // not silently wrap to 0 - the canonical "open everything" NAPOT
-    // encoding real firmware uses lands exactly on that boundary.
-    reg [32:0] acc_lo, acc_hi;
-    always @(*) begin
-        acc_lo = {1'b0, addr};
-        case (size)
-            2'd0:    acc_hi = acc_lo + 33'd1;
-            2'd1:    acc_hi = acc_lo + 33'd2;
-            default: acc_hi = acc_lo + 33'd4;
-        endcase
-    end
+    // Everything below compares in word space (address >> 2), not byte
+    // space. Every region bound is a multiple of 4 - pmpaddr holds address>>2
+    // for TOR as much as for NA4/NAPOT - so for any byte address a and bound
+    // b (b a multiple of 4), `a < b` is `a[31:2] < b>>2` and `a >= b` is
+    // `a[31:2] >= b>>2`; the exclusive end of the access, addr+size, is
+    // tested through its *last byte* (addr+size-1): `addr+size > b` is
+    // `last>>2 >= b>>2` and `addr+size <= b` is `last>>2 < b>>2`. That
+    // replaces a pair of 33-bit byte comparators per entry (and a 33-bit
+    // access-end adder feeding all sixteen) with 31-bit word comparators
+    // against two values computed once, here. It is exact for every input,
+    // not only for aligned accesses: formal/fv_pmp_equiv.v proves `fault`
+    // equal to formal/pmp_ref.v's byte-granular original for all of them,
+    // the deliberately misaligned straddle case included.
+    wire [29:0] lo_w = addr[31:2];
+    // Last byte of the access: addr + 0, 1 or 3. One bit wider than the
+    // address because addr = 0xFFFFFFFF with a word access ends past 2^32.
+    wire [32:0] last_byte = {1'b0, addr} + ((size == 2'd0) ? 33'd0 :
+                                            (size == 2'd1) ? 33'd1 : 33'd3);
+    wire [30:0] last_w = last_byte[32:2];
 
     wire [15:0] entry_hit_vec, entry_permit_vec, entry_l_vec;
 
@@ -87,9 +94,12 @@ module pmp (
             wire [31:0] a_this = pmpaddr[32*gi +: 32];
             wire [31:0] a_prev = (gi == 0) ? 32'b0 : pmpaddr[32*(gi-1) +: 32];
 
-            // Region bounds in byte-address space, exclusive top, one bit
-            // wider than addr for the same reason acc_hi is - see above.
-            reg [32:0] base, top;
+            // Region bounds in word space, exclusive top, 31 bits: the byte
+            // form was 33 bits (bound = word<<2), so pmpaddr[31] has always
+            // fallen off the top of a shift and pmpaddr[30] has landed in
+            // the 33rd bit - and the NA4 top wraps at 2^33 bytes, which is
+            // 2^31 words. The 31-bit words here keep exactly that, unchanged.
+            reg [30:0] base_w, top_w;
 
             // NAPOT: the count of trailing one-bits in a_this sets both the
             // region size (2^(t+3) bytes) and how many low bits of the base
@@ -102,43 +112,42 @@ module pmp (
             // ends ...1111 (4 = t+1 bits set), region size 2^(3+3)=64 bytes.
             wire [29:0] napot_mask = a_this[29:0] ^ (a_this[29:0] + 30'd1);
             wire [29:0] napot_base_hi = a_this[29:0] & ~napot_mask;
-            // Region size in bytes, as an explicit 33-bit value before any
-            // arithmetic touches it - up to 2^32 exactly (the "whole 32-bit
-            // space" maximal encoding), which is why this needs the extra
-            // bit rather than fitting in 32. Written out this way, rather
-            // than folded into the `top` expression below, because folding
-            // it left Verilator's width inference genuinely ambiguous about
-            // which sub-expression was supposed to carry 33 bits
-            // (WIDTHEXPAND, caught by `make sim_opensbi`'s Verilator build,
-            // not by Icarus - iverilog accepted the folded form without
-            // complaint, another reminder that "no warnings" from one
-            // simulator is not the same claim as "no warnings").
-            wire [32:0] napot_size = ({3'b000, napot_mask} + 33'd1) << 2;
+            // Region size in words, up to 2^30 exactly (the "whole 32-bit
+            // space" maximal encoding - all of a_this[29:0] set), which is
+            // why this needs 31 bits and not 30: the canonical "open
+            // everything" encoding real firmware uses ends exactly on 2^32
+            // bytes. Written out as its own wire, rather than folded into
+            // `top_w`, for the reason the byte-space version did: Verilator's
+            // width inference on the folded form was genuinely ambiguous
+            // (WIDTHEXPAND, caught by `make sim_opensbi`'s Verilator build and
+            // not by Icarus - "no warnings" from one simulator is not the
+            // same claim as "no warnings").
+            wire [30:0] napot_size_w = {1'b0, napot_mask} + 31'd1;
 
             always @(*) begin
                 case (a_mode)
                     2'b01: begin // TOR: [pmpaddr[i-1], pmpaddr[i])
-                        base = {1'b0, a_prev} << 2;
-                        top  = {1'b0, a_this} << 2;
+                        base_w = a_prev[30:0];
+                        top_w  = a_this[30:0];
                     end
                     2'b10: begin // NA4: exactly 4 bytes at pmpaddr[i]<<2
-                        base = {1'b0, a_this} << 2;
-                        top  = base + 33'd4;
+                        base_w = a_this[30:0];
+                        top_w  = base_w + 31'd1;
                     end
                     2'b11: begin // NAPOT
-                        base = {1'b0, napot_base_hi, 2'b00};
-                        top  = base + napot_size;
+                        base_w = {1'b0, napot_base_hi};
+                        top_w  = base_w + napot_size_w;
                     end
                     default: begin // OFF
-                        base = 33'b0;
-                        top  = 33'b0;
+                        base_w = 31'b0;
+                        top_w  = 31'b0;
                     end
                 endcase
             end
 
             wire active   = (a_mode != 2'b00);
-            wire overlaps = active && (acc_hi > base) && (acc_lo < top);
-            wire contains = (acc_lo >= base) && (acc_hi <= top);
+            wire overlaps = active && (last_w >= base_w) && ({1'b0, lo_w} < top_w);
+            wire contains = ({1'b0, lo_w} >= base_w) && (last_w < top_w);
             wire grant    = is_fetch ? x_bit : (is_write ? w_bit : r_bit);
 
             assign entry_hit_vec[gi]    = overlaps;

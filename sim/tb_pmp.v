@@ -15,8 +15,9 @@
 //      adds over NA4.
 //   4. NAPOT at the maximal size (the whole 32-bit space) - the exact
 //      encoding (`pmpaddr = -1`) real firmware uses to open everything at
-//      boot, and the one case that needs the extra address bit rtl/pmp.v's
-//      33-bit base/top carries specifically to avoid a wraparound here.
+//      boot, and the one case that needs the extra bit rtl/pmp.v's 31-bit
+//      word-space top (and 33-bit last-byte address) carries to avoid a
+//      wraparound here.
 //   5. TOR, including a straddling access - the one region shape where a
 //      naturally-aligned access can still straddle a boundary, since TOR
 //      bounds are arbitrary byte addresses rather than power-of-two-aligned.

@@ -239,6 +239,30 @@ August. Only 1.62 ns of the HEAD critical path's 52 ns is in PMP nets, so if
 it costs timing it does so through routing congestion, which was not tested.
 So the regression has several causes, none individually established.
 
+**Smaller PMP, measured (2026-10-03; new bundle `20261002`, FB 8x8, the same six
+seeds as the table above).** `rtl/pmp.v` now compares in word space: every
+region bound is a multiple of 4, so each entry's two 33-bit byte comparators
+become 31-bit word comparators against a last-byte address computed once for
+all sixteen entries. `fault` is unchanged for every input -
+`formal/fv_pmp_equiv.v` proves it equal to the byte-granular original kept as
+`formal/pmp_ref.v`, misaligned accesses included.
+
+| Seed | before | after | Difference |
+|---|---|---|---|
+| 0 | 18.17 | 19.60 | +1.43 |
+| 1 | 17.43 | 20.23 | +2.80 |
+| 2 | 17.94 | 19.41 | +1.47 |
+| 3 | 18.01 | 19.62 | +1.61 |
+| 4 | 19.14 | 19.59 | +0.45 |
+| 5 | 18.01 | 20.26 | +2.25 |
+| mean | 18.12 | 19.78 | +1.67 |
+
+TRELLIS_COMB 36,001 to 33,218 (-2,783, -7.7%). All six seeds improve, so this
+is not noise, but **HEAD still fails the 25 MHz constraint on every seed** and
+the 23.8 MHz of 2026-08-26 is not recovered: the remaining 3 to 4 MHz sits in
+the NPU, the CSR file, the framebuffer and the rest of the area growth listed
+above. The critical path was not re-read after this change.
+
 **Why 8x8.** At full scale (320x240) the current RTL does not finish
 synthesis: Yosys was still running after more than an hour on each bundle,
 converting the framebuffer's memories to registers (51 "Replacing memory ...
