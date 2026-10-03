@@ -274,6 +274,9 @@ module soc_top #(
 
     // ---- shared slave bus ----
     wire                     s_cyc, s_we, s_data_master;
+    wire                     snoop_wr;
+    wire [31:0]              snoop_adr;
+    wire [NUM_HARTS-1:0]     snoop_src_d;
     wire [NUM_SLAVES-1:0]    s_stb;
     wire [31:0]              s_adr, s_dat_w;
     wire [3:0]               s_sel;
@@ -337,13 +340,15 @@ module soc_top #(
     // instantiation for why, and rtl/debug/README.md/docs/roadmap/phase-06-debug.md
     // Phase 6 for the full reasoning.
 
-    // Correctness-first D-cache bypass (rtl/soc/cpu_wb.v's DCACHE_ENABLE,
-    // Phase 13 stage 5): a write-through cache with no snoop path is only
-    // correct with one master on the bus. NUM_HARTS=1 keeps today's
-    // DCACHE_ENABLE=1 (unaffected); NUM_HARTS>1 forces it off for every
-    // hart, since two real masters now genuinely share this memory and
-    // nothing here watches for a foreign write into either hart's cache.
-    localparam HART_DCACHE_ENABLE = (NUM_HARTS > 1) ? 0 : 1;
+    // Every hart's data cache is on, at any NUM_HARTS. It used to be forced
+    // off above one hart (Phase 13 stage 5): a write-through cache with no
+    // snoop path is only correct with one master on the bus. The interconnect
+    // now reports every write that completes on the shared bus (`snoop_*`)
+    // and each hart's cache drops the line at that index unless the write was
+    // its own (rtl/soc/cpu_wb.v). sim/tb_soc_2hart_coherence.v is the test
+    // that fails when that stops being true. `DCACHE_ENABLE` stays a
+    // parameter of cpu_wb.v, so a bypass build is still one localparam away.
+    localparam HART_DCACHE_ENABLE = 1;
 
     // The reset every core and peripheral sees: the pad reset, plus the debugger's
     // own (see the note where `dbg_ndmreset` is driven, below). Declared here,
@@ -397,6 +402,7 @@ module soc_top #(
         .dmem_size(dmem_size[1:0]), .dmem_rdata(dmem_rdata[31:0]),
         .dmem_rvalid(dmem_rvalid[0]), .dbus_wait(dbus_wait[0]),
         .fence_i(fence_i[0]),
+        .snoop_wr(snoop_wr && !snoop_src_d[0]), .snoop_adr(snoop_adr),
         .iwb_cyc(iwb_cyc[0]), .iwb_stb(iwb_stb[0]), .iwb_adr(iwb_adr[31:0]),
         .iwb_dat_r(iwb_dat_r[31:0]), .iwb_ack(iwb_ack[0]),
         .dwb_cyc(dwb_cyc[0]), .dwb_stb(dwb_stb[0]), .dwb_we(dwb_we[0]),
@@ -502,6 +508,7 @@ module soc_top #(
                 .dmem_size(dmem_size[2*h +: 2]), .dmem_rdata(dmem_rdata[32*h +: 32]),
                 .dmem_rvalid(dmem_rvalid[h]), .dbus_wait(dbus_wait[h]),
                 .fence_i(fence_i[h]),
+                .snoop_wr(snoop_wr && !snoop_src_d[h]), .snoop_adr(snoop_adr),
                 .iwb_cyc(iwb_cyc[h]), .iwb_stb(iwb_stb[h]), .iwb_adr(iwb_adr[32*h +: 32]),
                 .iwb_dat_r(iwb_dat_r[32*h +: 32]), .iwb_ack(iwb_ack[h]),
                 .dwb_cyc(dwb_cyc[h]), .dwb_stb(dwb_stb[h]), .dwb_we(dwb_we[h]),
@@ -643,7 +650,8 @@ module soc_top #(
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
-        .s_data_master(s_data_master)
+        .s_data_master(s_data_master),
+        .snoop_wr(snoop_wr), .snoop_adr(snoop_adr), .snoop_src_d(snoop_src_d)
     );
 
     // =====================================================================

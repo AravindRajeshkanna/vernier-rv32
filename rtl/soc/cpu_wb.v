@@ -36,19 +36,16 @@
 // that assumption is safe, but it is an assumption.
 module cpu_wb #(
     // Disables the data cache entirely (every access reaches the bus, every
-    // cycle) without removing it - docs/roadmap/phase-13-multicore.md's Phase 13 entry names
-    // this write-through cache as "correct only in a single-master system":
-    // nothing snoops the bus for a *second* master's writes to a line this
-    // one has cached, so a value changed by another hart's own store can be
-    // served stale here indefinitely, with nothing - not even the next
-    // access to the same address - ever correcting it. That is a
-    // consequence of there being no coherence protocol at all, not a
-    // one-line bug: closing it for real needs either a real snoop path into
-    // this cache or the correctness-first alternative the project chose -
-    // no per-core caching until one is built. This parameter is that
-    // alternative. Defaults to 1 (today's behavior, and the only value
-    // anything in this tree instantiates with yet); nothing has been asked
-    // to instantiate a second hart, or to set this to 0, yet either.
+    // cycle) without removing it. docs/roadmap/phase-13-multicore.md's Phase 13
+    // entry named this write-through cache "correct only in a single-master
+    // system": a value another master wrote into a line this one had cached
+    // was served stale, with nothing ever correcting it. This parameter was
+    // the correctness-first answer (no per-core caching until a snoop path
+    // existed), and soc_top.v forced it to 0 above one hart. The snoop path
+    // now exists (`snoop_wr`/`snoop_adr` below, from the interconnect), so
+    // every hart runs with 1; the parameter stays so a build can still turn
+    // the cache off, and sim/tb_cpu_wb_dcache_bypass.v still shows what a
+    // cache with no snoop does when something writes behind it.
     parameter DCACHE_ENABLE = 1
 )(
     input  wire        clk,
@@ -73,6 +70,15 @@ module cpu_wb #(
     output wire [31:0] dmem_rdata,
     output wire        dmem_rvalid,
     output wire        dbus_wait,
+
+    // Another master's write to memory, completed on the shared bus this
+    // cycle (the interconnect's `snoop_*`, with this hart's own writes
+    // masked out by the SoC). The data cache drops whatever line sits at
+    // that word's index, so a value another master changed is never served
+    // from here afterwards. Tie `snoop_wr` low for a cache nothing else
+    // writes behind.
+    input  wire        snoop_wr,
+    input  wire [31:0] snoop_adr,
 
     // FENCE.I: drop the cached fetch word. Without this the buffer can
     // serve a stale instruction for an address that was just written -
@@ -446,9 +452,33 @@ module cpu_wb #(
         end
     end
 
+    // Snoop: another master wrote this word, so any line at its index is
+    // dropped - by index alone, no tag compare. A line with a different tag
+    // at the same index is thrown away too, which costs a refill and nothing
+    // else, and saves a second read port on the tag array and a comparator.
+    //
+    // Why this is enough for a write-through cache: every write reaches the
+    // bus, the bus serves one transfer a cycle, and a multi-cycle transfer
+    // holds it, so a write cannot complete while this hart's own fill is in
+    // flight. A fill therefore lands either before the write (and is dropped
+    // by it) or after (and already holds the new data). The one stale window
+    // left is a hit already latched in `dc_hit_latched` on the cycle the
+    // write completes: it delivers the old word a cycle later, which is a
+    // load that began no later than the write and is ordered before it.
+    //
+    // Last in the block, so it wins over a same-cycle `dc_update`; the two
+    // cannot actually coincide (this hart's own ack and another master's
+    // write ack are never the same cycle), but the order costs nothing.
+    wire snoop_cacheable = (snoop_adr[31:24] == 8'h80) || (snoop_adr[31:24] == 8'h00);
+    wire [DC_IDX_BITS-1:0] snoop_idx = snoop_adr[DC_IDX_BITS+1:2];
+
     always @(posedge clk or posedge rst) begin
-        if (rst)            dc_valid <= {DC_ENTRIES{1'b0}};
-        else if (dc_update) dc_valid[dc_idx] <= 1'b1;
+        if (rst) dc_valid <= {DC_ENTRIES{1'b0}};
+        else begin
+            if (dc_update) dc_valid[dc_idx] <= 1'b1;
+            if (DCACHE_ENABLE && snoop_wr && snoop_cacheable)
+                dc_valid[snoop_idx] <= 1'b0;
+        end
     end
 
 

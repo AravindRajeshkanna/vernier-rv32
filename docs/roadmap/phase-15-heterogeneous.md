@@ -66,7 +66,9 @@ something this stage quietly did anyway.
 
 **Cache policy is not an open decision here the way it reads in a
 generic multi-core plan - Phase 13 already made it, for a directly
-applicable reason.** `rtl/soc/soc_top.v`'s own `HART_DCACHE_ENABLE`
+applicable reason.** (Update: Phase 8 Part 5 later replaced the bypass with a
+snooping write-through cache at any hart count; what follows is the account as
+it stood.) `rtl/soc/soc_top.v`'s own `HART_DCACHE_ENABLE`
 localparam (line 313) is `(NUM_HARTS > 1) ? 0 : 1` - **every hart's
 private D-cache is already disabled outright the moment a second hart
 exists**, precisely because two real bus masters sharing memory with no
@@ -556,7 +558,8 @@ than assuming it was guaranteed.
 
 **Read honestly, not smoothed over:**
 
-- **Concurrent-and-cacheless costs real cycles, and this stage cannot
+- **Concurrent-and-cacheless costs real cycles (Update: the cache is back on in
+  Phase 8 Part 5, and the cost is measured there), and this stage cannot
   cleanly separate how much of that is contention versus the cache
   itself.** `HART_DCACHE_ENABLE = (NUM_HARTS > 1) ? 0 : 1` (Phase 13's
   own decision, unrelated to this stage) turns the D-cache off the

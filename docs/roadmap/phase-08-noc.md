@@ -243,7 +243,73 @@ on 2026-10-03: do not start Stage 1, and work the levers above in the order
 given. Stage 0's "Done when" is met and closed, in simulation, at this scale.
 Stages 1 to 5 remain a plan, now explicitly behind the trigger above (several
 memory endpoints, or high-bandwidth DMA to different slaves). The levers
-themselves are not yet started; the first is a coherent data cache.
+themselves are not yet started; the first is a coherent data cache (done: Part 5 below).
+
+**Update, Part 5: the first lever, a coherent data cache, and what it does not
+reach.** Each hart's data cache is write-through, so every write to memory
+crosses the shared bus; `rtl/soc/wb_interconnect.v` now reports each write that
+completes on it (`snoop_wr`, `snoop_adr`, and `snoop_src_d`, which hart issued
+it), and `rtl/soc/cpu_wb.v` drops the line at that word's index unless the write
+was its own hart's. The index alone is compared, not the tag: a different line
+at the same index is dropped too, which costs a refill and saves a second read
+port on the tag array. With that in place `HART_DCACHE_ENABLE` in
+`rtl/soc/soc_top.v` is 1 at any `NUM_HARTS`; the bypass it forced above one hart
+is gone.
+
+The test came first. `make sim_soc_2hart_coherence` (and `_hetero`) runs
+`sim/gen_soc2hart_coh.py`'s program: six words cross between two harts, three
+each way, each already in the reader's cache. With the cache forced on and no
+snoop it fails (hart 0 spins on a cached `done` word, read as a hit on every
+poll); with the bypass it passes; with the snoop it passes on both builds.
+Mutations, each run on a freshly built binary: hart 0's snoop tied low fails
+three checks, hart 1's tied low fails the re-read of `Z`, a wrong snoop index
+fails. One thing it does not catch: a hart also invalidating on its own writes
+(a hit-rate bug, not a correctness one). The second round exists because the
+first version of the program left hart 1's snoop untested: tying it low still
+passed. `make verify` and `make verify_ooo` pass, `formal/run.sh
+fv_interconnect` still proves, and the existing cross-hart LR/SC, AMO and
+ordinary-access tests pass with the cache on.
+
+Measured on the Part 1 workload, two harts running separate CoreMark images,
+against the same tree without this change (which reproduces Part 1's numbers
+exactly: 727,564 and 673,368 cycles):
+
+| | Pair cycles | Bus in use | A master waiting | Hart 0 / hart 1 iteration |
+|---|---|---|---|---|
+| In-order pair, before | 727,564 | 67.0% | 19.6% | 502,529 / 534,774 |
+| In-order pair, coherent cache | 644,154 (-11.5%) | 45.1% | 11.1% | 434,074 / 451,483 |
+| Wide pair, before | 673,368 | 78.5% | 35.0% | 440,467 / 470,994 |
+| Wide pair, coherent cache | 587,360 (-12.8%) | 52.4% | 18.2% | 373,576 / 393,182 |
+
+A hart's CoreMark iteration is now 3.4% and 7.6% slower than one in-order hart
+alone (419,621), against 19.8% and 27.4% before; for the wide core 3.6% and 9.1%
+against 22.2% and 30.7% (360,481 alone). The CRCs validate on all four runs.
+
+**What it does not reach: Linux.** The same two-hart boot, `make
+sim_linux_2hart` with the Part 4 flags, on the tree with and without this
+change gives identical results to the cycle (376,246,210 cycles, 99.67% of
+cycles with the bus in use, 88.59% with a master waiting). The data cache only
+covers block RAM and the boot ROM (`dc_cacheable` in `rtl/soc/cpu_wb.v`:
+`addr[31:24]` of `0x80` or `0x00`), and Linux's memory is the SDRAM window, which
+no data cache here covers. So the coherent cache helps the workloads that run
+from block RAM and does nothing for the one that showed saturation. That
+changes the order of the levers: for Linux the cache would first have to cover
+the SDRAM range, which is a larger and separately measured step (the cache is
+256 words), and the memory-bandwidth and arbitration levers are not behind it.
+
+**Two corrections to the account above.** Part 4's 286.2 M cycles to userspace
+(two in-order harts) does not reproduce on today's tree: it is 376.2 M, with or
+without this change. Something between Part 4 and now moved it (the kernel went
+from 6.18.45 to 6.18.54 in the interim, among other changes), and which one has
+not been isolated, so Part 4's cycle counts are history and its occupancy
+percentages are the figures to compare. And the Stage 0 recommendation to do
+the coherent cache first rested on Part 2's CoreMark result, which this
+confirms; it did not examine whether Linux's memory is cached at all.
+
+Not established here: the mixed in-order and wide pair under CoreMark, the
+area and clock cost of the snoop path (it is one more write to a flag vector per
+hart and a few gates; not synthesised), anything on a board, and a formal proof
+of coherence (the evidence is directed simulation with mutations).
 
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
