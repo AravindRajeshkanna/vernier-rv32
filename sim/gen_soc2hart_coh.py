@@ -26,12 +26,30 @@ def b_type(imm, rs1, rs2, f3, op):
 def j_type(imm, rd, op):
     return (((imm >> 20) & 1) << 31) | (((imm >> 1) & 0x3FF) << 21) | (((imm >> 11) & 1) << 20) | (((imm >> 12) & 0xFF) << 12) | ((rd & 0x1F) << 7) | (op & 0x7F)
 
-LW  = lambda rd, off, rs1: i_type(off, rs1, 2, rd, 0x03)
-SW  = lambda rs2, off, rs1: s_type(off, rs1, rs2, 2, 0x23)
-ADDI = lambda rd, rs1, imm: i_type(imm, rs1, 0, rd, 0x13)
-LUI = lambda rd, imm20: u_type(imm20, rd, 0x37)
-BEQ = lambda rs1, rs2, off: b_type(off, rs1, rs2, 0, 0x63)
-BNE = lambda rs1, rs2, off: b_type(off, rs1, rs2, 1, 0x63)
+def LW(rd, off, rs1):
+    return i_type(off, rs1, 2, rd, 0x03)
+
+
+def SW(rs2, off, rs1):
+    return s_type(off, rs1, rs2, 2, 0x23)
+
+
+def ADDI(rd, rs1, imm):
+    return i_type(imm, rs1, 0, rd, 0x13)
+
+
+def LUI(rd, imm20):
+    return u_type(imm20, rd, 0x37)
+
+
+def BEQ(rs1, rs2, off):
+    return b_type(off, rs1, rs2, 0, 0x63)
+
+
+def BNE(rs1, rs2, off):
+    return b_type(off, rs1, rs2, 1, 0x63)
+
+
 SPIN = j_type(0, 0, 0x6F)
 
 hart0 = [
