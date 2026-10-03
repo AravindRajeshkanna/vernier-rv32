@@ -55,9 +55,11 @@ RTL since then, not the toolchain. The critical path is routing-dominated
 (11.78 ns logic, 40.52 ns routing) from the `ex_mem_rd` forwarding register
 through the MMU address adder to the CSR file. Separately, full-scale
 (320x240) synthesis does not finish within an hour: Yosys is converting
-`wb_framebuffer.v` memories to registers. Next step: bisect between
-`efee7bf` and HEAD for both. Detail in
-[fpga/README.md](../../fpga/README.md#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause).
+`wb_framebuffer.v` memories to registers. Bisected on 2026-10-03: the drop falls between 2026-09-03 and
+2026-09-20 but the window is cannot be built on this bundle (Yosys aborts or
+stalls), and the PMP accounts for about 13,000 of the 19,000 LUTs added.
+Next step: shrink or pipeline the PMP match and re-measure; the full account
+is in [fpga/README.md](../../fpga/README.md#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause).
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
