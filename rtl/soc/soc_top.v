@@ -264,7 +264,7 @@ module soc_top #(
     wire [NUM_HARTS*32-1:0] resv_addr, store_addr;
 
     // ---- Wishbone masters, one triple per hart ----
-    wire [NUM_HARTS-1:0]    iwb_cyc, iwb_stb, iwb_ack;
+    wire [NUM_HARTS-1:0]    iwb_cyc, iwb_stb, iwb_ack, iwb_burst;
     wire [NUM_HARTS*32-1:0] iwb_adr, iwb_dat_r;
     wire [NUM_HARTS-1:0]    dwb_cyc, dwb_stb, dwb_we, dwb_ack;
     wire [NUM_HARTS*32-1:0] dwb_adr, dwb_dat_w, dwb_dat_r;
@@ -405,6 +405,7 @@ module soc_top #(
         .fence_i(fence_i[0]),
         .snoop_wr(snoop_wr && !snoop_src_d[0]), .snoop_adr(snoop_adr),
         .iwb_cyc(iwb_cyc[0]), .iwb_stb(iwb_stb[0]), .iwb_adr(iwb_adr[31:0]),
+        .iwb_burst(iwb_burst[0]),
         .iwb_dat_r(iwb_dat_r[31:0]), .iwb_ack(iwb_ack[0]),
         .dwb_cyc(dwb_cyc[0]), .dwb_stb(dwb_stb[0]), .dwb_we(dwb_we[0]),
         .dwb_adr(dwb_adr[31:0]), .dwb_dat_w(dwb_dat_w[31:0]), .dwb_sel(dwb_sel[3:0]),
@@ -511,6 +512,7 @@ module soc_top #(
                 .fence_i(fence_i[h]),
                 .snoop_wr(snoop_wr && !snoop_src_d[h]), .snoop_adr(snoop_adr),
                 .iwb_cyc(iwb_cyc[h]), .iwb_stb(iwb_stb[h]), .iwb_adr(iwb_adr[32*h +: 32]),
+                .iwb_burst(iwb_burst[h]),
                 .iwb_dat_r(iwb_dat_r[32*h +: 32]), .iwb_ack(iwb_ack[h]),
                 .dwb_cyc(dwb_cyc[h]), .dwb_stb(dwb_stb[h]), .dwb_we(dwb_we[h]),
                 .dwb_adr(dwb_adr[32*h +: 32]), .dwb_dat_w(dwb_dat_w[32*h +: 32]), .dwb_sel(dwb_sel[4*h +: 4]),
@@ -633,9 +635,10 @@ module soc_top #(
                     .BURST_SLAVES(1 << S_SDRAM)) BUS (
         .clk(clk), .rst(rst_soc),
         .f_cyc(iwb_cyc), .f_stb(iwb_stb), .f_adr(iwb_adr),
-        // No fetch master asks for a burst yet (the instruction cache has no
-        // line fill), so this is tied low and the SoC is as it was.
-        .f_burst({NUM_HARTS{1'b0}}),
+        // The instruction caches' line fills: a miss in the SDRAM window asks
+        // for the whole aligned line, which the interconnect carries to the
+        // SDRAM controller only (`BURST_SLAVES`).
+        .f_burst(iwb_burst),
         .f_dat_r(iwb_dat_r), .f_ack(iwb_ack),
         .d_cyc(dwb_cyc), .d_stb(dwb_stb), .d_we(dwb_we), .d_adr(dwb_adr),
         .d_dat_w(dwb_dat_w), .d_sel(dwb_sel),
@@ -685,8 +688,8 @@ module soc_top #(
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_SDRAM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
         // The interconnect's `s_burst`, high only while a fetch master that
-        // asks for a burst is selected and decodes to this slave; nothing
-        // asks yet, so it is low and this is the single-word controller.
+        // asks for a burst is selected and decodes to this slave: the
+        // instruction cache's line fills.
         .wb_burst(s_burst),
         .wb_dat_r(s_dat_r[32*S_SDRAM +: 32]), .wb_ack(s_ack[S_SDRAM]),
         .sdram_cke(sdram_cke), .sdram_cs_n(sdram_cs_n),

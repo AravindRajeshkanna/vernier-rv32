@@ -2673,6 +2673,16 @@ sim_clint_multihart: sim/sim_clint_multihart.out
 # docs/roadmap/phase-13-multicore.md's Phase 13 entry.
 # Bursts through the interconnect to the real SDRAM controller (Phase 8 Part 9,
 # step 2a): the lock has to hold the bus for all four acks.
+# The instruction cache's line fills against a bursting bus slave and a
+# protocol monitor (Phase 8 Part 9, step 2b).
+sim/sim_cpu_wb_ifill.out: sim/tb_cpu_wb_ifill.v rtl/soc/cpu_wb.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_wb_ifill.v rtl/soc/cpu_wb.v
+
+sim_cpu_wb_ifill: sim/sim_cpu_wb_ifill.out
+	cd sim && $(VVP) sim_cpu_wb_ifill.out $(VVP_DUMP) | tee cpu_wb_ifill.log
+	@grep -aq "CPU_WB IFILL TEST PASSED" sim/cpu_wb_ifill.log && echo "CPU_WB IFILL OK" || \
+	    { echo "FAILED: rtl/soc/cpu_wb.v's instruction-cache line fills"; exit 1; }
+
 sim/sim_interconnect_burst.out: sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
 
@@ -3557,6 +3567,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence_hetero \
         sim_soc_2hart_coherence_sdram \
         sim_interconnect_burst \
+        sim_cpu_wb_ifill \
         sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_amoswap_sdram \
         sim_soc_2hart_amoswap_sdram_hetero \

@@ -568,6 +568,87 @@ becomes the first master to ask; (3) the Linux boots re-measured. Not
 established: any effect on the SoC, since no master asks; area or clock cost of
 the lock's two extra registers (not synthesised).
 
+**Update, Part 11: line fills, step 2b - the instruction cache fetches a line,
+and what it did to Linux.** `rtl/soc/cpu_wb.v`'s instruction cache is the first
+master to ask for a burst. A miss in the SDRAM window fetches the whole
+16-byte-aligned line as one burst and caches all four words; a miss anywhere else
+(block RAM, the boot ROM, DDR3) is still one word. Each word keeps its own tag
+and valid bit and the four words of an aligned line land in four consecutive
+entries, so a filled line behaves exactly as a 4-word-line cache of the same 256
+words, the shape Part 8 measured. The core takes its word on that word's own ack
+and carries on while the rest of the line arrives behind it. `soc_top.v` connects
+each hart's new `iwb_burst` to the interconnect's `f_burst`.
+
+Two things in the fill needed care, and the test checks both: a FENCE.I while a
+line is in flight poisons the whole line (the poison lasts to the fourth ack),
+including a FENCE.I that lands on a non-final ack cycle, which clears the valid
+bits but would not by itself stop the words after it; and the word an ack carries
+is the line's base plus the ack count, not the request address.
+
+Verification. `make sim_cpu_wb_ifill` drives the cache with a core model against
+a bursting bus slave and a protocol monitor (request, burst flag and address held
+to the last ack; a burst 16-byte aligned and inside the SDRAM window; four acks to
+a burst, one to anything else). It checks 16 sequential words are four fills with
+16 acks and then all hit; a mid-line start fills the whole line; block RAM, ROM
+and DDR3 stay single-word; a redirect before the first ack and a core that moves
+on mid-burst leave both lines whole and right; FENCE.I before the first ack and on
+a non-final ack leaves nothing stale; and a slow slave (latency 7, three idle
+cycles between acks). Seven mutations each fail it: the fill disabled, the word
+address ignoring the count, poison dropped after the first ack, the count not
+advancing, bursts outside SDRAM, a burst address not aligned to the line, and no
+poison for a FENCE.I on an ack cycle. `make verify` and `make verify_ooo` pass.
+Writing this test found two mistakes of my own and no bug in the RTL: a bus slave
+model that treated the ack cycle's still-asserted request as a new transfer, and a
+core model that kept presenting an address after taking its word, so the line was
+legitimately fetched again.
+
+The Verilator harness needed a change: `+checkreads` compares every SDRAM read the
+interconnect completes with the memory at the bus address, and a burst's second to
+fourth acks carry words at base + 4, 8, 12 while the address stays at the base, so
+it reported 612 "wrong words", three per burst. It now computes the word's address
+from the interconnect's own ack count (`sim/verilator_soc.cpp`, with `s_burst` and
+`burst_acks` exposed in `sim/verilator_soc.vlt`), and `make verilator_check`
+passes: 91,014 SDRAM reads checked, all matching the part, and 2,257,908
+instruction fetches matching memory. It is also the first time the C++ SDRAM model
+has served pipelined reads, and the Icarus and Verilator runs agree on cycles.
+
+Linux boots to userspace, `+busmon` as in Part 4, against the tree before line
+fills (simulation cycles):
+
+| | Cycles, before | Cycles, after | Bus in use, before to after |
+|---|---|---|---|
+| 1 hart, in-order | 186.5 M | 146.9 M (-21.2%) | 81.1% to 72.9% |
+| 1 hart, wide | 184.4 M | 149.3 M (-19.0%) | 83.2% to 77.6% |
+| 2 harts, in-order | 199.4 M | 212.2 M (+6.4%) | 93.0% to 93.0% |
+| 2 harts, wide | 223.5 M | 159.9 M (-28.5%) | 94.3% to 91.9% |
+
+All four reach userspace, both harts in the two-hart runs. Against the original
+shared bus with no SDRAM caching (Part 4's tree, Part 6's table) the boots are now
+35% (1 hart, in-order), 33% (1 hart, wide), 44% (2 harts, in-order) and 58% (2
+harts, wide) shorter.
+
+**The two-hart in-order boot got slower, and the table says why.** Hart 0's
+instruction fetch was granted 77.4 M bus cycles, down from 102.8 M (-25%), as the
+fills intended. But hart 1, which the fixed arbiter had starved to about 13% of
+the fetch cycles it asked for, was granted 39.5 M, up from 16.3 M, and its
+page-table walker 4.8 M, up from 1.2 M: it is doing several times more work, on a
+bus that was already saturated (93.0% in use before and after). Hart 0 and the boot
+finish later because hart 1 now takes bus time hart 0 used to get. That reading is
+an inference from the counters, not isolated: the work hart 1 does is not measured
+and may be mostly its idle loop. The wide pair does not show it. The fairness
+question Part 7 left alone is therefore live again, as a result of this change and
+not of the arbiter.
+
+Cost. Synthesised for the ULX3S 85F at the framebuffer's diagnostic 8x8 size, three
+placement seeds each, one tool bundle: the tree before this change is 33,634
+TRELLIS_COMB and 18.64 to 19.39 MHz (mean 19.12); with line fills 33,347
+(-287) and 18.89 to 20.84 MHz (mean 20.10), the difference inside the seed spread.
+(That tree is 504 LUTs above the one Part 7 measured, 33,130, before the two
+earlier steps added the controller's and interconnect's burst logic.) Not
+established: anything on a board; the Linux effect with the data side bursting
+too; and whether the in-order two-hart result is fixed by arbitration or by
+something else.
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for

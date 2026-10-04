@@ -90,6 +90,10 @@ module cpu_wb #(
     output wire        iwb_cyc,
     output wire        iwb_stb,
     output wire [31:0] iwb_adr,
+    // High for a fetch in the SDRAM window: a miss there asks for the whole
+    // 16-byte-aligned line as four acks (`iwb_adr` is then the line's base).
+    // See "Line fills" below.
+    output wire        iwb_burst,
     input  wire [31:0] iwb_dat_r,
     input  wire        iwb_ack,
 
@@ -188,8 +192,32 @@ module cpu_wb #(
     reg        f_busy;
     reg [31:0] f_addr;
     reg        f_poison;
+    reg        f_burst;     // the fetch on the bus is a four-word line fill
+    reg [1:0]  f_cnt;       // acks of it already received
 
-    wire [31:0] bus_addr = f_busy ? f_addr : imem_addr;
+    // ---- Line fills ----
+    // Phase 8 Part 8 measured that 87 to 90% of this cache's misses are the
+    // next sequential word, so a miss in the SDRAM window fetches the whole
+    // aligned line of four words as one burst (rtl/soc/wb_sdram.v streams them
+    // two cycles apart; rtl/soc/wb_interconnect.v holds the bus for all four
+    // acks). Nothing else about the cache changes: each word still has its own
+    // tag and valid bit, and the four words of an aligned line land in four
+    // consecutive entries, so a filled line behaves exactly as a 4-word-line
+    // cache of the same capacity. The core gets its word on that word's own
+    // ack and carries on while the rest of the line arrives behind it; the
+    // line's other words are cached for when it gets there. Block RAM, the
+    // boot ROM and DDR3 are not bursting slaves and stay single-word.
+    wire in_sdram  = (imem_addr[31:25] == 7'h48);        // 0x90_000000-0x91_FFFFFF
+    wire new_burst = !f_busy && in_sdram;
+    wire burst_cur = f_busy ? f_burst : new_burst;       // the transfer this cycle is part of
+    wire [1:0] cnt_cur = f_busy ? f_cnt : 2'd0;
+
+    // A line fill's address is its base, held for all four acks (Wishbone, and
+    // the slave, want it stable); the word an ack carries is base + count.
+    wire [31:0] bus_addr = f_busy ? f_addr :
+                           new_burst ? {imem_addr[31:4], 4'b0000} : imem_addr;
+    wire [31:0] ack_addr = burst_cur ? {bus_addr[31:4], cnt_cur, 2'b00} : bus_addr;
+    assign iwb_burst = burst_cur;
 
     // `f_busy` alone is enough to keep a transfer already in flight going -
     // it was issued before `itlb_wait_stall` had any say, and Wishbone
@@ -203,34 +231,57 @@ module cpu_wb #(
 
     // The ack only answers the core's *current* question if the transfer it
     // completes was for the address the core is asking about now. After a
-    // redirect it is not, and the core has to wait for the next one.
-    wire ack_for_current = iwb_ack && (bus_addr[31:2] == imem_addr[31:2]);
+    // redirect it is not, and the core has to wait for the next one. For a
+    // line fill each of the four acks is a different word.
+    wire ack_for_current = iwb_ack && (ack_addr[31:2] == imem_addr[31:2]);
+
+    // A line fill is over at its fourth ack; a single-word fetch at its first.
+    wire last_ack = !burst_cur || (cnt_cur == 2'd3);
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             f_busy   <= 1'b0;
             f_addr   <= 32'b0;
             f_poison <= 1'b0;
+            f_burst  <= 1'b0;
+            f_cnt    <= 2'd0;
         end else if (iwb_ack) begin
-            f_busy   <= 1'b0;
-            f_poison <= 1'b0;
+            if (last_ack) begin
+                f_busy   <= 1'b0;
+                f_poison <= 1'b0;
+                f_burst  <= 1'b0;
+                f_cnt    <= 2'd0;
+            end else begin
+                // Words two to four still to come: keep the transfer, and
+                // keep any poison - or add it, for a FENCE.I on this very
+                // cycle, which clears the valid bits below but would not stop
+                // the words after it.
+                f_busy  <= 1'b1;
+                f_addr  <= bus_addr;
+                f_burst <= 1'b1;
+                f_cnt   <= cnt_cur + 2'd1;
+                if (fence_i) f_poison <= 1'b1;
+            end
         end else if (iwb_cyc) begin
-            f_busy <= 1'b1;
-            f_addr <= bus_addr;
+            f_busy  <= 1'b1;
+            f_addr  <= bus_addr;
+            f_burst <= burst_cur;
+            f_cnt   <= cnt_cur;
             // A FENCE.I retiring while a fetch is in flight poisons that
             // fetch: it was issued before the fence, so its data may predate
             // the writes the fence exists to publish. Dropping the result
             // rather than buffering it keeps a stale word from being cached
-            // under a valid tag.
+            // under a valid tag. For a line fill the poison lasts to its end.
             if (fence_i) f_poison <= 1'b1;
         end
     end
 
-    // Which entry an arriving word belongs in - keyed off `bus_addr`, not
-    // `imem_addr`, because the two diverge the moment a branch redirects
-    // mid-transfer and the word on its way back is for the old address.
-    wire [IC_IDX_BITS-1:0] ic_fill_idx = bus_addr[IC_IDX_BITS+1:2];
-    wire [IC_TAG_BITS-1:0] ic_fill_tag = bus_addr[31:IC_IDX_BITS+2];
+    // Which entry an arriving word belongs in - keyed off the transfer's own
+    // address (`ack_addr`), not `imem_addr`, because the two diverge the
+    // moment a branch redirects mid-transfer and the word on its way back is
+    // for the old address.
+    wire [IC_IDX_BITS-1:0] ic_fill_idx = ack_addr[IC_IDX_BITS+1:2];
+    wire [IC_TAG_BITS-1:0] ic_fill_tag = ack_addr[31:IC_IDX_BITS+2];
     wire                   ic_fill     = iwb_ack && !f_poison;
 
     // Data and tag need no reset: an entry is only ever read when its valid
