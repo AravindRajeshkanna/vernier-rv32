@@ -148,6 +148,8 @@ public_flat_rd -module "wb_interconnect" -var "s_dat_w"
 public_flat_rd -module "wb_interconnect" -var "s_sel"
 public_flat_rd -module "wb_interconnect" -var "fin_ack"
 public_flat_rd -module "wb_interconnect" -var "fin_dat"
+public_flat_rd -module "wb_interconnect" -var "s_burst"
+public_flat_rd -module "wb_interconnect" -var "burst_acks"
 public_flat_rd -module "wb_interconnect" -var "sel_d"
 public_flat_rd -module "wb_interconnect" -var "sel_w"
 // +busmon: the request, grant and slave-strobe signals sim/bus_monitor.v

@@ -1234,10 +1234,19 @@ int main(int argc, char **argv) {
                                                              : "fetch");
         }
 
+        // The word a read completion carries. A burst (the instruction cache's
+        // line fills) is one request at the line's base and four acks, one word
+        // each, so ack k carries the word at base + 4k, with k the interconnect's
+        // own count of acks already delivered for it.
+        const uint32_t read_adr =
+            root->soc_top__DOT__BUS__DOT__s_adr +
+            (root->soc_top__DOT__BUS__DOT__s_burst
+                 ? 4u * root->soc_top__DOT__BUS__DOT__burst_acks : 0u);
+
         if (rt_fp &&
             root->soc_top__DOT__BUS__DOT__fin_ack &&
             !root->soc_top__DOT__BUS__DOT__s_we) {
-            const uint32_t a = root->soc_top__DOT__BUS__DOT__s_adr;
+            const uint32_t a = read_adr;
             if (a >= rt_lo && a < rt_hi)
                 fprintf(rt_fp, "%ld %08x %08x %s\n", cycles, a,
                         root->soc_top__DOT__BUS__DOT__fin_dat,
@@ -1249,7 +1258,7 @@ int main(int argc, char **argv) {
         if (check_reads &&
             root->soc_top__DOT__BUS__DOT__fin_ack &&
             !root->soc_top__DOT__BUS__DOT__s_we) {
-            const uint32_t a = root->soc_top__DOT__BUS__DOT__s_adr;
+            const uint32_t a = read_adr;
             if ((a >> 24) == 0x90 || (a >> 24) == 0x91) {
                 const uint32_t w = (a - 0x90000000u) >> 1;
                 if (w + 1 < sdram.words()) {
