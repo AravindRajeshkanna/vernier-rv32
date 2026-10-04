@@ -431,6 +431,58 @@ Not established: area and clock for the 4096-word cache (not synthesised), any
 change to the data cache's size, the SDRAM controller's burst length, anything
 on a board.
 
+**Update, Part 8: how much of the instruction side line fills could take.**
+Part 7 named line fills (fetching several words per bus access) as one of two
+instruction-side designs and chose it to measure first. The instruction cache is
+word-granular, so the first question is how much spatial locality its misses
+have. Measured, on a copy of the tree (nothing committed), by logging each hart's
+fetch stream during the Linux boot and feeding it to shadow caches of the same 256-word capacity
+with 1, 2, 4 and 8-word lines, counting their misses (a miss is one bus
+transfer today, one fill for a line cache). Cumulative at cycle 167.8 M of the boot, in
+millions; "real" is the actual cache's fills and "sequential" the share of those whose
+address is the previous miss plus 4:
+
+| | Fetch events | Real misses | Sequential | 1-word shadow | 2-word | 4-word | 8-word |
+|---|---|---|---|---|---|---|---|
+| 1 hart | 39.9 | 13.24 | 87% | 12.46 | 7.02 | 4.14 | 2.61 |
+| 2 harts, hart 0 | 34.0 | 11.10 | 89% | 10.38 | 5.70 | 3.28 | 2.05 |
+| 2 harts, hart 1 | 30.9 | 1.66 | 90% | 1.55 | 0.85 | 0.48 | 0.30 |
+
+**Almost every miss is the next word after the previous miss, so a 4-word line
+cuts the number of fills by about two thirds and an 8-word line by about four
+fifths**, at the same capacity. The 1-word shadow lands 5 to 7% below the real
+cache's miss count (a different definition of a fetch event, and re-fetches after a
+redirect), which is the size of this method's error. For scale, the bigger caches
+of Part 7 cut hart 0's fetch bus time by 34% (1024 words) and 65% (4096).
+
+What that is worth depends on how a line is fetched, which is not measured here.
+The SDRAM controller (`rtl/soc/wb_sdram.v`) runs burst length 2 and CAS latency 2
+with one open row, and one word fetch holds the bus for roughly 8 cycles (an
+estimate: hart 0's fetch was granted 102.8 M cycles in the whole boot against
+about 13 M misses by this snapshot's rate). Fetching a 4-word line as four such
+reads would cost four times that and save nothing. Fetching it as one 8-beat
+burst would add about six cycles to one read instead of repeating the whole
+sequence three more times: on the order of 13 to 14 cycles against roughly 31.
+**That would be a bus-time saving of about half** (3.3 M fills of about 13 cycles
+against 11.1 M word fetches of about 8: 43 M against 89 M cycles), plus the
+core no longer stalling on each word. These are inferences from the table and
+the controller's structure, not simulations of a design.
+
+So the build, if the maintainer wants it, is in this order and each is its own
+change: (1) burst support in `wb_sdram.v` (a mode-register change and a way for
+single-word reads, which the data cache, walkers and DMA still make, to end the
+burst early), with the SDRAM model and its tests extended; (2) a line-fill
+state machine in the instruction cache of `rtl/soc/cpu_wb.v`, with the
+interconnect holding the bus across the fill; (3) the same Linux boots
+re-measured. A side effect worth having: a 4-word-line cache of 256 words has 64
+tags, a quarter of today's tag array, and the tag compare is on the critical path
+(Part 5).
+
+Not established: any of the build's cost or speedup; the two-hart boot time
+effect (only bus time and fills are estimated); how the data side and walkers
+share a burst-mode controller; and whether the shadow caches' handling of
+redirects matches a real fill FSM's.
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
