@@ -138,10 +138,16 @@ module cpu_wb #(
     // offers - would add a wait state to every fetch including hits, and the
     // core's fetch buffer cannot hide it, because the PC only advances when
     // the fetch is not stalled. So these infer distributed LUT RAM, which is
-    // why the cache is sized in hundreds of words rather than thousands:
-    // 256 entries is roughly 900 LUT4s for data and tags together, against
-    // an 85F's 84k. Making it much bigger means making it synchronous, and
-    // that is a different design.
+    // why the cache is sized in hundreds of words rather than thousands. An
+    // earlier estimate here, roughly 900 LUT4s for 256 entries, was low;
+    // place and route on the ULX3S 85F (one hart, the whole design) gives
+    // 31,837 LUT4s at 64 entries, 33,130 at 256 and 42,070 at 1024: about
+    // 6.7 per entry from 64 to 256 and 11.6 from 256 to 1024. The clock was
+    // the same at 64 and 256 (one seed each, 20.35 and 20.56 MHz) and fell
+    // about 3 MHz at 1024 (three seeds, 20.37 to 17.24 mean). Making it much
+    // bigger means making it synchronous, and that is a different design;
+    // docs/roadmap/phase-08-noc.md Part 7 has the measurement and what a
+    // bigger cache buys.
     //
     // Coherence is by invalidation only. RISC-V requires FENCE.I before
     // executing freshly-written code; `fence_i` clears every valid bit.

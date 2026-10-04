@@ -399,9 +399,11 @@ diagnostic 8x8 size, three placement seeds each, the same tool bundle: today's
 tree gives 33,130 TRELLIS_COMB and 20.56 / 19.87 / 20.67 MHz (mean 20.37); the
 1024-word cache gives 42,070 TRELLIS_COMB (+8,940, +27%) and 16.45 / 18.02 /
 17.26 MHz (mean 17.24, -3.1 MHz), worse on every seed. That is about 11.6 LUTs a
-word, several times the "256 entries is roughly 900 LUT4s" in the cache's own
-comment (a number this measurement contradicts; the comment is not changed
-here). The design already misses 25 MHz, and the instruction-cache tag compare
+word, several times the "256 entries is roughly 900 LUT4s" the cache's own
+comment used to say. A 64-entry build (31,837 LUT4s, 20.35 MHz on one seed)
+fills in the curve: 6.7 LUTs a word from 64 to 256, 11.6 from 256 to 1024, so
+the cost per word rises with size. The comment and the Phase 3 account now carry
+the measured figures. The design already misses 25 MHz, and the instruction-cache tag compare
 is on its critical path (Part 5's path reading), so a bigger LUT-RAM cache
 spends area and clock for cycles. Both figures are for one hart's cache; with
 two harts the area doubles.
