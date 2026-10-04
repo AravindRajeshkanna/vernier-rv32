@@ -146,7 +146,11 @@
 // program can survive.
 module wb_interconnect #(
     parameter NUM_SLAVES = 7,
-    parameter NUM_HARTS  = 1
+    parameter NUM_HARTS  = 1,
+    // Bit i set: slave i can return a four-word burst (a bit mask over the
+    // slave index, like `s_stb`). 0, the default, means none, and then
+    // `f_burst` and `s_burst` do nothing. See "Bursts" below.
+    parameter BURST_SLAVES = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -156,6 +160,12 @@ module wb_interconnect #(
     input  wire [NUM_HARTS-1:0]      f_cyc,
     input  wire [NUM_HARTS-1:0]      f_stb,
     input  wire [NUM_HARTS*32-1:0]   f_adr,
+    // Hart h asks for a four-word burst read at `f_adr` (16-byte aligned),
+    // answered by four `f_ack` pulses. Honoured only where the address decodes
+    // to a `BURST_SLAVES` slave; the master holds cyc/stb/f_burst/f_adr until
+    // the fourth ack and must not ask anywhere else (a slave that cannot burst
+    // would return one ack and leave the master waiting for three more).
+    input  wire [NUM_HARTS-1:0]      f_burst,
     output wire [NUM_HARTS*32-1:0]   f_dat_r,
     output wire [NUM_HARTS-1:0]      f_ack,
 
@@ -250,6 +260,10 @@ module wb_interconnect #(
     // formal/fv_interconnect.v for why debug must never assert this).
     output wire                      s_data_master,
 
+    // The selected master's burst request, when it is honoured: to the slaves,
+    // which latch it with the request.
+    output wire                      s_burst,
+
     // ---- write snoop, for the harts' data caches ----
     // A write completing on the shared bus this cycle, its address, and
     // which hart's data master (if any) issued it: a hart's own writes are
@@ -311,6 +325,8 @@ module wb_interconnect #(
                          !(|w_cyc) && !(|f_cyc);
 
     reg        lock;
+    reg        lock_b;                  // the locked transfer is a burst
+    reg  [1:0] burst_acks;              // acks of it already delivered
     reg        lock_dbg;
     reg  [NUM_HARTS-1:0] lock_d, lock_w, lock_f;
     reg        lock_n;
@@ -431,6 +447,18 @@ module wb_interconnect #(
     assign n_dat_r   = fin_dat;
     assign n_ack     = sel_n && fin_ack;
 
+    // ---- Bursts ----
+    // A burst is one transfer with four acks. Acks are routed to whichever
+    // master is selected, and selection follows the lock, so the lock must
+    // outlast all four or words two to four would go to a different master.
+    // It is taken at the start of a burst even if the first ack arrives in
+    // that same cycle, and released on the fourth ack. A request is a burst
+    // only if its master asks and its slave can (`BURST_SLAVES`); everything
+    // else is a single-ack transfer exactly as before.
+    wire m_burst = |(sel_f & f_burst);
+    wire burst_ok = m_burst && (|(hit & BURST_SLAVES[NUM_SLAVES-1:0]));
+    assign s_burst = burst_ok;
+
     // Take the lock only when a transfer actually starts and does *not*
     // complete in its first cycle, so zero-wait-state slaves (the peripheral
     // bridges, and an unmapped address) behave exactly as they did before
@@ -446,14 +474,19 @@ module wb_interconnect #(
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             lock     <= 1'b0;
+            lock_b   <= 1'b0;
+            burst_acks <= 2'd0;
             lock_dbg <= 1'b0;
             lock_d   <= {NUM_HARTS{1'b0}};
             lock_w   <= {NUM_HARTS{1'b0}};
             lock_f   <= {NUM_HARTS{1'b0}};
             lock_n   <= 1'b0;
         end else if (!lock) begin
-            if (cur_stb && !fin_ack) begin
+            if (cur_stb && (!fin_ack || burst_ok)) begin
                 lock     <= 1'b1;
+                lock_b   <= burst_ok;
+                // A burst whose first ack is this very cycle has delivered one.
+                burst_acks <= (fin_ack && burst_ok) ? 2'd1 : 2'd0;
                 lock_dbg <= sel_dbg;
                 lock_d   <= sel_d;
                 lock_w   <= sel_w;
@@ -461,7 +494,13 @@ module wb_interconnect #(
                 lock_n   <= sel_n;
             end
         end else if (fin_ack) begin
-            lock <= 1'b0;
+            if (lock_b && burst_acks != 2'd3) begin
+                burst_acks <= burst_acks + 2'd1;
+            end else begin
+                lock       <= 1'b0;
+                lock_b     <= 1'b0;
+                burst_acks <= 2'd0;
+            end
         end
     end
 endmodule

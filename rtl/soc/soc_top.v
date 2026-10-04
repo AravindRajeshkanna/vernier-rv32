@@ -274,6 +274,7 @@ module soc_top #(
 
     // ---- shared slave bus ----
     wire                     s_cyc, s_we, s_data_master;
+    wire                     s_burst;
     wire                     snoop_wr;
     wire [31:0]              snoop_adr;
     wire [NUM_HARTS-1:0]     snoop_src_d;
@@ -628,9 +629,13 @@ module soc_top #(
     // why that is precisely the original 4-master shape, and
     // docs/roadmap/phase-13-multicore.md's Phase 13 entry for hart 1's own instantiation above
     // and what still isn't wired to it.
-    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS)) BUS (
+    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
+                    .BURST_SLAVES(1 << S_SDRAM)) BUS (
         .clk(clk), .rst(rst_soc),
         .f_cyc(iwb_cyc), .f_stb(iwb_stb), .f_adr(iwb_adr),
+        // No fetch master asks for a burst yet (the instruction cache has no
+        // line fill), so this is tied low and the SoC is as it was.
+        .f_burst({NUM_HARTS{1'b0}}),
         .f_dat_r(iwb_dat_r), .f_ack(iwb_ack),
         .d_cyc(dwb_cyc), .d_stb(dwb_stb), .d_we(dwb_we), .d_adr(dwb_adr),
         .d_dat_w(dwb_dat_w), .d_sel(dwb_sel),
@@ -650,7 +655,7 @@ module soc_top #(
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
-        .s_data_master(s_data_master),
+        .s_data_master(s_data_master), .s_burst(s_burst),
         .snoop_wr(snoop_wr), .snoop_adr(snoop_adr), .snoop_src_d(snoop_src_d)
     );
 
@@ -679,9 +684,10 @@ module soc_top #(
         .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_SDRAM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
-        // No master asks for a burst yet (the interconnect does not carry the
-        // request), so the controller is exactly the single-word one.
-        .wb_burst(1'b0),
+        // The interconnect's `s_burst`, high only while a fetch master that
+        // asks for a burst is selected and decodes to this slave; nothing
+        // asks yet, so it is low and this is the single-word controller.
+        .wb_burst(s_burst),
         .wb_dat_r(s_dat_r[32*S_SDRAM +: 32]), .wb_ack(s_ack[S_SDRAM]),
         .sdram_cke(sdram_cke), .sdram_cs_n(sdram_cs_n),
         .sdram_ras_n(sdram_ras_n), .sdram_cas_n(sdram_cas_n),

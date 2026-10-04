@@ -2671,6 +2671,16 @@ sim_clint_multihart: sim/sim_clint_multihart.out
 # over a real cycle-by-cycle trace against a real, multi-wait-state slave,
 # before any second hart exists to wire the new ports to for real - see
 # docs/roadmap/phase-13-multicore.md's Phase 13 entry.
+# Bursts through the interconnect to the real SDRAM controller (Phase 8 Part 9,
+# step 2a): the lock has to hold the bus for all four acks.
+sim/sim_interconnect_burst.out: sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
+
+sim_interconnect_burst: sim/sim_interconnect_burst.out
+	cd sim && $(VVP) sim_interconnect_burst.out $(VVP_DUMP) | tee interconnect_burst.log
+	@grep -aq "INTERCONNECT BURST TEST PASSED" sim/interconnect_burst.log && echo "INTERCONNECT BURST OK" || \
+	    { echo "FAILED: rtl/soc/wb_interconnect.v carrying a four-word burst"; exit 1; }
+
 sim/sim_interconnect_multihart.out: sim/tb_interconnect_multihart.v rtl/soc/wb_interconnect.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_interconnect_multihart.v rtl/soc/wb_interconnect.v
 
@@ -3546,6 +3556,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence \
         sim_soc_2hart_coherence_hetero \
         sim_soc_2hart_coherence_sdram \
+        sim_interconnect_burst \
         sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_amoswap_sdram \
         sim_soc_2hart_amoswap_sdram_hetero \
