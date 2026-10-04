@@ -43,6 +43,30 @@
 // round to a single cycle, which is what makes an SDR controller at this
 // speed tractable: the part is far faster than the bus in front of it.
 //
+// ---- Burst reads ----
+//
+// Phase 8 Part 8 measured that 87 to 90% of the instruction cache's misses are
+// the next sequential word, and a word read costs about seven cycles here
+// (latch, decide, READ, CAS latency, two halves), nearly all of it fixed
+// overhead. A line of four words fetched as four reads pays that four times.
+//
+// No mode-register change is needed: the part already runs burst length 2 and
+// CAS latency 2, and a READ command may be issued every cycle, so four READs
+// two cycles apart, on the four column pairs of a 16-byte-aligned line,
+// stream one word every two cycles with the bus never idle:
+//
+//   cycle  0  1  2  3  4  5  6  7  8  9 10 11 12
+//   READ   w0       w1       w2       w3
+//   data           w0.lo/hi  w1.lo/hi ...
+//   ack                        ^w0     ^w1   ^w2   ^w3
+//
+// so four words in about twelve cycles instead of about twenty-eight. A line
+// never crosses a row (rows are 1 KB aligned), which is why 16-byte alignment
+// is the whole of the precondition. The controller stays in the burst states
+// to the end - no precharge, no refresh and no new request interleave - and an
+// owed refresh simply waits those twelve cycles out, as it does behind any
+// transfer (tREFI is 195 cycles at 25 MHz).
+//
 // ---- What this does not do yet, and what it costs ----
 //
 //   * **One open row, not four.** The controller tracks a single active
@@ -54,7 +78,8 @@
 //     is mostly cache misses, which are mostly sequential. That is an
 //     argument for measuring before building, not for assuming.
 //   * **One transfer at a time.** No bank pipelining, no posted writes. The
-//     Wishbone in front of it is single-transfer classic anyway.
+//     Wishbone in front of it is single-transfer classic anyway - apart from
+//     the one burst shape below.
 //   * **No ECC, no scrubbing.** Refresh is the only thing keeping data alive.
 module wb_sdram #(
     // Must match the clock actually driving `clk`. Getting this too *low*
@@ -77,6 +102,15 @@ module wb_sdram #(
     input  wire [31:0] wb_adr,
     input  wire [31:0] wb_dat_w,
     input  wire [3:0]  wb_sel,
+    // Burst read hint: with `wb_we` low and `wb_adr` 16-byte aligned, a high
+    // `wb_burst` asks for the four consecutive words at and after `wb_adr`,
+    // returned as four separate `wb_ack` pulses, one word on `wb_dat_r` with
+    // each, the first about where a single read's ack would be and the rest
+    // two cycles apart. The master holds `cyc`/`stb`/`wb_burst` and the
+    // address until the fourth. Anything else - a write, an address that is
+    // not 16-byte aligned - ignores it and is one ordinary transfer, so a
+    // master that ties this low sees no change at all. See "Burst reads".
+    input  wire        wb_burst,
     output wire [31:0] wb_dat_r,
     output wire        wb_ack,
 
@@ -193,7 +227,9 @@ module wb_sdram #(
                      S_WRITE_LO  = 4'd9,
                      S_WRITE_HI  = 4'd10,
                      S_PRECHARGE = 4'd11,
-                     S_REFRESH   = 4'd12;
+                     S_REFRESH   = 4'd12,
+                     S_BR_LO     = 4'd13,
+                     S_BR_HI     = 4'd14;
 
     reg [3:0]          state;
     reg [CNT_BITS-1:0] tmr;          // cycles left before the state may act
@@ -218,7 +254,7 @@ module wb_sdram #(
     // Refresh is owed until it is issued, not merely requested: a refresh
     // deferred behind an in-flight transfer is still owed. One outstanding is
     // all this needs, because T_REFI is 195 cycles at 25 MHz and the longest
-    // transfer here is under ten.
+    // transfer here, a burst read, is thirteen.
     //
     // `refresh_taken` exists to settle the one cycle where the interval timer
     // expires *and* a refresh is being issued. Both want to write
@@ -240,6 +276,8 @@ module wb_sdram #(
     reg [31:0]         req_dat;
     reg [3:0]          req_sel;
     reg                req_we;
+    reg                req_burst;    // a four-word burst read, see "Burst reads"
+    reg [1:0]          burst_idx;    // which word of the burst is being received
 
     wire req = wb_cyc && wb_stb && !ack_r;
 
@@ -300,6 +338,8 @@ module wb_sdram #(
             req_dat     <= 32'b0;
             req_sel     <= 4'b0;
             req_we      <= 1'b0;
+            req_burst   <= 1'b0;
+            burst_idx   <= 2'd0;
         end else begin
             // Defaults, overridden below. Issuing NOP every cycle a state
             // does not explicitly drive a command is what keeps a command
@@ -373,6 +413,9 @@ module wb_sdram #(
                         req_dat  <= wb_dat_w;
                         req_sel  <= wb_sel;
                         req_we   <= wb_we;
+                        // Only an aligned read is a burst; col[2:0] == 0 is
+                        // wb_adr[3:1], and wb_adr[1] is already 0 for a word.
+                        req_burst <= wb_burst && !wb_we && (a_col[2:0] == 3'b000);
                         state    <= S_ACTIVE;
                     end
                 end
@@ -453,7 +496,8 @@ module wb_sdram #(
                     ba_r  <= req_bank;
                     dqm_r <= 2'b00;
                     tmr   <= CAS_LATENCY[CNT_BITS-1:0] - 1'b1;
-                    state <= S_READ_LO;
+                    burst_idx <= 2'd0;
+                    state <= req_burst ? S_BR_LO : S_READ_LO;
                 end
                 S_READ_LO: begin
                     rdata_r[15:0] <= sdram_dq_i;
@@ -463,6 +507,35 @@ module wb_sdram #(
                     rdata_r[31:16] <= sdram_dq_i;
                     ack_r          <= 1'b1;
                     state          <= S_IDLE;
+                end
+
+                // ---- burst read: words 1..3 are READs two cycles apart ------
+                // Each LO state captures the low half of the word whose READ
+                // went out two cycles ago and, unless that was the last word,
+                // issues the READ for the next column pair: the column's low
+                // three bits are zero, so OR-ing the offset in cannot carry,
+                // and A[10] stays clear (no auto-precharge). HI captures the
+                // high half and acks that word.
+                S_BR_LO: begin
+                    rdata_r[15:0] <= sdram_dq_i;
+                    if (burst_idx != 2'd3) begin
+                        cmd_r <= CMD_READ;
+                        a_r   <= col_a_of_req |
+                                 {{(ROW_BITS-3){1'b0}}, (burst_idx + 2'd1), 1'b0};
+                        ba_r  <= req_bank;
+                        dqm_r <= 2'b00;
+                    end
+                    state <= S_BR_HI;
+                end
+                S_BR_HI: begin
+                    rdata_r[31:16] <= sdram_dq_i;
+                    ack_r          <= 1'b1;
+                    if (burst_idx == 2'd3) begin
+                        state <= S_IDLE;
+                    end else begin
+                        burst_idx <= burst_idx + 2'd1;
+                        state     <= S_BR_LO;
+                    end
                 end
 
                 // ---- write: same command, data on the two following cycles

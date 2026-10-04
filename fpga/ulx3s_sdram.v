@@ -118,7 +118,7 @@ module ulx3s_sdram #(
     wb_sdram #(.CLK_HZ(CLK_HZ)) DUT (
         .clk(clk), .rst(rst),
         .wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we),
-        .wb_adr(wb_adr), .wb_dat_w(wb_dat_w), .wb_sel(4'b1111),
+        .wb_adr(wb_adr), .wb_dat_w(wb_dat_w), .wb_sel(4'b1111), .wb_burst(1'b0),
         .wb_dat_r(wb_dat_r), .wb_ack(wb_ack),
         .sdram_cke(sdram_cke), .sdram_cs_n(sdram_csn),
         .sdram_ras_n(sdram_rasn), .sdram_cas_n(sdram_casn),
