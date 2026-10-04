@@ -522,6 +522,52 @@ bursts, but nothing has issued one to it yet. Not established: any effect on the
 SoC, since no master asks for a burst, and area or clock cost (the controller
 gained two states and three small registers; not synthesised).
 
+**Update, Part 10: line fills, step 2a - the interconnect carries a burst.**
+The second of the line-fill changes is split in two, and this is its first half:
+`rtl/soc/wb_interconnect.v` now carries a four-word burst from a fetch master to
+the SDRAM and keeps the bus for all four acks; the instruction cache's line-fill
+state machine (step 2b) is what will ask for one. A `BURST_SLAVES` mask names the
+slaves that can burst (`soc_top.v` sets it to the SDRAM), each hart's fetch master
+gets an `f_burst` input, and the selected master's request is passed to the
+slaves as `s_burst`, but only when the address decodes to a burst-capable slave,
+so a hint aimed anywhere else never reaches it. The lock, which released on the
+first ack, now counts four for a burst. That is the whole point of the change:
+acks follow the selection and the selection follows the lock, so a lock released
+after the first ack would hand words two to four to whichever master won the next
+arbitration. `soc_top.v` connects `s_burst` to the controller and ties every
+`f_burst` low, so the SoC behaves as it did.
+
+Verification. `make sim_interconnect_burst` runs two harts' fetch masters
+bursting SDRAM lines while hart 1's data master makes single reads of SDRAM and
+of a one-wait RAM with idle gaps (so a data request, which outranks fetch, lands
+in the middle of a burst), all against the real controller and model, with a
+monitor that fails if any other master is acked between a burst's first and
+fourth ack, and a check that a hint to a slave that cannot burst is not passed
+on. Four mutations each fail it: the lock released on the first ack (the
+pre-burst behaviour: acks to another master and wrong words), released after the
+third, `s_burst` never signalled, and no slave-capability gating. The formal
+check gains the same property (no ack to any other master while a burst is
+between its first and fourth ack) and proves it, and fails on the first-ack
+mutant; to state it, "in flight" in `formal/fv_interconnect.v` now includes a
+burst's middle, since the lock still holds the bus there, and the legal-master
+assumptions say a pending request keeps its burst flag and address. Two earlier
+versions of that property failed on inputs no master produces (a request whose
+burst flag changed before its ack), which is why those assumptions exist.
+
+One constraint the test taught, and worth keeping: **a master must hold `cyc`
+through the rising edge that sees its ack.** The interconnect releases a lock
+only at an edge where it samples `cyc`/`stb` together with the slave's ack. My
+first testbench dropped `cyc` at the falling edge, in the middle of the cycle in
+which the ack was visible, and the lock never released and the whole bus
+deadlocked. Every real master here is registered and drops after the edge
+(`rtl/soc/cpu_wb.v` does), so nothing in the SoC is affected, but it is the
+kind of thing a new master has to know.
+
+Still to do: (2b) the line-fill state machine in the instruction cache, which
+becomes the first master to ask; (3) the Linux boots re-measured. Not
+established: any effect on the SoC, since no master asks; area or clock cost of
+the lock's two extra registers (not synthesised).
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for

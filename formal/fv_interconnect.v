@@ -59,6 +59,7 @@ module fv_interconnect #(
 
     input wire [NUM_HARTS-1:0]      f_cyc, f_stb,
     input wire [NUM_HARTS*32-1:0]   f_adr,
+    input wire [NUM_HARTS-1:0]      f_burst,
 
     input wire [NUM_HARTS-1:0]      d_cyc, d_stb, d_we,
     input wire [NUM_HARTS*32-1:0]   d_adr, d_dat_w,
@@ -110,14 +111,15 @@ module fv_interconnect #(
     wire        dbg_ack;
     wire [31:0] n_dat_r;
     wire        n_ack;
-    wire        s_cyc, s_we, s_data_master;
+    wire        s_cyc, s_we, s_data_master, s_burst;
     wire [NUM_SLAVES-1:0] s_stb;
     wire [31:0] s_adr, s_dat_w;
     wire [3:0]  s_sel;
 
-    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS)) DUT (
+    wb_interconnect #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
+                      .BURST_SLAVES(1 << 8)) DUT (
         .clk(clk), .rst(rst),
-        .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr),
+        .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr), .f_burst(f_burst),
         .f_dat_r(f_dat_r), .f_ack(f_ack),
         .d_cyc(d_cyc), .d_stb(d_stb), .d_we(d_we), .d_adr(d_adr),
         .d_dat_w(d_dat_w), .d_sel(d_sel),
@@ -134,7 +136,7 @@ module fv_interconnect #(
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
-        .s_data_master(s_data_master)
+        .s_data_master(s_data_master), .s_burst(s_burst)
     );
 
     // BMC starts from an unconstrained state, so require reset in the first
@@ -199,6 +201,41 @@ module fv_interconnect #(
         if (p_n_pending)   assume (n_cyc && n_stb);
     end
 
+    // ---- bursts (Phase 8 Part 9, step 2a) ----
+    // A fetch master's burst is "mid" from its first ack to its fourth: its
+    // counter, advanced on each ack that comes with `s_burst`, is non-zero.
+    // Slave 8 (the SDRAM, `BURST_SLAVES = 1 << 8`) is the only slave that bursts.
+    reg [2*NUM_HARTS-1:0]  fb_cnt;
+    reg [32*NUM_HARTS-1:0] p_f_adr;
+    reg [NUM_HARTS-1:0]    p_f_burst;
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            fb_cnt    <= {2*NUM_HARTS{1'b0}};
+            p_f_adr   <= {32*NUM_HARTS{1'b0}};
+            p_f_burst <= {NUM_HARTS{1'b0}};
+        end else begin
+            p_f_adr   <= f_adr;
+            p_f_burst <= f_burst;
+            for (k = 0; k < NUM_HARTS; k = k + 1)
+                if (f_ack[k] && s_burst)
+                    fb_cnt[2*k +: 2] <= (fb_cnt[2*k +: 2] == 2'd3) ? 2'd0
+                                                                   : fb_cnt[2*k +: 2] + 2'd1;
+        end
+    end
+    // Environment: a burst master holds its request, burst flag and address
+    // until the fourth ack, as the line-fill state machine will - before the
+    // first ack as much as between acks, since a request whose type or address
+    // changed under the interconnect is not Wishbone.
+    always @(*) begin
+        for (k = 0; k < NUM_HARTS; k = k + 1)
+            if (p_f_pending[k]) assume (f_burst[k] == p_f_burst[k]);
+        for (k = 0; k < NUM_HARTS; k = k + 1)
+            if (fb_cnt[2*k +: 2] != 2'd0 || (p_f_pending[k] && p_f_burst[k])) begin
+                assume (f_cyc[k] && f_stb[k] && f_burst[k]);
+                assume (f_adr[32*k +: 32] == p_f_adr[32*k +: 32]);
+            end
+    end
+
     // ---- everything below is expressed over ports only ----
     // No hierarchical references into the DUT. Partly because they survive a
     // refactor, but mainly because `prep -flatten` leaves several distinct
@@ -227,7 +264,12 @@ module fv_interconnect #(
 
     // True exactly when a transfer started earlier and has not completed, so
     // arbitration must stay put.
-    wire in_flight = p_any_req && !p_any_ack;
+    //
+    // A burst is one transfer with four acks, so it stays in flight until the
+    // fourth: after its first ack the lock still holds the bus, and a
+    // higher-priority master that is asking has to wait for it. `fb_cnt` is
+    // non-zero exactly between a burst's first and fourth ack.
+    wire in_flight = (p_any_req && !p_any_ack) || (|fb_cnt);
 
     integer j;
     reg [3:0] stb_count;
@@ -262,6 +304,16 @@ module fv_interconnect #(
                                            ~(d_amo_wrphase - 1'b1);
 
     always @(*) if (!rst) begin
+        // 6. Nobody else is acked in the middle of a burst. Acks follow the
+        //    selection and the selection follows the lock, so this is the lock
+        //    holding for all four acks. With the lock released on the first
+        //    ack (what it did before bursts) a higher-priority master can win
+        //    the next cycle and be handed a word meant for the burst's master.
+        for (k = 0; k < NUM_HARTS; k = k + 1)
+            if (fb_cnt[2*k +: 2] != 2'd0)
+                assert (!(|d_ack) && !(|w_ack) && !dbg_ack && !n_ack &&
+                        ((f_ack & ~({{(NUM_HARTS-1){1'b0}}, 1'b1} << k)) == {NUM_HARTS{1'b0}}));
+
         // 1. At most one slave is ever strobed. Two slaves answering in the
         //    same cycle drive the shared response mux against each other.
         assert (stb_count <= 4'd1);

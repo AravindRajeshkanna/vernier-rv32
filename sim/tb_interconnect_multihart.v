@@ -60,7 +60,7 @@ module tb_interconnect_multihart;
 
     wb_interconnect #(.NUM_SLAVES(NS), .NUM_HARTS(NH)) DUT (
         .clk(clk), .rst(rst),
-        .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr),
+        .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr), .f_burst({NH{1'b0}}),
         .f_dat_r(f_dat_r), .f_ack(f_ack),
         .d_cyc(d_cyc), .d_stb(d_stb), .d_we(d_we), .d_adr(d_adr),
         .d_dat_w(d_dat_w), .d_sel(d_sel),
@@ -81,7 +81,7 @@ module tb_interconnect_multihart;
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
-        .s_data_master(s_data_master)
+        .s_data_master(s_data_master), .s_burst()
     );
 
     // One real, 1-wait-state slave, matching wb_ram.v's own timing: address
