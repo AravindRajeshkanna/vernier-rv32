@@ -55,7 +55,9 @@ fetch including hits, and the core's fetch buffer cannot hide it because the PC
 only advances when the fetch is not stalled — so they infer distributed LUT RAM.
 256 entries is roughly 900 LUT4s against an 85F's 84k, but that is an estimate,
 not a place-and-route result, and the 45F was already at 97% block RAM before
-this. Nothing here has been through synthesis.
+this. Nothing here has been through synthesis. (Update: Phase 8 Part 7 later
+measured it, and the estimate was low: the whole design is 31,837 LUT4s with 64
+entries, 33,130 with 256 and 42,070 with 1024.)
 
 ## The D-cache: 1.11x more, and it moved where the next work is
 
