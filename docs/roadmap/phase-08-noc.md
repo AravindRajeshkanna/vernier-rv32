@@ -483,6 +483,45 @@ effect (only bus time and fills are estimated); how the data side and walkers
 share a burst-mode controller; and whether the shadow caches' handling of
 redirects matches a real fill FSM's.
 
+**Update, Part 9: line fills, step 1 - the SDRAM controller streams a
+four-word burst.** The maintainer chose line fills after Part 8; the first of its
+three changes is in `rtl/soc/wb_sdram.v`, and nothing else uses it yet. A new
+input, `wb_burst`, asks for the four consecutive words of a 16-byte-aligned line
+as four `wb_ack` pulses, one word with each. No mode-register change was needed:
+the part already runs burst length 2 and CAS latency 2, and a READ command can
+be issued every cycle, so the controller issues four READ commands two cycles apart on
+the line's four column pairs and the data bus is never idle. A write, or a read
+that is not 16-byte aligned, ignores the hint and is one ordinary transfer, so a
+master that ties `wb_burst` low sees the same controller as before (`soc_top.v`
+and the standalone SDRAM board top do).
+
+Measured in `sim/tb_sdram.v` against the protocol-checking model, on an open
+row: **a four-word line takes 12 cycles as a burst and 24 as four reads**, half,
+with the first word at the same time a single read would deliver it. That is a
+little better than Part 8's inference (13 to 14 against about 31) because a read
+on an open row is six cycles, not the eight that Part 8 averaged across row
+misses and arbitration; the saving for lines that start on an open row is the
+factor of two, and lines that open a row save less. The new tests also read
+every one of the 64 lines in a 1 KB span (including the last line of a row),
+start a burst on a different row and bank, run 64 lines back to back through
+refreshes, and check that a misaligned burst request, or one with `wb_we`, gives
+exactly one ack and that nothing is acked after a burst. The model's own protocol
+checks (tRCD, tRAS, refresh interval, row containment) pass throughout. Five
+deliberate mutations of the controller each fail the test: the hint disabled, the
+column offset wrong, the last read command dropped, only the last word acked, and the
+alignment check removed. `make verify` and `make verify_ooo` pass with the port
+tied low in the SoC.
+
+What is still to do, each its own change: (2) the interconnect has to carry the
+request to the SDRAM and hold the bus across all four acks (its lock releases on
+the first), and the instruction cache in `rtl/soc/cpu_wb.v` needs a line-fill
+state machine that issues a burst for SDRAM addresses and fills four words; (3)
+re-measure the Linux boots. The Verilator C++ SDRAM model (`SdramModel` in
+`sim/verilator_soc.cpp`) uses the same pipelined-read logic and should accept
+bursts, but nothing has issued one to it yet. Not established: any effect on the
+SoC, since no master asks for a burst, and area or clock cost (the controller
+gained two states and three small registers; not synthesised).
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for

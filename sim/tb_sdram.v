@@ -36,6 +36,7 @@ module tb_sdram;
     reg  [31:0] wb_dat_w = 0;
     reg  [3:0]  wb_sel   = 4'b1111;
     reg         wb_we    = 0;
+    reg         wb_burst = 0;
     reg         wb_cyc   = 0;
     reg         wb_stb   = 0;
     wire [31:0] wb_dat_r;
@@ -63,6 +64,7 @@ module tb_sdram;
         .clk(clk), .rst(rst),
         .wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we),
         .wb_adr(wb_adr), .wb_dat_w(wb_dat_w), .wb_sel(wb_sel),
+        .wb_burst(wb_burst),
         .wb_dat_r(wb_dat_r), .wb_ack(wb_ack),
         .sdram_cke(sd_cke), .sdram_cs_n(sd_cs_n), .sdram_ras_n(sd_ras_n),
         .sdram_cas_n(sd_cas_n), .sdram_we_n(sd_we_n),
@@ -123,6 +125,63 @@ module tb_sdram;
             end
         end
     endtask
+
+
+    // A four-word burst read: the request is held, with `wb_burst`, until the
+    // fourth ack, and each ack carries one word. `ncyc` is clock edges from the
+    // request to the last ack, `nack` how many acks arrived (4, unless the
+    // controller hangs or stops early, which the cap turns into a failure
+    // instead of a run that never ends).
+    reg [31:0] bw [0:3];
+    integer nack, ncyc;
+    task wb_burst_read(input [31:0] a);
+        begin
+            @(negedge clk);
+            wb_adr = a; wb_sel = 4'b1111; wb_we = 1'b0;
+            wb_burst = 1'b1; wb_cyc = 1'b1; wb_stb = 1'b1;
+            nack = 0; ncyc = 0;
+            while (nack < 4 && ncyc < 100) begin
+                @(negedge clk);
+                ncyc = ncyc + 1;
+                if (wb_ack) begin bw[nack] = wb_dat_r; nack = nack + 1; end
+            end
+            wb_cyc = 1'b0; wb_stb = 1'b0; wb_burst = 1'b0;
+            if (nack != 4) begin
+                $display("  FAIL burst at %08h: only %0d of 4 acks in %0d cycles", a, nack, ncyc);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
+    // The same read as one ordinary transfer, timed.
+    integer single_cyc;
+    task wb_read_timed(input [31:0] a, output [31:0] d);
+        begin
+            @(negedge clk);
+            wb_adr = a; wb_sel = 4'b1111; wb_we = 1'b0;
+            wb_cyc = 1'b1; wb_stb = 1'b1;
+            single_cyc = 0;
+            @(negedge clk); single_cyc = single_cyc + 1;
+            while (!wb_ack) begin @(negedge clk); single_cyc = single_cyc + 1; end
+            d = wb_dat_r;
+            wb_cyc = 1'b0; wb_stb = 1'b0;
+        end
+    endtask
+
+    task expect_line(input [31:0] a, input [31:0] w0, input [31:0] w1,
+                     input [31:0] w2, input [31:0] w3, input [1023:0] what);
+        begin
+            wb_burst_read(a);
+            if (bw[0] !== w0 || bw[1] !== w1 || bw[2] !== w2 || bw[3] !== w3) begin
+                $display("  FAIL %0s: line %08h = %08h %08h %08h %08h, expected %08h %08h %08h %08h",
+                         what, a, bw[0], bw[1], bw[2], bw[3], w0, w1, w2, w3);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
+    integer stray, burst_cyc, k;
+    reg [31:0] one;
 
     integer errs_before;
     task check(input [1023:0] name);
@@ -247,6 +306,107 @@ module tb_sdram;
         repeat (4000) @(posedge clk);      // 160 us, ~20 refresh intervals
         expect_word(32'h0000_0400, 32'h5AA55AA5, "after 160 us idle");
         check("data survives refresh");
+
+
+        // ================= burst reads (Phase 8 Part 8, step 1) =================
+        // The controller streams four READ commands two cycles apart and acks
+        // each word as it arrives; see "Burst reads" in wb_sdram.v.
+
+        // ---- a line comes back whole, in order ----
+        for (i = 0; i < 8; i = i + 1)
+            wb_write(32'h0000_1000 + i*4, 32'hA000_0000 + i, 4'b1111);
+        expect_line(32'h0000_1000, 32'hA000_0000, 32'hA000_0001, 32'hA000_0002, 32'hA000_0003, "line 0");
+        expect_line(32'h0000_1010, 32'hA000_0004, 32'hA000_0005, 32'hA000_0006, 32'hA000_0007, "line 1");
+        check("burst: two lines, word-exact");
+
+        // ---- and it is faster than four reads, which is the point ----
+        // Both on an open row: measure the burst, then four single reads.
+        wb_burst_read(32'h0000_1000);
+        burst_cyc = ncyc;
+        k = 0;
+        for (i = 0; i < 4; i = i + 1) begin
+            wb_read_timed(32'h0000_1000 + i*4, one);
+            k = k + single_cyc;
+        end
+        $display("  four-word line: %0d cycles as a burst, %0d as four reads", burst_cyc, k);
+        if (burst_cyc > 14 || (k - burst_cyc) < 10) begin
+            $display("  FAIL: burst took %0d cycles against %0d for four reads", burst_cyc, k);
+            errors = errors + 1;
+        end
+        check("burst: line <= 14 cycles, < 4 reads");
+
+        // ---- every line of a row, and the last line of a bank's row ----
+        // 0x3F0 is the last 16 bytes of row 0, bank 0: columns 0x1F8-0x1FF,
+        // the line most likely to run off the end if the offset were wrong.
+        for (i = 0; i < 256; i = i + 1)
+            wb_write(32'h0000_0000 + i*4, 32'hB100_0000 + i, 4'b1111);
+        for (i = 0; i < 64; i = i + 1)
+            expect_line(i*16, 32'hB100_0000 + i*4, 32'hB100_0000 + i*4 + 1,
+                              32'hB100_0000 + i*4 + 2, 32'hB100_0000 + i*4 + 3, "row walk");
+        check("burst: 64 lines of a row");
+
+        // ---- a burst that must close the open row first ----
+        wb_write(32'h0010_0000, 32'hC000_0000, 4'b1111);   // a different row
+        wb_write(32'h0010_0004, 32'hC000_0001, 4'b1111);
+        wb_write(32'h0010_0008, 32'hC000_0002, 4'b1111);
+        wb_write(32'h0010_000C, 32'hC000_0003, 4'b1111);
+        wb_write(32'h0000_1000, 32'hA000_0000, 4'b1111);   // back to the first row
+        expect_line(32'h0010_0000, 32'hC000_0000, 32'hC000_0001, 32'hC000_0002, 32'hC000_0003, "row miss");
+        expect_line(32'h0000_1000, 32'hA000_0000, 32'hA000_0001, 32'hA000_0002, 32'hA000_0003, "row miss back");
+        check("burst: row miss start");
+
+        // ---- the hint is ignored where it does not apply ----
+        // Not 16-byte aligned: one ordinary word, and exactly one ack.
+        @(negedge clk);
+        wb_adr = 32'h0000_1004; wb_sel = 4'b1111; wb_we = 1'b0;
+        wb_burst = 1'b1; wb_cyc = 1'b1; wb_stb = 1'b1;
+        nack = 0;
+        repeat (40) begin
+            @(negedge clk);
+            if (wb_ack) begin nack = nack + 1; one = wb_dat_r; wb_cyc = 1'b0; wb_stb = 1'b0; end
+        end
+        wb_burst = 1'b0;
+        if (nack !== 1 || one !== 32'hA000_0001) begin
+            $display("  FAIL: unaligned burst request gave %0d acks, word %08h", nack, one);
+            errors = errors + 1;
+        end
+        check("burst: ignored if unaligned");
+        // A write: an ordinary write, one ack.
+        @(negedge clk);
+        wb_adr = 32'h0000_1020; wb_dat_w = 32'hD00D_F00D; wb_sel = 4'b1111;
+        wb_we = 1'b1; wb_burst = 1'b1; wb_cyc = 1'b1; wb_stb = 1'b1;
+        nack = 0;
+        repeat (40) begin
+            @(negedge clk);
+            if (wb_ack) begin nack = nack + 1; wb_cyc = 1'b0; wb_stb = 1'b0; wb_we = 1'b0; end
+        end
+        wb_burst = 1'b0; wb_we = 1'b0;
+        if (nack !== 1) begin
+            $display("  FAIL: write with the burst hint gave %0d acks", nack);
+            errors = errors + 1;
+        end
+        expect_word(32'h0000_1020, 32'hD00D_F00D, "write with the hint");
+        check("burst: ignored on a write");
+
+        // ---- nothing is left over after a burst ----
+        wb_burst_read(32'h0000_1000);
+        stray = 0;
+        repeat (30) begin @(negedge clk); if (wb_ack) stray = stray + 1; end
+        if (stray != 0) begin
+            $display("  FAIL: %0d stray acks after a burst", stray);
+            errors = errors + 1;
+        end
+        check("burst: no stray acks afterwards");
+
+        // ---- bursts across many refresh intervals ----
+        // About 40 lines back to back is ~500 cycles, 2-3 refresh intervals,
+        // so refreshes owed during a burst must wait it out and then happen.
+        for (i = 0; i < 64; i = i + 1) begin
+            expect_line(32'h0000_0000 + (i % 64)*16,
+                        32'hB100_0000 + (i % 64)*4,     32'hB100_0000 + (i % 64)*4 + 1,
+                        32'hB100_0000 + (i % 64)*4 + 2, 32'hB100_0000 + (i % 64)*4 + 3, "refresh soak");
+        end
+        check("burst: 64 lines through refresh");
 
         $display("");
         $display("  refreshes issued: %0d", MEM.refresh_count);

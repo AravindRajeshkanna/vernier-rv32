@@ -679,6 +679,9 @@ module soc_top #(
         .clk(clk), .rst(rst_soc),
         .wb_cyc(s_cyc), .wb_stb(s_stb[S_SDRAM]), .wb_we(s_we), .wb_adr(s_adr),
         .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        // No master asks for a burst yet (the interconnect does not carry the
+        // request), so the controller is exactly the single-word one.
+        .wb_burst(1'b0),
         .wb_dat_r(s_dat_r[32*S_SDRAM +: 32]), .wb_ack(s_ack[S_SDRAM]),
         .sdram_cke(sdram_cke), .sdram_cs_n(sdram_cs_n),
         .sdram_ras_n(sdram_ras_n), .sdram_cas_n(sdram_cas_n),
