@@ -5,7 +5,7 @@
 //
 // ---- Packet format (shared with noc_ni_slave.v and noc_node1.v) ----
 //
-// One 80-bit packet, request and response alike, so a router stage never has
+// One 82-bit packet, request and response alike, so a router stage never has
 // to know which it is carrying beyond the `rsp` convention below:
 //
 //    [0]      lock  request: more transactions from this master follow, keep
@@ -21,11 +21,18 @@
 //    [15:12]  dst   receiver's node ID, same convention.
 //    [47:16]  adr   byte address (request); response: 0.
 //    [79:48]  dat   write data (request) / read data (response).
+//    [80]     burst request: a four-word read of the 16-byte line at `adr`
+//                   (what the SDRAM controller streams); the response is four
+//                   packets, in address order. Response: 0.
+//    [81]     last  response: the final (or only) packet of the answer. A
+//                   request carries 0.
 //
 // ---- What this block does ----
 //
 // One transaction outstanding at a time, which is all a classic Wishbone
-// master can have. `req_valid` is combinational from the master's own
+// master can have. A burst is one transaction: the master holds its request
+// through four acks, one per response packet, and the transaction ends on the
+// packet marked `last`. `req_valid` is combinational from the master's own
 // `cyc & stb`, so the request stays presented, unchanged, until the network
 // takes it (`req_ready`): that is the back-pressure path, and the master
 // sees it as an ordinary wait state. The response ack is the response packet
@@ -57,22 +64,23 @@ module noc_ni_master #(
     input  wire [3:0]  wb_dst,
     input  wire [1:0]  wb_qos,
     input  wire        wb_lock,
+    input  wire        wb_burst,
     output wire [31:0] wb_dat_r,
     output wire        wb_ack,
     output wire        wb_err,
 
     // Network side
     output wire        req_valid,
-    output wire [79:0] req_pkt,
+    output wire [81:0] req_pkt,
     input  wire        req_ready,
     input  wire        rsp_valid,
-    input  wire [79:0] rsp_pkt,
+    input  wire [81:0] rsp_pkt,
     output wire        rsp_ready
 );
     reg sent;   // the request has gone; waiting for its response
 
     assign req_valid = wb_cyc && wb_stb && !sent;
-    assign req_pkt   = {wb_dat_w, wb_adr, wb_dst, ID, wb_qos, wb_sel, wb_we, wb_lock};
+    assign req_pkt   = {1'b0, wb_burst, wb_dat_w, wb_adr, wb_dst, ID, wb_qos, wb_sel, wb_we, wb_lock};
 
     assign rsp_ready = sent;
     wire   rsp_take  = rsp_valid && sent;
@@ -85,6 +93,6 @@ module noc_ni_master #(
     always @(posedge clk) begin
         if (rst)                         sent <= 1'b0;
         else if (req_valid && req_ready) sent <= 1'b1;
-        else if (rsp_take)               sent <= 1'b0;
+        else if (rsp_take && rsp_pkt[81]) sent <= 1'b0;
     end
 endmodule

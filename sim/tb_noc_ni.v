@@ -37,19 +37,19 @@ module tb_noc_ni;
     // ---------------------------------------------------------------- Part A
     localparam NM = 2, NS = 2;
 
-    reg  [NM-1:0]    m_cyc = 0, m_stb = 0, m_we = 0, m_lock = 0;
+    reg  [NM-1:0]    m_cyc = 0, m_stb = 0, m_we = 0, m_lock = 0, m_burst = 0;
     reg  [NM*32-1:0] m_adr = 0, m_dat_w = 0;
     reg  [NM*4-1:0]  m_sel = 0, m_dst = 0;
     wire [NM*32-1:0] m_dat_r;
     wire [NM-1:0]    m_ack, m_err;
 
     wire [NM-1:0]    mq_valid, mq_ready, mr_valid, mr_ready;
-    wire [NM*80-1:0] mq_pkt, mr_pkt;
+    wire [NM*82-1:0] mq_pkt, mr_pkt;
     wire [NS-1:0]    sq_valid, sq_ready, sr_valid, sr_ready;
-    wire [79:0]      sq_pkt;
-    wire [NS*80-1:0] sr_pkt;
+    wire [81:0]      sq_pkt;
+    wire [NS*82-1:0] sr_pkt;
 
-    wire [NS-1:0]    s_cyc, s_stb, s_we, s_ack, s_err;
+    wire [NS-1:0]    s_cyc, s_stb, s_we, s_ack, s_err, s_burst;
     wire [NS*32-1:0] s_adr, s_dat_w, s_dat_r;
     wire [NS*4-1:0]  s_sel;
 
@@ -61,23 +61,23 @@ module tb_noc_ni;
                 .wb_cyc(m_cyc[g]), .wb_stb(m_stb[g]), .wb_we(m_we[g]),
                 .wb_adr(m_adr[g*32 +: 32]), .wb_dat_w(m_dat_w[g*32 +: 32]),
                 .wb_sel(m_sel[g*4 +: 4]), .wb_dst(m_dst[g*4 +: 4]),
-                .wb_qos(2'd0), .wb_lock(m_lock[g]),
+                .wb_qos(2'd0), .wb_lock(m_lock[g]), .wb_burst(m_burst[g]),
                 .wb_dat_r(m_dat_r[g*32 +: 32]), .wb_ack(m_ack[g]), .wb_err(m_err[g]),
-                .req_valid(mq_valid[g]), .req_pkt(mq_pkt[g*80 +: 80]), .req_ready(mq_ready[g]),
-                .rsp_valid(mr_valid[g]), .rsp_pkt(mr_pkt[g*80 +: 80]), .rsp_ready(mr_ready[g]));
+                .req_valid(mq_valid[g]), .req_pkt(mq_pkt[g*82 +: 82]), .req_ready(mq_ready[g]),
+                .rsp_valid(mr_valid[g]), .rsp_pkt(mr_pkt[g*82 +: 82]), .rsp_ready(mr_ready[g]));
         end
         for (g = 0; g < NS; g = g + 1) begin : g_sni
             noc_ni_slave #(.ID(g)) NIS (
                 .clk(clk), .rst(rst),
                 .req_valid(sq_valid[g]), .req_pkt(sq_pkt), .req_ready(sq_ready[g]),
-                .rsp_valid(sr_valid[g]), .rsp_pkt(sr_pkt[g*80 +: 80]), .rsp_ready(sr_ready[g]),
+                .rsp_valid(sr_valid[g]), .rsp_pkt(sr_pkt[g*82 +: 82]), .rsp_ready(sr_ready[g]),
                 .wb_cyc(s_cyc[g]), .wb_stb(s_stb[g]), .wb_we(s_we[g]),
                 .wb_adr(s_adr[g*32 +: 32]), .wb_dat_w(s_dat_w[g*32 +: 32]),
-                .wb_sel(s_sel[g*4 +: 4]),
+                .wb_sel(s_sel[g*4 +: 4]), .wb_burst(s_burst[g]),
                 .wb_dat_r(s_dat_r[g*32 +: 32]), .wb_ack(s_ack[g]), .wb_err(s_err[g]));
-            wb_memmodel #(.SEED(g + 7), .ERR_WORD(g == 1 ? 255 : -1)) MEM (
+            wb_memmodel #(.SEED(g + 7), .ERR_WORD(g == 1 ? 254 : -1)) MEM (
                 .clk(clk), .cyc(s_cyc[g]), .stb(s_stb[g]), .we(s_we[g]),
-                .adr(s_adr[g*32 +: 32]), .dat_w(s_dat_w[g*32 +: 32]), .sel(s_sel[g*4 +: 4]),
+                .adr(s_adr[g*32 +: 32]), .dat_w(s_dat_w[g*32 +: 32]), .sel(s_sel[g*4 +: 4]), .burst(s_burst[g]),
                 .dat_r(s_dat_r[g*32 +: 32]), .ack(s_ack[g]), .err(s_err[g]));
         end
     endgenerate
@@ -110,6 +110,33 @@ module tb_noc_ni;
             #1;
             m_stb[m] = 1'b0;  m_lock[m] = 1'b0;
             if (!lock) m_cyc[m] = 1'b0;
+        end
+    endtask
+
+    // A four-word burst read from master m: one request, held through four
+    // acks, each ack carrying the next word of the line. `n` counts the acks
+    // seen before the transaction ended; an error ends it early.
+    task automatic burst_rd(input integer m, input [31:0] adr, output [127:0] words,
+                            output integer n, output e);
+        reg fin;
+        begin
+            m_cyc[m] = 1'b1;  m_stb[m] = 1'b1;  m_we[m] = 1'b0;  m_burst[m] = 1'b1;
+            m_adr[m*32 +: 32] = adr;  m_dat_w[m*32 +: 32] = 32'b0;
+            m_sel[m*4 +: 4] = 4'hf;  m_dst[m*4 +: 4] = decode(adr);  m_lock[m] = 1'b0;
+            words = 128'b0;  n = 0;  e = 1'b0;
+            fin = 1'b0;
+            while (!fin) begin
+                @(posedge clk);
+                if (m_err[m]) begin
+                    e = 1'b1;  fin = 1'b1;
+                end else if (m_ack[m]) begin
+                    words[n*32 +: 32] = m_dat_r[m*32 +: 32];
+                    n = n + 1;
+                    if (n == 4) fin = 1'b1;
+                end
+            end
+            #1;
+            m_stb[m] = 1'b0;  m_cyc[m] = 1'b0;  m_burst[m] = 1'b0;
         end
     endtask
 
@@ -187,12 +214,21 @@ module tb_noc_ni;
         end
     endtask
 
+    // an error ends a transaction: the packet that carries one is the last
+    integer mi;
+    always @(posedge clk) if (!rst)
+        for (mi = 0; mi < NS; mi = mi + 1)
+            if (sr_valid[mi] && sr_pkt[mi*82 + 1] && !sr_pkt[mi*82 + 81])
+                fail("an error response was not marked last");
+
     // cyc held across the two phases, as the slave sees it
     integer gap_cyc_seen = 0;
     always @(posedge clk) if (!rst && s_cyc[1] && !s_stb[1]) gap_cyc_seen = gap_cyc_seen + 1;
 
     integer r, w, c;
     reg [31:0] rdv, dmy;
+    reg [127:0] bw;
+    integer bn, bursts_ok;
     reg ev;
     reg done0 = 0, done1 = 0;
 
@@ -221,8 +257,42 @@ module tb_noc_ni;
                         fail("final contents wrong");
                 end
 
+        // ---- A1b: burst reads of a four-word line, while the other master
+        // does ordinary traffic. Lines at words 240 and 244 of each slave.
+        for (r = 0; r < 2; r = r + 1)
+            for (w = 0; w < 8; w = w + 1)
+                xfer(0, 1'b1, waddr(r, 240 + w), 32'hb000_0000 + (r << 8) + w, 4'hf, 1'b0, dmy, ev);
+        bursts_ok = 0;
+        fork
+            begin : burster
+                for (c = 0; c < 60; c = c + 1) begin
+                    repeat (c % 3) @(posedge clk);
+                    #1;
+                    r = c & 1;
+                    burst_rd(0, waddr(r, 240 + 4 * ((c >> 1) & 1)), bw, bn, ev);
+                    if (ev || bn != 4) fail("burst did not return four words");
+                    else begin
+                        for (w = 0; w < 4; w = w + 1)
+                            if (bw[w*32 +: 32] !== 32'hb000_0000 + (r << 8) + 4 * ((c >> 1) & 1) + w)
+                                fail("burst word wrong or out of order");
+                        bursts_ok = bursts_ok + 1;
+                    end
+                end
+            end
+            begin worker(1, 200); end
+        join
+        $display("  A1b: %0d bursts returned four words in order while master 1 did 200 ordinary ops", bursts_ok);
+        // a burst that ends in a slave error, and one to an unmapped address
+        xfer(0, 1'b1, waddr(0, 3), 32'hfeed0003, 4'hf, 1'b0, dmy, ev);
+        burst_rd(0, waddr(1, 252), bw, bn, ev);
+        if (!ev || bn != 2) fail("burst error not returned after two words");
+        burst_rd(1, 32'h8000_0010, bw, bn, ev);
+        if (!ev || bn != 0) fail("unmapped burst not answered with an error");
+        xfer(0, 1'b0, waddr(0, 3), 32'b0, 4'hf, 1'b0, rdv, ev);
+        if (ev || rdv !== 32'hfeed0003) fail("network wedged or confused after a failed burst");
+
         // ---- A2: an error from a slave, and an unmapped address
-        xfer(0, 1'b0, waddr(1, 255), 32'b0, 4'hf, 1'b0, rdv, ev);
+        xfer(0, 1'b0, waddr(1, 254), 32'b0, 4'hf, 1'b0, rdv, ev);
         if (!ev) fail("slave error not returned");
         xfer(1, 1'b1, waddr(0, 3), 32'hdead0001, 4'hf, 1'b0, rdv, ev);
         if (ev) fail("a good write after an error was refused");
@@ -253,18 +323,18 @@ module tb_noc_ni;
     end
 
     // ---------------------------------------------------------------- Part B
-    reg        b_cyc = 0, b_stb = 0, b_we = 0;
+    reg        b_cyc = 0, b_stb = 0, b_we = 0, b_burst = 0;
     reg [31:0] b_adr = 0, b_dat_w = 0;
     reg [3:0]  b_sel = 0;
     wire [31:0] b_dat_r;
     wire        b_ack, b_err;
     wire        bq_valid, bq_ready;      // master interface <-> channel
-    wire [79:0] bq_pkt;
+    wire [81:0] bq_pkt;
     wire        bs_valid, bs_ready;      // channel <-> slave interface
     wire        sp_valid, sp_ready;      // slave interface -> channel (response)
-    wire [79:0] sp_pkt;
+    wire [81:0] sp_pkt;
     wire        bt_valid, bt_ready;      // channel -> master interface (response)
-    wire        w_cyc, w_stb, w_we, w_ack, w_err;
+    wire        w_cyc, w_stb, w_we, w_ack, w_err, w_burst;
     wire [31:0] w_adr, w_dat_w, w_dat_r;
     wire [3:0]  w_sel;
 
@@ -284,7 +354,7 @@ module tb_noc_ni;
     noc_ni_master #(.ID(0)) BNIM (
         .clk(clk), .rst(rst),
         .wb_cyc(b_cyc), .wb_stb(b_stb), .wb_we(b_we), .wb_adr(b_adr), .wb_dat_w(b_dat_w),
-        .wb_sel(b_sel), .wb_dst(4'd0), .wb_qos(2'd2), .wb_lock(1'b0),
+        .wb_sel(b_sel), .wb_dst(4'd0), .wb_qos(2'd2), .wb_lock(1'b0), .wb_burst(b_burst),
         .wb_dat_r(b_dat_r), .wb_ack(b_ack), .wb_err(b_err),
         .req_valid(bq_valid), .req_pkt(bq_pkt), .req_ready(bq_ready),
         .rsp_valid(bt_valid), .rsp_pkt(sp_pkt), .rsp_ready(bt_ready));
@@ -293,21 +363,21 @@ module tb_noc_ni;
         .req_valid(bs_valid), .req_pkt(bq_pkt), .req_ready(bs_ready),
         .rsp_valid(sp_valid), .rsp_pkt(sp_pkt), .rsp_ready(sp_ready),
         .wb_cyc(w_cyc), .wb_stb(w_stb), .wb_we(w_we), .wb_adr(w_adr), .wb_dat_w(w_dat_w),
-        .wb_sel(w_sel), .wb_dat_r(w_dat_r), .wb_ack(w_ack), .wb_err(w_err));
+        .wb_sel(w_sel), .wb_burst(w_burst), .wb_dat_r(w_dat_r), .wb_ack(w_ack), .wb_err(w_err));
     wb_memmodel #(.SEED(31), .ERR_WORD(-1)) BMEM (
         .clk(clk), .cyc(w_cyc), .stb(w_stb), .we(w_we), .adr(w_adr), .dat_w(w_dat_w),
-        .sel(w_sel), .dat_r(w_dat_r), .ack(w_ack), .err(w_err));
+        .sel(w_sel), .burst(w_burst), .dat_r(w_dat_r), .ack(w_ack), .err(w_err));
 
     // while a request is offered and not taken, it must not change
     reg        q_pend = 0;
-    reg [79:0] q_prev;
+    reg [81:0] q_prev;
     always @(posedge clk) begin
         if (q_pend && bq_valid && bq_pkt !== q_prev) fail("request packet changed while waiting");
         q_pend <= bq_valid && !bq_ready;
         q_prev <= bq_pkt;
     end
     reg        r_pend = 0;
-    reg [79:0] r_prev;
+    reg [81:0] r_prev;
     always @(posedge clk) begin
         if (r_pend && sp_valid && sp_pkt !== r_prev) fail("response packet changed while waiting");
         r_pend <= sp_valid && !sp_ready;
@@ -323,7 +393,7 @@ module tb_noc_ni;
     end
 
     reg [31:0] bref [0:255];
-    integer bi, bn, bseed2, bk;
+    integer bi, bwn, bseed2, bk, bk2, bnb;
     reg [31:0] brd, bwant;
     reg be;
     integer sawstall = 0;
@@ -334,31 +404,49 @@ module tb_noc_ni;
         wait (partb_go);
         bseed2 = 77;
         for (bi = 0; bi < 800; bi = bi + 1) begin
-            bn = ($random(bseed2) & 32'h7fffffff) % 64;
+            bwn = ($random(bseed2) & 32'h7fffffff) % 64;
             @(posedge clk); #1;
-            if ($random(bseed2) & 1) begin
+            bk2 = $random(bseed2) & 3;
+            if (bk2 < 2) begin
                 brd = $random(bseed2);
-                b_cyc = 1; b_stb = 1; b_we = 1; b_adr = bn << 2; b_dat_w = brd; b_sel = 4'hf;
+                b_cyc = 1; b_stb = 1; b_we = 1; b_adr = bwn << 2; b_dat_w = brd; b_sel = 4'hf;
                 begin : wa
                     forever begin @(posedge clk); if (b_ack || b_err) disable wa; end
                 end
                 #1 b_stb = 0; b_cyc = 0;
-                bref[bn] = brd;
+                bref[bwn] = brd;
+            end else if (bk2 == 3) begin
+                // burst read of the line holding word bwn
+                bwn = bwn & ~3;
+                b_cyc = 1; b_stb = 1; b_we = 0; b_burst = 1; b_adr = bwn << 2; b_sel = 4'hf;
+                bnb = 0;
+                while (bnb < 4) begin
+                    @(posedge clk);
+                    if (b_err) begin fail("part B burst errored"); bnb = 4; end
+                    else if (b_ack) begin
+                        if (b_dat_r !== bref[bwn + bnb]) begin
+                            fail("part B burst word wrong");
+                            $display("    word %0d: got %08h want %08h", bwn + bnb, b_dat_r, bref[bwn + bnb]);
+                        end
+                        bnb = bnb + 1;
+                    end
+                end
+                #1 b_stb = 0; b_cyc = 0; b_burst = 0;
             end else begin
-                b_cyc = 1; b_stb = 1; b_we = 0; b_adr = bn << 2; b_sel = 4'hf;
+                b_cyc = 1; b_stb = 1; b_we = 0; b_adr = bwn << 2; b_sel = 4'hf;
                 begin : wb
                     forever begin @(posedge clk);
                         if (b_ack || b_err) begin brd = b_dat_r; be = b_err; disable wb; end
                     end
                 end
                 #1 b_stb = 0; b_cyc = 0;
-                if (be || brd !== bref[bn]) begin
+                if (be || brd !== bref[bwn]) begin
                     fail("part B read wrong");
-                    $display("    word %0d: got %08h want %08h err %b", bn, brd, bref[bn], be);
+                    $display("    word %0d: got %08h want %08h err %b", bwn, brd, bref[bwn], be);
                 end
             end
         end
-        $display("  B: 800 transfers through a randomly stalling channel; request refused in %0d cycles", sawstall);
+        $display("  B: 800 transfers (writes, reads and bursts) through a randomly stalling channel; request refused in %0d cycles", sawstall);
         partb_done = 1;
     end
 
@@ -370,39 +458,50 @@ module tb_noc_ni;
 endmodule
 
 // Wishbone slave memory: 256 words, random wait states, byte enables,
-// optionally an error response at one word.
+// optionally an error response at one word. A burst read answers four acks,
+// the words of the line from `adr` on, a couple of cycles apart (the SDRAM
+// controller's pattern); the error word ends it early.
 module wb_memmodel #(parameter SEED = 1, parameter integer ERR_WORD = -1) (
     input  wire        clk,
     input  wire        cyc, stb, we,
     input  wire [31:0] adr, dat_w,
     input  wire [3:0]  sel,
+    input  wire        burst,
     output reg  [31:0] dat_r,
     output reg         ack,
     output reg         err
 );
     reg [31:0] mem [0:255];
     integer    waits, seed, k;
+    reg [1:0]  bcnt;
+    reg [7:0]  widx;
     initial begin
         seed = SEED;
         waits = 0;
+        bcnt = 0;
         ack = 0; err = 0; dat_r = 0;
         for (k = 0; k < 256; k = k + 1) mem[k] = 0;
     end
     always @(posedge clk) begin
         ack <= 1'b0;
         err <= 1'b0;
+        if (!(cyc && stb)) bcnt <= 2'd0;     // a burst ends when the request does
         if (cyc && stb && !ack && !err) begin
             if (waits > 0) waits <= waits - 1;
             else begin
-                if (adr[9:2] == ERR_WORD) err <= 1'b1;
-                else begin
+                widx = adr[9:2] + (burst ? {6'b0, bcnt} : 8'd0);
+                if (widx == ERR_WORD) begin
+                    err  <= 1'b1;
+                    bcnt <= 2'd0;
+                end else begin
                     ack <= 1'b1;
                     if (we) begin
-                        if (sel[0]) mem[adr[9:2]][7:0]   <= dat_w[7:0];
-                        if (sel[1]) mem[adr[9:2]][15:8]  <= dat_w[15:8];
-                        if (sel[2]) mem[adr[9:2]][23:16] <= dat_w[23:16];
-                        if (sel[3]) mem[adr[9:2]][31:24] <= dat_w[31:24];
-                    end else dat_r <= mem[adr[9:2]];
+                        if (sel[0]) mem[widx][7:0]   <= dat_w[7:0];
+                        if (sel[1]) mem[widx][15:8]  <= dat_w[15:8];
+                        if (sel[2]) mem[widx][23:16] <= dat_w[23:16];
+                        if (sel[3]) mem[widx][31:24] <= dat_w[31:24];
+                    end else dat_r <= mem[widx];
+                    bcnt <= burst ? bcnt + 2'd1 : 2'd0;
                 end
                 waits <= ($random(seed) & 32'h7fffffff) % 4;
             end

@@ -9,24 +9,25 @@
 // The ports are driven by a legal environment, assumed rather than hoped:
 //   - a master that has offered a request keeps offering it, unchanged,
 //     until the node takes it, and its packet's `src` is its own port;
-//   - a slave answers only requests it was given, and holds an answer
-//     until it is taken.
+//   - a slave answers only requests it was given, holds an answer until it
+//     is taken, and keeps the request open (`at`) until the packet marked
+//     `last`, so a burst is several answers to one request.
 // Proven for two masters and two slaves, with `dst` free over all sixteen
 // values, so the unmapped-destination path is inside the proof.
 module fv_noc_node (
     input wire         clk,
     input wire         rst,
     input wire [1:0]   m_req_valid,
-    input wire [159:0] m_req_pkt,
+    input wire [163:0] m_req_pkt,
     input wire [1:0]   m_rsp_ready,
     input wire [1:0]   s_req_ready,
     input wire [1:0]   s_rsp_valid,
-    input wire [159:0] s_rsp_pkt
+    input wire [163:0] s_rsp_pkt
 );
     wire [1:0]   m_req_ready, m_rsp_valid;
-    wire [159:0] m_rsp_pkt;
+    wire [163:0] m_rsp_pkt;
     wire [1:0]   s_req_valid, s_rsp_ready;
-    wire [79:0]  s_req_pkt;
+    wire [81:0]  s_req_pkt;
 
     noc_node1 #(.NUM_M(2), .NUM_S(2)) DUT (
         .clk(clk), .rst(rst),
@@ -50,8 +51,9 @@ module fv_noc_node (
     wire       take0 = m_req_valid[0] && m_req_ready[0];
     wire       take1 = m_req_valid[1] && m_req_ready[1];
     wire       take  = take0 || take1;
-    wire [79:0] taken = take1 ? m_req_pkt[159:80] : m_req_pkt[79:0];
+    wire [81:0] taken = take1 ? m_req_pkt[163:82] : m_req_pkt[81:0];
     wire       deliver = |(m_rsp_valid & m_rsp_ready);
+    wire       deliver_last = deliver && m_rsp_pkt[81];
 
     always @(posedge clk) begin
         if (rst) begin
@@ -60,14 +62,15 @@ module fv_noc_node (
             if (take) begin
                 open <= taken[0]; owner <= take1; busy <= 1'b1; who <= take1; last_dst <= taken[15:12];
             end
-            if (deliver) busy <= 1'b0;
+            if (deliver_last) busy <= 1'b0;
             if (|(s_req_valid & s_req_ready)) at <= at | (s_req_valid & s_req_ready);
-            if (|(s_rsp_valid & s_rsp_ready)) at <= at & ~(s_rsp_valid & s_rsp_ready);
+            if (|(s_rsp_valid & s_rsp_ready & {s_rsp_pkt[163], s_rsp_pkt[81]}))
+                at <= at & ~(s_rsp_valid & s_rsp_ready & {s_rsp_pkt[163], s_rsp_pkt[81]});
         end
     end
 
     // ---- the environment's side of the contract ----
-    reg [159:0] p_req_pkt;
+    reg [163:0] p_req_pkt;
     reg [1:0]   p_pend, p_rsp_valid, p_rsp_ready_n;
     reg         p_ok;
     always @(posedge clk) begin
@@ -80,10 +83,10 @@ module fv_noc_node (
     always @(*) if (f_initialized && !rst) begin
         // a master's own port number is its src
         assume (m_req_pkt[11:8]   == 4'd0);
-        assume (m_req_pkt[91:88]  == 4'd1);
+        assume (m_req_pkt[93:90]  == 4'd1);
         // an offered request stays, unchanged, until taken
-        if (p_ok && p_pend[0]) assume (m_req_valid[0] && m_req_pkt[79:0]    == p_req_pkt[79:0]);
-        if (p_ok && p_pend[1]) assume (m_req_valid[1] && m_req_pkt[159:80]  == p_req_pkt[159:80]);
+        if (p_ok && p_pend[0]) assume (m_req_valid[0] && m_req_pkt[81:0]    == p_req_pkt[81:0]);
+        if (p_ok && p_pend[1]) assume (m_req_valid[1] && m_req_pkt[163:82]  == p_req_pkt[163:82]);
         // a slave answers only what it holds, and holds the answer until taken
         if (s_rsp_valid[0]) assume (at[0]);
         if (s_rsp_valid[1]) assume (at[1]);
@@ -126,6 +129,7 @@ module fv_noc_node (
     // reachability, so none of the above is vacuous
     always @(*) if (f_initialized && !rst) begin
         cover (open && busy);
+        cover (deliver && !m_rsp_pkt[81]);   // a burst's middle beat
         cover (deliver && who);
         cover (deliver && !who);
         cover (take && taken[15:12] > 4'd1);

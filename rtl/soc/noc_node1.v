@@ -10,6 +10,15 @@
 //   REQ       present it to the slave its `dst` names until that slave takes it
 //   WAIT      wait for the slave's response packet
 //   RSP       hand the response to the master named by the request's `src`
+//             (back to WAIT for the next beat of a burst, else to IDLE)
+//
+// ---- Bursts ----
+//
+// A burst read is one transaction that comes back as four response packets.
+// The node takes it like any other request, then cycles between WAIT (a
+// beat from the slave) and RSP (that beat to the master) until the beat
+// marked `last` has gone, and only then takes another request - so nothing
+// can fall between a burst's words, which is what the bus's burst lock does.
 //
 // ---- Ordering ----
 //
@@ -47,25 +56,25 @@ module noc_node1 #(
 
     // Master-side ports (to each noc_ni_master)
     input  wire [NUM_M-1:0]    m_req_valid,
-    input  wire [NUM_M*80-1:0] m_req_pkt,
+    input  wire [NUM_M*82-1:0] m_req_pkt,
     output wire [NUM_M-1:0]    m_req_ready,
     output wire [NUM_M-1:0]    m_rsp_valid,
-    output wire [NUM_M*80-1:0] m_rsp_pkt,
+    output wire [NUM_M*82-1:0] m_rsp_pkt,
     input  wire [NUM_M-1:0]    m_rsp_ready,
 
     // Slave-side ports (to each noc_ni_slave)
     output wire [NUM_S-1:0]    s_req_valid,
-    output wire [79:0]         s_req_pkt,
+    output wire [81:0]         s_req_pkt,
     input  wire [NUM_S-1:0]    s_req_ready,
     input  wire [NUM_S-1:0]    s_rsp_valid,
-    input  wire [NUM_S*80-1:0] s_rsp_pkt,
+    input  wire [NUM_S*82-1:0] s_rsp_pkt,
     output wire [NUM_S-1:0]    s_rsp_ready
 );
     localparam S_IDLE = 2'd0, S_REQ = 2'd1, S_WAIT = 2'd2, S_RSP = 2'd3;
 
     reg [1:0]  state;
-    reg [79:0] pkt;         // the request in flight
-    reg [79:0] rsp;         // its response, on the way back
+    reg [81:0] pkt;         // the request in flight
+    reg [81:0] rsp;         // its response, on the way back
     reg        owner_v;     // a locked sequence is open...
     reg [3:0]  owner;        // ...and belongs to this master
 
@@ -98,7 +107,7 @@ module noc_node1 #(
         for (g = 0; g < NUM_M; g = g + 1) begin : g_m
             assign m_req_ready[g] = (state == S_IDLE) && pick_v && (pick == g);
             assign m_rsp_valid[g] = (state == S_RSP) && (p_src == g);
-            assign m_rsp_pkt[g*80 +: 80] = rsp;
+            assign m_rsp_pkt[g*82 +: 82] = rsp;
         end
         for (g = 0; g < NUM_S; g = g + 1) begin : g_s
             assign s_req_valid[g] = (state == S_REQ)  && dst_ok && (p_dst == g);
@@ -107,17 +116,17 @@ module noc_node1 #(
     endgenerate
     assign s_req_pkt = pkt;
 
-    wire [79:0] picked = m_req_pkt[pick*80 +: 80];
-    wire [79:0] chosen = s_rsp_pkt[p_dst*80 +: 80];
+    wire [81:0] picked = m_req_pkt[pick*82 +: 82];
+    wire [81:0] chosen = s_rsp_pkt[p_dst*82 +: 82];
 
     // A response to a request nothing decodes: dst/src swapped, err set.
-    wire [79:0] nodev = {32'b0, 32'b0, pkt[11:8], pkt[15:12], pkt[7:6], 4'b0, 1'b1, 1'b0};
+    wire [81:0] nodev = {1'b1, 1'b0, 32'b0, 32'b0, pkt[11:8], pkt[15:12], pkt[7:6], 4'b0, 1'b1, 1'b0};
 
     always @(posedge clk) begin
         if (rst) begin
             state   <= S_IDLE;
-            pkt     <= 80'b0;
-            rsp     <= 80'b0;
+            pkt     <= 82'b0;
+            rsp     <= 82'b0;
             owner_v <= 1'b0;
             owner   <= 4'd0;
         end else begin
@@ -140,7 +149,7 @@ module noc_node1 #(
                     rsp   <= chosen;
                     state <= S_RSP;
                 end
-                default: if (m_rsp_ready_x[p_src]) state <= S_IDLE;
+                default: if (m_rsp_ready_x[p_src]) state <= rsp[81] ? S_IDLE : S_WAIT;
             endcase
         end
     end
