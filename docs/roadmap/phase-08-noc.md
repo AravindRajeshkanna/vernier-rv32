@@ -697,11 +697,72 @@ at this scale**, and Part 11's reading that it was live is withdrawn. The levers
 remain reduce traffic or add bandwidth: the instruction side still takes about 59%
 of the busy bus cycles after line fills (hart 0 and hart 1 fetch: 77.4 M and 39.5 M
 of 197 M), the data side about 34% (36.2 M and 31.5 M), and the page-table walkers
-about 6%; a data-side line fill, a larger cache (Part 7 priced it) and the DDR3 of
-Phase 9 are the candidates. Not established: how the boot's critical path divides
+about 6%; a data-side line fill (measured in Part 13 and not worth it: stores, not load
+misses, are the data side's bus time), a larger cache (Part 7 priced it) and the
+DDR3 of Phase 9 are the candidates. Not established: how the boot's critical path divides
 between the harts (only each hart's time use), whether a different policy than
 strict priority (a time-sliced or weighted one) behaves differently from either
 fixed order, and anything on a board.
+
+**Update, Part 13: the data side, measured before building: a line fill is the
+wrong lever, and stores are the right one.** Part 12 left the data side as the
+next candidate (about a third of the busy bus cycles), and a data-cache line
+fill, the obvious twin of the instruction side's, was recommended. Before building
+it, the same two measurements were taken on a copy of the tree (nothing
+committed): shadow data caches of the same 256-word capacity (1, 2, 4 and 8-word
+lines) fed each hart's real SDRAM *load* stream, and the data master's bus-held
+cycles counted by kind. Cumulative at cycle 134.2 M of the one-hart boot and at
+201.3 M of the two-hart in-order boot (it ends at 212.2 M); `loads` are SDRAM
+loads, `real` the cache's actual load misses:
+
+| | Loads | Real misses (share sequential) | 1-word shadow | 4-word | 8-word |
+|---|---|---|---|---|---|
+| 1 hart | 8.90 M | 0.739 M (19%) | 0.911 M | 0.646 M (-29%) | 0.610 M |
+| 2 harts, hart 0 | 10.03 M | 1.024 M (20%) | 1.137 M | 0.728 M (-36%) | 0.657 M |
+| 2 harts, hart 1 | 7.91 M | 0.645 M (17%) | 0.635 M | 0.504 M (-21%) | 0.457 M |
+
+The load hit rate is already about 92%, and only 17 to 20% of the misses are the
+next sequential word (87 to 90% on the instruction side), so a 4-word line removes
+21 to 36% of an already small number of misses, against 68% on the instruction side.
+The shadow caches ignore stores and snooped writes, so they overstate the miss
+count slightly (1-word shadow against real: 0.911 M against 0.739 M in the one-hart
+run).
+
+The bus-held cycles say where the data side's time actually goes. Cycles the data
+master held the bus, by kind (these include the cycles spent waiting for a grant):
+
+| | Stores | Load misses | Atomics | Uncached loads |
+|---|---|---|---|---|
+| 1 hart | 27.7 M (68%) | 8.4 M (21%) | 3.6 M (9%) | 1.7 M (4%) |
+| 2 harts, hart 0 | 44.1 M (65%) | 14.9 M (22%) | 4.7 M (7%) | 2.1 M (3%) |
+| 2 harts, hart 1 | 45.5 M (79%) | 10.2 M (18%) | 2.3 M (4%) | 0 |
+
+**Stores are two thirds to four fifths of the data side's bus time**, not load
+misses. The data cache is write-through, so every store is its own SDRAM write
+transaction of about eight cycles (27.7 M cycles for 3.5 M stores, in the one-hart
+run). A line fill could save at most a third of the load-miss share, a few percent
+of the data side and about 2% of the bus; it is not worth the fill state machine
+and its coherence cases (a store or a snooped write landing mid-fill).
+
+What the numbers point to instead is the store path: **a store buffer that posts
+stores and merges adjacent ones into a burst write**, so the core does not wait
+for each write and a run of stores costs one transaction. That is a larger and
+riskier change than a line fill, and its correctness is the whole difficulty, not
+its speed: stores must stay ordered with later loads to the same address (forward
+from the buffer, or drain before the load), the buffer must drain before an atomic
+(AMO or LR/SC), before FENCE and FENCE.I, and before any access that is not to
+cacheable memory (device registers stay strictly ordered); a snooped write from the
+other hart must still invalidate correctly; and a trap or the debug halt must not
+lose a posted store. The SDRAM controller would also need a four-word write burst
+(it streams reads today). None of that is built or estimated here, and the saving
+is not measured: eight cycles a store is an upper bound on what posting could
+hide, and how many stores are adjacent is not counted. This is a design decision
+for the maintainer, not an autopilot step.
+
+Not established: any of the above on a board; the effect on the wide core (all the
+measurements are in-order); how many stores are adjacent (the merge benefit); and
+the atomics' and uncached loads' share, which is small here but is a fixed cost
+any store buffer has to drain around.
 
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
