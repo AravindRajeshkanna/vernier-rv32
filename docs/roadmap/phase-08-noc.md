@@ -1,7 +1,9 @@
 # Phase 8 — Network-on-Chip interconnect
 
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
-decision: no network yet); Stage 1 onward is a plan, not an account, and nothing about any of it is blocked on a
+decision: no network yet). Stage 1 has begun (Part 15: the network interfaces, a
+packet format and a one-node network, proven in isolation and not yet in the SoC);
+Stage 2 onward is a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -814,7 +816,87 @@ Not established: that merging runs of this kind is achievable in a real buffer (
 boundaries here are idealised), the write burst's real cost, the wide core, and
 anything on a board.
 
-**Stage 1 - a network interface and a real packet format.** The boundary
+**Update, Part 15: Stage 1 begun - the network interfaces, a packet format and a
+one-node network, outside the SoC.** The maintainer asked for Stage 1 to proceed
+(2026-10-05), after Stage 0's decision to work the memory levers first; this is
+the first slice of it, and it changes nothing in the SoC. Three new files carry
+the Stage 1 boundary:
+
+- `rtl/soc/noc_ni_master.v`: a Wishbone slave port facing one master, turning its
+  `cyc & stb` into a request packet and the response packet into its `ack` (or
+  `err`, with the read data).
+- `rtl/soc/noc_ni_slave.v`: takes a request packet, performs it as a Wishbone
+  master against one slave, and returns the answer as a response packet. It
+  accepts a request only when idle, so a second one waits in the network.
+- `rtl/soc/noc_node1.v`: the degenerate one-node network. It carries one
+  transaction at a time, as the bus does: take a request, route it by `dst`,
+  wait for the response, return it by `src`. A `dst` that names no slave is
+  answered with an error by the node itself, the equivalent of the bus's
+  decode-error ack.
+
+The packet is one 80-bit word for request and response alike: `lock`, `we`
+(`err` in a response), byte enables, a 2-bit `qos`, 4-bit `src` and `dst`, 32-bit
+address, 32-bit data. `qos` is carried end to end and echoed in the response,
+and nothing arbitrates on it; that is Stage 3.
+
+**Atomics.** A bus holds `cyc` across an AMO's two phases and the arbiter keeps
+everyone else out; a network cannot see that, so the master says it in the packet.
+The `lock` bit means "more from this master follows": the node then accepts
+nobody else until a request with `lock` clear from the same master has been
+carried, and the slave interface keeps `cyc` high with `stb` low in the gap, which
+is the pattern the slaves see from a locked bus today. The master interface takes
+the bit as a sideband input (`wb_lock`) because only the core knows an AMO's read
+is the first of two; wiring that to `dmem_is_amo` is the integration step, not
+done here.
+
+**Evidence.**
+
+- `make sim_noc_ni` (`sim/tb_noc_ni.v`), part of `make verify`. Two masters and two
+  slaves with random wait states: 600 random reads and writes each (random byte
+  enables, back to back and with gaps) on private words, every read checked
+  against a per-master reference, which is round-trip correctness and per-master
+  ordering; every word read back at the end; a slave error and an unmapped address
+  both returned as errors with the network still working afterwards; then both
+  masters make 80 locked read-modify-write increments of one shared word and the
+  total is exactly 160, with the slave seen holding `cyc` in the gap (811 cycles).
+  Part B puts a channel that randomly refuses to pass a request or a response for a
+  cycle between one master interface and one slave interface (800 transfers, the
+  request refused in 449 cycles) and checks that no packet changes while waiting,
+  that the slave interface is never ready while busy, and that the master interface
+  never takes an unsolicited response.
+- Mutation: removing the owner lock, never opening it, dropping `cyc` between
+  phases, ignoring byte enables, ignoring `we`, dropping the error, answering an
+  unmapped address with an ack, sending the response to the wrong master, dropping
+  `dst`, and returning the wrong read data are each caught. Two mutants survived at
+  first (a master interface always ready for a response, a slave interface always
+  ready for a request): at system level they are equivalent, since the node only
+  offers a request when the interface is idle, so the handshake checks above were
+  added and now catch them.
+- Formal: `formal/fv_noc_node.v` proves for the node, over all sixteen `dst`
+  values, at depth 12: at most one slave asked and only the one named; one request
+  taken per cycle and only while idle; a response goes to the master that asked and
+  only while one is outstanding; while a locked sequence is open nobody but its
+  owner is taken; the three phases of a transaction are disjoint. Four cover
+  statements are reached, and removing the lock, sending the response to the wrong master, asking
+  both slaves and accepting while busy are each refuted. Writing it caught a bug in
+  the property itself: a sum of three one-bit terms wrapped and passed everything.
+
+**What this does not establish.** The interfaces are not wired into `soc_top`, so
+no core runs through them, and nothing has been measured: the extra latency of
+the packet round trip against the bus is unknown (the node adds several cycles
+per transaction by construction, which on a bus that is 93% busy would matter, and
+that is the reason the trigger stays where Stage 0 put it). Stage 1's "same
+functional behaviour as the bus" is shown against a Wishbone memory model, not
+against `wb_interconnect.v` and the real slaves; the burst transfer the SDRAM now
+supports (Part 9) has no packet form yet, so an instruction line fill could not
+cross this boundary as it stands; the master interface needs a master that holds
+its request until acked; LR/SC's reservation monitor is untouched, since it
+watches the bus and no bus is between the harts yet. Stages 2 to 5 remain a plan.
+
+**Stage 1 - a network interface and a real packet format** (begun: Part 15 built
+the interfaces, the packet and the one-node network and tested them in isolation;
+wiring them into the SoC and the Done-when comparison against the real bus are
+still open). The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
 a QoS tag), and real Wishbone-to-NoC network interfaces on both the master
@@ -898,4 +980,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stages 1 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has begun (Part 15). Stages 2 onward are a plan.
