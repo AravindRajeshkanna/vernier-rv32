@@ -636,8 +636,8 @@ bus that was already saturated (93.0% in use before and after). Hart 0 and the b
 finish later because hart 1 now takes bus time hart 0 used to get. That reading is
 an inference from the counters, not isolated: the work hart 1 does is not measured
 and may be mostly its idle loop. The wide pair does not show it. The fairness
-question Part 7 left alone is therefore live again, as a result of this change and
-not of the arbiter.
+question Part 7 left alone looked live again as a result of this change; Part 12
+measures it and withdraws that.
 
 Cost. Synthesised for the ULX3S 85F at the framebuffer's diagnostic 8x8 size, three
 placement seeds each, one tool bundle: the tree before this change is 33,634
@@ -648,6 +648,60 @@ earlier steps added the controller's and interconnect's burst logic.) Not
 established: anything on a board; the Linux effect with the data side bursting
 too; and whether the in-order two-hart result is fixed by arbitration or by
 something else.
+
+**Update, Part 12: what the two harts do after line fills, and why
+arbitration is not the lever.** Part 11 left a question open: the two-hart
+in-order boot got 6.4% slower when hart 1, previously starved, started getting the
+bus. Whether that extra work was useful, or hart 1's idle loop taking bus time hart
+0 needed, decides whether arbitration matters. Measured on a copy of the tree
+(nothing committed) by sampling each hart's physical fetch address every 64th
+instruction through the boot, mapping it to a kernel symbol with `System.map`
+(the Image loads at `0x9040_0000` for virtual `0xC000_0000`), and attributing the
+cycles between samples to the sampled symbol. The idle path here is `do_idle`,
+`default_idle_call`, `arch_cpu_idle`, the context-tracking and RCU idle
+functions around them, and `cpu_startup_entry`; a judgement, and the weights are
+statistical. Share of cycles, two in-order harts, after line fills:
+
+| | Idle path | Other kernel | OpenSBI |
+|---|---|---|---|
+| Hart 0, whole boot | 27% | 54% | 19% |
+| Hart 1, whole boot | 16% | 52% | 32% |
+| Hart 0, after cycle 100 M | 49% | 45% | 6% |
+| Hart 1, after cycle 100 M | 8% | 83% | 10% |
+
+So **hart 1's extra work is real work**: after cycle 100 M it spends 83% of its
+time in kernel code outside the idle path, mostly sysfs and device initialisation
+(`kernfs_add_one`, `__kernfs_new_node`, `idr_get_free`, `memset`,
+`kmem_cache_alloc`, `__div64_32`), and it spends 32% of the whole boot parked in
+the firmware before the kernel brings it up. Hart 0 is idle for about half the late
+boot. That reverses Part 11's worry that hart 1 was taking bus time from hart 0's
+useful work, and suggested the opposite remedy: if the boot waits on hart 1, giving
+hart 1 the bus first should shorten it. That was tested by inverting the arbiter's
+tie-break so hart 1 wins every tier (also on a copy):
+
+| Two harts | Cycles, hart 0 first (today) | Cycles, hart 1 first |
+|---|---|---|
+| In-order | 212.2 M | 225.0 M (+6.0%) |
+| Wide | 159.9 M | 156.3 M (-2.2%) |
+
+It does not help: the in-order boot is 6% slower and the wide one 2% faster, which
+is inside what the change of who waits can explain. The bus is 93.3% and 91.7% in
+use in the two runs, as it is today, so what the boot is bound by is the bandwidth
+of one saturated bus and not which hart is served first; moving priority moves the
+waiting and not the total. The per-master table says the same: hart 1's fetch
+bus time rises from 39.5 M to 84.2 M and hart 0's falls from 77.4 M to 42.0 M, and
+the sum is about 120 M cycles either way.
+
+What this settles for Phase 8: **arbitration fairness is not a lever worth pulling
+at this scale**, and Part 11's reading that it was live is withdrawn. The levers that
+remain reduce traffic or add bandwidth: the instruction side still takes about 59%
+of the busy bus cycles after line fills (hart 0 and hart 1 fetch: 77.4 M and 39.5 M
+of 197 M), the data side about 34% (36.2 M and 31.5 M), and the page-table walkers
+about 6%; a data-side line fill, a larger cache (Part 7 priced it) and the DDR3 of
+Phase 9 are the candidates. Not established: how the boot's critical path divides
+between the harts (only each hart's time use), whether a different policy than
+strict priority (a time-sliced or weighted one) behaves differently from either
+fixed order, and anything on a board.
 
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
