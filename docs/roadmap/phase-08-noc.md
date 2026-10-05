@@ -764,6 +764,56 @@ measurements are in-order); how many stores are adjacent (the merge benefit); an
 the atomics' and uncached loads' share, which is small here but is a fixed cost
 any store buffer has to drain around.
 
+**Update, Part 14: how adjacent are the stores, the number a store buffer's
+value hangs on.** Part 13 found stores are two thirds to four fifths of the data
+side's bus time and named a store buffer that merges adjacent stores into a burst
+write as the candidate, noting that how many stores are adjacent had not been
+counted. Counted now, on a copy of the tree (nothing committed): each SDRAM store
+against the previous one, and as runs of stores to one 16-byte line with no other
+data access of that hart in between, the most a four-word write burst could
+merge. Cumulative at cycle 134.2 M of the one-hart boot and 201.3 M of the
+two-hart in-order boot:
+
+| | Stores | Same line as the previous store | Runs of 1 | 2 | 3 | 4 or more | Transactions if runs merged |
+|---|---|---|---|---|---|---|---|
+| 1 hart | 3.37 M | 50% | 1.14 M | 0.43 M | 0.14 M | 0.24 M | 1.95 M (-42%) |
+| 2 harts, hart 0 | 3.68 M | 47% | 1.38 M | 0.52 M | 0.13 M | 0.22 M | 2.25 M (-39%) |
+| 2 harts, hart 1 | 4.11 M | 80% | 0.55 M | 1.49 M | 0.06 M | 0.10 M | 2.20 M (-46%) |
+
+(Runs of four or more are split at four; the run lengths add up to the store
+count exactly.) Roughly half the stores sit in the same line as the one before, and
+hart 1 is dominated by pairs of adjacent stores: 1.49 M runs of exactly two.
+
+What that is worth, as a bound and not a measurement. A single store costs about
+eight cycles on the bus (27.7 M cycles for 3.37 M stores in the one-hart run).
+Assuming a merged write of k words costs 8 + 2(k - 1) cycles, by analogy with the
+read burst (Part 9: 12 cycles for four words against 24 for four reads), merging
+every run perfectly would take the one-hart stores from about 27 M bus cycles to
+about 18 M (-32%), hart 0 of the two-hart run from about 29 M to 21 M (-29%) and
+hart 1 from about 33 M to 21 M (-35%). Stores are about a quarter of the busy bus
+cycles (Part 13: roughly 35% for the data side, two thirds to four fifths of it
+stores), so **merging alone is worth about 7 to 9% of the bus**. That is a ceiling:
+it assumes a buffer deep enough to hold stores until each run completes and no
+ordering event cutting runs short, and the write-burst cost is assumed, not
+simulated (the controller has no write burst).
+
+The other benefit is separate and larger when the bus is not the limit: **posting**.
+Today the core waits out each store's eight cycles, which in the one-hart boot is
+about 27 M of 134 M cycles, 20% of the run. A buffer that lets the core carry on
+could hide up to that much on one hart, if it never fills and nothing forces a
+drain. On two saturated harts it would not shorten the boot by that much, since the
+bus is the limit and posting does not reduce its load.
+
+So a store buffer is worth building if one-hart (and lightly loaded) speed matters,
+with the merge a modest 7 to 9% of the bus on top, and little for the saturated
+two-hart boot beyond the merge. The cost is the one Part 13 listed: ordering with
+later loads, drains before atomics, FENCE and device accesses, snooped writes, and
+a trap or debug halt not losing a posted store. This is the maintainer's decision.
+
+Not established: that merging runs of this kind is achievable in a real buffer (run
+boundaries here are idealised), the write burst's real cost, the wide core, and
+anything on a board.
+
 **Stage 1 - a network interface and a real packet format.** The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
