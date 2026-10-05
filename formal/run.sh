@@ -53,6 +53,7 @@ TARGETS=(
     "btb             $ROOT/rtl/btb.v"
     "fv_regfile      $ROOT/rtl/regfile.v $HERE/fv_regfile.v"
     "fv_interconnect $ROOT/rtl/soc/wb_interconnect.v $HERE/fv_interconnect.v"
+    "fv_noc_node     $ROOT/rtl/soc/noc_node1.v $HERE/fv_noc_node.v"
     "fv_regfile_wide $ROOT/rtl/ooo/regfile_wide.v $HERE/fv_regfile_wide.v"
     "fv_pmp          $ROOT/rtl/pmp.v $HERE/fv_pmp.v"
     "fv_pmp_equiv    $ROOT/rtl/pmp.v $HERE/pmp_ref.v $HERE/fv_pmp_equiv.v"

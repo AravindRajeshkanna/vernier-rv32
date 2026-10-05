@@ -223,7 +223,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1029,7 +1029,14 @@ lint-rtl-ddr3:
 	$(VERILATOR) --lint-only --timing -Wall -Wno-UNUSEDSIGNAL --top-module wb_ddr \
 	    rtl/soc/wb_ddr.v $(DDR3_SYNTH_SRCS)
 
-lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3
+# The network interfaces and one-node network (Phase 8 Stage 1) are not
+# instantiated by soc_top yet, so the SoC lint above never reads them.
+lint-rtl-noc:
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_node1 rtl/soc/noc_node1.v
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_master rtl/soc/noc_ni_master.v
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_slave rtl/soc/noc_ni_slave.v
+
+lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc
 
 # git ls-files rather than a glob, for the identical reason lint-markdown
 # gives: software/bench/coremark/ is a fetched, .gitignore'd tree with its
@@ -2683,6 +2690,16 @@ sim_cpu_wb_ifill: sim/sim_cpu_wb_ifill.out
 	@grep -aq "CPU_WB IFILL TEST PASSED" sim/cpu_wb_ifill.log && echo "CPU_WB IFILL OK" || \
 	    { echo "FAILED: rtl/soc/cpu_wb.v's instruction-cache line fills"; exit 1; }
 
+NOC_RTL = rtl/soc/noc_ni_master.v rtl/soc/noc_ni_slave.v rtl/soc/noc_node1.v
+
+sim/sim_noc_ni.out: sim/tb_noc_ni.v $(NOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_ni.v $(NOC_RTL)
+
+sim_noc_ni: sim/sim_noc_ni.out
+	cd sim && $(VVP) sim_noc_ni.out $(VVP_DUMP) | tee noc_ni.log
+	@grep -aq "NOC NI TEST PASSED" sim/noc_ni.log && echo "NOC NI OK" || \
+	    { echo "FAILED: the Phase 8 network interfaces and one-node network"; exit 1; }
+
 sim/sim_interconnect_burst.out: sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
 
@@ -3567,6 +3584,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence_hetero \
         sim_soc_2hart_coherence_sdram \
         sim_interconnect_burst \
+        sim_noc_ni \
         sim_cpu_wb_ifill \
         sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_amoswap_sdram \
