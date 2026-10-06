@@ -23,9 +23,11 @@
 # See docs/practices.md for what these layers are each meant to catch.
 name: CI
 
+# Pull requests only. A merge to main used to run the whole workflow again on
+# the same tree the pull request had just passed, which cost the same hour of
+# runner time and could only repeat the answer. A run on main is still one click
+# away (workflow_dispatch) when a merge needs checking by itself.
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
