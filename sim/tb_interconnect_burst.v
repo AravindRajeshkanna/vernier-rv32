@@ -1,4 +1,9 @@
 `timescale 1ns/1ps
+// `INTERCONNECT picks the module under test: the bus (the default) or the Phase 8
+// network fabric (wb_noc_fabric.v), which has to pass the same test.
+`ifndef INTERCONNECT
+`define INTERCONNECT wb_interconnect
+`endif
 // wb_interconnect.v carrying four-word bursts to the real SDRAM controller
 // (Phase 8 Part 9, step 2a). Two harts' fetch masters burst-read SDRAM lines
 // while hart 1's data master makes single reads of SDRAM and of a 1-wait RAM,
@@ -33,7 +38,7 @@ module tb_interconnect_burst;
     wire [NS*32-1:0] s_dat_r;
     wire [NS-1:0]    s_ack;
 
-    wb_interconnect #(.NUM_SLAVES(NS), .NUM_HARTS(NH), .BURST_SLAVES(1)) BUS (
+    `INTERCONNECT #(.NUM_SLAVES(NS), .NUM_HARTS(NH), .BURST_SLAVES(1)) BUS (
         .clk(clk), .rst(rst),
         .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr), .f_burst(f_burst),
         .f_dat_r(f_dat_r), .f_ack(f_ack),

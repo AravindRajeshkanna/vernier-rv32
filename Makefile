@@ -1035,6 +1035,7 @@ lint-rtl-noc:
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_node1 rtl/soc/noc_node1.v
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_master rtl/soc/noc_ni_master.v
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_slave rtl/soc/noc_ni_slave.v
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module wb_noc_fabric $(NOC_FABRIC_RTL)
 
 lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc
 
@@ -2691,6 +2692,7 @@ sim_cpu_wb_ifill: sim/sim_cpu_wb_ifill.out
 	    { echo "FAILED: rtl/soc/cpu_wb.v's instruction-cache line fills"; exit 1; }
 
 NOC_RTL = rtl/soc/noc_ni_master.v rtl/soc/noc_ni_slave.v rtl/soc/noc_node1.v
+NOC_FABRIC_RTL = rtl/soc/wb_noc_fabric.v $(NOC_RTL)
 
 sim/sim_noc_ni.out: sim/tb_noc_ni.v $(NOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_ni.v $(NOC_RTL)
@@ -2699,6 +2701,23 @@ sim_noc_ni: sim/sim_noc_ni.out
 	cd sim && $(VVP) sim_noc_ni.out $(VVP_DUMP) | tee noc_ni.log
 	@grep -aq "NOC NI TEST PASSED" sim/noc_ni.log && echo "NOC NI OK" || \
 	    { echo "FAILED: the Phase 8 network interfaces and one-node network"; exit 1; }
+
+sim/sim_noc_fabric.out: sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
+
+sim_noc_fabric: sim/sim_noc_fabric.out
+	cd sim && $(VVP) sim_noc_fabric.out $(VVP_DUMP) | tee noc_fabric.log
+	@grep -aq "NOC FABRIC TEST PASSED" sim/noc_fabric.log && echo "NOC FABRIC OK" || \
+	    { echo "FAILED: the Phase 8 network fabric disagrees with the bus"; exit 1; }
+
+# The bus's own burst test, unchanged, with the network fabric in the bus's place.
+sim/sim_interconnect_burst_noc.out: sim/tb_interconnect_burst.v $(NOC_FABRIC_RTL) rtl/soc/wb_sdram.v sim/sdram_model.v
+	$(IVERILOG) $(IVFLAGS) -DINTERCONNECT=wb_noc_fabric -o $@ sim/tb_interconnect_burst.v $(NOC_FABRIC_RTL) rtl/soc/wb_sdram.v sim/sdram_model.v
+
+sim_interconnect_burst_noc: sim/sim_interconnect_burst_noc.out
+	cd sim && $(VVP) sim_interconnect_burst_noc.out $(VVP_DUMP) | tee interconnect_burst_noc.log
+	@grep -aq "INTERCONNECT BURST TEST PASSED" sim/interconnect_burst_noc.log && echo "INTERCONNECT BURST (NOC) OK" || \
+	    { echo "FAILED: the network fabric carrying a four-word burst to the real SDRAM controller"; exit 1; }
 
 sim/sim_interconnect_burst.out: sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_interconnect_burst.v rtl/soc/wb_interconnect.v rtl/soc/wb_sdram.v sim/sdram_model.v
@@ -3585,6 +3604,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence_sdram \
         sim_interconnect_burst \
         sim_noc_ni \
+        sim_noc_fabric \
+        sim_interconnect_burst_noc \
         sim_cpu_wb_ifill \
         sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_amoswap_sdram \

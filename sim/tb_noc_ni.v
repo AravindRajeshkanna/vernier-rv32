@@ -87,7 +87,8 @@ module tb_noc_ni;
         .m_req_valid(mq_valid), .m_req_pkt(mq_pkt), .m_req_ready(mq_ready),
         .m_rsp_valid(mr_valid), .m_rsp_pkt(mr_pkt), .m_rsp_ready(mr_ready),
         .s_req_valid(sq_valid), .s_req_pkt(sq_pkt), .s_req_ready(sq_ready),
-        .s_rsp_valid(sr_valid), .s_rsp_pkt(sr_pkt), .s_rsp_ready(sr_ready));
+        .s_rsp_valid(sr_valid), .s_rsp_pkt(sr_pkt), .s_rsp_ready(sr_ready),
+        .hold_v(1'b0), .hold_id(4'd0), .t_at_slave(), .t_src());
 
     // Address map: bit 12 picks the slave, bit 31 means "nothing decodes this".
     function [3:0] decode(input [31:0] a);

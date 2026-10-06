@@ -68,7 +68,23 @@ module noc_node1 #(
     input  wire [NUM_S-1:0]    s_req_ready,
     input  wire [NUM_S-1:0]    s_rsp_valid,
     input  wire [NUM_S*82-1:0] s_rsp_pkt,
-    output wire [NUM_S-1:0]    s_rsp_ready
+    output wire [NUM_S-1:0]    s_rsp_ready,
+
+    // The AMO gap, from outside. While `hold_v` is set only master `hold_id`
+    // may be taken, even when it has nothing to offer yet: the bus gives a
+    // hart's `d_amo_wrphase` the same power (a core cannot say "lock" on an
+    // AMO's read, since it does not know yet that a write follows, so it
+    // raises the hold when the read is acked instead). The request's own
+    // `lock` bit and this are two ways to the same end.
+    input  wire                hold_v,
+    input  wire [3:0]          hold_id,
+
+    // Whose transaction is at the slave side, for whoever has to rebuild the
+    // bus's shared signals from it: `t_at_slave` is high from the cycle the
+    // request is offered to a slave until its answer is back, `t_src` is the
+    // requesting master's ID throughout.
+    output wire                t_at_slave,
+    output wire [3:0]          t_src
 );
     localparam S_IDLE = 2'd0, S_REQ = 2'd1, S_WAIT = 2'd2, S_RSP = 2'd3;
 
@@ -96,7 +112,8 @@ module noc_node1 #(
         pick_v = 1'b0;
         pick   = 4'd0;
         for (i = NUM_M - 1; i >= 0; i = i - 1)
-            if (m_req_valid[i] && (!owner_v || owner == i[3:0])) begin
+            if (m_req_valid[i] && (!owner_v || owner == i[3:0]) &&
+                (!hold_v || hold_id == i[3:0])) begin
                 pick_v = 1'b1;
                 pick   = i[3:0];
             end
@@ -114,7 +131,9 @@ module noc_node1 #(
             assign s_rsp_ready[g] = (state == S_WAIT) && dst_ok && (p_dst == g);
         end
     endgenerate
-    assign s_req_pkt = pkt;
+    assign s_req_pkt  = pkt;
+    assign t_at_slave = (state == S_REQ) || (state == S_WAIT);
+    assign t_src      = p_src;
 
     wire [81:0] picked = m_req_pkt[pick*82 +: 82];
     wire [81:0] chosen = s_rsp_pkt[p_dst*82 +: 82];
