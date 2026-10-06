@@ -26,7 +26,10 @@
 
 module tb_uartload;
     localparam CLK_PERIOD   = 40;              // 25 MHz, matching CLK_HZ
-    localparam CLKS_PER_BIT = 4;               // must match soc_top's divisor
+`ifndef UARTLOAD_CPB
+`define UARTLOAD_CPB 4
+`endif
+    localparam CLKS_PER_BIT = `UARTLOAD_CPB;    // must match soc_top's divisor
     localparam BIT_NS       = CLK_PERIOD * CLKS_PER_BIT;
     localparam ROW_BITS     = 13;
     localparam COL_BITS     = 9;

@@ -171,7 +171,12 @@ static int failures = 0;
  * the instruction stream each time rather than always the same one -
  * walking the phase rather than fixing it.
  */
+/* (-DTIMER_INTERVAL=... overrides it: the interrupt has to be fully handled
+ * before the next is due, which takes longer when every memory access does,
+ * as it does through the packet network - see `make INTERCONNECT=noc`.) */
+#ifndef TIMER_INTERVAL
 #define TIMER_INTERVAL   97u    /* cycles; short and coprime-ish with the loop */
+#endif
 #define STRESS_ROUNDS    400    /* * N_CASES calls, each with a live timer */
 
 /* Phase 3's own interval, longer than phase 2's: an M-mode-only handler
