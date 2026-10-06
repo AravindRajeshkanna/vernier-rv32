@@ -113,7 +113,8 @@ module wb_noc_fabric #(
     localparam ID_W   = 1 + NUM_HARTS;
     localparam ID_F   = 1 + 2 * NUM_HARTS;
     localparam ID_N   = 1 + 3 * NUM_HARTS;
-    localparam [3:0] ID_D4 = ID_D;     // the same, as the four-bit IDs the packets carry
+    localparam [3:0] ID_D4 = 4'(ID_D);    // the same, as the four-bit IDs the packets carry
+    localparam [3:0] ID_W4 = 4'(ID_W);
 
     // ---- decode: which slave does an address belong to ----
     function [3:0] dst_of(input [31:0] a);
@@ -276,7 +277,7 @@ module wb_noc_fabric #(
     assign s_burst = r_burst;
 
     // a data master is at the slaves
-    assign s_data_master = t_at_slave && (t_src >= ID_D) && (t_src < ID_W);
+    assign s_data_master = t_at_slave && (t_src >= ID_D4) && (t_src < ID_W4);
 
     // acks of the current burst already delivered, as the bus counts them:
     // the verification harness reads it (with `s_burst` and `s_adr`) to know

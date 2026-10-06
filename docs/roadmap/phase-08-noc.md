@@ -1,8 +1,8 @@
 # Phase 8 — Network-on-Chip interconnect
 
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
-decision: no network yet). Stage 1 has largely been built (Parts 15 to 18: the network interfaces, a
-packet format with a four-word burst, a one-node network, and a drop-in fabric that runs the SoC, Linux included, at a measured cost of 27% more cycles);
+decision: no network yet). Stage 1 has largely been built (Parts 15 to 19: the network interfaces, a
+packet format with a four-word burst, a one-node network, and a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles);
 Stage 2 onward is a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
@@ -1044,10 +1044,53 @@ the network stand-in only approximates (a master is counted as granted while the
 has its request at a slave). Nothing here measures area or timing: the fabric's LUTs
 and its effect on the 25 MHz target are unknown, and the cost above is cycles only.
 
-**Stage 1 - a network interface and a real packet format** (built: Parts 15 to 18 made
+**Update, Part 19: the wide core and the second hart over the network.** Part 18 left
+two things not yet run over the packet network: the wide core's suite and a two-hart Linux
+boot. Both now pass. `make verify_noc CORE=ooo` exits 0, and Linux reaches userspace
+on both harts over the network with the in-order pair and with the wide pair
+(`make sim_linux_2hart INTERCONNECT=noc`).
+
+**The cost, measured on the bus and on the network from the same tree** (cycles to
+userspace):
+
+| Configuration | Bus | Network | Network costs |
+|---|---|---|---|
+| 1 hart, in-order | 146,914,531 | 186,736,140 | +27.1% |
+| 1 hart, wide | 149,304,491 | 191,667,924 | +28.4% |
+| 2 harts, in-order | 212,175,721 | 246,170,878 | +16.0% |
+| 2 harts, wide | 159,893,093 | 226,199,579 | +41.5% |
+
+One hart costs about 27 to 28% on either core. Two in-order harts cost the least (16%)
+and two wide harts the most (41.5%), which the measurement does not explain: the
+in-order pair was already the slow one on the bus (Part 11 found its second hart
+no longer starved once line fills arrived), and the wide pair is the one the bus
+served best, so it may simply have the most to lose from a serial extra
+few cycles per transaction. That is a guess, not a measured cause; the number to
+trust is the one in the table.
+
+**One test was fragile, and is fixed.** `test_gpt`'s timer check (`software/soc/main.c`)
+read `COUNT` twice around a 40-iteration loop and required the second reading to be
+larger, with the timer wrapping at 100. That holds only if the loop takes under 100
+cycles, so it passed on the bus and on the in-order core over the network by the
+phase of the wrap, and failed on the wide core over the network, where each loop
+iteration's stack store takes longer. It now reads with a free-running count (period
+0) so wrapping cannot spoil it, and waits for the wraparound and its interrupt-pending
+bit by polling within a generous bound instead of a fixed loop count. The test is in
+every core's and both interconnects' suites; all four combinations pass it, and the bus
+suites (`make verify`, `make verify_ooo`) pass with it.
+
+**What this does not establish.** The same caveats as Part 18: no CI job builds the
+network, so it is run by hand; area and timing are unmeasured; `+busmon` only
+approximates grants. The suites `verify_noc` and `verify_noc CORE=ooo` ran before a final
+no-logic edit (explicit four-bit casts on two parameters of the fabric, to satisfy a
+Verilator width lint that only the two-hart builds reached); after it, the fabric's
+own tests, its lint, and both two-hart Linux boots were rerun and pass, and the two
+full network suites were not.
+
+**Stage 1 - a network interface and a real packet format** (built: Parts 15 to 19 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
-Linux boot over it, at 27% more cycles; formal properties of the whole fabric and a CI job
+Linux boot over it with one and two harts and both cores, at 16 to 41% more cycles; formal properties of the whole fabric and a CI job
 are still open). The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
@@ -1132,4 +1175,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has largely been built (Parts 15 to 18). Stages 2 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has largely been built (Parts 15 to 19). Stages 2 onward are a plan.
