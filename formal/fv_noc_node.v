@@ -22,7 +22,9 @@ module fv_noc_node (
     input wire [1:0]   m_rsp_ready,
     input wire [1:0]   s_req_ready,
     input wire [1:0]   s_rsp_valid,
-    input wire [163:0] s_rsp_pkt
+    input wire [163:0] s_rsp_pkt,
+    input wire         hold_v,
+    input wire [3:0]   hold_id
 );
     wire [1:0]   m_req_ready, m_rsp_valid;
     wire [163:0] m_rsp_pkt;
@@ -34,7 +36,8 @@ module fv_noc_node (
         .m_req_valid(m_req_valid), .m_req_pkt(m_req_pkt), .m_req_ready(m_req_ready),
         .m_rsp_valid(m_rsp_valid), .m_rsp_pkt(m_rsp_pkt), .m_rsp_ready(m_rsp_ready),
         .s_req_valid(s_req_valid), .s_req_pkt(s_req_pkt), .s_req_ready(s_req_ready),
-        .s_rsp_valid(s_rsp_valid), .s_rsp_pkt(s_rsp_pkt), .s_rsp_ready(s_rsp_ready));
+        .s_rsp_valid(s_rsp_valid), .s_rsp_pkt(s_rsp_pkt), .s_rsp_ready(s_rsp_ready),
+        .hold_v(hold_v), .hold_id(hold_id), .t_at_slave(), .t_src());
 
     reg f_initialized = 1'b0;
     always @(posedge clk) f_initialized <= 1'b1;
@@ -118,6 +121,11 @@ module fv_noc_node (
         if (open && m_req_ready[0]) assert (!owner);
         if (open && m_req_ready[1]) assert (owner);
 
+        // 4b. The hold (the AMO gap): while it is raised only its master is
+        //     taken, whether or not that master has anything to offer.
+        if (hold_v && m_req_ready[0]) assert (hold_id == 4'd0);
+        if (hold_v && m_req_ready[1]) assert (hold_id == 4'd1);
+
         // 5. The node never lets a request sit unanswered for good: whatever
         //    it holds is either at a slave, being answered, or on its way
         //    back - never in a state with no way out. (Checked as: while
@@ -133,5 +141,6 @@ module fv_noc_node (
         cover (deliver && who);
         cover (deliver && !who);
         cover (take && taken[15:12] > 4'd1);
+        cover (hold_v && hold_id == 4'd1 && m_req_valid[0] && take1);
     end
 endmodule

@@ -1,8 +1,8 @@
 # Phase 8 — Network-on-Chip interconnect
 
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
-decision: no network yet). Stage 1 has begun (Parts 15 and 16: the network interfaces, a
-packet format with a four-word burst, and a one-node network, proven in isolation and not yet in the SoC);
+decision: no network yet). Stage 1 has begun (Parts 15 to 17: the network interfaces, a
+packet format with a four-word burst, a one-node network, and a drop-in fabric compared with the bus, none yet in the SoC);
 Stage 2 onward is a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
@@ -940,10 +940,70 @@ instruction cache's line fill through the packets, and the queue's depth is the
 burst length, so a longer burst (the DDR3 path's) needs it widened. Latency is
 unmeasured.
 
-**Stage 1 - a network interface and a real packet format** (begun: Part 15 built
-the interfaces, the packet and the one-node network and tested them in isolation;
-wiring them into the SoC and the Done-when comparison against the real bus are
-still open). The boundary
+**Update, Part 17: a fabric that stands where the bus stands.** Parts 15 and 16 tested
+the interfaces and the node against a memory model. Stage 1's Done-when asks for
+the same functional behaviour as the bus, so this builds
+`rtl/soc/wb_noc_fabric.v`: the same ports and decode as `wb_interconnect.v`, with
+every master behind a master interface, every slave behind a slave interface and
+the node between them. Nothing in `soc_top` uses it yet.
+
+How the bus's behaviour is kept. Master IDs follow the bus's priority (debug, then
+each hart's data, walker and fetch, then the NPU) and the node serves the lowest,
+so the tiers and the lowest-hart tie-break are the same. The AMO gap is closed by
+a new `hold` input on the node, driven by `d_amo_wrphase`: only that hart's data
+master may be taken, even while it has nothing to offer (a core cannot lock on an
+AMO's read, since it does not know yet that a write follows; it raises the hold when
+the read is acked, which the bus relies on too). An unmapped address comes back from
+the node as an error and the fabric turns it into the bus's ack with zero data. A
+fetch master's `f_burst` becomes a burst only for a slave in `BURST_SLAVES`. The
+slaves' shared wires are rebuilt as the OR of the slave interfaces' outputs, each
+gated by its own `stb`, and `snoop_wr`, `snoop_adr`, `snoop_src_d` and
+`s_data_master` are rebuilt from the slave side and the node's record of whose
+transaction is out.
+
+**Evidence.**
+
+- The bus's own burst test, unchanged, passes with the fabric in the bus's place
+  (`make sim_interconnect_burst_noc`), against the real SDRAM controller and its
+  model: four-word bursts to the master that asked, in order, and nobody else acked
+  in between.
+- `make sim_noc_fabric` (`sim/tb_noc_fabric.v`) runs two copies of one system on
+  the same random traffic, one around the bus and one around the fabric: two
+  harts' data, walker and fetch masters, the debug master and the NPU's, a
+  burst-capable RAM with wait states, a one-wait RAM, a device that acks in the cycle
+  it is addressed, and an unmapped range. Each master follows a seeded script, so
+  both copies see the same requests. The 300 operations per master include random
+  byte-lane writes, reads, line bursts, unmapped reads and writes, and AMO
+  increments in the bus's real protocol. All eight masters' logs of what they read
+  are identical (about 2,500 values), every slave ends in identical contents, the
+  72 AMO increments are all present in the counters on both sides, and the
+  snooped-write and data-master tallies match.
+- Mutation of the fabric: no hold, the hold on the wrong hart, burst for every slave,
+  burst for none, no error-to-ack conversion, a lost snoop source, a snoop without
+  its ack, the data-master flag off or including walkers, and dropped byte lanes are
+  each caught. `fv_noc_node` gains the hold property (only the held master is
+  taken, with a cover for a hold overriding a waiting master); removing the hold
+  from the node is refuted.
+
+**What differs from the bus, deliberately.** A write to an address nothing decodes
+is acked by both but reported to the snoopers only by the bus; it changes no memory.
+A master that holds `cyc` with `stb` low outranks others on the bus and is invisible
+here, which the cores only do in an AMO's gap, where the hold now stands in; the test
+found that its own data master left `cyc` up between transfers and so hung the bus
+copy, a test fault the bus's own rule makes plain. Timing is not equal and not
+compared: a transaction costs a few cycles more through the packets.
+
+**What this does not establish.** No core runs through it: `soc_top` still builds
+the bus, so Linux, CoreMark, the two-hart tests and the formal properties of
+`wb_interconnect.v` have not been run against the fabric, and the priority order is
+proved by construction (the node serves the lowest ID) rather than tested, since
+random private-word traffic does not depend on it. The cost is unmeasured. Wiring it
+in behind a build switch, running the existing system tests over it and measuring the
+cycles it costs is the next Stage 1 step.
+
+**Stage 1 - a network interface and a real packet format** (begun: Parts 15 to 17 built
+the interfaces, the packet, the one-node network and a drop-in fabric, and compared
+the fabric with the bus on random traffic; running the SoC over it is still open). The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
 a QoS tag), and real Wishbone-to-NoC network interfaces on both the master
@@ -1027,4 +1087,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has begun (Parts 15 and 16). Stages 2 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has begun (Parts 15 to 17). Stages 2 onward are a plan.
