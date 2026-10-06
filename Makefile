@@ -117,6 +117,26 @@ CORE_RTL      =
 CORE_DEFINES  =
 VERILATOR_LINT_FLAGS =
 endif
+
+# Which interconnect rtl/soc/soc_top.v builds (Phase 8 Stage 1). `bus` is the
+# shared Wishbone bus every build has always used; `noc` puts the packet network
+# (rtl/soc/wb_noc_fabric.v) in its place, with the same ports and behaviour.
+# It travels with the other defines so every build and test that takes
+# CORE_DEFINES takes it too. `make verify INTERCONNECT=noc` runs the suites over it.
+INTERCONNECT ?= bus
+ifeq ($(INTERCONNECT),noc)
+# The UART loader test sends at 4 clocks per bit, a simulation shortcut: the boot
+# ROM polls a UART with no FIFO and has about 40 cycles per byte. Through the
+# network each access takes longer and it falls behind at 6 clocks per bit (it
+# keeps up at 8; the real baud is about 217). So the test is told to go slower.
+CORE_DEFINES += -DINTERCONNECT_NOC -DUARTLOAD_CPB=8
+# The divide test's timer fires every 97 cycles, which the interrupt handler
+# must finish inside; through the network each of its memory accesses takes
+# longer and the test never gets past it (it times out). 200 passes.
+DIV64_DEFINES = -DTIMER_INTERVAL=200u
+else ifneq ($(INTERCONNECT),bus)
+$(error INTERCONNECT must be bus or noc, not $(INTERCONNECT))
+endif
 IVFLAGS       = -g2012 $(CORE_DEFINES)
 VVP           = vvp
 VERILATOR     = verilator
@@ -173,6 +193,9 @@ SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/pli
           rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v \
           rtl/debug/jtag_tap.v rtl/debug/dmi_cdc.v rtl/debug/dm.v \
           rtl/soc/soc_top.v
+ifeq ($(INTERCONNECT),noc)
+SOC_RTL_BASE += $(NOC_FABRIC_RTL)
+endif
 SOC_RTL = $(SOC_RTL_BASE) $(CORE_RTL)
 SOC_TB  = sim/tb_soc.v sim/sd_card_model.v
 
@@ -223,7 +246,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1770,7 +1793,7 @@ sim_uartirq: sim/bootrom_$(CORE).hex sim/uartirqimage.hex sim/sim_uartirq.out
 DIV64TEST_SRCS = $(SOCRT_SRCS) software/soc/div64test.c
 
 software/soc/div64test.elf: $(DIV64TEST_SRCS) software/soc/link_ram.ld $(SOC_HDRS)
-	$(RISCV_CC) $(SOC_CFLAGS_COMMON) -T software/soc/link_ram.ld \
+	$(RISCV_CC) $(SOC_CFLAGS_COMMON) $(DIV64_DEFINES) -T software/soc/link_ram.ld \
 	    -o $@ $(DIV64TEST_SRCS)
 
 sim/div64testimage.hex: software/soc/div64test.elf software/bin2hex.py Makefile
@@ -3588,6 +3611,17 @@ verify_ooo:
 	rm -f sim/*.out
 	$(MAKE) verify CORE=ooo
 	rm -f sim/*.out
+
+# The suites over the packet network (Phase 8 Stage 1) in the bus's place.
+# Same reason as verify_ooo for clearing the built simulations, and the
+# Verilator build directories too, because those are keyed on the core and not
+# on the interconnect. Run it as `make verify_noc` (or with CORE=ooo).
+verify_noc:
+	rm -f sim/*.out software/soc/div64test.elf sim/div64testimage.hex
+	rm -rf obj_dir_soc_*
+	$(MAKE) verify INTERCONNECT=noc
+	rm -f sim/*.out software/soc/div64test.elf sim/div64testimage.hex
+	rm -rf obj_dir_soc_*
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 dtb_ddr3 ddr3_check \

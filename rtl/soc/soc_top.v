@@ -631,8 +631,17 @@ module soc_top #(
     // why that is precisely the original 4-master shape, and
     // docs/roadmap/phase-13-multicore.md's Phase 13 entry for hart 1's own instantiation above
     // and what still isn't wired to it.
+    // `INTERCONNECT_NOC` (make INTERCONNECT=noc) puts the Phase 8 packet
+    // network where the bus is: the same ports and the same behaviour, built
+    // from network interfaces and a one-node network (rtl/soc/wb_noc_fabric.v).
+    // The bus stays the default; nothing here is chosen by anything else.
+`ifdef INTERCONNECT_NOC
+    wb_noc_fabric #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
+                    .BURST_SLAVES(1 << S_SDRAM)) BUS (
+`else
     wb_interconnect #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
                     .BURST_SLAVES(1 << S_SDRAM)) BUS (
+`endif
         .clk(clk), .rst(rst_soc),
         .f_cyc(iwb_cyc), .f_stb(iwb_stb), .f_adr(iwb_adr),
         // The instruction caches' line fills: a miss in the SDRAM window asks

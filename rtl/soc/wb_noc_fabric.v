@@ -278,11 +278,45 @@ module wb_noc_fabric #(
     // a data master is at the slaves
     assign s_data_master = t_at_slave && (t_src >= ID_D) && (t_src < ID_W);
 
-    assign snoop_wr  = r_we && (|(si_stb & s_ack));
+    // acks of the current burst already delivered, as the bus counts them:
+    // the verification harness reads it (with `s_burst` and `s_adr`) to know
+    // which word of the line an ack carries.
+    reg [1:0] burst_acks;
+    always @(posedge clk) begin
+        if (rst || !(|si_stb))                  burst_acks <= 2'd0;
+        else if (r_burst && (|(si_stb & s_ack))) burst_acks <= burst_acks + 2'd1;
+    end
+
+    // What the bus calls the master it is serving and the transfer it is
+    // finishing, kept under the same names for the Verilator harness
+    // (sim/verilator_soc.cpp reads them to check every read against memory
+    // and to count bus use). `sel_*` is the node having that master's request
+    // at a slave; `fin_ack`/`fin_dat` are a slave's own ack and read data, in
+    // the cycle it gives them - as they are on the bus, ahead of the master's.
+    wire [NUM_HARTS-1:0] sel_d, sel_w, sel_f;
+    wire                 sel_dbg = t_at_slave && (t_src == 4'(ID_DBG));
+    wire                 sel_n   = t_at_slave && (t_src == 4'(ID_N));
+    wire                 fin_ack = |(si_stb & s_ack);
+    reg  [31:0]          fin_dat;
+    integer              fd;
+    always @* begin
+        fin_dat = 32'b0;
+        for (fd = 0; fd < NUM_SLAVES; fd = fd + 1)
+            if (si_stb[fd]) fin_dat = fin_dat | s_dat_r[32*fd +: 32];
+    end
+    generate
+        for (g = 0; g < NUM_HARTS; g = g + 1) begin : g_sel
+            assign sel_d[g] = t_at_slave && (t_src == 4'(ID_D + g));
+            assign sel_w[g] = t_at_slave && (t_src == 4'(ID_W + g));
+            assign sel_f[g] = t_at_slave && (t_src == 4'(ID_F + g));
+        end
+    endgenerate
+
+    assign snoop_wr  = r_we && fin_ack;
     assign snoop_adr = r_adr;
     generate
         for (g = 0; g < NUM_HARTS; g = g + 1) begin : g_snoop
-            assign snoop_src_d[g] = t_at_slave && (t_src == 4'(ID_D + g));
+            assign snoop_src_d[g] = sel_d[g];
         end
     endgenerate
 endmodule

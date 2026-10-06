@@ -165,6 +165,29 @@ public_flat_rd -module "wb_interconnect" -var "sel_n"
 public_flat_rd -module "wb_interconnect" -var "s_cyc"
 public_flat_rd -module "wb_interconnect" -var "s_stb"
 
+// The network fabric (make INTERCONNECT=noc) stands where the bus stands and keeps every
+// signal the harness reads from it, under the same names.
+public_flat_rd -module "wb_noc_fabric" -var "s_adr"
+public_flat_rd -module "wb_noc_fabric" -var "s_we"
+public_flat_rd -module "wb_noc_fabric" -var "s_dat_w"
+public_flat_rd -module "wb_noc_fabric" -var "s_sel"
+public_flat_rd -module "wb_noc_fabric" -var "fin_ack"
+public_flat_rd -module "wb_noc_fabric" -var "fin_dat"
+public_flat_rd -module "wb_noc_fabric" -var "s_burst"
+public_flat_rd -module "wb_noc_fabric" -var "burst_acks"
+public_flat_rd -module "wb_noc_fabric" -var "sel_d"
+public_flat_rd -module "wb_noc_fabric" -var "sel_w"
+public_flat_rd -module "wb_noc_fabric" -var "f_cyc"
+public_flat_rd -module "wb_noc_fabric" -var "d_cyc"
+public_flat_rd -module "wb_noc_fabric" -var "w_cyc"
+public_flat_rd -module "wb_noc_fabric" -var "dbg_cyc"
+public_flat_rd -module "wb_noc_fabric" -var "n_cyc"
+public_flat_rd -module "wb_noc_fabric" -var "sel_f"
+public_flat_rd -module "wb_noc_fabric" -var "sel_dbg"
+public_flat_rd -module "wb_noc_fabric" -var "sel_n"
+public_flat_rd -module "wb_noc_fabric" -var "s_cyc"
+public_flat_rd -module "wb_noc_fabric" -var "s_stb"
+
 // And the instruction the core actually consumes, which the bus check above
 // cannot see: a fetch that hits in the I-cache never reaches the bus at all,
 // so `fin_dat` says nothing about it. These three are the cache's *output*

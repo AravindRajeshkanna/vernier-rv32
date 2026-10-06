@@ -1,8 +1,8 @@
 # Phase 8 — Network-on-Chip interconnect
 
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
-decision: no network yet). Stage 1 has begun (Parts 15 to 17: the network interfaces, a
-packet format with a four-word burst, a one-node network, and a drop-in fabric compared with the bus, none yet in the SoC);
+decision: no network yet). Stage 1 has largely been built (Parts 15 to 18: the network interfaces, a
+packet format with a four-word burst, a one-node network, and a drop-in fabric that runs the SoC, Linux included, at a measured cost of 27% more cycles);
 Stage 2 onward is a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
@@ -1001,9 +1001,54 @@ random private-word traffic does not depend on it. The cost is unmeasured. Wirin
 in behind a build switch, running the existing system tests over it and measuring the
 cycles it costs is the next Stage 1 step.
 
-**Stage 1 - a network interface and a real packet format** (begun: Parts 15 to 17 built
-the interfaces, the packet, the one-node network and a drop-in fabric, and compared
-the fabric with the bus on random traffic; running the SoC over it is still open). The boundary
+**Update, Part 18: the SoC runs over the network, and what it costs.** The fabric
+from Part 17 is now selectable in `soc_top`: `make INTERCONNECT=noc` builds the
+SoC with `wb_noc_fabric` where `wb_interconnect` stood (the same instance name and
+ports; the bus stays the default, and nothing else chooses). `make verify_noc` runs
+the whole `make verify` suite over it, clearing the built simulations first since
+they are keyed on the core and not the interconnect. This is the Stage 5
+build switch in its first form, and Stage 1's Done-when run against the real
+system.
+
+**Evidence.** `make verify_noc` exits 0: the boot ROM and SD path, the preloaded-RAM
+boots, the trap checks, the SDRAM and DDR3 paths, the MMU and PMP tests, the PLIC and UART
+tests, the debug module, both-hart tests (coherence, AMOs, LR/SC, the hetero pair),
+the NPU, the Verilator harness with its read checker (cycle for cycle identical to
+Icarus) and the Linux boot to userspace all pass over the packet network. `make verify` on the
+bus still exits 0.
+
+**The cost, measured.** Linux boots to userspace in 186,736,140 cycles over the
+network against 146,914,531 over the bus, **27% more** (one in-order hart, with the
+instruction-cache line fills of Parts 8 to 11). The SDRAM boot check, a different
+mix, takes 2,887,812 cycles against 2,262,170, 28% more. A transaction through the
+interfaces and node costs a handful of cycles more than on the bus, and the bus's own
+saturation (Part 7) means no part of it is hidden. That is the price of the packet
+form at one node, before any router; Stage 2's reason to exist would be to win it
+back by carrying transactions in parallel, which a single memory (Stage 0) gives it
+little to do.
+
+**Two tests had timing assumptions the extra latency broke, neither a defect.**
+`sim_uartload_ddr3` sends at 4 clocks per bit, a simulation shortcut, so the boot
+ROM has about 40 cycles per byte and no FIFO: over the network it loses bytes at 6
+clocks per bit and keeps up at 8, so the network build sends at 8 (the real baud is
+about 217 clocks per bit). `sim_div64test`'s timer fires every 97 cycles and its
+handler has to finish inside that; over the network it never gets past it, passes at
+200 and 400, and the network build uses 200 (the threshold between 97 and 200 was
+not located). Both are macros that only the network build sets.
+
+**What this does not establish.** `make verify_noc` is run by hand: CI runs the bus
+build and no network job yet, so a change that breaks only the network build would
+not turn CI red. `verify_ooo` over the network (the wide core) and the two-hart Linux
+boot were not run over it; the Verilator `+busmon` monitor reads bus internals that
+the network stand-in only approximates (a master is counted as granted while the node
+has its request at a slave). Nothing here measures area or timing: the fabric's LUTs
+and its effect on the 25 MHz target are unknown, and the cost above is cycles only.
+
+**Stage 1 - a network interface and a real packet format** (built: Parts 15 to 18 made
+the interfaces, the packet, the one-node network and a drop-in fabric, compared the
+fabric with the bus on random traffic, and ran the whole `make verify` suite and a
+Linux boot over it, at 27% more cycles; formal properties of the whole fabric and a CI job
+are still open). The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
 a QoS tag), and real Wishbone-to-NoC network interfaces on both the master
@@ -1087,4 +1132,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has begun (Parts 15 to 17). Stages 2 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has largely been built (Parts 15 to 18). Stages 2 onward are a plan.
