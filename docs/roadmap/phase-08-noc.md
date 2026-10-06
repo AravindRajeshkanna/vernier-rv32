@@ -1,8 +1,8 @@
 # Phase 8 — Network-on-Chip interconnect
 
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
-decision: no network yet). Stage 1 has begun (Part 15: the network interfaces, a
-packet format and a one-node network, proven in isolation and not yet in the SoC);
+decision: no network yet). Stage 1 has begun (Parts 15 and 16: the network interfaces, a
+packet format with a four-word burst, and a one-node network, proven in isolation and not yet in the SoC);
 Stage 2 onward is a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
@@ -834,7 +834,7 @@ the Stage 1 boundary:
   answered with an error by the node itself, the equivalent of the bus's
   decode-error ack.
 
-The packet is one 80-bit word for request and response alike: `lock`, `we`
+The packet is one 80-bit word (82 since Part 16 added burst and last bits) for request and response alike: `lock`, `we`
 (`err` in a response), byte enables, a 2-bit `qos`, 4-bit `src` and `dst`, 32-bit
 address, 32-bit data. `qos` is carried end to end and echoed in the response,
 and nothing arbitrates on it; that is Stage 3.
@@ -888,10 +888,57 @@ per transaction by construction, which on a bus that is 93% busy would matter, a
 that is the reason the trigger stays where Stage 0 put it). Stage 1's "same
 functional behaviour as the bus" is shown against a Wishbone memory model, not
 against `wb_interconnect.v` and the real slaves; the burst transfer the SDRAM now
-supports (Part 9) has no packet form yet, so an instruction line fill could not
-cross this boundary as it stands; the master interface needs a master that holds
+supports (Part 9) had no packet form yet (Part 16 adds one); the master interface needs a master that holds
 its request until acked; LR/SC's reservation monitor is untouched, since it
 watches the bus and no bus is between the harts yet. Stages 2 to 5 remain a plan.
+
+**Update, Part 16: the packet carries a four-word burst.** Part 15's closing note
+said the SDRAM's burst (Part 9) had no packet form, so an instruction line fill
+could not cross the new boundary. This closes that, and only that: the packet is
+now 82 bits, with a `burst` bit in a request (a four-word read of the 16-byte
+line at `adr`) and a `last` bit in a response. A burst is one request answered by
+four response packets, in address order, the fourth marked `last`; every other
+response is a single packet with `last` set. The three blocks change as follows.
+
+- `noc_ni_master.v` takes a `wb_burst` sideband, holds the master's request
+  through four acks (one per packet), and ends the transaction on the packet
+  marked `last`.
+- `noc_ni_slave.v` holds `stb` and the address steady until the slave's fourth
+  ack, tells the slave it is a burst through `wb_burst`, and turns each ack into
+  a packet. A Wishbone ack cannot be refused, so the packets wait in a four-entry
+  queue; a new request is taken only when the queue is empty. An error ends a
+  burst early, and its packet is marked `last`.
+- `noc_node1.v` cycles between waiting for a beat and delivering it until the
+  `last` beat has gone, and takes no other request in between, which is the
+  property the bus's burst lock (Part 9) provides.
+
+**Evidence.** `make sim_noc_ni` now also runs 60 four-word bursts from one master
+(both slaves, both lines) while the other does 200 ordinary reads and writes,
+every word checked against what was stored and in order; a burst that meets a
+slave error after two words (and must end there, with the network afterwards still
+returning the right data); a burst to an unmapped address (answered with one error
+packet); and bursts mixed into the randomly stalling channel test. A monitor
+checks that an error response is always marked `last`. Mutation: ending the
+transaction after every beat, taking a new request after each beat, marking every
+beat or no beat `last`, an error that is not marked `last`, a burst that ends
+after three beats, dropping the burst flag at either interface, a queue that
+overwrites one slot, and taking a request while the queue is not empty are each
+caught. Four needed test fixes to be caught, none an RTL fix: the memory model's
+burst counter carried over between requests (so a one-beat "burst" repeated looked
+like a real one), its error word was the burst's last beat, a check read only
+the error flag and not the data after it, and an error that was not marked `last`
+needed a monitor, since a master that has already seen the error cannot tell.
+`formal/fv_noc_node.v` is widened for the 82-bit packet: a transaction now stays
+open until its `last` packet has been delivered, so the existing properties (no
+request taken while one is open, a response only to its requester, the lock) also
+say that nothing falls inside a burst; a mutant that takes a request after each
+beat is refuted, and a cover statement reaches a burst's middle beat.
+
+**What this does not establish.** Still outside the SoC and still against a
+Wishbone memory model: nothing here runs the real SDRAM controller or the
+instruction cache's line fill through the packets, and the queue's depth is the
+burst length, so a longer burst (the DDR3 path's) needs it widened. Latency is
+unmeasured.
 
 **Stage 1 - a network interface and a real packet format** (begun: Part 15 built
 the interfaces, the packet and the one-node network and tested them in isolation;
@@ -980,4 +1027,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has begun (Part 15). Stages 2 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has begun (Parts 15 and 16). Stages 2 onward are a plan.
