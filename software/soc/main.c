@@ -277,6 +277,7 @@ static int test_gpt(void) {
     int ok = 1;
     uint32_t c0, c1;
 
+    /* Registers read back what was written. */
     TIMER_CTRL    = 0;
     TIMER_PERIOD  = 100u;
     TIMER_COMPARE = 40u;
@@ -288,18 +289,32 @@ static int test_gpt(void) {
     if (TIMER_COMPARE != 40u)  ok = 0;
     if (TIMER_CTRL != (TIMER_CTRL_EN | TIMER_CTRL_PWM_EN)) ok = 0;
 
+    /* COUNT advances. Run with PERIOD = 0, a free count with no wraparound, so
+     * that "the second reading is larger" cannot be spoiled by the counter
+     * wrapping between the reads. (With PERIOD = 100 it held only while the
+     * loop below took under 100 cycles, which is a statement about how fast
+     * the bus is and not about the timer.) */
+    TIMER_CTRL   = 0;
+    TIMER_PERIOD = 0u;
+    TIMER_COUNT  = 0u;
+    TIMER_CTRL   = TIMER_CTRL_EN;
     c0 = TIMER_COUNT;
     for (volatile int i = 0; i < 40; i++) { }
     c1 = TIMER_COUNT;
     if (c1 <= c0) ok = 0;
 
-    /* Run well past one full period (100 cycles) so a wraparound has
-     * certainly happened, then confirm both that COUNT itself wrapped and
-     * that the interrupt-pending bit the wraparound should have set is
-     * actually set. */
-    for (volatile int i = 0; i < 150; i++) { }
-    if (TIMER_COUNT >= 100u) ok = 0;
+    /* It wraps, and the interrupt-pending bit the wraparound sets is set:
+     * poll for it, within a bound far past one period at any bus speed, rather
+     * than waiting a fixed number of loop iterations. COUNT then has to be
+     * below PERIOD, which a counter stuck high could not be. */
+    TIMER_CTRL   = 0;
+    TIMER_PERIOD = 100u;
+    TIMER_COUNT  = 0u;
+    TIMER_IP     = 1u;
+    TIMER_CTRL   = TIMER_CTRL_EN | TIMER_CTRL_PWM_EN;
+    for (volatile int i = 0; i < 100000 && !(TIMER_IP & 1u); i++) { }
     if (!(TIMER_IP & 1u))    ok = 0;
+    if (TIMER_COUNT >= 100u) ok = 0;
 
     TIMER_IP = 1u;                 /* write-1-to-clear */
     if (TIMER_IP & 1u) ok = 0;
