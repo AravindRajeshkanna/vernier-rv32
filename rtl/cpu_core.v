@@ -119,6 +119,11 @@ module cpu_core #(
     // side. See wb_interconnect.v's own header for the full account of why
     // that gap is real and what closes it.
     output wire         dmem_amo_wrphase,
+    // This MEM access is a read-modify-write AMO (an AMOxxx, not LR or SC): the only
+    // kind whose read is certain to be followed by a write to the same word, so the
+    // only kind a router fabric can safely lock at the read (rtl/soc/wb_noc_xbar.v).
+    // An LR has no write phase and an SC may not, so locking them would never release.
+    output wire         dmem_is_rmw,
 
     // ---- LR/SC reservation: exposed for cross-hart snooping ----
     // `reservation_valid`/`reservation_addr` themselves are unchanged -
@@ -1552,6 +1557,7 @@ module cpu_core #(
     assign dmem_size  = ex_mem_mem_size;
     assign dmem_is_amo = ex_mem_valid && ex_mem_is_amo;
     assign dmem_amo_wrphase = amo_wr_phase;
+    assign dmem_is_rmw = ex_mem_valid && ex_mem_is_amo_rmw;
 
     // ---- LR/SC reservation - MEM stage only ----
     // Required, not stylistic: for back-to-back LR;SC, SC reaches EX the

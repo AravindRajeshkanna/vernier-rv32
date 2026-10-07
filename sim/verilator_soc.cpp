@@ -845,6 +845,9 @@ struct BusMon {
     void clear() { *this = BusMon(); }
 
     void sample(Vsoc_top___024root *r) {
+#ifdef INTERCONNECT_XBAR
+        (void)r;    // the bus's grant and request wires do not exist in the router fabric
+#else
         const unsigned H = BUSMON_HARTS;
         const uint32_t m = (1u << H) - 1u;
         uint32_t rq = (r->soc_top__DOT__BUS__DOT__f_cyc & m)
@@ -868,6 +871,7 @@ struct BusMon {
         }
         uint32_t st = r->soc_top__DOT__BUS__DOT__s_stb;
         for (unsigned i = 0; i < BUSMON_NS; i++) slave[i] += (st >> i) & 1;
+#endif
     }
 
     static const char *role(unsigned m, int *hart) {
@@ -1052,6 +1056,13 @@ int main(int argc, char **argv) {
     long         verdict_at = -1;
     long         stop_at    = -1;   // cycle +stopon's text completed
     const bool   check_reads = plusarg(argc, argv, "checkreads") != nullptr;
+#ifdef INTERCONNECT_XBAR
+    if (check_reads || plusarg(argc, argv, "busmon")) {
+        fprintf(stderr, "+checkreads and +busmon read the shared bus's wires, which "
+                        "INTERCONNECT=xbar does not have\n");
+        return 2;
+    }
+#endif
     long         reads_checked = 0;
     long         reads_bad     = 0;
     const bool   check_fetch = plusarg(argc, argv, "checkfetch") != nullptr;
@@ -1208,6 +1219,7 @@ int main(int argc, char **argv) {
             first_trap_epc    = root->soc_top__DOT__CPU__DOT__CSR__DOT__mepc_r;
             first_trap_tval   = root->soc_top__DOT__CPU__DOT__CSR__DOT__mtval_r;
         }
+#ifndef INTERCONNECT_XBAR   // the router fabric has no single bus to read at its acks
         // ---- every read, against what the part holds ----
         //
         // The interconnect's `fin_ack` is the acknowledgement it hands the
@@ -1281,6 +1293,8 @@ int main(int argc, char **argv) {
                 }
             }
         }
+
+#endif
 
         // ---- and every instruction the core takes ----
         //

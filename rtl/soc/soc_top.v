@@ -232,6 +232,7 @@ module soc_top #(
     // - see rtl/soc/wb_interconnect.v's own header for why `dmem_is_amo`
     // alone does not tell it that continuously enough to matter.
     wire [NUM_HARTS-1:0]    dmem_amo_wrphase;
+    wire [NUM_HARTS-1:0]    dmem_is_rmw;      // a read-modify-write AMO (not LR/SC), for the router fabric
     wire [NUM_HARTS*2-1:0]  dmem_size;
     wire [NUM_HARTS-1:0]    ibus_wait, dbus_wait;
     wire [NUM_HARTS-1:0]    itlb_wait_stall;
@@ -272,17 +273,36 @@ module soc_top #(
     wire [NUM_HARTS-1:0]    pwb_cyc, pwb_stb, pwb_ack;
     wire [NUM_HARTS*32-1:0] pwb_adr, pwb_dat_r;
 
-    // ---- shared slave bus ----
-    wire                     s_cyc, s_we, s_data_master;
-    wire                     s_burst;
-    wire                     snoop_wr;
-    wire [31:0]              snoop_adr;
-    wire [NUM_HARTS-1:0]     snoop_src_d;
+    // ---- the slave side of the interconnect ----
+    //
+    // Every slave reads its own copy of the address, data and control wires
+    // (`sl_*`, indexed by slave). On the shared bus and the one-node network
+    // each copy is the same shared wire, so nothing changes for them; the
+    // router fabric (INTERCONNECT=xbar) drives each slave's wires separately,
+    // which is what lets two slaves be busy at once.
     wire [NUM_SLAVES-1:0]    s_stb;
-    wire [31:0]              s_adr, s_dat_w;
-    wire [3:0]               s_sel;
     wire [NUM_SLAVES*32-1:0] s_dat_r;
     wire [NUM_SLAVES-1:0]    s_ack;
+    wire [NUM_SLAVES-1:0]    sl_cyc, sl_we, sl_burst, sl_dm;
+    wire [NUM_SLAVES*32-1:0] sl_adr, sl_dat_w;
+    wire [NUM_SLAVES*4-1:0]  sl_sel;
+`ifdef INTERCONNECT_XBAR
+    wire [NUM_SLAVES-1:0]            xs_wr;
+    wire [NUM_SLAVES*32-1:0]         xs_adr;
+    wire [NUM_SLAVES*NUM_HARTS-1:0]  xs_src_d;
+`else
+    wire                     s_cyc, s_we, s_data_master, s_burst;
+    wire [31:0]              s_adr, s_dat_w;
+    wire [3:0]               s_sel;
+`endif
+
+    // The data caches' snoop ports. The bus reports each completed write once
+    // (port 1); the router fabric reports them per slave, and the two cacheable
+    // ones, block RAM and SDRAM, can complete in the same cycle, so each gets a
+    // port (the others' writes are not in a cacheable window).
+    wire                     snoop_wr, snoop2_wr;
+    wire [31:0]              snoop_adr, snoop2_adr;
+    wire [NUM_HARTS-1:0]     snoop_src_d, snoop2_src_d;
 
     // ---- hart control (rtl/debug/dm.v <-> CPU), both cores now ----
     //
@@ -350,6 +370,15 @@ module soc_top #(
     // that fails when that stops being true. `DCACHE_ENABLE` stays a
     // parameter of cpu_wb.v, so a bypass build is still one localparam away.
     localparam HART_DCACHE_ENABLE = 1;
+    // The router fabric returns an access's ack some cycles after the slave has
+    // completed it, so another hart's write can be snooped in between; the cache
+    // has to drop the update such an ack would make (rtl/soc/cpu_wb.v). The shared
+    // bus never does, and keeps its exact behaviour.
+`ifdef INTERCONNECT_XBAR
+    localparam SNOOP_LATE_ACK = 1;
+`else
+    localparam SNOOP_LATE_ACK = 0;
+`endif
 
     // The reset every core and peripheral sees: the pad reset, plus the debugger's
     // own (see the note where `dbg_ndmreset` is driven, below). Declared here,
@@ -369,7 +398,7 @@ module soc_top #(
         .dmem_addr(dmem_addr[31:0]), .dmem_wdata(dmem_wdata[31:0]),
         .dmem_we(dmem_we[0]), .dmem_re(dmem_re[0]), .dmem_size(dmem_size[1:0]),
         .dmem_rdata(dmem_rdata[31:0]), .dmem_rvalid(dmem_rvalid[0]), .dmem_is_amo(dmem_is_amo[0]),
-        .dmem_amo_wrphase(dmem_amo_wrphase[0]),
+        .dmem_amo_wrphase(dmem_amo_wrphase[0]), .dmem_is_rmw(dmem_is_rmw[0]),
         .ibus_wait(ibus_wait[0]), .dbus_wait(dbus_wait[0]),
         .ptw_req(ptw_req[0]), .ptw_addr(ptw_addr[31:0]),
         .ptw_gnt(ptw_gnt[0]), .ptw_rdata(ptw_rdata[31:0]),
@@ -394,7 +423,7 @@ module soc_top #(
         .dbg_reg_rdata(dbg_reg_rdata_h[0+:32]), .dbg_reg_err(dbg_reg_err_h[0])
     );
 
-    cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (
+    cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE), .SNOOP_LATE_ACK(SNOOP_LATE_ACK)) BUSADAPT (
         .clk(clk), .rst(rst_soc),
         .imem_addr(imem_addr[31:0]), .imem_rdata(imem_rdata[31:0]), .ibus_wait(ibus_wait[0]),
         .itlb_wait_stall(itlb_wait_stall[0]),
@@ -404,6 +433,7 @@ module soc_top #(
         .dmem_rvalid(dmem_rvalid[0]), .dbus_wait(dbus_wait[0]),
         .fence_i(fence_i[0]),
         .snoop_wr(snoop_wr && !snoop_src_d[0]), .snoop_adr(snoop_adr),
+        .snoop2_wr(snoop2_wr && !snoop2_src_d[0]), .snoop2_adr(snoop2_adr),
         .iwb_cyc(iwb_cyc[0]), .iwb_stb(iwb_stb[0]), .iwb_adr(iwb_adr[31:0]),
         .iwb_burst(iwb_burst[0]),
         .iwb_dat_r(iwb_dat_r[31:0]), .iwb_ack(iwb_ack[0]),
@@ -465,7 +495,7 @@ module soc_top #(
                 .dmem_addr(dmem_addr[32*h +: 32]), .dmem_wdata(dmem_wdata[32*h +: 32]),
                 .dmem_we(dmem_we[h]), .dmem_re(dmem_re[h]), .dmem_size(dmem_size[2*h +: 2]),
                 .dmem_rdata(dmem_rdata[32*h +: 32]), .dmem_rvalid(dmem_rvalid[h]), .dmem_is_amo(dmem_is_amo[h]),
-                .dmem_amo_wrphase(dmem_amo_wrphase[h]),
+                .dmem_amo_wrphase(dmem_amo_wrphase[h]), .dmem_is_rmw(dmem_is_rmw[h]),
                 .ibus_wait(ibus_wait[h]), .dbus_wait(dbus_wait[h]),
                 .ptw_req(ptw_req[h]), .ptw_addr(ptw_addr[32*h +: 32]),
                 .ptw_gnt(ptw_gnt[h]), .ptw_rdata(ptw_rdata[32*h +: 32]),
@@ -500,7 +530,7 @@ module soc_top #(
                 .dbg_reg_rdata(dbg_reg_rdata_h[32*h +: 32]), .dbg_reg_err(dbg_reg_err_h[h])
             );
 
-            cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE)) BUSADAPT (
+            cpu_wb #(.DCACHE_ENABLE(HART_DCACHE_ENABLE), .SNOOP_LATE_ACK(SNOOP_LATE_ACK)) BUSADAPT (
                 .clk(clk), .rst(rst_soc),
                 .imem_addr(imem_addr[32*h +: 32]), .imem_rdata(imem_rdata[32*h +: 32]),
                 .ibus_wait(ibus_wait[h]),
@@ -511,6 +541,7 @@ module soc_top #(
                 .dmem_rvalid(dmem_rvalid[h]), .dbus_wait(dbus_wait[h]),
                 .fence_i(fence_i[h]),
                 .snoop_wr(snoop_wr && !snoop_src_d[h]), .snoop_adr(snoop_adr),
+                .snoop2_wr(snoop2_wr && !snoop2_src_d[h]), .snoop2_adr(snoop2_adr),
                 .iwb_cyc(iwb_cyc[h]), .iwb_stb(iwb_stb[h]), .iwb_adr(iwb_adr[32*h +: 32]),
                 .iwb_burst(iwb_burst[h]),
                 .iwb_dat_r(iwb_dat_r[32*h +: 32]), .iwb_ack(iwb_ack[h]),
@@ -631,11 +662,15 @@ module soc_top #(
     // why that is precisely the original 4-master shape, and
     // docs/roadmap/phase-13-multicore.md's Phase 13 entry for hart 1's own instantiation above
     // and what still isn't wired to it.
-    // `INTERCONNECT_NOC` (make INTERCONNECT=noc) puts the Phase 8 packet
-    // network where the bus is: the same ports and the same behaviour, built
-    // from network interfaces and a one-node network (rtl/soc/wb_noc_fabric.v).
-    // The bus stays the default; nothing here is chosen by anything else.
-`ifdef INTERCONNECT_NOC
+    // `make INTERCONNECT=noc` puts the Phase 8 packet network where the bus is -
+    // the same ports and behaviour, from network interfaces and a one-node network
+    // (rtl/soc/wb_noc_fabric.v) - and `INTERCONNECT=xbar` a fabric built on routers
+    // (rtl/soc/wb_noc_xbar.v), with a set of slave wires per slave. The bus stays the
+    // default; nothing here is chosen by anything else.
+`ifdef INTERCONNECT_XBAR
+    wb_noc_xbar #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
+                  .BURST_SLAVES(1 << S_SDRAM)) BUS (
+`elsif INTERCONNECT_NOC
     wb_noc_fabric #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
                     .BURST_SLAVES(1 << S_SDRAM)) BUS (
 `else
@@ -656,6 +691,10 @@ module soc_top #(
         // see that file's own dc_pending/access_start comment for why a
         // signal routed through it cannot be the one this needs.
         .d_amo_wrphase(dmem_amo_wrphase),
+`ifdef INTERCONNECT_XBAR
+        // The router fabric also needs to lock an AMO's read when it is issued.
+        .d_is_rmw(dmem_is_rmw),
+`endif
         .w_cyc(pwb_cyc), .w_stb(pwb_stb), .w_adr(pwb_adr),
         .w_dat_r(pwb_dat_r), .w_ack(pwb_ack),
         .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),
@@ -664,26 +703,59 @@ module soc_top #(
         .n_cyc(npu_m_cyc), .n_stb(npu_m_stb), .n_adr(npu_m_adr),
         .n_dat_r(npu_m_dat_r), .n_ack(npu_m_ack),
         .s_base(s_base), .s_mask(s_mask),
+`ifdef INTERCONNECT_XBAR
+        .s_cyc(sl_cyc), .s_stb(s_stb), .s_we(sl_we),
+        .s_adr(sl_adr), .s_dat_w(sl_dat_w), .s_sel(sl_sel),
+        .s_dat_r(s_dat_r), .s_ack(s_ack),
+        .s_data_master(sl_dm), .s_burst(sl_burst),
+        .snoop_wr(xs_wr), .snoop_adr(xs_adr), .snoop_src_d(xs_src_d)
+`else
         .s_cyc(s_cyc), .s_stb(s_stb), .s_we(s_we),
         .s_adr(s_adr), .s_dat_w(s_dat_w), .s_sel(s_sel),
         .s_dat_r(s_dat_r), .s_ack(s_ack),
         .s_data_master(s_data_master), .s_burst(s_burst),
         .snoop_wr(snoop_wr), .snoop_adr(snoop_adr), .snoop_src_d(snoop_src_d)
+`endif
     );
+
+`ifdef INTERCONNECT_XBAR
+    // Per-slave snoop events (xs_*), of which the two cacheable slaves' go to the
+    // data caches' two ports.
+    // (declared here, after the instance that drives them: only this build has them)
+    assign snoop_wr     = xs_wr[S_RAM];
+    assign snoop_adr    = xs_adr[32*S_RAM +: 32];
+    assign snoop_src_d  = xs_src_d[NUM_HARTS*S_RAM +: NUM_HARTS];
+    assign snoop2_wr    = xs_wr[S_SDRAM];
+    assign snoop2_adr   = xs_adr[32*S_SDRAM +: 32];
+    assign snoop2_src_d = xs_src_d[NUM_HARTS*S_SDRAM +: NUM_HARTS];
+`else
+    // The bus and the one-node network drive one set of slave wires: every
+    // slave's copy is that set, and there is one snoop port.
+    assign sl_cyc    = {NUM_SLAVES{s_cyc}};
+    assign sl_we     = {NUM_SLAVES{s_we}};
+    assign sl_burst  = {NUM_SLAVES{s_burst}};
+    assign sl_dm     = {NUM_SLAVES{s_data_master}};
+    assign sl_adr    = {NUM_SLAVES{s_adr}};
+    assign sl_dat_w  = {NUM_SLAVES{s_dat_w}};
+    assign sl_sel    = {NUM_SLAVES{s_sel}};
+    assign snoop2_wr     = 1'b0;
+    assign snoop2_adr    = 32'b0;
+    assign snoop2_src_d  = {NUM_HARTS{1'b0}};
+`endif
 
     // =====================================================================
     // Slaves
     // =====================================================================
     wb_rom #(.MEM_WORDS(ROM_WORDS), .INIT_FILE(ROM_INIT_FILE)) ROM (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_ROM]), .wb_we(s_we), .wb_adr(s_adr),
+        .wb_cyc(sl_cyc[S_ROM]), .wb_stb(s_stb[S_ROM]), .wb_we(sl_we[S_ROM]), .wb_adr(sl_adr[32*S_ROM +: 32]),
         .wb_dat_r(s_dat_r[32*S_ROM +: 32]), .wb_ack(s_ack[S_ROM])
     );
 
     wb_ram #(.MEM_BYTES(RAM_BYTES), .INIT_FILE(RAM_INIT_FILE)) RAM (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_RAM]), .wb_we(s_we), .wb_adr(s_adr),
-        .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        .wb_cyc(sl_cyc[S_RAM]), .wb_stb(s_stb[S_RAM]), .wb_we(sl_we[S_RAM]), .wb_adr(sl_adr[32*S_RAM +: 32]),
+        .wb_dat_w(sl_dat_w[32*S_RAM +: 32]), .wb_sel(sl_sel[4*S_RAM +: 4]),
         .wb_dat_r(s_dat_r[32*S_RAM +: 32]), .wb_ack(s_ack[S_RAM])
     );
 
@@ -694,12 +766,12 @@ module soc_top #(
         .BA_BITS(SDRAM_BA_BITS)
     ) SDRAM (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_SDRAM]), .wb_we(s_we), .wb_adr(s_adr),
-        .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        .wb_cyc(sl_cyc[S_SDRAM]), .wb_stb(s_stb[S_SDRAM]), .wb_we(sl_we[S_SDRAM]), .wb_adr(sl_adr[32*S_SDRAM +: 32]),
+        .wb_dat_w(sl_dat_w[32*S_SDRAM +: 32]), .wb_sel(sl_sel[4*S_SDRAM +: 4]),
         // The interconnect's `s_burst`, high only while a fetch master that
         // asks for a burst is selected and decodes to this slave: the
         // instruction cache's line fills.
-        .wb_burst(s_burst),
+        .wb_burst(sl_burst[S_SDRAM]),
         .wb_dat_r(s_dat_r[32*S_SDRAM +: 32]), .wb_ack(s_ack[S_SDRAM]),
         .sdram_cke(sdram_cke), .sdram_cs_n(sdram_cs_n),
         .sdram_ras_n(sdram_ras_n), .sdram_cas_n(sdram_cas_n),
@@ -754,8 +826,8 @@ module soc_top #(
     /* verilator lint_off PINCONNECTEMPTY */
     wb_ddr DDR3 (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_DDR3]), .wb_we(s_we), .wb_adr(s_adr),
-        .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        .wb_cyc(sl_cyc[S_DDR3]), .wb_stb(s_stb[S_DDR3]), .wb_we(sl_we[S_DDR3]), .wb_adr(sl_adr[32*S_DDR3 +: 32]),
+        .wb_dat_w(sl_dat_w[32*S_DDR3 +: 32]), .wb_sel(sl_sel[4*S_DDR3 +: 4]),
         .wb_dat_r(s_dat_r[32*S_DDR3 +: 32]), .wb_ack(s_ack[S_DDR3]),
         .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
         .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
@@ -772,7 +844,7 @@ module soc_top #(
     /* verilator lint_on PINCONNECTEMPTY */
 `else
     assign s_dat_r[32*S_DDR3 +: 32] = 32'b0;
-    assign s_ack[S_DDR3]            = s_cyc & s_stb[S_DDR3];
+    assign s_ack[S_DDR3]            = sl_cyc[S_DDR3] & s_stb[S_DDR3];
     assign ddr3_ck = 1'b0; assign ddr3_ck_n = 1'b1;
     assign ddr3_cs_n = 1'b1; assign ddr3_ras_n = 1'b1;
     assign ddr3_cas_n = 1'b1; assign ddr3_we_n = 1'b1;
@@ -787,10 +859,10 @@ module soc_top #(
     wire        clint_we, clint_re;
     wb_periph_bridge CLINT_BR (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_CLINT]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_CLINT]), .wb_stb(s_stb[S_CLINT]), .wb_we(sl_we[S_CLINT]),
+        .wb_adr(sl_adr[32*S_CLINT +: 32]), .wb_dat_w(sl_dat_w[32*S_CLINT +: 32]),
         .wb_dat_r(s_dat_r[32*S_CLINT +: 32]), .wb_ack(s_ack[S_CLINT]),
-        .data_master(s_data_master),
+        .data_master(sl_dm[S_CLINT]),
         .p_addr(clint_addr), .p_wdata(clint_wdata),
         .p_we(clint_we), .p_re(clint_re), .p_rdata(clint_rdata)
     );
@@ -814,10 +886,10 @@ module soc_top #(
     wire        plic_we, plic_re;
     wb_periph_bridge PLIC_BR (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_PLIC]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_PLIC]), .wb_stb(s_stb[S_PLIC]), .wb_we(sl_we[S_PLIC]),
+        .wb_adr(sl_adr[32*S_PLIC +: 32]), .wb_dat_w(sl_dat_w[32*S_PLIC +: 32]),
         .wb_dat_r(s_dat_r[32*S_PLIC +: 32]), .wb_ack(s_ack[S_PLIC]),
-        .data_master(s_data_master),
+        .data_master(sl_dm[S_PLIC]),
         .p_addr(plic_addr), .p_wdata(plic_wdata),
         .p_we(plic_we), .p_re(plic_re), .p_rdata(plic_rdata)
     );
@@ -838,10 +910,10 @@ module soc_top #(
     wire        uart_we, uart_re;
     wb_periph_bridge UART_BR (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_UART]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_UART]), .wb_stb(s_stb[S_UART]), .wb_we(sl_we[S_UART]),
+        .wb_adr(sl_adr[32*S_UART +: 32]), .wb_dat_w(sl_dat_w[32*S_UART +: 32]),
         .wb_dat_r(s_dat_r[32*S_UART +: 32]), .wb_ack(s_ack[S_UART]),
-        .data_master(s_data_master),
+        .data_master(sl_dm[S_UART]),
         .p_addr(uart_addr), .p_wdata(uart_wdata),
         .p_we(uart_we), .p_re(uart_re), .p_rdata(uart_rdata)
     );
@@ -854,8 +926,8 @@ module soc_top #(
     // ---- native Wishbone peripherals ----
     wb_gpio #(.WIDTH(GPIO_WIDTH)) GPIO (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_GPIO]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_GPIO]), .wb_stb(s_stb[S_GPIO]), .wb_we(sl_we[S_GPIO]),
+        .wb_adr(sl_adr[32*S_GPIO +: 32]), .wb_dat_w(sl_dat_w[32*S_GPIO +: 32]),
         .wb_dat_r(s_dat_r[32*S_GPIO +: 32]), .wb_ack(s_ack[S_GPIO]),
         .gpio_in(gpio_in), .gpio_out(gpio_out), .gpio_dir(gpio_dir),
         .irq(gpio_irq)
@@ -876,8 +948,8 @@ module soc_top #(
         .FB_WIDTH(FB_WIDTH), .FB_HEIGHT(FB_HEIGHT), .PIXEL_DOUBLE(1)
     ) FB (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_FB]), .wb_we(s_we), .wb_adr(s_adr),
-        .wb_dat_w(s_dat_w), .wb_sel(s_sel),
+        .wb_cyc(sl_cyc[S_FB]), .wb_stb(s_stb[S_FB]), .wb_we(sl_we[S_FB]), .wb_adr(sl_adr[32*S_FB +: 32]),
+        .wb_dat_w(sl_dat_w[32*S_FB +: 32]), .wb_sel(sl_sel[4*S_FB +: 4]),
         .wb_dat_r(s_dat_r[32*S_FB +: 32]), .wb_ack(s_ack[S_FB]),
         .vid_x(raster_x), .vid_y(raster_y), .vid_de(raster_de),
         .vid_hsync(raster_hsync), .vid_vsync(raster_vsync),
@@ -888,8 +960,8 @@ module soc_top #(
 
     wb_spi SPI (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_SPI]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_SPI]), .wb_stb(s_stb[S_SPI]), .wb_we(sl_we[S_SPI]),
+        .wb_adr(sl_adr[32*S_SPI +: 32]), .wb_dat_w(sl_dat_w[32*S_SPI +: 32]),
         .wb_dat_r(s_dat_r[32*S_SPI +: 32]), .wb_ack(s_ack[S_SPI]),
         .spi_sck(spi_sck), .spi_mosi(spi_mosi),
         .spi_miso(spi_miso), .spi_cs_n(spi_cs_n)
@@ -897,8 +969,8 @@ module soc_top #(
 
     wb_timer TIMER (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_TIMER]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_TIMER]), .wb_stb(s_stb[S_TIMER]), .wb_we(sl_we[S_TIMER]),
+        .wb_adr(sl_adr[32*S_TIMER +: 32]), .wb_dat_w(sl_dat_w[32*S_TIMER +: 32]),
         .wb_dat_r(s_dat_r[32*S_TIMER +: 32]), .wb_ack(s_ack[S_TIMER]),
         .pwm_out(pwm_out), .irq(timer_irq)
     );
@@ -910,8 +982,8 @@ module soc_top #(
     // lowest-priority tier above, not the CPU-facing slave bus.
     wb_npu NPU (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_NPU]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_NPU]), .wb_stb(s_stb[S_NPU]), .wb_we(sl_we[S_NPU]),
+        .wb_adr(sl_adr[32*S_NPU +: 32]), .wb_dat_w(sl_dat_w[32*S_NPU +: 32]),
         .wb_dat_r(s_dat_r[32*S_NPU +: 32]), .wb_ack(s_ack[S_NPU]),
         .m_cyc(npu_m_cyc), .m_stb(npu_m_stb), .m_adr(npu_m_adr),
         .m_dat_r(npu_m_dat_r), .m_ack(npu_m_ack)
@@ -923,8 +995,8 @@ module soc_top #(
     // closes.
     wb_fir FIR (
         .clk(clk), .rst(rst_soc),
-        .wb_cyc(s_cyc), .wb_stb(s_stb[S_FIR]), .wb_we(s_we),
-        .wb_adr(s_adr), .wb_dat_w(s_dat_w),
+        .wb_cyc(sl_cyc[S_FIR]), .wb_stb(s_stb[S_FIR]), .wb_we(sl_we[S_FIR]),
+        .wb_adr(sl_adr[32*S_FIR +: 32]), .wb_dat_w(sl_dat_w[32*S_FIR +: 32]),
         .wb_dat_r(s_dat_r[32*S_FIR +: 32]), .wb_ack(s_ack[S_FIR])
     );
 endmodule
