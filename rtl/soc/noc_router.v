@@ -124,7 +124,7 @@ module noc_router #(
         end
         for (i = 0; i < NUM_IN; i = i + 1) begin
             take[i] = 1'b0;
-            drop[i] = f_valid[i] && (h_dst[i] >= NUM_OUT);
+            drop[i] = f_valid[i] && ({28'b0, h_dst[i]} >= NUM_OUT);
             for (o = 0; o < NUM_OUT; o = o + 1)
                 if (sel_v[o] && sel_i[o] == i[3:0] && out_ready[o]) take[i] = 1'b1;
         end

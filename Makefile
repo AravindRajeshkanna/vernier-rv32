@@ -1060,6 +1060,7 @@ lint-rtl-noc:
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_slave rtl/soc/noc_ni_slave.v
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module wb_noc_fabric $(NOC_FABRIC_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_router rtl/soc/noc_router.v
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module wb_noc_xbar $(NOC_XBAR_RTL)
 
 lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc
 
@@ -2717,6 +2718,7 @@ sim_cpu_wb_ifill: sim/sim_cpu_wb_ifill.out
 
 NOC_RTL = rtl/soc/noc_ni_master.v rtl/soc/noc_ni_slave.v rtl/soc/noc_node1.v
 NOC_FABRIC_RTL = rtl/soc/wb_noc_fabric.v $(NOC_RTL)
+NOC_XBAR_RTL = rtl/soc/wb_noc_xbar.v rtl/soc/noc_router.v rtl/soc/noc_err_sink.v $(NOC_RTL)
 
 sim/sim_noc_ni.out: sim/tb_noc_ni.v $(NOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_ni.v $(NOC_RTL)
@@ -2733,6 +2735,14 @@ sim_noc_router: sim/sim_noc_router.out
 	cd sim && $(VVP) sim_noc_router.out $(VVP_DUMP) | tee noc_router.log
 	@grep -aq "NOC ROUTER TEST PASSED" sim/noc_router.log && echo "NOC ROUTER OK" || \
 	    { echo "FAILED: the Phase 8 packet router"; exit 1; }
+
+sim/sim_noc_xbar.out: sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
+
+sim_noc_xbar: sim/sim_noc_xbar.out
+	cd sim && $(VVP) sim_noc_xbar.out $(VVP_DUMP) | tee noc_xbar.log
+	@grep -aq "NOC XBAR TEST PASSED" sim/noc_xbar.log && echo "NOC XBAR OK" || \
+	    { echo "FAILED: the Phase 8 router fabric disagrees with the bus"; exit 1; }
 
 sim/sim_noc_fabric.out: sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
@@ -3648,6 +3658,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_interconnect_burst \
         sim_noc_ni \
         sim_noc_router \
+        sim_noc_xbar \
         sim_noc_fabric \
         sim_interconnect_burst_noc \
         sim_cpu_wb_ifill \

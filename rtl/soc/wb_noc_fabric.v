@@ -238,6 +238,7 @@ module wb_noc_fabric #(
     wire [NUM_SLAVES-1:0]    si_cyc, si_stb, si_we, si_burst;
     wire [NUM_SLAVES*32-1:0] si_adr, si_dat_w;
     wire [NUM_SLAVES*4-1:0]  si_sel;
+    wire [NUM_SLAVES*4-1:0]  si_src;       // who each slave is serving (not needed here)
 
     generate
         for (g = 0; g < NUM_SLAVES; g = g + 1) begin : g_slave
@@ -247,7 +248,7 @@ module wb_noc_fabric #(
                 .rsp_valid(sr_valid[g]), .rsp_pkt(sr_pkt[82*g +: 82]), .rsp_ready(sr_ready[g]),
                 .wb_cyc(si_cyc[g]), .wb_stb(si_stb[g]), .wb_we(si_we[g]),
                 .wb_adr(si_adr[32*g +: 32]), .wb_dat_w(si_dat_w[32*g +: 32]),
-                .wb_sel(si_sel[4*g +: 4]), .wb_burst(si_burst[g]),
+                .wb_sel(si_sel[4*g +: 4]), .wb_burst(si_burst[g]), .wb_src(si_src[4*g +: 4]),
                 .wb_dat_r(s_dat_r[32*g +: 32]), .wb_ack(s_ack[g]), .wb_err(1'b0));
         end
     endgenerate

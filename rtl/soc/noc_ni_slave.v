@@ -49,6 +49,7 @@ module noc_ni_slave #(
     output wire [31:0] wb_dat_w,
     output wire [3:0]  wb_sel,
     output wire        wb_burst,
+    output wire [3:0]  wb_src,       // who is being served (the request's `src`), while `wb_cyc` is up
     input  wire [31:0] wb_dat_r,
     input  wire        wb_ack,
     input  wire        wb_err
@@ -72,6 +73,7 @@ module noc_ni_slave #(
     assign wb_adr   = lat[47:16];
     assign wb_dat_w = lat[79:48];
     assign wb_burst = lat[80] && busy;
+    assign wb_src   = lat[11:8];
 
     assign rsp_valid = (q_n != 3'd0);
     assign rsp_pkt   = q[q_rd];
