@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stages 3 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Part 24: traffic classes in the router); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1306,6 +1306,75 @@ network; the two-hart Linux boots are one run each; the late-ack guard's cost is
 has run with the NPU's DMA racing a hart over the router fabric, the case where two slaves are
 genuinely busy together.
 
+**Update, Part 24: Stage 3 begun - traffic classes in the router.** Stage 3 asks for growth
+past the minimal case, a real quality-of-service mechanism, a check that the reservation
+monitor and coherence still hold with routing between the harts and memory, sensible routing
+to more than one memory, and measurements under real multi-master workloads. This is the
+quality-of-service piece, and only that.
+
+**The mechanism.** The packet has carried a two-bit `qos` class since Part 15, set by each
+master interface and echoed in the response, and nothing read it. `rtl/soc/noc_router.v`
+now does. With the new parameter `QOS_EN` set, an output serves the input whose head packet
+has the highest class (0 to 3), the lowest input number among equals. Strict class priority
+starves a low class under a steady stream of a higher one, so `AGE_LIMIT` bounds it: a head
+that has waited that many cycles is treated as the top class from then on, so its wait is
+bounded by the limit plus the time to serve every other aged head ahead of it, whatever the
+traffic (0 turns aging off). `wb_noc_xbar.v` takes the switches and one class per master role
+(`QOS_DBG`, `QOS_D`, `QOS_W`, `QOS_F`, `QOS_N`) and applies them to both routers, so a
+response travels in the class of its request. Everything defaults off and equal, which is the
+behaviour of Parts 21 to 23.
+
+**Evidence.**
+
+- `make sim_noc_router_qos` (`sim/tb_noc_router_qos.v`, in `make verify`): three inputs of
+  classes 2, 1 and 0 flood one output for 600 cycles. With strict priority the top class takes
+  every slot (600, 0 and 0 packets): the starvation, shown and not assumed. With aging at 20
+  cycles every input keeps being served (542, 29 and 29 packets) and the longest gap between one
+  input's packets is 21 cycles, against a bound of 28. Two packets that arrive together leave
+  in class order, not input order. Mutants are caught: classes ignored, aging never promoting,
+  an aged head promoted to the lowest class, the lowest class winning, the wait counter never
+  reset, and the aging limit doubled. Two of those survived the first version of the test: it
+  checked only completed gaps and that each input got something, so a wait counter that never
+  reset (which left one input with a single packet) passed; it now also checks the gap still
+  open when the window ends and a minimum share.
+- `formal/fv_noc_router_qos.v` (depth 12, boolector, both covers reached): whenever an output
+  picks afresh, no input that could have been served has a higher effective class, and among
+  equals none has a lower number, with locks and the hold in play; and each input's effective
+  class is what it should be (the top class once aged, its own class otherwise). Four mutants
+  are refuted. The class-definition assertions were added after a mutant that promoted an aged
+  head to the *lowest* class passed the first version: the arbiter was proved consistent with
+  its own idea of the class, which proves nothing about whether that idea is right.
+- `make sim_noc_xbar` now runs a third copy of the system, the router fabric with the classes
+  on (fetch class 3, data and walker 2, debug 1, the NPU's DMA 0, aging at 48 cycles), against
+  the bus: every master's reads, every slave's final contents, the AMO counters and the snoop
+  and data-master tallies agree. Priorities change when a master is served, never what it reads
+  or writes. The per-role cost, in asking cycles per transfer:
+
+  | | data | fetch | walker | debug | NPU |
+  |---|---|---|---|---|---|
+  | bus | 4.71 | 10.28 | 11.77 | 3.12 | 23.13 |
+  | router fabric | 9.07 | 11.29 | 15.46 | 10.14 | 23.22 |
+  | router fabric, classes on | 15.03 | 9.21 | 21.87 | 20.87 | 22.65 |
+
+  The classes do what they say: the top class, fetch, is served sooner (11.29 to 9.21,
+  better than the bus's 10.28; the test requires it) and the lower ones wait more, the price of
+  putting it first. The NPU's bulk DMA barely moves, because it is already last in the fixed
+  order the bus uses and the routers inherit: the class does not make it less urgent than it
+  was. So "bulk DMA cannot starve CPU fetch" already held; what the classes add is a choice of
+  who goes first among the processor-side masters, and with aging a guarantee in the other
+  direction, that the NPU cannot be starved by them.
+- The default path is unchanged to the cycle: Linux still boots to userspace over the router
+  fabric in 183,452,079 cycles (in-order) and 181,536,850 (wide), as in Part 23.
+
+**What this does not establish.** The classes are off in the SoC, and the assignment in the
+test is illustrative, not a recommendation: it was chosen to show the mechanism, and it makes
+data and debug accesses slower to speed fetch up, which may or may not be wanted. No real workload
+has shown a benefit: the NPU DMA racing a hart, interrupt traffic and the concurrent multi-hart
+Linux have not yet been run with the classes on. The aging bound is tested, not proved (the
+formal property is the pick rule, not a latency bound, which needs fairness assumptions the
+bounded check does not give). The rest of Stage 3 is not done: four or more harts, the reservation
+monitor and coherence at that size, and the workload measurements.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -1338,7 +1407,9 @@ while the new path is proven separately. **Done when:** that same
 Linux SMP still reaches userspace on it, and real latency/bandwidth/area
 numbers are recorded against the classic bus, not estimated.
 
-**Stage 3 - scaling past the minimal case.** Real growth to four or more
+**Stage 3 - scaling past the minimal case** (begun at the maintainer's request:
+Part 24 built the quality-of-service mechanism; four or more harts, the coherence check at that size and the
+workload measurements are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -1397,4 +1468,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stages 3 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Part 24: traffic classes in the router). Stages 4 onward are a plan.

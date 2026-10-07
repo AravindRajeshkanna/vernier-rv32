@@ -2754,6 +2754,14 @@ sim_noc_router: sim/sim_noc_router.out
 	@grep -aq "NOC ROUTER TEST PASSED" sim/noc_router.log && echo "NOC ROUTER OK" || \
 	    { echo "FAILED: the Phase 8 packet router"; exit 1; }
 
+sim/sim_noc_router_qos.out: sim/tb_noc_router_qos.v rtl/soc/noc_router.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_router_qos.v rtl/soc/noc_router.v
+
+sim_noc_router_qos: sim/sim_noc_router_qos.out
+	cd sim && $(VVP) sim_noc_router_qos.out $(VVP_DUMP) | tee noc_router_qos.log
+	@grep -aq "NOC ROUTER QOS TEST PASSED" sim/noc_router_qos.log && echo "NOC ROUTER QOS OK" || \
+	    { echo "FAILED: the Phase 8 packet router's quality of service"; exit 1; }
+
 sim/sim_noc_xbar.out: sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
 
@@ -3684,6 +3692,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_interconnect_burst \
         sim_noc_ni \
         sim_noc_router \
+        sim_noc_router_qos \
         sim_noc_xbar \
         sim_noc_fabric \
         sim_interconnect_burst_noc \
