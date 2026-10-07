@@ -152,7 +152,9 @@ module eq_slaves_p (
                   .dat_w(s_dat_w[95:64]), .sel(s_sel[11:8]), .dat_r(s_dat_r[95:64]), .ack(s_ack[2]));
 endmodule
 
-// One copy of the system. FABRIC=0 builds the bus, FABRIC=1 the router fabric.
+// One copy of the system. FABRIC=0 builds the bus, FABRIC=1 the router fabric and
+// FABRIC=2 the same with quality of service on: fetch the top class, data and walker
+// next, debug, then the NPU's bulk DMA last, with aging at 48 cycles.
 module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40) (
     input  wire clk,
     input  wire rst,
@@ -239,7 +241,9 @@ module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40) (
                 if (s_data_master && s_cyc && (|(s_stb & s_ack))) dm_cnt = dm_cnt + 1;
             end
         end else begin : g_noc
-            wb_noc_xbar #(.NUM_SLAVES(NS), .NUM_HARTS(NH), .BURST_SLAVES(1)) IC (
+            wb_noc_xbar #(.NUM_SLAVES(NS), .NUM_HARTS(NH), .BURST_SLAVES(1),
+                          .QOS_EN(FABRIC == 2 ? 1 : 0), .AGE_LIMIT(FABRIC == 2 ? 48 : 0),
+                          .QOS_DBG(1), .QOS_D(2), .QOS_W(2), .QOS_F(3), .QOS_N(0)) IC (
                 .clk(clk), .rst(rst),
                 .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr), .f_burst(f_burst), .f_dat_r(f_dat_r), .f_ack(f_ack),
                 .d_cyc(d_cyc), .d_stb(d_stb), .d_we(d_we), .d_adr(d_adr), .d_dat_w(d_dat_w), .d_sel(d_sel),
@@ -269,6 +273,39 @@ module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40) (
             end
         end
     endgenerate
+
+    // ---- how long each master waited, asking cycles per transfer ----
+    // Index as the logs: 0,1 data; 2,3 fetch; 4,5 walker; 6 debug; 7 NPU.
+    integer ask [0:7];
+    integer ops [0:7];
+    integer lm;
+    initial for (lm = 0; lm < 8; lm = lm + 1) begin ask[lm] = 0; ops[lm] = 0; end
+    always @(posedge clk) if (!rst) begin
+        for (lm = 0; lm < NH; lm = lm + 1) begin
+            if (d_cyc[lm] && d_stb[lm]) ask[lm]     = ask[lm] + 1;
+            if (d_ack[lm])              ops[lm]     = ops[lm] + 1;
+            if (f_cyc[lm] && f_stb[lm]) ask[2 + lm] = ask[2 + lm] + 1;
+            if (f_ack[lm])              ops[2 + lm] = ops[2 + lm] + 1;
+            if (w_cyc[lm] && w_stb[lm]) ask[4 + lm] = ask[4 + lm] + 1;
+            if (w_ack[lm])              ops[4 + lm] = ops[4 + lm] + 1;
+        end
+        if (dbg_cyc && dbg_stb) ask[6] = ask[6] + 1;
+        if (dbg_ack)            ops[6] = ops[6] + 1;
+        if (n_cyc && n_stb)     ask[7] = ask[7] + 1;
+        if (n_ack)              ops[7] = ops[7] + 1;
+    end
+    // mean asking cycles per transfer, times 1000: the processors' three roles, and the NPU
+    function integer lat_cpu_k(input dummy);
+        begin lat_cpu_k = (1000 * (ask[0] + ask[1] + ask[2] + ask[3] + ask[4] + ask[5])) /
+                                   (ops[0] + ops[1] + ops[2] + ops[3] + ops[4] + ops[5]); end
+    endfunction
+    // the same for one role: masters a and b (the same index twice for a single one)
+    function integer lat_role_k(input integer a, input integer b);
+        begin lat_role_k = (1000 * (ask[a] + ask[b])) / (ops[a] + ops[b]); end
+    endfunction
+    function integer lat_npu_k(input dummy);
+        begin lat_npu_k = (1000 * ask[7]) / ops[7]; end
+    endfunction
 
     // ---- what every master saw ----
     reg [31:0] log [0:8*1024-1];
@@ -478,16 +515,17 @@ module tb_noc_xbar;
     reg rst = 1;
     always #20 clk = ~clk;
 
-    wire done_bus, done_noc;
+    wire done_bus, done_noc, done_noq;
     eq_side #(.FABRIC(0)) BUS (.clk(clk), .rst(rst), .done(done_bus));
     eq_side #(.FABRIC(1)) NOC (.clk(clk), .rst(rst), .done(done_noc));
+    eq_side #(.FABRIC(2)) NOQ (.clk(clk), .rst(rst), .done(done_noq));
 
     integer failures = 0;
     integer m, i, bad;
     initial begin
         repeat (4) @(posedge clk);
         #1 rst = 0;
-        wait (done_bus && done_noc);
+        wait (done_bus && done_noc && done_noq);
 
         // every master saw the same values, in the same order
         for (m = 0; m < 8; m = m + 1) begin
@@ -552,9 +590,95 @@ module tb_noc_xbar;
             failures = failures + 1;
         end
 
+
+        // ---- the same comparisons for the router fabric with quality of service on:
+        // priorities change when a master is served, never what it reads or writes ----
+        // every master saw the same values, in the same order
+        for (m = 0; m < 8; m = m + 1) begin
+            bad = 0;
+            if (BUS.lc[m] != NOQ.lc[m]) begin
+                $display("  FAIL master %0d logged %0d reads on the bus, %0d on the fabric with quality of service", m, BUS.lc[m], NOQ.lc[m]);
+                failures = failures + 1;
+            end
+            for (i = 0; i < BUS.lc[m] && i < NOQ.lc[m]; i = i + 1)
+                if (BUS.log[m*1024 + i] !== NOQ.log[m*1024 + i]) begin
+                    if (bad < 3)
+                        $display("  FAIL master %0d read %0d: bus %08h qos fabric %08h", m, i,
+                                 BUS.log[m*1024 + i], NOQ.log[m*1024 + i]);
+                    bad = bad + 1;
+                end
+            if (bad != 0) failures = failures + 1;
+            $display("  master %0d: %0d reads compared, %0d differ", m, BUS.lc[m], bad);
+        end
+
+        // every slave ended in the same state
+        bad = 0;
+        for (i = 0; i < 4096; i = i + 1) begin
+            if (BUS.g_bus.SL.S0.m0[i] !== NOQ.g_noc.SL.S0.m0[i]) bad = bad + 1;
+            if (BUS.g_bus.SL.S1.m1[i] !== NOQ.g_noc.SL.S1.m1[i]) bad = bad + 1;
+        end
+        for (i = 0; i < 16; i = i + 1)
+            if (BUS.g_bus.SL.S2.m2[i] !== NOQ.g_noc.SL.S2.m2[i]) bad = bad + 1;
+        if (bad != 0) begin
+            $display("  FAIL %0d slave words differ at the end", bad);
+            failures = failures + 1;
+        end else $display("  all slave contents identical");
+
+        // the AMO counters add up to the increments the harts made: exact
+        // only if nobody fell into an AMO's gap
+        $display("  AMO increments made: bus %0d qos fabric %0d; counters: bus %0d + %0d, qos fabric %0d + %0d",
+                 BUS.amo_done, NOQ.amo_done, BUS.g_bus.SL.S0.m0[12'h800], BUS.g_bus.SL.S1.m1[12'h800],
+                 NOQ.g_noc.SL.S0.m0[12'h800], NOQ.g_noc.SL.S1.m1[12'h800]);
+        if (BUS.amo_done == 0) begin
+            $display("  FAIL no AMO ran");
+            failures = failures + 1;
+        end
+        if (BUS.g_bus.SL.S0.m0[12'h800] + BUS.g_bus.SL.S1.m1[12'h800] != BUS.amo_done) begin
+            $display("  FAIL the bus lost an AMO update (the test's own reference)");
+            failures = failures + 1;
+        end
+        if (NOQ.g_noc.SL.S0.m0[12'h800] + NOQ.g_noc.SL.S1.m1[12'h800] != NOQ.amo_done) begin
+            $display("  FAIL the fabric with quality of service lost an AMO update");
+            failures = failures + 1;
+        end
+
+        // snooping and the data-master flag
+        for (i = 0; i < 3; i = i + 1)
+            if (BUS.sn_cnt[i] != NOQ.sn_cnt[i] || BUS.sn_sum[i] !== NOQ.sn_sum[i]) begin
+                $display("  FAIL snoop tally %0d: bus %0d/%08h qos fabric %0d/%08h", i,
+                         BUS.sn_cnt[i], BUS.sn_sum[i], NOQ.sn_cnt[i], NOQ.sn_sum[i]);
+                failures = failures + 1;
+            end
+        $display("  snooped writes (hart 0, hart 1, other): %0d %0d %0d; data-master transfers %0d",
+                 NOQ.sn_cnt[0], NOQ.sn_cnt[1], NOQ.sn_cnt[2], NOQ.dm_cnt);
+        if (BUS.dm_cnt != NOQ.dm_cnt) begin
+            $display("  FAIL data-master transfers: bus %0d qos fabric %0d", BUS.dm_cnt, NOQ.dm_cnt);
+            failures = failures + 1;
+        end
+
         $display("  cycles with two slaves busy at once: bus %0d, router fabric %0d", BUS.par_cnt, NOC.par_cnt);
         if (NOC.par_cnt == 0) begin
             $display("  FAIL the router fabric never had two slaves busy at once");
+            failures = failures + 1;
+        end
+
+        $display("  mean asking cycles per transfer by role      data   fetch  walker   debug     NPU");
+        $display("    bus                                      %5.2f   %5.2f   %5.2f   %5.2f   %5.2f",
+                 BUS.lat_role_k(0,1) / 1000.0, BUS.lat_role_k(2,3) / 1000.0, BUS.lat_role_k(4,5) / 1000.0, BUS.lat_role_k(6,6) / 1000.0, BUS.lat_role_k(7,7) / 1000.0);
+        $display("    router fabric                            %5.2f   %5.2f   %5.2f   %5.2f   %5.2f",
+                 NOC.lat_role_k(0,1) / 1000.0, NOC.lat_role_k(2,3) / 1000.0, NOC.lat_role_k(4,5) / 1000.0, NOC.lat_role_k(6,6) / 1000.0, NOC.lat_role_k(7,7) / 1000.0);
+        $display("    router fabric with quality of service    %5.2f   %5.2f   %5.2f   %5.2f   %5.2f",
+                 NOQ.lat_role_k(0,1) / 1000.0, NOQ.lat_role_k(2,3) / 1000.0, NOQ.lat_role_k(4,5) / 1000.0, NOQ.lat_role_k(6,6) / 1000.0, NOQ.lat_role_k(7,7) / 1000.0);
+        $display("  mean asking cycles per transfer (processor roles / NPU): bus %0d.%03d / %0d.%03d, fabric %0d.%03d / %0d.%03d, fabric with QoS %0d.%03d / %0d.%03d",
+                 BUS.lat_cpu_k(0) / 1000, BUS.lat_cpu_k(0) % 1000, BUS.lat_npu_k(0) / 1000, BUS.lat_npu_k(0) % 1000,
+                 NOC.lat_cpu_k(0) / 1000, NOC.lat_cpu_k(0) % 1000, NOC.lat_npu_k(0) / 1000, NOC.lat_npu_k(0) % 1000,
+                 NOQ.lat_cpu_k(0) / 1000, NOQ.lat_cpu_k(0) % 1000, NOQ.lat_npu_k(0) / 1000, NOQ.lat_npu_k(0) % 1000);
+
+        // the top class is served sooner when the classes are on: fetch, class 3, waits
+        // less than with every master equal. (The others wait more, the price of putting
+        // it first; the table above shows it.)
+        if (NOQ.lat_role_k(2,3) >= NOC.lat_role_k(2,3)) begin
+            $display("  FAIL the top class did not get served sooner with quality of service on");
             failures = failures + 1;
         end
 

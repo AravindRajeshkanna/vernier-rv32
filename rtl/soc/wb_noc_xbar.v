@@ -38,7 +38,19 @@
 module wb_noc_xbar #(
     parameter NUM_SLAVES   = 7,
     parameter NUM_HARTS    = 1,
-    parameter BURST_SLAVES = 0
+    parameter BURST_SLAVES = 0,
+    // Quality of service (Phase 8 Stage 3). With QOS_EN clear the routers arbitrate by
+    // master number alone, as the bus does. With it set, each master's traffic carries
+    // the class below (0 to 3, higher served first) and a request that has waited
+    // AGE_LIMIT cycles is promoted to the top class (0 = never), so a lower class is
+    // delayed but cannot be starved. The classes default to equal.
+    parameter QOS_EN       = 0,
+    parameter AGE_LIMIT    = 0,
+    parameter QOS_DBG      = 0,
+    parameter QOS_D        = 0,
+    parameter QOS_W        = 0,
+    parameter QOS_F        = 0,
+    parameter QOS_N        = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -140,7 +152,7 @@ module wb_noc_xbar #(
             .clk(clk), .rst(rst),
             .wb_cyc(dbg_cyc), .wb_stb(dbg_stb), .wb_we(dbg_we), .wb_adr(dbg_adr),
             .wb_dat_w(dbg_dat_w), .wb_sel(dbg_sel), .wb_dst(dst_of(dbg_adr)),
-            .wb_qos(2'd0), .wb_lock(1'b0), .wb_burst(1'b0),
+            .wb_qos(QOS_DBG[1:0]), .wb_lock(1'b0), .wb_burst(1'b0),
             .wb_dat_r(mi_dat[32*ID_DBG +: 32]), .wb_ack(mi_ack[ID_DBG]), .wb_err(mi_err[ID_DBG]),
             .req_valid(mq_valid[ID_DBG]), .req_pkt(mq_pkt[82*ID_DBG +: 82]), .req_ready(mq_ready[ID_DBG]),
             .rsp_valid(mr_valid[ID_DBG]), .rsp_pkt(mr_pkt[82*ID_DBG +: 82]), .rsp_ready(mr_ready[ID_DBG]));
@@ -151,7 +163,7 @@ module wb_noc_xbar #(
                 .wb_cyc(d_cyc[g]), .wb_stb(d_stb[g]), .wb_we(d_we[g]), .wb_adr(d_adr[32*g +: 32]),
                 .wb_dat_w(d_dat_w[32*g +: 32]), .wb_sel(d_sel[4*g +: 4]),
                 .wb_dst(dst_of(d_adr[32*g +: 32])),
-                .wb_qos(2'd0), .wb_lock(d_is_rmw[g] && !d_amo_wrphase[g]), .wb_burst(1'b0),
+                .wb_qos(QOS_D[1:0]), .wb_lock(d_is_rmw[g] && !d_amo_wrphase[g]), .wb_burst(1'b0),
                 .wb_dat_r(mi_dat[32*(ID_D+g) +: 32]), .wb_ack(mi_ack[ID_D+g]), .wb_err(mi_err[ID_D+g]),
                 .req_valid(mq_valid[ID_D+g]), .req_pkt(mq_pkt[82*(ID_D+g) +: 82]), .req_ready(mq_ready[ID_D+g]),
                 .rsp_valid(mr_valid[ID_D+g]), .rsp_pkt(mr_pkt[82*(ID_D+g) +: 82]), .rsp_ready(mr_ready[ID_D+g]));
@@ -159,7 +171,7 @@ module wb_noc_xbar #(
                 .clk(clk), .rst(rst),
                 .wb_cyc(w_cyc[g]), .wb_stb(w_stb[g]), .wb_we(1'b0), .wb_adr(w_adr[32*g +: 32]),
                 .wb_dat_w(32'b0), .wb_sel(4'hf), .wb_dst(dst_of(w_adr[32*g +: 32])),
-                .wb_qos(2'd0), .wb_lock(1'b0), .wb_burst(1'b0),
+                .wb_qos(QOS_W[1:0]), .wb_lock(1'b0), .wb_burst(1'b0),
                 .wb_dat_r(mi_dat[32*(ID_W+g) +: 32]), .wb_ack(mi_ack[ID_W+g]), .wb_err(mi_err[ID_W+g]),
                 .req_valid(mq_valid[ID_W+g]), .req_pkt(mq_pkt[82*(ID_W+g) +: 82]), .req_ready(mq_ready[ID_W+g]),
                 .rsp_valid(mr_valid[ID_W+g]), .rsp_pkt(mr_pkt[82*(ID_W+g) +: 82]), .rsp_ready(mr_ready[ID_W+g]));
@@ -167,7 +179,7 @@ module wb_noc_xbar #(
                 .clk(clk), .rst(rst),
                 .wb_cyc(f_cyc[g]), .wb_stb(f_stb[g]), .wb_we(1'b0), .wb_adr(f_adr[32*g +: 32]),
                 .wb_dat_w(32'b0), .wb_sel(4'hf), .wb_dst(dst_of(f_adr[32*g +: 32])),
-                .wb_qos(2'd0), .wb_lock(1'b0),
+                .wb_qos(QOS_F[1:0]), .wb_lock(1'b0),
                 .wb_burst(f_burst[g] && is_burst_slave(dst_of(f_adr[32*g +: 32]))),
                 .wb_dat_r(mi_dat[32*(ID_F+g) +: 32]), .wb_ack(mi_ack[ID_F+g]), .wb_err(mi_err[ID_F+g]),
                 .req_valid(mq_valid[ID_F+g]), .req_pkt(mq_pkt[82*(ID_F+g) +: 82]), .req_ready(mq_ready[ID_F+g]),
@@ -188,7 +200,7 @@ module wb_noc_xbar #(
         .clk(clk), .rst(rst),
         .wb_cyc(n_cyc), .wb_stb(n_stb), .wb_we(1'b0), .wb_adr(n_adr),
         .wb_dat_w(32'b0), .wb_sel(4'hf), .wb_dst(dst_of(n_adr)),
-        .wb_qos(2'd0), .wb_lock(1'b0), .wb_burst(1'b0),
+        .wb_qos(QOS_N[1:0]), .wb_lock(1'b0), .wb_burst(1'b0),
         .wb_dat_r(mi_dat[32*ID_N +: 32]), .wb_ack(mi_ack[ID_N]), .wb_err(mi_err[ID_N]),
         .req_valid(mq_valid[ID_N]), .req_pkt(mq_pkt[82*ID_N +: 82]), .req_ready(mq_ready[ID_N]),
         .rsp_valid(mr_valid[ID_N]), .rsp_pkt(mr_pkt[82*ID_N +: 82]), .rsp_ready(mr_ready[ID_N]));
@@ -207,13 +219,13 @@ module wb_noc_xbar #(
     wire [NUM_P*82-1:0] ri_pkt;
 
     wire qr_misroute, rr_misroute;        // never set: the decode only produces ports
-    noc_router #(.NUM_IN(NUM_M), .NUM_OUT(NUM_P), .DEPTH(2)) QR (
+    noc_router #(.NUM_IN(NUM_M), .NUM_OUT(NUM_P), .DEPTH(2), .QOS_EN(QOS_EN), .AGE_LIMIT(AGE_LIMIT)) QR (
         .clk(clk), .rst(rst),
         .in_valid(mq_valid), .in_pkt(mq_pkt), .in_ready(mq_ready),
         .out_valid(qo_valid), .out_pkt(qo_pkt), .out_ready(qo_ready),
         .hold_v(1'b0), .hold_id(4'd0), .misroute(qr_misroute));
 
-    noc_router #(.NUM_IN(NUM_P), .NUM_OUT(NUM_M), .DEPTH(2)) RR (
+    noc_router #(.NUM_IN(NUM_P), .NUM_OUT(NUM_M), .DEPTH(2), .QOS_EN(QOS_EN), .AGE_LIMIT(AGE_LIMIT)) RR (
         .clk(clk), .rst(rst),
         .in_valid(ri_valid), .in_pkt(ri_pkt), .in_ready(ri_ready),
         .out_valid(mr_valid), .out_pkt(mr_pkt), .out_ready(mr_ready),
