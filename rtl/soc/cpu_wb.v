@@ -46,7 +46,17 @@ module cpu_wb #(
     // every hart runs with 1; the parameter stays so a build can still turn
     // the cache off, and sim/tb_cpu_wb_dcache_bypass.v still shows what a
     // cache with no snoop does when something writes behind it.
-    parameter DCACHE_ENABLE = 1
+    parameter DCACHE_ENABLE = 1,
+    // Set when the ack of an access can reach this hart *after* another master's
+    // write to the same word has completed and been snooped - which a fabric with
+    // routers does (the slave completes an access, then the ack and a read's data
+    // travel back) and the shared bus does not (a transfer holds the bus until its
+    // ack, so nothing else completes in between). Such an ack would fill, or update,
+    // the cache with a value already out of date, so a snoop that hits the index of an
+    // access still in flight cancels its cache update. Off, behaviour is exactly as
+    // before: a hit while a request merely waits for the bus would cost a fill the
+    // bus would have made good.
+    parameter SNOOP_LATE_ACK = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -79,6 +89,11 @@ module cpu_wb #(
     // writes behind.
     input  wire        snoop_wr,
     input  wire [31:0] snoop_adr,
+    // A second snoop port, for a fabric that can complete two writes in the same
+    // cycle (block RAM and SDRAM are both cacheable): same meaning, tie low when
+    // there is only one.
+    input  wire        snoop2_wr,
+    input  wire [31:0] snoop2_adr,
 
     // FENCE.I: drop the cached fetch word. Without this the buffer can
     // serve a stale instruction for an address that was just written -
@@ -499,7 +514,10 @@ module cpu_wb #(
     wire dc_fill  = read_ack  && dmem_re && dc_cacheable;
     wire dc_store = write_ack && dc_cacheable &&
                     (dc_present || (dwb_sel == 4'b1111));
-    wire dc_update = dc_fill || dc_store;
+    wire dc_update_raw = dc_fill || dc_store;
+    // A snoop that hit this access's index while it was in flight, see SNOOP_LATE_ACK.
+    reg  dc_poison;
+    wire dc_update = dc_update_raw && !(SNOOP_LATE_ACK != 0 && dc_poison);
 
     wire [31:0] dc_new = dc_fill ? dwb_dat_r : dc_merged;
 
@@ -534,6 +552,18 @@ module cpu_wb #(
     wire snoop_cacheable = (snoop_adr[31:24] == 8'h80) || (snoop_adr[31:24] == 8'h00) ||
                            (snoop_adr[31:25] == 7'h48);
     wire [DC_IDX_BITS-1:0] snoop_idx = snoop_adr[DC_IDX_BITS+1:2];
+    wire snoop2_cacheable = (snoop2_adr[31:24] == 8'h80) || (snoop2_adr[31:24] == 8'h00) ||
+                            (snoop2_adr[31:25] == 7'h48);
+    wire [DC_IDX_BITS-1:0] snoop2_idx = snoop2_adr[DC_IDX_BITS+1:2];
+
+    wire snoop_hit  = DCACHE_ENABLE && snoop_wr  && snoop_cacheable  && (snoop_idx  == dc_idx);
+    wire snoop2_hit = DCACHE_ENABLE && snoop2_wr && snoop2_cacheable && (snoop2_idx == dc_idx);
+
+    always @(posedge clk or posedge rst) begin
+        if (rst)                                  dc_poison <= 1'b0;
+        else if (dwb_ack)                         dc_poison <= 1'b0;
+        else if (dwb_stb && (snoop_hit || snoop2_hit)) dc_poison <= 1'b1;
+    end
 
     always @(posedge clk or posedge rst) begin
         if (rst) dc_valid <= {DC_ENTRIES{1'b0}};
@@ -541,6 +571,8 @@ module cpu_wb #(
             if (dc_update) dc_valid[dc_idx] <= 1'b1;
             if (DCACHE_ENABLE && snoop_wr && snoop_cacheable)
                 dc_valid[snoop_idx] <= 1'b0;
+            if (DCACHE_ENABLE && snoop2_wr && snoop2_cacheable)
+                dc_valid[snoop2_idx] <= 1'b0;
         end
     end
 

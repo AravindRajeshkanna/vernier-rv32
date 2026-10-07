@@ -124,6 +124,7 @@ endif
 # It travels with the other defines so every build and test that takes
 # CORE_DEFINES takes it too. `make verify INTERCONNECT=noc` runs the suites over it.
 INTERCONNECT ?= bus
+CHECKREADS = +checkreads
 ifeq ($(INTERCONNECT),noc)
 # The UART loader test sends at 4 clocks per bit, a simulation shortcut: the boot
 # ROM polls a UART with no FIFO and has about 40 cycles per byte. Through the
@@ -134,8 +135,14 @@ CORE_DEFINES += -DINTERCONNECT_NOC -DUARTLOAD_CPB=8
 # must finish inside; through the network each of its memory accesses takes
 # longer and the test never gets past it (it times out). 200 passes.
 DIV64_DEFINES = -DTIMER_INTERVAL=200u
+else ifeq ($(INTERCONNECT),xbar)
+# The router fabric (Phase 8 Stage 2): the same two timing knobs as `noc`, for the
+# same reasons, and no +checkreads, which reads the shared bus's wires.
+CORE_DEFINES += -DINTERCONNECT_XBAR -DUARTLOAD_CPB=8
+DIV64_DEFINES = -DTIMER_INTERVAL=200u
+CHECKREADS =
 else ifneq ($(INTERCONNECT),bus)
-$(error INTERCONNECT must be bus or noc, not $(INTERCONNECT))
+$(error INTERCONNECT must be bus, noc or xbar, not $(INTERCONNECT))
 endif
 IVFLAGS       = -g2012 $(CORE_DEFINES)
 VVP           = vvp
@@ -196,6 +203,9 @@ SOC_RTL_BASE = rtl/regfile.v rtl/csr_file.v rtl/muldiv_div.v rtl/clint.v rtl/pli
 ifeq ($(INTERCONNECT),noc)
 SOC_RTL_BASE += $(NOC_FABRIC_RTL)
 endif
+ifeq ($(INTERCONNECT),xbar)
+SOC_RTL_BASE += $(NOC_XBAR_RTL)
+endif
 SOC_RTL = $(SOC_RTL_BASE) $(CORE_RTL)
 SOC_TB  = sim/tb_soc.v sim/sd_card_model.v
 
@@ -246,7 +256,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -395,7 +405,7 @@ verilator_sdramboot: sim/sdramimage.hex $(VERILATOR_BIN)
 # `make sim_linux`, which is not in `verify` because it needs a kernel.
 verilator_check: sim_sdramboot $(VERILATOR_BIN)
 	@cd sim && ../$(VERILATOR_BIN) +sdram=sdramimage.hex \
-	    +checkreads +checkfetch +checkdecode +checkmmu +checkuart \
+	    $(CHECKREADS) +checkfetch +checkdecode +checkmmu +checkuart \
 	    | tee verilator_soc.log
 	@python3 sim/verilator_compare.py sim/sdramboot.log sim/verilator_soc.log
 	@grep -aq "were not the instruction at their own PC" sim/verilator_soc.log && \
@@ -2708,6 +2718,14 @@ sim_clint_multihart: sim/sim_clint_multihart.out
 # step 2a): the lock has to hold the bus for all four acks.
 # The instruction cache's line fills against a bursting bus slave and a
 # protocol monitor (Phase 8 Part 9, step 2b).
+sim/sim_cpu_wb_snoop_race.out: sim/tb_cpu_wb_snoop_race.v rtl/soc/cpu_wb.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_wb_snoop_race.v rtl/soc/cpu_wb.v
+
+sim_cpu_wb_snoop_race: sim/sim_cpu_wb_snoop_race.out
+	cd sim && $(VVP) sim_cpu_wb_snoop_race.out $(VVP_DUMP) | tee cpu_wb_snoop_race.log
+	@grep -aq "CPU-WB-SNOOP-RACE-TEST: PASS" sim/cpu_wb_snoop_race.log && echo "CPU_WB SNOOP RACE OK" || \
+	    { echo "FAILED: rtl/soc/cpu_wb.v's data cache against an ack that arrives after another master's write"; exit 1; }
+
 sim/sim_cpu_wb_ifill.out: sim/tb_cpu_wb_ifill.v rtl/soc/cpu_wb.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_cpu_wb_ifill.v rtl/soc/cpu_wb.v
 
@@ -3642,6 +3660,14 @@ verify_noc:
 	rm -f sim/*.out software/soc/div64test.elf sim/div64testimage.hex
 	rm -rf obj_dir_soc_*
 
+# The same, over the router fabric.
+verify_xbar:
+	rm -f sim/*.out software/soc/div64test.elf sim/div64testimage.hex
+	rm -rf obj_dir_soc_*
+	$(MAKE) verify INTERCONNECT=xbar
+	rm -f sim/*.out software/soc/div64test.elf sim/div64testimage.hex
+	rm -rf obj_dir_soc_*
+
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
         sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 dtb_ddr3 ddr3_check \
         verilator_sdramfull \
@@ -3662,6 +3688,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_noc_fabric \
         sim_interconnect_burst_noc \
         sim_cpu_wb_ifill \
+        sim_cpu_wb_snoop_race \
         sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_amoswap_sdram \
         sim_soc_2hart_amoswap_sdram_hetero \

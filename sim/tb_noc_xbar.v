@@ -15,7 +15,7 @@
 //
 // What has to agree: every master's log, word for word; every slave's final
 // contents; the AMO counters, which two harts increment with the bus's real
-// protocol (the router fabric additionally gets `d_is_amo`, which locks the
+// protocol (the router fabric additionally gets `d_is_rmw`, which locks the
 // read) and which come out exact only if no other master falls into the gap;
 // and the snooped writes and the data-master transfers. Timing differs and is
 // not compared. What must also be true is that the router fabric really ran
@@ -243,7 +243,7 @@ module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40) (
                 .clk(clk), .rst(rst),
                 .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr), .f_burst(f_burst), .f_dat_r(f_dat_r), .f_ack(f_ack),
                 .d_cyc(d_cyc), .d_stb(d_stb), .d_we(d_we), .d_adr(d_adr), .d_dat_w(d_dat_w), .d_sel(d_sel),
-                .d_dat_r(d_dat_r), .d_ack(d_ack), .d_amo_wrphase(d_wr), .d_is_amo(d_amo),
+                .d_dat_r(d_dat_r), .d_ack(d_ack), .d_amo_wrphase(d_wr), .d_is_rmw(d_amo),
                 .w_cyc(w_cyc), .w_stb(w_stb), .w_adr(w_adr), .w_dat_r(w_dat_r), .w_ack(w_ack),
                 .dbg_cyc(dbg_cyc), .dbg_stb(dbg_stb), .dbg_we(dbg_we), .dbg_adr(dbg_adr),
                 .dbg_dat_w(dbg_dat_w), .dbg_sel(dbg_sel), .dbg_dat_r(dbg_dat_r), .dbg_ack(dbg_ack),

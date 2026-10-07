@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2 has begun (Parts 21 and 22: a packet router, and a fabric built on routers that matches the bus on random traffic); Stages 3 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stages 3 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1230,6 +1230,82 @@ slaves are used together), and the snoop-port question above is unanswered. The 
 `soc_top`: per-slave wiring for all thirteen slaves, two snoop ports on the data cache, and the
 whole suite run over it, then the numbers.
 
+**Update, Part 23: the SoC over routers, and what it costs.** The router fabric of Part 22
+is now selectable in `soc_top`: `make INTERCONNECT=xbar` builds the SoC with `wb_noc_xbar` where
+the bus stood, and `make verify_xbar` runs the whole `make verify` suite over it (as
+`verify_noc` does for the one-node network). Every slave now reads its own copy of the
+address, data and control wires (`sl_*`) in every build: on the bus and the one-node network
+each copy is the shared wire, so nothing changes for them (the bus's cycle counts are
+identical to before: Linux boots in 146,914,531 cycles and the SDRAM boot check takes
+2,262,170, both unchanged), and on the router fabric they are separate wires, which is
+what lets two slaves be busy at once.
+
+**Three things had to change for the SoC to run, none of them visible in Part 22's models.**
+
+- **The cache's snoop argument rested on the bus.** `cpu_wb.v`'s write-through data cache was
+  argued correct because a write cannot complete while the hart's own access is in flight. With
+  routers it can: a slave completes an access, and the ack (and a read's data) takes more cycles
+  to come back, so another hart's write to the same word can be snooped in between and the late
+  ack then fills or updates the line with a value already out of date. `sim/tb_cpu_wb_snoop_race.v`
+  (`make sim_cpu_wb_snoop_race`, in `make verify`) reproduces both cases, a store and a fill, and
+  failed on the unchanged cache before the fix. The fix, behind a new parameter `SNOOP_LATE_ACK`
+  that only the router build turns on, cancels the cache update of an access whose index is
+  snooped while it is in flight. It is a parameter because on the bus the same check would
+  sometimes drop a fill needlessly, when another hart's write lands while a request merely waits
+  for the bus, which would change the bus's cycle counts.
+- **Two snoop ports.** Block RAM and SDRAM are both cacheable and can complete writes in the
+  same cycle; the cache has a second snoop port (`snoop2_*`, tied low on the bus), and the router
+  fabric reports each slave's writes separately, with the RAM slave's on port one and the SDRAM
+  slave's on port two.
+- **Only a read-modify-write AMO's read can be locked.** The first version of Part 22 locked
+  the read of anything the core calls an AMO, and the SoC deadlocked at the load-reserved test:
+  `dmem_is_amo` is also high for LR and SC, an LR has no write phase and an SC may not, so the
+  lock was never released and blocked the hart's own instruction fetch. Both cores now export
+  `dmem_is_rmw` (an AMO that is neither LR nor SC), which is what the fabric locks on.
+
+**Evidence.** `make verify` and `make verify_ooo` (the bus) exit 0 with all of the above, the bus's
+cycle counts unchanged. `make verify_xbar` and `make verify_xbar CORE=ooo` exit 0: the whole suite,
+including Linux booting to userspace, over the router fabric on both cores. `make sim_linux_2hart
+INTERCONNECT=xbar` reaches userspace on both harts with the in-order pair and the wide pair. Two
+test knobs are set for the network builds, for the reasons given in Part 18 (the UART loader's
+4-clocks-per-bit baud and the divide test's 97-cycle timer); `+checkreads` and `+busmon` read the
+shared bus's wires and are off for this build, so `verilator_check` there compares the two
+simulators cycle for cycle without the read checker.
+
+**The cost, measured** (cycles to userspace; bus, one-node network of Parts 18 and 19, router fabric):
+
+| Configuration | Bus | One-node network | Router fabric |
+|---|---|---|---|
+| 1 hart, in-order | 146,914,531 | 186,736,140 (+27.1%) | 183,452,079 (+24.9%) |
+| 1 hart, wide | 149,304,491 | 191,667,924 (+28.4%) | 181,536,850 (+21.6%) |
+| 2 harts, in-order | 212,175,721 | 246,170,878 (+16.0%) | 255,309,022 (+20.3%) |
+| 2 harts, wide | 159,893,093 | 226,199,579 (+41.5%) | 266,594,156 (+66.7%) |
+| SDRAM boot check, in-order | 2,262,170 | 2,887,812 (+27.7%) | 2,887,536 (+27.6%) |
+| SDRAM boot check, wide | 1,931,096 | | 2,428,528 (+25.8%) |
+
+With one hart the router fabric is slightly cheaper than the one-node network (it overlaps
+a fetch and a data access to different slaves) and still 22 to 25% slower than the bus. With two
+harts it is slower than the one-node network, and for the wide pair by a lot: 66.7% more
+cycles than the bus. **Why is not measured.** Candidates, none tested: two harts mostly meet at
+the one SDRAM slave, where the router fabric's parallelism has nothing to do and its longer path
+(two routers and two sets of queues) is pure latency, exactly what Stage 0's finding that one memory
+takes almost all the traffic predicts; and the late-ack guard, which cancels a cache update
+whenever the other hart writes the same index while an access is in flight, may be costing fills
+that two harts sharing data trigger often. Counting the cancelled fills would separate the two.
+
+**What this means for Stage 2's Done-when**, which asks that the two-hart configuration run
+correctly over the network in simulation, Linux SMP reach userspace, and the latency, bandwidth and
+area be recorded against the bus: the first two are met, the latency is recorded above, and the
+result is that **on this SoC the router fabric loses to the bus everywhere** (16 to 67% more
+cycles). That is the outcome Stage 0 expected. Bandwidth was not measured separately (Linux's
+cycles to userspace and the SDRAM boot check are the workloads), and area and timing were not
+measured at all.
+
+**What this does not establish.** No area or LUT figure, no Fmax, no board; no CI job builds the
+network; the two-hart Linux boots are one run each; the late-ack guard's cost is a guess; and nothing
+has run with the NPU's DMA racing a hart over the router fabric, the case where two slaves are
+genuinely busy together.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -1248,9 +1324,10 @@ covering round-trip correctness, per-master ordering, and real back-pressure
 - formal properties where the design admits them, the same bar every
 controller in this tree is already held to.
 
-**Stage 2 - the smallest router that could replace the bus** (begun at the
-maintainer's request: Parts 21 and 22 built the router and a fabric on it that matches the bus
-in simulation; the SoC built on it, and the Done-when's numbers, are still open). A real router
+**Stage 2 - the smallest router that could replace the bus** (done, in simulation,
+at the maintainer's request: Parts 21 to 23 built the router, a fabric on it, and ran the SoC and
+Linux over it; the cycles are recorded in Part 23, and the bus is faster; area and timing
+are not measured). A real router
 (wormhole or virtual-cut-through, 2-5 ports) in the smallest topology that
 says anything real - a 2x2 mesh, a small crossbar, or a ring, whichever
 Stage 0's own measurements favor - carrying a real first configuration: two
@@ -1320,4 +1397,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 has begun (Parts 21 and 22: a router, and a fabric built on it). Stages 3 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stages 3 onward are a plan.

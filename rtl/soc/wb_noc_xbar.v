@@ -22,10 +22,12 @@
 // takes its next request the moment the read finishes, a few cycles before the
 // read's response is back at the core and the core can raise `d_amo_wrphase`
 // (removing the lock and keeping only that hold lets another master's access in, and
-// the equivalence test sees it). So the read has to be locked when it is issued, and
-// the core knows it is executing an AMO even though it cannot yet know a write
-// follows: `d_is_amo` makes the data master send its read phase with `lock` set,
-// `d_amo_wrphase` ends it on the write, and the request router's owner lock keeps
+// the equivalence test sees it). So the read has to be locked when it is issued. A
+// read-modify-write AMO's read is certain to be followed by a write to the same word,
+// and the core knows it is executing one (`d_is_rmw`; not LR, which has no write, nor
+// SC, which may not - locking those would never release, and would block the hart's
+// own instruction fetch). The data master sends that read with `lock` set,
+// `d_amo_wrphase` ends the lock on the write, and the request router's owner lock keeps
 // everyone else off that slave across the gap. The router's `hold` input, which
 // noc_node1.v's gap needed, is not used here.
 //
@@ -57,7 +59,7 @@ module wb_noc_xbar #(
     output wire [NUM_HARTS*32-1:0]   d_dat_r,
     output wire [NUM_HARTS-1:0]      d_ack,
     input  wire [NUM_HARTS-1:0]      d_amo_wrphase,
-    input  wire [NUM_HARTS-1:0]      d_is_amo,
+    input  wire [NUM_HARTS-1:0]      d_is_rmw,
 
     input  wire [NUM_HARTS-1:0]      w_cyc,
     input  wire [NUM_HARTS-1:0]      w_stb,
@@ -149,7 +151,7 @@ module wb_noc_xbar #(
                 .wb_cyc(d_cyc[g]), .wb_stb(d_stb[g]), .wb_we(d_we[g]), .wb_adr(d_adr[32*g +: 32]),
                 .wb_dat_w(d_dat_w[32*g +: 32]), .wb_sel(d_sel[4*g +: 4]),
                 .wb_dst(dst_of(d_adr[32*g +: 32])),
-                .wb_qos(2'd0), .wb_lock(d_is_amo[g] && !d_amo_wrphase[g]), .wb_burst(1'b0),
+                .wb_qos(2'd0), .wb_lock(d_is_rmw[g] && !d_amo_wrphase[g]), .wb_burst(1'b0),
                 .wb_dat_r(mi_dat[32*(ID_D+g) +: 32]), .wb_ack(mi_ack[ID_D+g]), .wb_err(mi_err[ID_D+g]),
                 .req_valid(mq_valid[ID_D+g]), .req_pkt(mq_pkt[82*(ID_D+g) +: 82]), .req_ready(mq_ready[ID_D+g]),
                 .rsp_valid(mr_valid[ID_D+g]), .rsp_pkt(mr_pkt[82*(ID_D+g) +: 82]), .rsp_ready(mr_ready[ID_D+g]));
@@ -247,6 +249,22 @@ module wb_noc_xbar #(
     endgenerate
     assign s_cyc = si_cyc;
     assign s_stb = si_stb;
+
+    // Which masters are being served at some slave, under the names the bus's
+    // monitoring (sim/bus_monitor.v) reads: a master is "granted" while a slave
+    // interface holds its transaction.
+    reg [15:0] served;                  // the whole four-bit ID space
+    integer sv;
+    always @* begin
+        served = 16'b0;
+        for (sv = 0; sv < NUM_SLAVES; sv = sv + 1)
+            if (si_cyc[sv]) served[si_src[4*sv +: 4]] = 1'b1;
+    end
+    wire [NUM_HARTS-1:0] sel_d   = served[ID_D +: NUM_HARTS];
+    wire [NUM_HARTS-1:0] sel_w   = served[ID_W +: NUM_HARTS];
+    wire [NUM_HARTS-1:0] sel_f   = served[ID_F +: NUM_HARTS];
+    wire                 sel_dbg = served[ID_DBG];
+    wire                 sel_n   = served[ID_N];
 
     noc_err_sink #(.ID(NUM_SLAVES[3:0])) ERRSINK (
         .clk(clk), .rst(rst),

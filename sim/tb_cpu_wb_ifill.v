@@ -31,7 +31,7 @@ module tb_cpu_wb_ifill;
         .dmem_addr(32'b0), .dmem_wdata(32'b0), .dmem_we(1'b0), .dmem_re(1'b0),
         .dmem_is_amo(1'b0), .dmem_size(2'b10),
         .dmem_rdata(), .dmem_rvalid(), .dbus_wait(),
-        .fence_i(fence_i), .snoop_wr(1'b0), .snoop_adr(32'b0),
+        .fence_i(fence_i), .snoop_wr(1'b0), .snoop_adr(32'b0), .snoop2_wr(1'b0), .snoop2_adr(32'b0),
         .iwb_cyc(iwb_cyc), .iwb_stb(iwb_stb), .iwb_adr(iwb_adr), .iwb_burst(iwb_burst),
         .iwb_dat_r(iwb_dat_r), .iwb_ack(iwb_ack),
         .dwb_cyc(), .dwb_stb(), .dwb_we(), .dwb_adr(), .dwb_dat_w(), .dwb_sel(),
