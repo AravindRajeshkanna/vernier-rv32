@@ -256,7 +256,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_nodcache busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1945,14 +1945,56 @@ sim/npuloadimage.hex: software/soc/npuload.elf software/bin2hex.py Makefile
 	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
 	    software/soc/npuload.bin > $@
 
+# NPULOAD_MON is empty for builds whose interconnect has no single bus to watch (the router
+# fabric), and NPULOAD_DEFS carries any extra define (-DXBAR_QOS); clear sim/*.out when either
+# changes, as for CORE and INTERCONNECT.
+NPULOAD_MON ?= -DBUS_MONITOR
+NPULOAD_DEFS ?=
+
 sim/sim_npuload.out: sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
-	$(IVERILOG) $(IVFLAGS) -DBUS_MONITOR -DRAM_IMAGE='"npuloadimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
+	$(IVERILOG) $(IVFLAGS) $(NPULOAD_MON) $(NPULOAD_DEFS) -DRAM_IMAGE='"npuloadimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -o $@ sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
 
 sim_npuload: sim/bootrom_$(CORE).hex sim/npuloadimage.hex sim/sim_npuload.out
 	@cd sim && $(VVP) sim_npuload.out $(VVP_DUMP) 2>&1 | tee npuload.log
 	@grep -q "RAMBOOT TEST PASSED" sim/npuload.log || \
 	    { echo "sim_npuload FAILED"; exit 1; }
+
+# Variants of the same workload (Phase 8 Stage 3): where the NPU's buffer lives, and whether the
+# CPU loop fits in its data cache.
+#   split       the NPU's buffer in SDRAM, the CPU's code and data in block RAM: two memory
+#               endpoints used at once
+#   heavy       the CPU loop sweeps 8 KB, so every load reaches the bus (NPU buffer in RAM)
+#   heavysplit  both
+# `make npuload_matrix` runs them over the bus and the router fabric, with and without its classes.
+define NPULOAD_VARIANT
+software/soc/npuload_$(1).elf: $$(SOCRT_SRCS) software/soc/npuload.c \
+                               software/soc/link_ram.ld $$(SOC_HDRS)
+	$$(RISCV_CC) $$(SOCPROG_CFLAGS) $(2) -T software/soc/link_ram.ld \
+	    -o $$@ $$(SOCRT_SRCS) software/soc/npuload.c
+
+sim/npuload_$(1)_image.hex: software/soc/npuload_$(1).elf software/bin2hex.py Makefile
+	$$(RISCV_OBJCOPY) -O binary software/soc/npuload_$(1).elf software/soc/npuload_$(1).bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/npuload_$(1).bin > $$@
+
+sim/sim_npuload_$(1).out: sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $$(SOC_RTL)
+	$$(IVERILOG) $$(IVFLAGS) $$(NPULOAD_MON) $$(NPULOAD_DEFS) -DRAM_IMAGE='"npuload_$(1)_image.hex"' -DROM_IMAGE='"bootrom_$$(CORE).hex"' \
+	    -o $$@ sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $$(SOC_RTL)
+
+sim_npuload_$(1): sim/bootrom_$$(CORE).hex sim/npuload_$(1)_image.hex sim/sim_npuload_$(1).out
+	@cd sim && $$(VVP) sim_npuload_$(1).out $$(VVP_DUMP) 2>&1 | tee npuload_$(1).log
+	@grep -q "RAMBOOT TEST PASSED" sim/npuload_$(1).log || \
+	    { echo "sim_npuload_$(1) FAILED"; exit 1; }
+endef
+$(eval $(call NPULOAD_VARIANT,split,-DNPU_SRC_SDRAM))
+$(eval $(call NPULOAD_VARIANT,heavy,-DCPU_BUS_HEAVY))
+$(eval $(call NPULOAD_VARIANT,heavysplit,-DCPU_BUS_HEAVY -DNPU_SRC_SDRAM))
+
+# The matrix: every variant over the bus, the router fabric, and the router fabric with its
+# classes on, printed as one table. A measurement, not a gate.
+npuload_matrix:
+	bash sim/npuload_matrix.sh
 
 # The same with the data cache off, which is how any build with more than one
 # hart runs, so the CPU loop's bus traffic roughly doubles.
