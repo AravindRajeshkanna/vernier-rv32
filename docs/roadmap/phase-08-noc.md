@@ -1,8 +1,8 @@
 # Phase 8 — Network-on-Chip interconnect
 
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
-decision: no network yet). Stage 1 has largely been built (Parts 15 to 19: the network interfaces, a
-packet format with a four-word burst, a one-node network, and a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles);
+decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
+packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
 Stage 2 onward is a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
@@ -1087,11 +1087,52 @@ Verilator width lint that only the two-hart builds reached); after it, the fabri
 own tests, its lint, and both two-hart Linux boots were rerun and pass, and the two
 full network suites were not.
 
-**Stage 1 - a network interface and a real packet format** (built: Parts 15 to 19 made
+**Update, Part 20: the interfaces are proved too, and Stage 1's Done-when is met.**
+Parts 15 to 19 proved the one-node network formally (`formal/fv_noc_node.v`) and
+tested the interfaces. Stage 1's Done-when also asks for formal properties "where the
+design admits them", and the interfaces admit the ones that matter: lost or invented
+data.
+
+- `formal/fv_noc_ni_slave.v` proves, over a legal environment (an offered request stays
+  until taken, a burst is a read, the slave acks only to a strobe): the strobe is up
+  exactly while a request is outstanding and `cyc` also across a locked pair's gap; a
+  request is taken only when nothing is outstanding and every response packet of the
+  last has left; every ack becomes exactly one packet and the queue never holds more
+  than four (so a burst cannot overflow it); a transaction's last packet is marked and
+  nothing is queued behind it; an error is always last; and every response carries this
+  interface's own ID as sender.
+- `formal/fv_noc_ni_master.v` proves, over a legal master (it keeps its request until
+  acked) and a legal network (a response only to a request that was sent, an offered one
+  stays): one request at a time; the response is accepted exactly while one is awaited;
+  an ack or error reaches the master only with a response that is there and while it is
+  asking, never both; and the request packet carries exactly what the master asked for.
+- Both are proved at depth 12 with their cover statements reached (a full queue, a
+  burst's last beat, an error, a locked request, a burst's middle beat). Ten mutants
+  are each refuted: an error not marked last, a burst that ends early, a request taken
+  while packets are queued, a queue that loses a beat, `cyc` dropped in the lock gap, a
+  wrong sender ID, a second request allowed, a master interface always ready for a
+  response, a dropped lock bit, and an ack without a strobe. `make formal` now proves
+  11 targets.
+
+**Stage 1, against its own Done-when.** A real master reaches a real slave through the
+network interfaces with the bus's functional behaviour (Parts 17 to 19: the bus's own
+burst test, a side-by-side random comparison with the bus, and the whole verification
+suite and Linux over it on both cores with one and two harts); the directed tests cover
+round-trip correctness, per-master ordering (a master's reads see its own writes) and
+back-pressure (a randomly stalling channel, slave wait states, a queue that fills);
+LR/SC/AMO survive the crossing (the hold, and the two-hart atomics tests over the
+network); and the node and both interfaces carry formal properties. **That meets the
+Done-when, in simulation.** What it does not do, and the cost it carries, is in Parts
+17 to 19: 16 to 41% more cycles, nothing run on a board, no area or timing figure, and no CI job
+for the network build. Stage 2 (a real router) stays behind the phase's own trigger,
+which Stage 0's measurement says has not occurred: the bus is saturated by one memory,
+and a network does not add a second.
+
+**Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
-Linux boot over it with one and two harts and both cores, at 16 to 41% more cycles; formal properties of the whole fabric and a CI job
-are still open). The boundary
+Linux boot over it with one and two harts and both cores, at 16 to 41% more cycles, with formal properties of the node and both interfaces; a
+CI job for the network build is still open). The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
 a QoS tag), and real Wishbone-to-NoC network interfaces on both the master
@@ -1175,4 +1216,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 has largely been built (Parts 15 to 19). Stages 2 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stages 2 onward are a plan.
