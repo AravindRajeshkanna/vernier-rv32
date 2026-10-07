@@ -1059,6 +1059,7 @@ lint-rtl-noc:
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_master rtl/soc/noc_ni_master.v
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_slave rtl/soc/noc_ni_slave.v
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module wb_noc_fabric $(NOC_FABRIC_RTL)
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_router rtl/soc/noc_router.v
 
 lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc
 
@@ -2725,6 +2726,14 @@ sim_noc_ni: sim/sim_noc_ni.out
 	@grep -aq "NOC NI TEST PASSED" sim/noc_ni.log && echo "NOC NI OK" || \
 	    { echo "FAILED: the Phase 8 network interfaces and one-node network"; exit 1; }
 
+sim/sim_noc_router.out: sim/tb_noc_router.v rtl/soc/noc_router.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_router.v rtl/soc/noc_router.v
+
+sim_noc_router: sim/sim_noc_router.out
+	cd sim && $(VVP) sim_noc_router.out $(VVP_DUMP) | tee noc_router.log
+	@grep -aq "NOC ROUTER TEST PASSED" sim/noc_router.log && echo "NOC ROUTER OK" || \
+	    { echo "FAILED: the Phase 8 packet router"; exit 1; }
+
 sim/sim_noc_fabric.out: sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
 
@@ -3638,6 +3647,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence_sdram \
         sim_interconnect_burst \
         sim_noc_ni \
+        sim_noc_router \
         sim_noc_fabric \
         sim_interconnect_burst_noc \
         sim_cpu_wb_ifill \

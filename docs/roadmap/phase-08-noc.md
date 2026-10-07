@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2 onward is a plan, not an account, and nothing about any of it is blocked on a
+Stage 2 has begun (Part 21: a packet router, on its own); Stages 3 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1128,6 +1128,60 @@ for the network build. Stage 2 (a real router) stays behind the phase's own trig
 which Stage 0's measurement says has not occurred: the bus is saturated by one memory,
 and a network does not add a second.
 
+**Update, Part 21: Stage 2 begun - a packet router.** The maintainer asked for Stage 2
+(2026-10-08), which Stage 0's own measurement said would buy little (one memory takes
+95 to 99.8% of the traffic, so a network has nothing to carry in parallel); this builds
+it and measures it against the bus, as the Done-when asks, and does not claim a win in
+advance. The first piece is the router, on its own.
+
+`rtl/soc/noc_router.v` has NUM_IN input ports and NUM_OUT output ports joined by a
+crossbar. Each input has a small FIFO whose head packet's `dst` names the output it
+wants; each output serves, per cycle, the lowest-numbered input that wants it (the same
+fixed priority as the bus and the one-node network). So packets bound for *different*
+outputs move in the same cycle, which `noc_node1.v`, carrying one transaction at a time,
+cannot do. A packet is one flit (a whole request or one beat of a response), so there is
+no path to hold across cycles as a wormhole router holds one, and no virtual channels:
+nothing here is wider than one transfer. A grant is held until the receiver takes it, so
+an offer never changes while it waits. Packets between one input and one output keep their
+order. The two ways of keeping an AMO's phases together carry over: a `lock` packet makes
+its source the owner of that output until a packet with `lock` clear from it has gone, and
+the `hold` input (raised by a core when an AMO's read is acked) closes the output the
+holder last used to everyone else, leaving the other outputs open. A `dst` that is no
+port is taken, discarded and flagged (a sticky flag, `misroute` in the code) rather than left to hang.
+
+**Evidence.**
+
+- `make sim_noc_router` (`sim/tb_noc_router.v`, in `make verify`): three inputs, three
+  outputs, two-deep FIFOs. 2,101 packets of random traffic with random output
+  back-pressure and `lock` pairs, each carrying a per-flow sequence number: every one
+  delivered, none lost, repeated or reordered; an offered packet never changed or vanished
+  before it was taken; 563 cycles in which two or more outputs moved at once (required to
+  exceed 100); the lock excluded other sources in every locked sequence. A hold phase: while
+  `hold` was up no other input passed the held output (0 of 6 queued), the other output carried
+  all 6 packets sent to it, the holder still got through, and the six waiting packets passed
+  once it dropped. A phase with an undeliverable destination: discarded and flagged, traffic carried on. Ten mutants are
+  caught: no hold, a hold that blocks every output (survived at first, because the test
+  counted the other output across the whole window and the same input's packets to it were
+  stuck behind the blocked one; now a different input sends there and only the hold's window
+  is counted), no lock, a lock never released, a grant not held, a bad destination not discarded, a
+  FIFO that is never full, a FIFO that reads the wrong slot, ignoring the destination, and
+  `last_out` not recorded.
+- `formal/fv_noc_router.v` (two inputs, two outputs, depth 2; boolector, depth 12; 5 cover
+  statements reached): a packet leaves by the port its `dst` names; every packet that leaves
+  an input is that input's next one, by sequence number (no loss, repeat or reorder; the
+  numbers are mod 16, enough that a two-deep FIFO cannot confuse them); an input is ready
+  exactly while it has room; an offer, once made, stays unchanged; a locked sequence excludes
+  others at its output; and a new offer at the output the holder last used is the holder's.
+  Eight mutants are each refuted. (The first attempt used 32-bit counters and z3 and was
+  stopped after thirty minutes; four-bit counters and boolector prove it in under four.)
+
+**What this does not establish.** Nothing yet uses the router: `wb_noc_fabric.v` still has
+the one-node network, and `soc_top` still shares one set of slave wires, so no two slaves
+can be active at once. A fabric that gets parallelism out of the router has to give each
+slave its own address and data wires and rebuild what the bus's shared signals carry (the
+snoop and reservation-monitor events, which assume one write at a time); that is the next
+piece, then the SoC, then the numbers.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -1146,7 +1200,9 @@ covering round-trip correctness, per-master ordering, and real back-pressure
 - formal properties where the design admits them, the same bar every
 controller in this tree is already held to.
 
-**Stage 2 - the smallest router that could replace the bus.** A real router
+**Stage 2 - the smallest router that could replace the bus** (begun at the
+maintainer's request: Part 21 built the router on its own; the fabric and SoC built on it,
+and the Done-when's numbers, are still open). A real router
 (wormhole or virtual-cut-through, 2-5 ports) in the smallest topology that
 says anything real - a 2x2 mesh, a small crossbar, or a ring, whichever
 Stage 0's own measurements favor - carrying a real first configuration: two
@@ -1216,4 +1272,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stages 2 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 has begun (Part 21: a router, on its own). Stages 3 onward are a plan.
