@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 26: traffic classes in the router, the NPU's DMA racing a hart, and CoreMark on two harts in one memory and in two); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 27: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, and two harts streaming through memory); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1416,7 +1416,11 @@ fabric without them; a check inside the simulation confirmed the router really h
   per-word round trip: about 8 cycles from block RAM on the bus (66,102 over 8,192 words) and 16 on
   the router fabric, 18 and 26 from SDRAM. The fabric adds about 8 cycles to a single-word access,
   which is the same price the Linux boots paid (Parts 18, 19 and 23). The CPU's cache-missing
-  loop pays about 4 more cycles per miss (213,057 against 147,516, 44% slower).
+  loop pays about 4 more cycles per miss (213,057 against 147,516, 44% slower). (Update, Part 27: the
+  8 is the NPU's own read, 8.0 more a word (131,698 against 66,102 over 8,192 words). The processor's is
+  half that, 65,541 more cycles over 16,384 loads, 4.0 a load, and Part 27 measures 4.0 for a plain
+  word-at-a-time stream in block RAM and in SDRAM alike. Why the NPU's master pays twice the
+  processor's has not been traced, and the comparison with the Linux boots was not measured.)
 - **Isolation, where it exists.** With two memories (`heavysplit`) the bus lets the NPU slow the CPU
   by 11.7%, because the NPU's SDRAM reads hold the one bus; the router fabric does not (213,057
   to 213,101): the two use different slaves and never meet. This is the property the fabric exists
@@ -1506,6 +1510,77 @@ explanation for the same-memory penalty is not tested; an experiment that would 
 interface that accepts its next request while the last response drains, and seeing whether the penalty
 shrinks. That is also the most direct design improvement the numbers point to, and it is not done.
 
+**Update, Part 27: two harts streaming through memory, where the bus is the bottleneck.** Parts 25 and
+26 ended on the same gap: neither workload keeps the bus busy (CoreMark's working set fits the caches, and the
+NPU job leaves most cycles idle), and a fabric whose point is separate paths to memory cannot show that
+point where the bus has room. This workload is built to be bus-bound. `software/bench/stream2.S` runs on both
+harts: each fills an array of 1,024 words (4 KB) with `a[i] = i`, waits at a barrier, then reads it round and
+round, one word at a time, for 200,000 cycles, checking the sum of every 64-word block as it goes. The data
+cache is 256 words, direct-mapped, one word to an entry, so every load of every pass misses and is a
+single-word read on the interconnect. What it measures is the words read per thousand cycles in the window.
+Each hart's array is in block RAM or in SDRAM, so that the harts meet at one memory (RAM and RAM, or SDRAM and
+SDRAM) or use two (RAM and SDRAM), and each hart also runs alone, so that its rate beside the other can be set
+against its rate alone. `sim/tb_soc_2hart_stream.v` checks that the two windows start together (at most 109
+cycles apart, of 200,000) and that a hart meant to be parked did nothing. `make stream2_matrix`
+(`sim/stream2_matrix.py`) runs sixteen simulations per core.
+
+Words read per thousand cycles, both harts streaming, in-order core. A hart alone reads 225.9 from block RAM and
+105.4 from SDRAM on the bus, and 118.6 and 74.2 on the fabric.
+
+| arrays (hart 0, hart 1) | bus: hart 0, hart 1 | fabric: hart 0, hart 1 | fabric against bus: hart 0, hart 1, pair | beside/alone, bus | beside/alone, fabric |
+|---|---|---|---|---|---|
+| RAM, RAM | 204.9, 204.8 | 108.9, 108.9 | 0.53, 0.53, 0.53 | 0.91, 0.91 | 0.92, 0.92 |
+| RAM, SDRAM | 101.9, 96.8 | 118.6, 74.2 | **1.16**, 0.77, 0.97 | **0.45**, 0.92 | **1.00**, 1.00 |
+| SDRAM, SDRAM | 61.9, 61.9 | 49.0, 48.9 | 0.79, 0.79, 0.79 | 0.59, 0.59 | 0.66, 0.66 |
+
+The out-of-order core. A hart alone reads 258.6 and 105.1 on the bus, and 127.8 and 74.1 on the fabric.
+
+| arrays (hart 0, hart 1) | bus: hart 0, hart 1 | fabric: hart 0, hart 1 | fabric against bus: hart 0, hart 1, pair | beside/alone, bus | beside/alone, fabric |
+|---|---|---|---|---|---|
+| RAM, RAM | 213.0, 212.7 | 112.4, 112.4 | 0.53, 0.53, 0.53 | 0.82, 0.82 | 0.88, 0.88 |
+| RAM, SDRAM | 128.5, 95.6 | 127.7, 74.1 | 0.99, 0.78, 0.90 | **0.50**, 0.91 | **1.00**, 1.00 |
+| SDRAM, SDRAM | 62.0, 62.0 | 49.1, 48.9 | 0.79, 0.79, 0.79 | 0.59, 0.59 | 0.66, 0.66 |
+
+**What it shows.**
+
+- **The bus is contended only where a slow memory is involved.** Two streams from block RAM cost each other 9% on
+  the bus (the pair gets 1.81 harts' worth of one hart alone), so there is little for a fabric to isolate. Put
+  one hart on SDRAM and it is a different bus: the hart reading block RAM falls to 0.45 of its rate alone (0.50
+  on the out-of-order core), because every SDRAM read holds the one bus for its whole duration. The SDRAM hart
+  itself loses 8 to 9%.
+- **The fabric isolates completely.** With the arrays in two memories each hart gets exactly its rate alone
+  (1.00 and 1.00, on both cores): the hart reading block RAM runs at 118.6 words per thousand cycles whether or
+  not the other is streaming from SDRAM, where on the bus it gets anything from 101.9 to 225.9 depending on
+  what the other does. This is the property the fabric exists for, measured on a workload that needs it.
+- **The price is four cycles a word, in either memory.** A word costs 4.43 cycles from block RAM on the bus and
+  8.43 on the fabric, and 9.49 and 13.48 from SDRAM: 4.00 and 3.99 more, which is 90% more from block RAM and
+  42% from SDRAM. The out-of-order core pays the same (3.87 to 7.82, and 9.51 to 13.50). It is also the
+  processor's price in Part 25 (65,541 more cycles over 16,384 loads, 4.00 a load).
+- **Net, the bus still wins, narrowly in the case the fabric is for.** With RAM and SDRAM the hart on block RAM is
+  16% faster on the fabric (1% slower on the out-of-order core), the hart on SDRAM 23% slower (22%), and the
+  pair 3% slower (10%). Where the two share a memory there is nothing to isolate and the longer path is all
+  cost: the fabric delivers 0.53 of the bus's rate from block RAM and 0.79 from SDRAM.
+- **What the fabric is short by.** This is arithmetic on the measured rates, not a measurement. If the fabric kept
+  this isolation but added L cycles a word instead of 4.0, the RAM-and-SDRAM pair would break even at L = 3.71
+  on the in-order core and be 8% ahead at 3, 22% at 2 and 41% at 1; on the out-of-order core it breaks even at
+  L = 3.05 and is 15% ahead at 2. At two harts it is the fabric's path length, not its structure, that loses: a
+  third of a cycle a word from break-even in-order, a cycle out-of-order.
+- **A trade-off, not yet an improvement.** What the fabric buys is a rate that does not depend on the other hart
+  (hart 0 never below 118.6 words per thousand cycles; on the bus it is anywhere from 101.9 to 225.9). What it
+  costs is the SDRAM hart and the pair. Whether that is acceptable depends on which hart matters; it does not
+  meet the Done-when's "measured improvement".
+
+**What this does not establish.** Two harts, and a read-only stream of independent loads: stores (write-through,
+and each one invalidates entries in the other cache) are not streamed, so the fabric's write path is unmeasured
+here. The four cycles are an end-to-end difference; how they divide between the interfaces, the routers' queues
+and the response path is by inspection, not measured. The break-even figures assume the isolation stays at 1.00
+as the latency shrinks and are not a measurement of a faster router. The bus's utilisation is not measured
+(these testbenches have no bus monitor), so "contended" rests on the beside/alone ratios, and RAM and RAM on
+the bus is not saturated. Why the NPU's master pays twice the processor's has not been traced. More masters raise the
+bus's contention and not the fabric's per-word cost, so the crossover may lie at four harts; that is not run,
+because the SoC has not been built with four harts. No area or timing. The streams are hand-run, not part of
+`make verify`.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -1539,9 +1614,9 @@ Linux SMP still reaches userspace on it, and real latency/bandwidth/area
 numbers are recorded against the classic bus, not estimated.
 
 **Stage 3 - scaling past the minimal case** (begun at the maintainer's request:
-Part 24 built the quality-of-service mechanism, Part 25 measured the NPU's DMA racing a hart, and Part 26
-ran CoreMark on two harts in one memory and in two; four or more harts, the coherence check at that size
-and the interrupt-traffic workload are still open). Real growth to four or more
+Part 24 built the quality-of-service mechanism, Part 25 measured the NPU's DMA racing a hart, Part 26
+ran CoreMark on two harts in one memory and in two, and Part 27 streamed through memory on two harts;
+four or more harts, the coherence check at that size and the interrupt-traffic workload are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic

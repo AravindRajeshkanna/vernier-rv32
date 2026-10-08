@@ -256,7 +256,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1311,6 +1311,35 @@ sim_soc_2hart_coremark_split: sim/coremark_dispatch_split.hex sim/coremark_hart0
 
 coremark2_matrix:
 	bash sim/coremark2_matrix.sh
+
+# ---- two harts streaming through memory (Phase 8 Stage 3, Part 27) ----
+#
+# sim/tb_soc_2hart_stream.v runs software/bench/stream2.S on both harts: each sweeps an array
+# bigger than its data cache, so nearly every load is a single-word read on the interconnect, for a
+# fixed window of cycles, and counts how many words it got through. Where the arrays live and which
+# harts run are plusargs (see the testbench's header), so one simulation per interconnect covers
+# every row. `make stream2_matrix` runs the placements, each hart alone and both together, over the
+# bus and the router fabric. A measurement, not a gate.
+software/bench/stream2.elf: software/bench/stream2.S software/bench/link_stream2.ld
+	$(RISCV_CC) -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_stream2.ld -o $@ software/bench/stream2.S
+
+sim/stream2.hex: software/bench/stream2.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/stream2.elf software/bench/stream2.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/stream2.bin > $@
+
+sim/sim_soc_2hart_stream.out: sim/tb_soc_2hart_stream.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_2hart_stream.v sim/sdram_model.v $(SOC_RTL)
+
+STREAM2_ARGS ?=
+
+sim_soc_2hart_stream: sim/stream2.hex sim/sim_soc_2hart_stream.out
+	cd sim && $(VVP) sim_soc_2hart_stream.out $(VVP_DUMP) $(STREAM2_ARGS) | tee soc_2hart_stream.log
+	@grep -aq "SOC-2HART-STREAM: PASS" sim/soc_2hart_stream.log && echo "DUAL-HART STREAM OK" || \
+	    { echo "FAILED: two harts streaming (CORE=$(CORE))"; exit 1; }
+
+stream2_matrix:
+	python3 sim/stream2_matrix.py
 
 # ---- hardware bring-up (docs/roadmap/phase-02-memory-ceiling.md Phase 2, on a board) ----
 #
