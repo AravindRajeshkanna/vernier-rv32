@@ -209,6 +209,21 @@ module tb_ramboot;
     localparam CLK_PERIOD = 40;
     always #(CLK_PERIOD / 2) clk = ~clk;
 
+`ifdef XBAR_QOS
+    // The router fabric's traffic classes on for this run (Phase 8 Stage 3): fetch the top
+    // class, data and walker next, debug, then the NPU's bulk DMA last, with aging at 48
+    // cycles. Only meaningful with INTERCONNECT=xbar; defparam reaches the fabric's own
+    // parameters, so no RTL changes for a measurement.
+    defparam DUT.BUS.QOS_EN    = 1;
+    defparam DUT.BUS.AGE_LIMIT = 48;
+    defparam DUT.BUS.QOS_DBG   = 1;
+    defparam DUT.BUS.QOS_D     = 2;
+    defparam DUT.BUS.QOS_W     = 2;
+    defparam DUT.BUS.QOS_F     = 3;
+    defparam DUT.BUS.QOS_N     = 0;
+    initial $display("  (router fabric traffic classes on for this run)");
+`endif
+
 `ifdef BUS_MONITOR
     // Phase 8 Stage 0: a passive observer of the shared bus, reported once per
     // phase of the program under test. The program marks a phase boundary by

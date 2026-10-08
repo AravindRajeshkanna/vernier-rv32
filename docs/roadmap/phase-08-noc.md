@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Part 24: traffic classes in the router); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 and 25: traffic classes in the router, and the NPU's DMA racing a hart); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1375,6 +1375,75 @@ formal property is the pick rule, not a latency bound, which needs fairness assu
 bounded check does not give). The rest of Stage 3 is not done: four or more harts, the reservation
 monitor and coherence at that size, and the workload measurements.
 
+**Update, Part 25: the NPU's DMA racing a hart, over the bus and the router fabric.** Stage 3 names
+"NPU DMA racing CPU traffic" as one of the workloads that decides it. `software/soc/npuload.c`
+(Stage 0) times a CPU loop and a 32,768-element NPU DMA job alone and then together, and
+everything in it lived in block RAM, so on any interconnect the two met at one slave. Two
+options now change that, and the four forms they make are run over the bus, the router fabric, and
+the router fabric with its traffic classes on (`make npuload_matrix`, `sim/npuload_matrix.sh`;
+the program measures itself with the cycle counter):
+
+- `split`: the NPU's buffer in SDRAM, the CPU's code and data in block RAM, so two memory
+  endpoints are in use at once, which is the case a network with more than one path to memory is
+  for. (The CPU fills the buffer first, outside the timed phases.)
+- `heavy`: the CPU loop sweeps 8 KB, eight times the data cache, so every load reaches the bus
+  (the default loop fits its 1 KB cache and barely uses the bus). The same 16,384 loads.
+- `heavysplit`: both.
+
+Cycles, in-order core:
+
+| form | fabric | CPU loop alone | NPU job alone | CPU loop, NPU racing | CPU slowed by the NPU | both finished after |
+|---|---|---|---|---|---|---|
+| default | bus | 115,084 | 66,102 | 115,103 | +0.0% | 115,127 |
+| default | router fabric | 115,089 | 131,698 | 115,141 | +0.0% | 131,440 |
+| `split` | bus | 115,084 | 148,466 | 115,106 | +0.0% | 148,560 |
+| `split` | router fabric | 115,089 | 214,480 | 115,138 | +0.0% | 214,224 |
+| `heavy` | bus | 147,516 | 66,102 | 147,534 | +0.0% | 147,558 |
+| `heavy` | router fabric | 213,057 | 131,698 | 237,658 | **+11.5%** | 237,708 |
+| `heavysplit` | bus | 147,516 | 148,473 | 164,763 | **+11.7%** | 164,787 |
+| `heavysplit` | router fabric | 213,057 | 214,480 | 213,101 | +0.0% | 214,199 |
+
+("Both finished after" is the later of the CPU loop and the NPU job when they race; where the
+NPU job is the longer, as in the default form on the router fabric, it is the NPU's time.)
+
+With the classes on, every row is cycle for cycle the same as the router
+fabric without them; a check inside the simulation confirmed the router really had `QOS_EN=1` and
+`AGE_LIMIT=48`.
+
+**What it shows.**
+
+- **Latency.** The NPU reads one word at a time and waits for each, so its job time is its
+  per-word round trip: about 8 cycles from block RAM on the bus (66,102 over 8,192 words) and 16 on
+  the router fabric, 18 and 26 from SDRAM. The fabric adds about 8 cycles to a single-word access,
+  which is the same price the Linux boots paid (Parts 18, 19 and 23). The CPU's cache-missing
+  loop pays about 4 more cycles per miss (213,057 against 147,516, 44% slower).
+- **Isolation, where it exists.** With two memories (`heavysplit`) the bus lets the NPU slow the CPU
+  by 11.7%, because the NPU's SDRAM reads hold the one bus; the router fabric does not (213,057
+  to 213,101): the two use different slaves and never meet. This is the property the fabric exists
+  for, and it works.
+- **Worse than the bus where they do meet.** With one memory (`heavy`) the bus loses nothing to the
+  NPU (+0.0%: the NPU is last in priority and takes cycles the CPU leaves free, and a block RAM
+  access is short) but the router fabric loses 11.5%. A slave interface stays busy for its whole
+  round trip, request in and response out, so a CPU request to that slave waits behind an NPU read
+  that is already inside it, and no priority can overtake an access already accepted.
+- **The net result is a trade-off, and the bus wins it.** Even with the NPU racing, the CPU loop
+  takes 164,763 cycles on the bus and 213,101 on the router fabric (the bus 23% faster), and the pair
+  finishes in 164,787 against 214,199. The isolation is worth 11.7% on the bus and the fabric's
+  latency costs 44%, so the fabric would only break even if the NPU slowed the CPU by more than about
+  44% on the bus, which it does not come near on this SoC.
+- **The classes did nothing here.** Not because they are off (they are on) but because they never
+  decide anything: the NPU is already last by master number, and the processor's fetches hit the
+  instruction cache, so no two requests of different classes were ever waiting for the same output
+  at the same time in a way that order did not already settle. The mechanism of Part 24 is
+  inert on this workload, not harmful.
+
+**What this does not establish.** One hart, the in-order core, one job size. No interrupt traffic
+and no NPU racing a Linux boot. The bus monitor reads the shared bus's wires and does not exist for
+the router fabric, so there is no wire-level view of where the 11.5% goes; the explanation above is
+the mechanism by inspection, not a measurement of it. Area and timing are not measured. The
+workloads where the bus is saturated (two harts) are the ones to look at next: this one never
+saturates it.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -1408,8 +1477,8 @@ Linux SMP still reaches userspace on it, and real latency/bandwidth/area
 numbers are recorded against the classic bus, not estimated.
 
 **Stage 3 - scaling past the minimal case** (begun at the maintainer's request:
-Part 24 built the quality-of-service mechanism; four or more harts, the coherence check at that size and the
-workload measurements are still open). Real growth to four or more
+Part 24 built the quality-of-service mechanism and Part 25 measured the NPU's DMA racing a hart; four or more
+harts, the coherence check at that size and the remaining workloads are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -1468,4 +1537,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Part 24: traffic classes in the router). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 and 25). Stages 4 onward are a plan.

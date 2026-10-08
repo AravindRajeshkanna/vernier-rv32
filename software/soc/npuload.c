@@ -31,9 +31,24 @@
 #include "console.h"
 
 #define NPU_N      32768u
+#ifdef NPU_SRC_SDRAM
+/* The NPU's buffer in SDRAM, the CPU's code and data in block RAM: two memory
+ * endpoints used at once, which is the case a network with more than one path
+ * to memory exists for (Phase 8 Stage 3). The CPU fills the buffer first, so
+ * every byte the job reads is defined, outside the timed phases. */
+#define NPU_SRC    (SDRAM_BASE + 0x100000u)
+#else
 #define NPU_SRC    (RAM_BASE + 0x1000u)   /* static: program text, rodata, zeros */
+#endif
+#ifdef CPU_BUS_HEAVY
+/* An 8 KB sweep, eight times the 256-word direct-mapped data cache: every load misses and
+ * reaches the bus. Same number of loads as the default (16384), a different place to find them. */
+#define CPU_WORDS  2048
+#define CPU_PASSES 8
+#else
 #define CPU_WORDS  256
 #define CPU_PASSES 64
+#endif
 
 static uint32_t buf[CPU_WORDS];
 
@@ -75,10 +90,14 @@ int main(void)
     uint32_t i;
     int32_t  npu_expected = 0;
     uint32_t cpu_expected, cs;
-    uint32_t t0, cpu_alone, npu_alone, cpu_both;
+    uint32_t t0, cpu_alone, npu_alone, cpu_both, both_total;
     int      npu_still_busy;
     int      ok = 1;
 
+#ifdef NPU_SRC_SDRAM
+    for (i = 0; i < NPU_N / 4; i++)
+        ((volatile uint32_t *)(uintptr_t)NPU_SRC)[i] = i * 2246822519u;
+#endif
     for (i = 0; i < NPU_N; i++) {
         int32_t b = ((const volatile int8_t *)(uintptr_t)NPU_SRC)[i];
         npu_expected += b * b;
@@ -109,6 +128,7 @@ int main(void)
     cpu_both = cycles() - t0;
     npu_still_busy = (NPU_STATUS & NPU_STATUS_BUSY) != 0;
     npu_wait();
+    both_total = cycles() - t0;       /* until the later of the two has finished */
     GPIO_OUT = 3;
     if (cs != cpu_expected) ok = 0;
     if ((int32_t)NPU_RESULT != npu_expected) ok = 0;
@@ -119,6 +139,7 @@ int main(void)
     put_str("  CPU loop, NPU running:     "); put_dec((int)cpu_both);   put_str(" cycles\n");
     put_str("  (how long the NPU job took while the CPU ran is in the bus monitor's\n"
             "   'npu dma' row for phase 3: cycles asked, and how many it waited)\n");
+    put_str("  both finished after:       "); put_dec((int)both_total); put_str(" cycles\n");
     put_str("  NPU still busy when the CPU loop ended: ");
     put_str(npu_still_busy ? "yes\n" : "no\n");
 
