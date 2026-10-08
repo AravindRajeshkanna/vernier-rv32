@@ -21,6 +21,9 @@
 //   valid/ready handshakes hold under real back-pressure and that no packet
 //   changes while it is waiting.
 module tb_noc_ni;
+    // 1 runs everything with the slave interfaces' bypass on (rtl/soc/noc_ni_slave.v):
+    // `iverilog -Ptb_noc_ni.BYPASS=1`, `make sim_noc_ni_bypass`.
+    parameter BYPASS = 0;
     reg clk = 0;
     reg rst = 1;
     always #20 clk = ~clk;
@@ -67,7 +70,7 @@ module tb_noc_ni;
                 .rsp_valid(mr_valid[g]), .rsp_pkt(mr_pkt[g*82 +: 82]), .rsp_ready(mr_ready[g]));
         end
         for (g = 0; g < NS; g = g + 1) begin : g_sni
-            noc_ni_slave #(.ID(g)) NIS (
+            noc_ni_slave #(.ID(g), .BYPASS(BYPASS)) NIS (
                 .clk(clk), .rst(rst),
                 .req_valid(sq_valid[g]), .req_pkt(sq_pkt), .req_ready(sq_ready[g]),
                 .rsp_valid(sr_valid[g]), .rsp_pkt(sr_pkt[g*82 +: 82]), .rsp_ready(sr_ready[g]),
@@ -359,7 +362,7 @@ module tb_noc_ni;
         .wb_dat_r(b_dat_r), .wb_ack(b_ack), .wb_err(b_err),
         .req_valid(bq_valid), .req_pkt(bq_pkt), .req_ready(bq_ready),
         .rsp_valid(bt_valid), .rsp_pkt(sp_pkt), .rsp_ready(bt_ready));
-    noc_ni_slave #(.ID(0)) BNIS (
+    noc_ni_slave #(.ID(0), .BYPASS(BYPASS)) BNIS (
         .clk(clk), .rst(rst),
         .req_valid(bs_valid), .req_pkt(bq_pkt), .req_ready(bs_ready),
         .rsp_valid(sp_valid), .rsp_pkt(sp_pkt), .rsp_ready(sp_ready),
@@ -387,9 +390,14 @@ module tb_noc_ni;
 
     // ready means ready: the slave interface must not offer to take a request
     // while it is still performing or answering the last one, and the master
-    // interface must not take a response when nothing is outstanding
+    // interface must not take a response when nothing is outstanding. (With BYPASS
+    // a request on offer is already presented to the slave in the cycle it is taken,
+    // and may be answered in it, so while one is offered its own strobe and response
+    // are not "busy"; the formal proof, formal/fv_noc_ni_slave.v, separates the
+    // previous request's activity from the new one's exactly. With nothing on offer
+    // the check is the same in both builds.)
     always @(posedge clk) if (!rst) begin
-        if (bs_ready && (w_stb || sp_valid)) fail("slave interface ready while busy");
+        if (bs_ready && !(BYPASS != 0 && bs_valid) && (w_stb || sp_valid)) fail("slave interface ready while busy");
         if (bt_ready && !(b_cyc && b_stb))    fail("master interface took an unsolicited response");
     end
 

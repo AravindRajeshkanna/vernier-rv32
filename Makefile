@@ -124,6 +124,10 @@ endif
 # It travels with the other defines so every build and test that takes
 # CORE_DEFINES takes it too. `make verify INTERCONNECT=noc` runs the suites over it.
 INTERCONNECT ?= bus
+# With INTERCONNECT=xbar: 1 turns on the slave interfaces' bypass (rtl/soc/noc_ni_slave.v,
+# Phase 8 Stage 3, Part 28), which takes two cycles off every access. Off by default; like
+# INTERCONNECT it changes the build, so `verify_xbar` clears the built simulations before it.
+XBAR_NI_BYPASS ?= 0
 CHECKREADS = +checkreads
 ifeq ($(INTERCONNECT),noc)
 # The UART loader test sends at 4 clocks per bit, a simulation shortcut: the boot
@@ -138,7 +142,7 @@ DIV64_DEFINES = -DTIMER_INTERVAL=200u
 else ifeq ($(INTERCONNECT),xbar)
 # The router fabric (Phase 8 Stage 2): the same two timing knobs as `noc`, for the
 # same reasons, and no +checkreads, which reads the shared bus's wires.
-CORE_DEFINES += -DINTERCONNECT_XBAR -DUARTLOAD_CPB=8
+CORE_DEFINES += -DINTERCONNECT_XBAR -DUARTLOAD_CPB=8 -DXBAR_NI_BYPASS=$(XBAR_NI_BYPASS)
 DIV64_DEFINES = -DTIMER_INTERVAL=200u
 CHECKREADS =
 else ifneq ($(INTERCONNECT),bus)
@@ -1071,6 +1075,9 @@ lint-rtl-noc:
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module wb_noc_fabric $(NOC_FABRIC_RTL)
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_router rtl/soc/noc_router.v
 	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module wb_noc_xbar $(NOC_XBAR_RTL)
+	# the slave interfaces' bypass (Phase 8 Stage 3, Part 28), whose paths the defaults do not elaborate
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module noc_ni_slave -GBYPASS=1 rtl/soc/noc_ni_slave.v
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module wb_noc_xbar -GNI_BYPASS=1 $(NOC_XBAR_RTL)
 
 lint-rtl: lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc
 
@@ -2868,6 +2875,15 @@ sim_noc_ni: sim/sim_noc_ni.out
 	@grep -aq "NOC NI TEST PASSED" sim/noc_ni.log && echo "NOC NI OK" || \
 	    { echo "FAILED: the Phase 8 network interfaces and one-node network"; exit 1; }
 
+# The same, with the slave interfaces' bypass on (Phase 8 Stage 3, Part 28).
+sim/sim_noc_ni_bypass.out: sim/tb_noc_ni.v $(NOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -Ptb_noc_ni.BYPASS=1 -o $@ sim/tb_noc_ni.v $(NOC_RTL)
+
+sim_noc_ni_bypass: sim/sim_noc_ni_bypass.out
+	cd sim && $(VVP) sim_noc_ni_bypass.out $(VVP_DUMP) | tee noc_ni_bypass.log
+	@grep -aq "NOC NI TEST PASSED" sim/noc_ni_bypass.log && echo "NOC NI (BYPASS) OK" || \
+	    { echo "FAILED: the network interfaces with the slave interfaces' bypass"; exit 1; }
+
 sim/sim_noc_router.out: sim/tb_noc_router.v rtl/soc/noc_router.v
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_router.v rtl/soc/noc_router.v
 
@@ -2891,6 +2907,24 @@ sim_noc_xbar: sim/sim_noc_xbar.out
 	cd sim && $(VVP) sim_noc_xbar.out $(VVP_DUMP) | tee noc_xbar.log
 	@grep -aq "NOC XBAR TEST PASSED" sim/noc_xbar.log && echo "NOC XBAR OK" || \
 	    { echo "FAILED: the Phase 8 router fabric disagrees with the bus"; exit 1; }
+
+sim/sim_noc_xbar_bypass.out: sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
+	$(IVERILOG) $(IVFLAGS) -Ptb_noc_xbar.NI_BYPASS=1 -o $@ sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
+
+sim_noc_xbar_bypass: sim/sim_noc_xbar_bypass.out
+	cd sim && $(VVP) sim_noc_xbar_bypass.out $(VVP_DUMP) | tee noc_xbar_bypass.log
+	@grep -aq "NOC XBAR TEST PASSED" sim/noc_xbar_bypass.log && echo "NOC XBAR (BYPASS) OK" || \
+	    { echo "FAILED: the router fabric with the slave interfaces' bypass disagrees with the bus"; exit 1; }
+
+# Where a read's cycles go in the router fabric, stage by stage, as built and with the slave
+# interface's bypass (Phase 8 Stage 3, Part 28).
+sim/sim_noc_latency.out: sim/tb_noc_latency.v $(NOC_XBAR_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_latency.v $(NOC_XBAR_RTL)
+
+sim_noc_latency: sim/sim_noc_latency.out
+	cd sim && $(VVP) sim_noc_latency.out $(VVP_DUMP) | tee noc_latency.log
+	@grep -aq "NOC LATENCY TEST PASSED" sim/noc_latency.log && echo "NOC LATENCY OK" || \
+	    { echo "FAILED: the Phase 8 router fabric's latency, stage by stage"; exit 1; }
 
 sim/sim_noc_fabric.out: sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_fabric.v rtl/soc/wb_interconnect.v $(NOC_FABRIC_RTL)
@@ -3813,9 +3847,12 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence_sdram \
         sim_interconnect_burst \
         sim_noc_ni \
+        sim_noc_ni_bypass \
         sim_noc_router \
         sim_noc_router_qos \
         sim_noc_xbar \
+        sim_noc_xbar_bypass \
+        sim_noc_latency \
         sim_noc_fabric \
         sim_interconnect_burst_noc \
         sim_cpu_wb_ifill \

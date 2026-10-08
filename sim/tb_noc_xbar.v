@@ -155,7 +155,7 @@ endmodule
 // One copy of the system. FABRIC=0 builds the bus, FABRIC=1 the router fabric and
 // FABRIC=2 the same with quality of service on: fetch the top class, data and walker
 // next, debug, then the NPU's bulk DMA last, with aging at 48 cycles.
-module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40) (
+module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40, parameter NI_BYPASS = 0) (
     input  wire clk,
     input  wire rst,
     output reg  done
@@ -243,7 +243,8 @@ module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40) (
         end else begin : g_noc
             wb_noc_xbar #(.NUM_SLAVES(NS), .NUM_HARTS(NH), .BURST_SLAVES(1),
                           .QOS_EN(FABRIC == 2 ? 1 : 0), .AGE_LIMIT(FABRIC == 2 ? 48 : 0),
-                          .QOS_DBG(1), .QOS_D(2), .QOS_W(2), .QOS_F(3), .QOS_N(0)) IC (
+                          .QOS_DBG(1), .QOS_D(2), .QOS_W(2), .QOS_F(3), .QOS_N(0),
+                          .NI_BYPASS(NI_BYPASS)) IC (
                 .clk(clk), .rst(rst),
                 .f_cyc(f_cyc), .f_stb(f_stb), .f_adr(f_adr), .f_burst(f_burst), .f_dat_r(f_dat_r), .f_ack(f_ack),
                 .d_cyc(d_cyc), .d_stb(d_stb), .d_we(d_we), .d_adr(d_adr), .d_dat_w(d_dat_w), .d_sel(d_sel),
@@ -511,14 +512,18 @@ module eq_side #(parameter FABRIC = 0, parameter N = 300, parameter AMOS = 40) (
 endmodule
 
 module tb_noc_xbar;
+    // 1 runs the same comparison with the slave interfaces' bypass on in both router fabrics
+    // (rtl/soc/noc_ni_slave.v): `iverilog -Ptb_noc_xbar.NI_BYPASS=1`, `make sim_noc_xbar_bypass`.
+    parameter NI_BYPASS = 0;
     reg clk = 0;
     reg rst = 1;
     always #20 clk = ~clk;
 
     wire done_bus, done_noc, done_noq;
     eq_side #(.FABRIC(0)) BUS (.clk(clk), .rst(rst), .done(done_bus));
-    eq_side #(.FABRIC(1)) NOC (.clk(clk), .rst(rst), .done(done_noc));
-    eq_side #(.FABRIC(2)) NOQ (.clk(clk), .rst(rst), .done(done_noq));
+    eq_side #(.FABRIC(1), .NI_BYPASS(NI_BYPASS)) NOC (.clk(clk), .rst(rst), .done(done_noc));
+    eq_side #(.FABRIC(2), .NI_BYPASS(NI_BYPASS)) NOQ (.clk(clk), .rst(rst), .done(done_noq));
+    initial $display("  (slave interfaces' bypass %0s in the router fabrics)", NI_BYPASS ? "ON" : "off");
 
     integer failures = 0;
     integer m, i, bad;

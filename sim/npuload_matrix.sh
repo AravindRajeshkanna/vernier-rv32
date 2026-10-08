@@ -3,19 +3,21 @@
 #
 # Runs software/soc/npuload.c in four forms - the original, with the NPU's buffer in SDRAM, with
 # the CPU loop sweeping 8 KB so it misses its data cache, and both - over the shared bus, the
-# router fabric, and the router fabric with its traffic classes on, and prints one table of
+# router fabric, the router fabric with its traffic classes on, and the router fabric with the
+# slave interfaces' bypass, and prints one table of
 # what the program measures itself: the CPU loop alone, the NPU job alone, the CPU loop while
 # the NPU runs, and the time until both have finished.
 #
 # `make` does not know that a different INTERCONNECT or define needs a different build, so the
-# built simulations are cleared before each run. Takes a while: twelve Icarus simulations.
+# built simulations are cleared before each run. Takes a while: sixteen Icarus simulations.
 set -u
 cd "$(dirname "$0")/.."
 LOG=${NPULOAD_LOG:-/tmp/npuload_matrix}
 mkdir -p "$LOG"
 
 variants=(plain split heavy heavysplit)
-configs=(bus xbar xbar_qos)
+# (NPULOAD_CONFIGS picks a subset, e.g. "xbar xbar_bypass")
+configs=(${NPULOAD_CONFIGS:-bus xbar xbar_qos xbar_bypass})
 
 target_of() { [ "$1" = plain ] && echo sim_npuload || echo "sim_npuload_$1"; }
 log_of()    { [ "$1" = plain ] && echo sim/npuload.log || echo "sim/npuload_$1.log"; }
@@ -27,6 +29,8 @@ run() {  # variant config
         bus)      args=(NPULOAD_MON=) ;;
         xbar)     args=(INTERCONNECT=xbar NPULOAD_MON=) ;;
         xbar_qos) args=(INTERCONNECT=xbar NPULOAD_MON= NPULOAD_DEFS=-DXBAR_QOS) ;;
+        # the slave interfaces' bypass on (rtl/soc/noc_ni_slave.v): two cycles less on every access
+        xbar_bypass) args=(INTERCONNECT=xbar XBAR_NI_BYPASS=1 NPULOAD_MON=) ;;
     esac
     rm -f sim/*.out
     make "$t" "${args[@]}" > "$LOG/$v.$c.log" 2>&1

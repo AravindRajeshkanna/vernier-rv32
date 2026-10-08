@@ -36,7 +36,7 @@ mkdir -p "$BUILD"
 # cannot reach in any reasonable time and boolector does in about a minute and a half.
 DDR3_SOLVER="${DDR3_SOLVER:-boolector}"
 DDR3_DEPTH="${DDR3_DEPTH:-250}"
-solver_for() { case "$1" in ddr3_ecp5_top) echo "$DDR3_SOLVER" ;; fv_pmp_equiv|fv_noc_router|fv_noc_router_qos) echo boolector ;; *) echo "$SOLVER" ;; esac; }
+solver_for() { case "$1" in ddr3_ecp5_top) echo "$DDR3_SOLVER" ;; fv_pmp_equiv|fv_noc_router|fv_noc_router_qos|fv_noc_ni_slave|fv_noc_ni_slave_bypass) echo boolector ;; *) echo "$SOLVER" ;; esac; }
 depth_for()  { case "$1" in ddr3_ecp5_top) echo "$DDR3_DEPTH"  ;; fv_pmp_equiv) echo 2 ;; *) echo "$DEPTH"  ;; esac; }
 
 # What to check: "<top module> <verilog files>".
@@ -57,6 +57,7 @@ TARGETS=(
     "fv_noc_router   $ROOT/rtl/soc/noc_router.v $HERE/fv_noc_router.v"
     "fv_noc_router_qos $ROOT/rtl/soc/noc_router.v $HERE/fv_noc_router_qos.v"
     "fv_noc_ni_slave $ROOT/rtl/soc/noc_ni_slave.v $HERE/fv_noc_ni_slave.v"
+    "fv_noc_ni_slave_bypass $ROOT/rtl/soc/noc_ni_slave.v $HERE/fv_noc_ni_slave.v"
     "fv_noc_ni_master $ROOT/rtl/soc/noc_ni_master.v $HERE/fv_noc_ni_master.v"
     "fv_regfile_wide $ROOT/rtl/ooo/regfile_wide.v $HERE/fv_regfile_wide.v"
     "fv_pmp          $ROOT/rtl/pmp.v $HERE/fv_pmp.v"

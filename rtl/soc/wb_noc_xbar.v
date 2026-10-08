@@ -50,7 +50,10 @@ module wb_noc_xbar #(
     parameter QOS_D        = 0,
     parameter QOS_W        = 0,
     parameter QOS_F        = 0,
-    parameter QOS_N        = 0
+    parameter QOS_N        = 0,
+    // Latency (Phase 8 Stage 3). 1 lets the slave interfaces skip the two registers a read crosses
+    // inside them (see noc_ni_slave.v); 0, the default, is unchanged to the cycle.
+    parameter NI_BYPASS    = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -238,7 +241,7 @@ module wb_noc_xbar #(
     genvar sg;
     generate
         for (sg = 0; sg < NUM_SLAVES; sg = sg + 1) begin : g_slave
-            noc_ni_slave #(.ID(4'(sg))) NI_S (
+            noc_ni_slave #(.ID(4'(sg)), .BYPASS(NI_BYPASS)) NI_S (
                 .clk(clk), .rst(rst),
                 .req_valid(qo_valid[sg]), .req_pkt(qo_pkt[82*sg +: 82]), .req_ready(qo_ready[sg]),
                 .rsp_valid(ri_valid[sg]), .rsp_pkt(ri_pkt[82*sg +: 82]), .rsp_ready(ri_ready[sg]),
