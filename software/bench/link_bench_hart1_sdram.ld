@@ -3,7 +3,7 @@
  * two harts' instruction and data traffic goes to two different memories.
  * Otherwise identical to link_bench_hart1.ld, below (whose header gives the
  * reasons each hart needs its own complete link). Loaded into the SDRAM model
- * by sim/tb_soc_2hart_coremark_split.v; coremark_dispatch_split.S sends hart 1
+ * by sim/tb_soc_2hart_coremark_mem.v; coremark_dispatch_split.S sends hart 1
  * here. */
 /* Linker script for hart 1's own copy of the dual-hart CoreMark image
  * (Phase 15 Stage 5). See link_bench_hart0.ld's own header for why this
