@@ -4,7 +4,7 @@
 # CoreMark iteration in cycles, and the wall-clock total. See sim/tb_soc_2hart_coremark_mem.v.
 #
 # `make` does not know that a different INTERCONNECT or define needs a different build, so the
-# built simulations are cleared before each run. Six Icarus simulations, each a few minutes to
+# built simulations are cleared before each run. Ten Icarus simulations, each a few minutes to
 # half an hour.
 set -u
 cd "$(dirname "$0")/.."
@@ -12,7 +12,8 @@ LOG=${COREMARK2_LOG:-/tmp/coremark2_matrix}
 mkdir -p "$LOG"
 
 layouts=(same split)
-configs=(bus xbar xbar_qos xbar_noguard)
+# (COREMARK2_CONFIGS picks a subset, e.g. "xbar xbar_bypass")
+configs=(${COREMARK2_CONFIGS:-bus xbar xbar_qos xbar_noguard xbar_bypass})
 
 run() {  # layout config
     local l=$1 c=$2 args=()
@@ -22,6 +23,8 @@ run() {  # layout config
         xbar_qos) args=(INTERCONNECT=xbar COREMARK2_DEFS=-DXBAR_QOS) ;;
         # a measurement only: the caches' late-ack guard off, which is WRONG under sharing
         xbar_noguard) args=(INTERCONNECT=xbar COREMARK2_DEFS=-DXBAR_NO_LATE_GUARD) ;;
+        # the slave interfaces' bypass on (rtl/soc/noc_ni_slave.v): two cycles less on every access
+        xbar_bypass) args=(INTERCONNECT=xbar XBAR_NI_BYPASS=1) ;;
     esac
     rm -f sim/*.out
     # (${args[@]+...} because an empty array is an unbound variable under `set -u` in the bash 3.2 macOS ships)

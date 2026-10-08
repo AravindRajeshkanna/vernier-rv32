@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 27: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, and two harts streaming through memory); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 28: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, and two of the fabric's four cycles an access cut away); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1291,7 +1291,7 @@ the one SDRAM slave, where the router fabric's parallelism has nothing to do and
 (two routers and two sets of queues) is pure latency, exactly what Stage 0's finding that one memory
 takes almost all the traffic predicts; and the late-ack guard, which cancels a cache update
 whenever the other hart writes the same index while an access is in flight, may be costing fills
-that two harts sharing data trigger often. Counting the cancelled fills would separate the two. (Update: Part 26 separated them by switching the guard off for a measurement; it costs nothing measurable on CoreMark.)
+that two harts sharing data trigger often. Counting the cancelled fills would separate the two. (Update: Part 26 separated them by switching the guard off for a measurement; it costs nothing measurable on CoreMark.) (Update: Part 28 took two of the four extra cycles out; the in-order pair then boots 3.1% faster than on the bus and the wide pair is 36.2% behind, so the path length was most of it.)
 
 **What this means for Stage 2's Done-when**, which asks that the two-hart configuration run
 correctly over the network in simulation, Linux SMP reach userspace, and the latency, bandwidth and
@@ -1420,7 +1420,7 @@ fabric without them; a check inside the simulation confirmed the router really h
   8 is the NPU's own read, 8.0 more a word (131,698 against 66,102 over 8,192 words). The processor's is
   half that, 65,541 more cycles over 16,384 loads, 4.0 a load, and Part 27 measures 4.0 for a plain
   word-at-a-time stream in block RAM and in SDRAM alike. Why the NPU's master pays twice the
-  processor's has not been traced, and the comparison with the Linux boots was not measured.)
+  processor's has not been traced, and the comparison with the Linux boots was not measured. Update, Part 28: it makes two reads for each word it counts, an activation and a weight, so it pays the per-access cost twice.)
 - **Isolation, where it exists.** With two memories (`heavysplit`) the bus lets the NPU slow the CPU
   by 11.7%, because the NPU's SDRAM reads hold the one bus; the router fabric does not (213,057
   to 213,101): the two use different slaves and never meet. This is the property the fabric exists
@@ -1565,6 +1565,7 @@ The out-of-order core. A hart alone reads 258.6 and 105.1 on the bus, and 127.8 
   on the in-order core and be 8% ahead at 3, 22% at 2 and 41% at 1; on the out-of-order core it breaks even at
   L = 3.05 and is 15% ahead at 2. At two harts it is the fabric's path length, not its structure, that loses: a
   third of a cycle a word from break-even in-order, a cycle out-of-order.
+  (Update, Part 28: removing two of the four cycles put the in-order pair 22% ahead, as this arithmetic said.)
 - **A trade-off, not yet an improvement.** What the fabric buys is a rate that does not depend on the other hart
   (hart 0 never below 118.6 words per thousand cycles; on the bus it is anywhere from 101.9 to 225.9). What it
   costs is the SDRAM hart and the pair. Whether that is acceptable depends on which hart matters; it does not
@@ -1576,10 +1577,162 @@ here. The four cycles are an end-to-end difference; how they divide between the 
 and the response path is by inspection, not measured. The break-even figures assume the isolation stays at 1.00
 as the latency shrinks and are not a measurement of a faster router. The bus's utilisation is not measured
 (these testbenches have no bus monitor), so "contended" rests on the beside/alone ratios, and RAM and RAM on
-the bus is not saturated. Why the NPU's master pays twice the processor's has not been traced. More masters raise the
+the bus is not saturated. Why the NPU's master pays twice the processor's has not been traced (Update, Part 28: it makes two reads for each word it counts). More masters raise the
 bus's contention and not the fabric's per-word cost, so the crossover may lie at four harts; that is not run,
 because the SoC has not been built with four harts. No area or timing. The streams are hand-run, not part of
 `make verify`.
+
+**Update, Part 28: where the fabric's four cycles go, and getting two of them back.** Part 27 found the fabric
+4.00 cycles behind the bus on every word a processor reads, and left the breakdown to inspection. Reading
+`rtl/soc/` gives four registered stages that a read crosses and the bus does not: the request router's input
+FIFO, the slave interface's request latch (`lat`), its response queue, and the response router's input FIFO
+(the master interface is combinational both ways and adds none). `sim/tb_noc_latency.v` now measures them one
+transaction at a time. It timestamps the master's strobe, the slave interface's strobe, the slave's ack and the
+master's ack, for slaves that ack in the strobe's own cycle, after one wait state and after four (with bursts),
+and for writes:
+
+| transaction | slave | as built: request path + slave + response path | with the bypass |
+|---|---|---|---|
+| read | acks at once | 2 + 0 + 2 = 4 | 1 + 0 + 1 = 2 |
+| read | one wait state | 2 + 1 + 2 = 5 | 1 + 1 + 1 = 3 |
+| read | four wait states | 2 + 4 + 2 = 8 | 1 + 4 + 1 = 6 |
+| write | acks at once | 2 + 0 + 2 = 4 | 1 + 0 + 1 = 2 |
+| four-word burst | a word every cycle, or every two | each beat's response path 2 | 1 |
+
+The fabric's cost is 2 + 2 whatever the slave: Part 27's 4.00, accounted for stage by stage. Two of the four are
+inside the slave interface, and a `BYPASS` parameter there (`NI_BYPASS` on `wb_noc_xbar`, and `make
+XBAR_NI_BYPASS=1` with `INTERCONNECT=xbar`) skips them where it can. It is off by default, and then the fabric
+is unchanged to the cycle.
+
+- A request accepted this cycle is presented to the slave this cycle, from the packet itself. It is still copied
+  into the latch, so a slave that does not ack at once goes on seeing the same request from there.
+- A response with nothing queued ahead of it goes to the network in the cycle of the ack, if the network will
+  take it. If it will not, it is queued and offered from the queue unchanged, and a response behind others
+  always queues, so order is kept.
+
+The two routers' input FIFOs are the other two cycles, and are left alone.
+
+**What it was checked against.**
+
+- `sim/tb_noc_latency.v` (in `make verify`) also checks the data every read returns, what the slave sees of every
+  write (word, byte enables, address), that a burst's words come back in order, that a locked read then write
+  on a slave that acks at once keeps `cyc` up through the gap (5 to 6 cycles, none dropped), and a burst whose
+  first beat is acked in its first cycle after an ordinary read.
+- The interface test (`sim_noc_ni_bypass`) and the crossbar's bus-equivalence test (`sim_noc_xbar_bypass`) run
+  again with the bypass on, both in `make verify`: the random mix through a randomly stalling channel, bursts
+  in order, the locked counter exact (160 of 160), and every master reading the same values in the same order as
+  on the bus, slave contents identical, AMO counters exact.
+- Formal: `fv_noc_ni_slave_bypass` is proved (depth 12, boolector, all 8 cover statements reached). The proof of
+  the interface was also made stronger for both configurations: what leaves is exactly the data, error flag and
+  last mark of the ack it answers, in order; a response offered and not taken is offered again unchanged; the
+  slave sees one request throughout, from its first cycle to its last. Both use boolector: z3 had not finished
+  the bypass proof after 32 CPU-minutes, and boolector takes 14 seconds. `make formal` now proves 14.
+- Seven plausible bypass bugs (a response sent straight through when the network is not ready, a request
+  presented without being accepted, a response both sent and queued, the choice of packet inverted, the first
+  cycle showing the previous request, a stale burst-beat count, the lock bit taken from the wrong place) were
+  each caught by the proof and by at least one simulation. Two of them, the stale count and the lock bit,
+  were missed by the simulations as they were, because they need a slave that acks in the first cycle; that
+  is why the latency test has one.
+- The suites over the bypassed fabric: `make verify_xbar XBAR_NI_BYPASS=1` exits 0 on the in-order core and with
+  `CORE=ooo` (riscv-tests, co-simulation, formal, and the Linux boot to userspace), and `make sim_linux_2hart
+  INTERCONNECT=xbar XBAR_NI_BYPASS=1` reaches userspace on both harts on both cores. `make verify` exits 0.
+  With the bypass off the fabric's cycle counts are those of Parts 26 and 27 to the digit.
+
+**The cost, measured** (cycles to userspace; bus, router fabric as built, router fabric with the bypass):
+
+| Configuration | Bus | Router fabric | With the bypass |
+|---|---|---|---|
+| 1 hart, in-order | 146,914,531 | 183,452,079 (+24.9%) | 161,956,559 (+10.2%) |
+| 1 hart, wide | 149,304,491 | 181,536,850 (+21.6%) | 159,180,520 (+6.6%) |
+| 2 harts, in-order | 212,175,721 | 255,309,022 (+20.3%) | **205,567,745 (-3.1%)** |
+| 2 harts, wide | 159,893,093 | 266,594,156 (+66.7%) | 217,764,208 (+36.2%) |
+| SDRAM boot check, in-order | 2,262,170 | 2,887,536 (+27.6%) | 2,578,170 (+14.0%) |
+| SDRAM boot check, wide | 1,931,096 | 2,428,528 (+25.8%) | 2,114,546 (+9.5%) |
+
+CoreMark on two harts (Part 26's runs, one iteration in cycles on each hart and the wall-clock, in-order):
+
+| memory | bus | router fabric | with the bypass |
+|---|---|---|---|
+| same | 434,074; 451,483; 644,154 | 633,713 (+46.0%); 634,485 (+40.5%); 1,042,102 (+61.8%) | 521,015 (+20.0%); 521,463 (+15.5%); 802,834 (+24.6%) |
+| split | 482,861; 571,410; 736,394 | 567,301 (+17.5%); 652,280 (+14.2%); 911,010 (+23.7%) | 492,848 (+2.1%); 597,569 (+4.6%); 777,642 (+5.6%) |
+
+Part 27's stream, both harts reading, in-order core (words read per thousand cycles; a hart alone reads 225.9
+from block RAM and 105.4 from SDRAM on the bus, 155.6 and 87.1 with the bypass):
+
+| arrays (hart 0, hart 1) | bus: hart 0, hart 1 | with the bypass: hart 0, hart 1 | bypass against bus: hart 0, hart 1, pair | beside/alone, bus | beside/alone, bypass |
+|---|---|---|---|---|---|
+| RAM, RAM | 204.9, 204.8 | 155.5, 155.5 | 0.76, 0.76, 0.76 | 0.91, 0.91 | 1.00, 1.00 |
+| RAM, SDRAM | 101.9, 96.8 | 155.5, 87.1 | **1.53**, 0.90, **1.22** | **0.45**, 0.92 | **1.00**, 1.00 |
+| SDRAM, SDRAM | 61.9, 61.9 | 59.1, 59.1 | 0.95, 0.96, 0.96 | 0.59, 0.59 | 0.68, 0.68 |
+
+The out-of-order core (alone: 258.6 and 105.1 on the bus, 172.1 and 87.0 with the bypass):
+
+| arrays (hart 0, hart 1) | bus: hart 0, hart 1 | with the bypass: hart 0, hart 1 | bypass against bus: hart 0, hart 1, pair | beside/alone, bus | beside/alone, bypass |
+|---|---|---|---|---|---|
+| RAM, RAM | 213.0, 212.7 | 172.1, 172.1 | 0.81, 0.81, 0.81 | 0.82, 0.82 | 1.00, 1.00 |
+| RAM, SDRAM | 128.5, 95.6 | 172.1, 87.0 | **1.34**, 0.91, **1.16** | **0.50**, 0.91 | **1.00**, 1.00 |
+| SDRAM, SDRAM | 62.0, 62.0 | 59.6, 59.6 | 0.96, 0.96, 0.96 | 0.59, 0.59 | 0.69, 0.69 |
+
+The NPU's DMA racing a hart (Part 25's four forms; cycles, in-order core):
+
+| form | fabric | CPU loop alone | NPU job alone | CPU loop, NPU racing | CPU slowed by the NPU | both finished after |
+|---|---|---|---|---|---|---|
+| default | bus | 115,084 | 66,102 | 115,103 | +0.0% | 115,127 |
+| default | router fabric | 115,089 | 131,698 | 115,141 | +0.0% | 131,440 |
+| default | with the bypass | 115,087 | 98,773 | 115,122 | +0.0% | 115,160 |
+| `split` | bus | 115,084 | 148,466 | 115,106 | +0.0% | 148,560 |
+| `split` | router fabric | 115,089 | 214,480 | 115,138 | +0.0% | 214,224 |
+| `split` | with the bypass | 115,087 | 181,248 | 115,122 | +0.0% | 181,454 |
+| `heavy` | bus | 147,516 | 66,102 | 147,534 | +0.0% | 147,558 |
+| `heavy` | router fabric | 213,057 | 131,698 | 237,658 | +11.5% | 237,708 |
+| `heavy` | with the bypass | 180,287 | 98,773 | 188,491 | +4.6% | 188,529 |
+| `heavysplit` | bus | 147,516 | 148,473 | 164,763 | +11.7% | 164,787 |
+| `heavysplit` | router fabric | 213,057 | 214,480 | 213,101 | +0.0% | 214,199 |
+| `heavysplit` | with the bypass | 180,287 | 181,248 | 180,319 | +0.0% | 181,401 |
+
+**What it shows.**
+
+- **Part 27's arithmetic held.** It said that with 2.0 cycles added instead of 4.0 the RAM-and-SDRAM pair on
+  the in-order core would read 242.6 words per thousand cycles, 22% ahead of the bus. Measured: 242.7. The
+  per-word cost is now 2.00 cycles more than the bus in block RAM and SDRAM alike (4.43 to 6.43, 9.49 to
+  11.48), and 1.94 and 1.98 on the out-of-order core.
+- **The first measured improvement over the bus.** Two harts streaming from two memories: the pair is 22% ahead
+  in-order and 16% out-of-order, the hart reading block RAM 53% (in-order) and 34% (out-of-order) faster than
+  the bus lets it run beside the SDRAM stream, and the isolation is still complete (1.00). The in-order two-hart Linux boot takes 3.1% fewer cycles than on
+  the bus, the first Linux row where the fabric wins.
+- **The bus still wins where the harts share one memory, and on one hart.** Two streams in block RAM are 0.76
+  and 0.81 of the bus, in SDRAM 0.96. A single hart's Linux boot is 6.6 to 10.2% behind, the wide pair's 36.2%
+  (from 66.7%; why it is the outlier is not investigated), CoreMark on two harts 2 to 20% behind per iteration.
+  Two streams in block RAM no longer slow each other at all (1.00, where on the bus they cost 9 to 18%); by
+  inspection that is the slave interface being free again the cycle after the ack, not something measured.
+- **The NPU race is still the bus's, by less.** With two memories (`heavysplit`) the isolation is kept (the NPU
+  slows the CPU by 0.0%, where on the bus it costs 11.7%), and the CPU loop racing the NPU takes 180,319 cycles
+  against 164,763 on the bus: 9.4% slower, where it was 29% (213,101). The fabric would break even if the NPU
+  cost the bus's CPU more than the loop's own extra 22.2% (180,287 against 147,516), and it costs 11.7%. With one
+  memory (`heavy`) the NPU's cost to the CPU on the fabric falls from 11.5% to 4.6%, and is still more than the
+  bus's 0.0%.
+- **Why the NPU paid twice the processor.** Its DMA reads an activation word and then a weight word for every
+  word index (`S_DMA_FETCH_A`, `S_DMA_FETCH_W` in `rtl/soc/wb_npu.v`), two accesses where the processor's load is
+  one. The fabric's 8.0 cycles a word in Part 25 was 2 x 4.0, and with the bypass the NPU job is 4.0 a word
+  cheaper (131,698 to 98,773 over 8,192 words), 2 x 2.0. It is the same cost per access.
+- **Where the rest of the gap is.** The bypass recovers 46 to 69% of the fabric's extra cycles in five of the
+  six boot rows and all of it in the sixth, as two of four cycles would predict. The other two cycles are the
+  routers' FIFOs.
+- **What it costs, structurally** (`fpga/synth/noc_lut_depth.sh`: yosys maps to four-input LUTs, `ltp` finds the
+  longest path between registers). One slave interface goes from 149 to 273 LUTs and from 3 to 4 levels deep,
+  with the same registers. The whole two-hart fabric goes from 26,244 to 27,160 LUTs (+3.5%) and from 15 to 17
+  levels on its longest combinational path, which in both cases starts at the request router's FIFO read pointer,
+  so it is the router's arbitration that sets it. **This is an estimate of the logic, not a timing figure.**
+
+**What this does not establish.** Timing. The bypass makes the slave's ack and the request path combinational
+through the interface, which the bus has always been; whether a board's clock holds with the fabric in the SoC
+is not measured (the board builds use the bus), and the structural estimate above is all there is. Area beyond
+that estimate. The routers' two FIFOs, the other two cycles: removing them would put a master's address decode,
+the arbitration and the slave interface in one cycle's path, and is not built. The wide pair's 36%. Four
+harts, interrupt traffic, and stores in the stream, as in Part 27. The default stays off: whether to turn it on
+for `INTERCONNECT=xbar` is a decision for the maintainer once its timing is known. The Stage 3 Done-when's
+"measured improvement" is met in simulation for two workloads with the bypass on (the stream, and the in-order
+two-hart boot), and the trade-off is recorded for the rest, where the bus is still ahead.
 
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
@@ -1615,8 +1768,9 @@ numbers are recorded against the classic bus, not estimated.
 
 **Stage 3 - scaling past the minimal case** (begun at the maintainer's request:
 Part 24 built the quality-of-service mechanism, Part 25 measured the NPU's DMA racing a hart, Part 26
-ran CoreMark on two harts in one memory and in two, and Part 27 streamed through memory on two harts;
-four or more harts, the coherence check at that size and the interrupt-traffic workload are still open). Real growth to four or more
+ran CoreMark on two harts in one memory and in two, Part 27 streamed through memory on two harts, and
+Part 28 found where the fabric's four cycles an access go and removed two of them; four or more harts,
+the coherence check at that size and the interrupt-traffic workload are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic

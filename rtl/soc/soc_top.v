@@ -667,9 +667,14 @@ module soc_top #(
     // (rtl/soc/wb_noc_fabric.v) - and `INTERCONNECT=xbar` a fabric built on routers
     // (rtl/soc/wb_noc_xbar.v), with a set of slave wires per slave. The bus stays the
     // default; nothing here is chosen by anything else.
+    // `XBAR_NI_BYPASS=1` (make XBAR_NI_BYPASS=1, with INTERCONNECT=xbar) turns on the slave
+    // interfaces' bypass (rtl/soc/noc_ni_slave.v): two cycles less on every access, off by default.
+`ifndef XBAR_NI_BYPASS
+`define XBAR_NI_BYPASS 0
+`endif
 `ifdef INTERCONNECT_XBAR
     wb_noc_xbar #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
-                  .BURST_SLAVES(1 << S_SDRAM)) BUS (
+                  .BURST_SLAVES(1 << S_SDRAM), .NI_BYPASS(`XBAR_NI_BYPASS)) BUS (
 `elsif INTERCONNECT_NOC
     wb_noc_fabric #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
                     .BURST_SLAVES(1 << S_SDRAM)) BUS (

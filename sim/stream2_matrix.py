@@ -2,15 +2,16 @@
 """Two harts streaming through memory, over the bus and over the router fabric (Phase 8 Stage 3,
 Part 27).
 
-Builds sim/sim_soc_2hart_stream.out once per interconnect, then runs the placements below with each
-hart alone and with both together, and prints what the programs measure of themselves: how many
-words each hart read per thousand cycles inside a fixed window, and the same figures set against the
-hart running alone (the interference) and against the other interconnect. A placement is where the
+Builds sim/sim_soc_2hart_stream.out once per interconnect (the bus, the router fabric, and the
+router fabric with the slave interfaces' bypass), then runs the placements below with each hart
+alone and with both together, and prints what the programs measure of themselves: how many words
+each hart read per thousand cycles inside a fixed window, and the same figures set against the hart
+running alone (the interference) and against the bus. A placement is where the
 two harts' arrays live: `same` both in block RAM, `split` hart 0 in RAM and hart 1 in SDRAM, `sdram`
 both in SDRAM. See sim/tb_soc_2hart_stream.v and software/bench/stream2.S.
 
 `make` does not know that a different INTERCONNECT needs a different build, so the built simulations
-are cleared before each build. Sixteen Icarus simulations, a few seconds to a few minutes each.
+are cleared before each build. Twenty-four Icarus simulations, a few seconds to a few minutes each.
 """
 import glob
 import os
@@ -33,7 +34,8 @@ RUNS = [
     ("split", 2, RAM_A, SD_A), ("split", 3, RAM_A, SD_A),
     ("sdram", 1, SD_A, SD_B), ("sdram", 2, SD_A, SD_B), ("sdram", 3, SD_A, SD_B),
 ]
-FABRICS = [("bus", []), ("fabric", ["INTERCONNECT=xbar"])]
+FABRICS = [("bus", []), ("fabric", ["INTERCONNECT=xbar"]),
+           ("bypass", ["INTERCONNECT=xbar", "XBAR_NI_BYPASS=1"])]   # the fabric with rtl/soc/noc_ni_slave.v's BYPASS
 MEMORY = {"same": "RAM,RAM", "split": "RAM,SDRAM", "sdram": "SDRAM,SDRAM"}
 # Which run is the hart on its own, in the memory it has in each placement.
 ALONE = {
@@ -95,20 +97,22 @@ def main():
                 fabric, MEMORY[placement], what, r["h0"], r["h1"], r["h0"] + r["h1"], r["total"],
                 "" if r["ok"] else "   FAILED"))
 
-    print("\nBoth harts streaming: the router fabric against the bus (ratio above 1: the fabric is faster)\n")
-    print("%-12s %26s %26s %26s" % ("memory", "hart 0 (bus, fabric, x)", "hart 1 (bus, fabric, x)", "sum (bus, fabric, x)"))
-    for placement in ("same", "split", "sdram"):
-        b = res[("bus", placement, 3)]
-        f = res[("fabric", placement, 3)]
-        cells = []
-        for k in ("h0", "h1"):
-            cells.append("%8.1f %8.1f %6.2f" % (b[k], f[k], f[k] / b[k] if b[k] else 0.0))
-        bs, fs = b["h0"] + b["h1"], f["h0"] + f["h1"]
-        cells.append("%8.1f %8.1f %6.2f" % (bs, fs, fs / bs if bs else 0.0))
-        print("%-12s %26s %26s %26s" % (MEMORY[placement], cells[0], cells[1], cells[2]))
+    for name, _ in FABRICS[1:]:
+        print("\nBoth harts streaming: the %s against the bus (ratio above 1: it is faster)\n" % name)
+        print("%-12s %26s %26s %26s" % ("memory", "hart 0 (bus, %s, x)" % name, "hart 1 (bus, %s, x)" % name,
+                                       "sum (bus, %s, x)" % name))
+        for placement in ("same", "split", "sdram"):
+            b = res[("bus", placement, 3)]
+            f = res[(name, placement, 3)]
+            cells = []
+            for k in ("h0", "h1"):
+                cells.append("%8.1f %8.1f %6.2f" % (b[k], f[k], f[k] / b[k] if b[k] else 0.0))
+            bs, fs = b["h0"] + b["h1"], f["h0"] + f["h1"]
+            cells.append("%8.1f %8.1f %6.2f" % (bs, fs, fs / bs if bs else 0.0))
+            print("%-12s %26s %26s %26s" % (MEMORY[placement], cells[0], cells[1], cells[2]))
 
     print("\nInterference: a hart's rate beside the other, over its rate alone (1.00: none)\n")
-    print("%-12s %22s %22s" % ("memory", "bus (hart 0, hart 1)", "fabric (hart 0, hart 1)"))
+    print("%-12s %s" % ("memory", " ".join("%22s" % ("%s (hart 0, hart 1)" % n) for n, _ in FABRICS)))
     for placement in ("same", "split", "sdram"):
         cells = []
         for fabric, _ in FABRICS:
@@ -117,8 +121,8 @@ def main():
             for h in (0, 1):
                 alone = res[(fabric,) + ALONE[(h, placement)]]["h%d" % h]
                 vals.append(both["h%d" % h] / alone if alone else 0.0)
-            cells.append("%9.2f %9.2f" % tuple(vals))
-        print("%-12s %22s %22s" % (MEMORY[placement], cells[0], cells[1]))
+            cells.append("%22s" % ("%9.2f %9.2f" % tuple(vals)))
+        print("%-12s %s" % (MEMORY[placement], " ".join(cells)))
 
     failed = [k for k, v in res.items() if not v["ok"]]
     if failed:
