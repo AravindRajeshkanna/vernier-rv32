@@ -256,7 +256,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1260,6 +1260,57 @@ sim_soc_2hart_coremark: sim/coremark_dispatch.hex sim/coremark_hart0.hex sim/cor
 	cd sim && $(VVP) sim_soc_2hart_coremark.out $(VVP_DUMP) | tee soc_2hart_coremark.log
 	@grep -aq "SOC-2HART-COREMARK: PASS" sim/soc_2hart_coremark.log && echo "DUAL-HART COREMARK OK" || \
 	    { echo "FAILED: concurrent CoreMark on both harts (CORE=$(CORE))"; exit 1; }
+
+# ---- CoreMark on both harts, in one memory or in two (Phase 8 Stage 3) ----
+#
+# sim/tb_soc_2hart_coremark_mem.v runs the dual-hart CoreMark above with the bus monitor removed
+# (it reads wires the router fabric does not have) and the placement of hart 1's image selectable:
+# `same` keeps both images in block RAM, `split` links hart 1's into SDRAM, so the two harts use
+# two memories. `make coremark2_matrix` runs both over the bus, the router fabric, and the router
+# fabric with its classes on. A measurement, not a gate.
+software/bench/coremark_hart1_sdram.elf: $(COREMARK_PORT) software/bench/link_bench_hart1_sdram.ld \
+                                          software/bench/core_portme.h
+	@test -f $(COREMARK_DIR)/core_main.c || \
+	    { echo "coremark not fetched - run 'make coremark-fetch'"; exit 1; }
+	$(RISCV_CC) $(MC_CFLAGS) -T software/bench/link_bench_hart1_sdram.ld \
+	    -o $@ $(COREMARK_PORT) $(COREMARK_SRCS)
+
+software/bench/coremark_dispatch_split.elf: software/bench/coremark_dispatch_split.S \
+                                             software/bench/link_coremark_dispatch.ld
+	$(RISCV_CC) -march=rv32im_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_coremark_dispatch.ld \
+	    -o $@ software/bench/coremark_dispatch_split.S
+
+sim/coremark_hart1_sdram.hex: software/bench/coremark_hart1_sdram.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/coremark_hart1_sdram.elf software/bench/coremark_hart1_sdram.bin
+	python3 software/bin2hex.py --word-size=2 software/bench/coremark_hart1_sdram.bin > $@
+
+sim/coremark_dispatch_split.hex: software/bench/coremark_dispatch_split.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/coremark_dispatch_split.elf software/bench/coremark_dispatch_split.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/coremark_dispatch_split.bin > $@
+
+COREMARK2_DEFS ?=
+
+sim/sim_soc_2hart_coremark_same.out: sim/tb_soc_2hart_coremark_mem.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) $(COREMARK2_DEFS) -o $@ sim/tb_soc_2hart_coremark_mem.v sim/sdram_model.v $(SOC_RTL)
+
+sim/sim_soc_2hart_coremark_split.out: sim/tb_soc_2hart_coremark_mem.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -DSPLIT_SDRAM $(COREMARK2_DEFS) -o $@ sim/tb_soc_2hart_coremark_mem.v sim/sdram_model.v $(SOC_RTL)
+
+sim_soc_2hart_coremark_same: sim/coremark_dispatch.hex sim/coremark_hart0.hex sim/coremark_hart1.hex \
+                              sim/sim_soc_2hart_coremark_same.out
+	cd sim && $(VVP) sim_soc_2hart_coremark_same.out $(VVP_DUMP) | tee soc_2hart_coremark_same.log
+	@grep -aq "SOC-2HART-COREMARK: PASS" sim/soc_2hart_coremark_same.log && echo "DUAL-HART COREMARK (same memory) OK" || \
+	    { echo "FAILED: concurrent CoreMark, both harts in block RAM (CORE=$(CORE))"; exit 1; }
+
+sim_soc_2hart_coremark_split: sim/coremark_dispatch_split.hex sim/coremark_hart0.hex sim/coremark_hart1_sdram.hex \
+                               sim/sim_soc_2hart_coremark_split.out
+	cd sim && $(VVP) sim_soc_2hart_coremark_split.out $(VVP_DUMP) | tee soc_2hart_coremark_split.log
+	@grep -aq "SOC-2HART-COREMARK: PASS" sim/soc_2hart_coremark_split.log && echo "DUAL-HART COREMARK (split memory) OK" || \
+	    { echo "FAILED: concurrent CoreMark, hart 1 in SDRAM (CORE=$(CORE))"; exit 1; }
+
+coremark2_matrix:
+	bash sim/coremark2_matrix.sh
 
 # ---- hardware bring-up (docs/roadmap/phase-02-memory-ceiling.md Phase 2, on a board) ----
 #

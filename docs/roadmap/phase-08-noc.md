@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 and 25: traffic classes in the router, and the NPU's DMA racing a hart); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 26: traffic classes in the router, the NPU's DMA racing a hart, and CoreMark on two harts in one memory and in two); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1291,7 +1291,7 @@ the one SDRAM slave, where the router fabric's parallelism has nothing to do and
 (two routers and two sets of queues) is pure latency, exactly what Stage 0's finding that one memory
 takes almost all the traffic predicts; and the late-ack guard, which cancels a cache update
 whenever the other hart writes the same index while an access is in flight, may be costing fills
-that two harts sharing data trigger often. Counting the cancelled fills would separate the two.
+that two harts sharing data trigger often. Counting the cancelled fills would separate the two. (Update: Part 26 separated them by switching the guard off for a measurement; it costs nothing measurable on CoreMark.)
 
 **What this means for Stage 2's Done-when**, which asks that the two-hart configuration run
 correctly over the network in simulation, Linux SMP reach userspace, and the latency, bandwidth and
@@ -1444,6 +1444,68 @@ the mechanism by inspection, not a measurement of it. Area and timing are not me
 workloads where the bus is saturated (two harts) are the ones to look at next: this one never
 saturates it.
 
+**Update, Part 26: CoreMark on two harts at once, in one memory and in two, and what the late-ack
+guard costs.** Part 23 found the router fabric well behind the bus with two harts and offered two
+explanations it had not tested. This runs the one real two-hart workload that is quick to repeat, the
+concurrent dual-hart CoreMark of Phase 15, and places the harts' images in the same memory or in
+two. `sim/tb_soc_2hart_coremark_mem.v` is that testbench with the bus monitor removed (it reads the
+shared bus's wires, which the router fabric does not have) and the placement selectable: `same` keeps
+both images in block RAM, `split` links hart 1's into SDRAM (`link_bench_hart1_sdram.ld`, reached
+through `coremark_dispatch_split.S`) so the two harts' traffic goes to two memories and they meet
+only at the interconnect. `make coremark2_matrix` (`sim/coremark2_matrix.sh`) runs both over the bus,
+the router fabric, and the router fabric with its classes on; a fourth column switches the data
+caches' late-ack guard off, for a measurement only (see below).
+
+Cycles for one CoreMark iteration on each hart (in-order cores), and the wall-clock from reset to
+both verdicts (which includes start-up and the console output):
+
+| memory | fabric | hart 0 | hart 1 | wall-clock |
+|---|---|---|---|---|
+| same | bus | 434,074 | 451,483 | 644,154 |
+| same | router fabric | 633,713 (+46.0%) | 634,485 (+40.5%) | 1,042,102 (+61.8%) |
+| same | router fabric, classes on | 632,532 | 634,202 | 1,039,450 |
+| same | router fabric, guard off (measurement) | 634,075 | 634,847 | 1,042,410 |
+| split | bus | 482,861 | 571,410 | 736,394 |
+| split | router fabric | 567,301 (+17.5%) | 652,280 (+14.2%) | 911,010 (+23.7%) |
+| split | router fabric, classes on | 567,301 | 652,280 | 910,900 |
+| split | router fabric, guard off (measurement) | 567,012 | 651,536 | 910,964 |
+
+(Each percentage is against the bus with the same placement.)
+
+**What it shows.**
+
+- **A shared memory is what hurts the router fabric most.** With both harts in block RAM it is 46% and
+  41% slower per iteration; with hart 1 in SDRAM, 17% and 14%, under 20%. By inspection
+  the cause is the one in Part 25: a slave interface serves one request at a time and stays busy for its
+  whole round trip, so two harts missing in the same memory queue behind each other for longer than they
+  would hold the bus. That is a reading of the design, not a wire-level measurement.
+- **The parallelism is real.** Moving hart 1 to SDRAM makes hart 0 on the router fabric 10.5% faster
+  (633,713 to 567,301 cycles) and the wall-clock 12.6% shorter, because it no longer queues behind hart 1
+  at the same slave. The same move makes the bus system *slower* (hart 0 +11.2%, hart 1 +26.6%, wall-clock
+  +14.3%): hart 1's SDRAM traffic now holds the one bus against hart 0. This is the property the fabric
+  exists for, and here it shows in a real program.
+- **The bus is still ahead.** With matching placement the fabric is 14 to 17% slower per iteration and 24%
+  slower on the wall-clock when the harts are in two memories, and 41 to 46% slower per iteration when they
+  share one.
+- **The late-ack guard is not the cost.** With the data caches' guard switched off, the cycles are the
+  same to within about 0.1% in both placements. That settles one of the two explanations Part 23 left open
+  (the guard cancelling fills): not on this workload. What remains is the fabric's longer path and its
+  busy-for-a-round-trip slave interfaces. The caveat is that these two CoreMark images do not share data,
+  so the guard has few cancellations to make; a workload that does (Linux, with its shared kernel data)
+  could differ, so this is "not measurable here", not "free". And the guard-off build is *not* a valid
+  configuration: without the guard a late ack can fill a line with a value another hart has already
+  overwritten (`sim_cpu_wb_snoop_race` shows it), CoreMark passing without it says nothing about that, and
+  the switch exists only so the cost could be measured.
+- **The classes decide almost nothing.** At most 0.25% (the wall-clock with both harts in one memory) and
+  under 0.02% with two memories.
+
+**What this does not establish.** Two in-order harts, one program. CoreMark's working set mostly fits the
+caches, so the bus is far from saturated, and the Linux boot that does saturate it (Part 23: the wide pair
+66.7% slower) was not rerun with its memory split, since the kernel and its data live in SDRAM. The
+explanation for the same-memory penalty is not tested; an experiment that would test it is a slave
+interface that accepts its next request while the last response drains, and seeing whether the penalty
+shrinks. That is also the most direct design improvement the numbers point to, and it is not done.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -1477,8 +1539,9 @@ Linux SMP still reaches userspace on it, and real latency/bandwidth/area
 numbers are recorded against the classic bus, not estimated.
 
 **Stage 3 - scaling past the minimal case** (begun at the maintainer's request:
-Part 24 built the quality-of-service mechanism and Part 25 measured the NPU's DMA racing a hart; four or more
-harts, the coherence check at that size and the remaining workloads are still open). Real growth to four or more
+Part 24 built the quality-of-service mechanism, Part 25 measured the NPU's DMA racing a hart, and Part 26
+ran CoreMark on two harts in one memory and in two; four or more harts, the coherence check at that size
+and the interrupt-traffic workload are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -1537,4 +1600,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 and 25). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 26). Stages 4 onward are a plan.
