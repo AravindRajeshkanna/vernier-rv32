@@ -261,6 +261,27 @@ module tb_ramboot;
     end
 `endif
 
+`ifdef REQ_COUNT
+    // Phase 8 Stage 3, Part 31: the accesses each master completes in a phase of the program under test,
+    // marked the way the bus monitor above is (GPIO_OUT: 0x00FF clears, any other value N reports the phase
+    // that has just ended and clears again; see software/soc/irqload.c). It counts acknowledgements at the
+    // masters' own ports, so a four-word line fill is four, and it reads the same wires whichever
+    // interconnect is built, which the bus monitor (the shared bus's own signals) cannot. One hart.
+    reg [31:0] rc_fetch, rc_data, rc_walk, rc_npu;
+    initial begin rc_fetch = 0; rc_data = 0; rc_walk = 0; rc_npu = 0; end
+    always @(posedge clk) if (!rst) begin
+        if (DUT.iwb_cyc[0] && DUT.iwb_ack[0]) rc_fetch = rc_fetch + 1;
+        if (DUT.dwb_cyc[0] && DUT.dwb_ack[0]) rc_data  = rc_data  + 1;
+        if (DUT.pwb_cyc[0] && DUT.pwb_ack[0]) rc_walk  = rc_walk  + 1;
+        if (DUT.npu_m_cyc   && DUT.npu_m_ack) rc_npu   = rc_npu   + 1;
+    end
+    always @(gpio_out) if (!rst) begin
+        if (gpio_out !== 16'h00FF && ^gpio_out !== 1'bx)
+            $display("[req] phase %0d: fetch %0d data %0d walker %0d npu %0d", gpio_out, rc_fetch, rc_data, rc_walk, rc_npu);
+        rc_fetch = 0; rc_data = 0; rc_walk = 0; rc_npu = 0;
+    end
+`endif
+
     // ---- UART receiver: decode the TX line back into characters ----
     integer i;
     reg [7:0] rx_byte;

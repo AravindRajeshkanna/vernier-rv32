@@ -260,7 +260,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -2093,6 +2093,51 @@ sim_npuload_nodcache: sim/bootrom_$(CORE).hex sim/npuloadimage.hex sim/sim_npulo
 	@cd sim && $(VVP) sim_npuload_nodcache.out $(VVP_DUMP) 2>&1 | tee npuload_nodcache.log
 	@grep -q "RAMBOOT TEST PASSED" sim/npuload_nodcache.log || \
 	    { echo "sim_npuload_nodcache FAILED"; exit 1; }
+
+# ---- Interrupt traffic (Phase 8 Stage 3, Part 31) ----
+#
+# software/soc/irqload.c takes a periodic timer interrupt, through the PLIC, while the CPU loop of
+# npuload.c runs alone and with the NPU's DMA job racing it, and times what the interrupts add and how
+# long each took to be served. A measurement that also checks its results, not a CI job. Built from
+# the same forms as npuload (where the NPU's buffer lives, whether the loop fits the data cache) and
+# run over every interconnect by `make irqload_matrix`:
+#   (none)      the NPU's buffer in block RAM, the loop in the data cache
+#   split       the NPU's buffer in SDRAM
+#   heavy       the loop sweeps 8 KB, so every load reaches the interconnect
+#   heavysplit  both
+#   slow        the plain form with an interrupt every 8,000 cycles, not 2,000
+# `make` does not know that a different INTERCONNECT needs a different build: clear sim/*.out first.
+IRQLOAD_SRCS = $(SOCRT_SRCS) software/soc/irqload_trap.S software/soc/irqload.c
+IRQLOAD_HDRS = $(SOC_HDRS) software/soc/irqload.h
+IRQLOAD_DEFS ?=   # extra Verilog defines for the simulation, e.g. -DXBAR_QOS
+
+define IRQLOAD_VARIANT
+software/soc/irqload$(1).elf: $$(IRQLOAD_SRCS) $$(IRQLOAD_HDRS) software/soc/link_ram.ld
+	$$(RISCV_CC) $$(SOCPROG_CFLAGS) $(2) -T software/soc/link_ram.ld \
+	    -o $$@ $$(IRQLOAD_SRCS)
+
+sim/irqload$(1)_image.hex: software/soc/irqload$(1).elf software/bin2hex.py Makefile
+	$$(RISCV_OBJCOPY) -O binary software/soc/irqload$(1).elf software/soc/irqload$(1).bin
+	python3 software/bin2hex.py --word-size=4 --skip-words=1024 \
+	    software/soc/irqload$(1).bin > $$@
+
+sim/sim_irqload$(1).out: sim/tb_ramboot.v sim/sdram_model.v $$(SOC_RTL)
+	$$(IVERILOG) $$(IVFLAGS) $$(IRQLOAD_DEFS) -DRAM_IMAGE='"irqload$(1)_image.hex"' -DROM_IMAGE='"bootrom_$$(CORE).hex"' \
+	    -o $$@ sim/tb_ramboot.v sim/sdram_model.v $$(SOC_RTL)
+
+sim_irqload$(1): sim/bootrom_$$(CORE).hex sim/irqload$(1)_image.hex sim/sim_irqload$(1).out
+	@cd sim && $$(VVP) sim_irqload$(1).out $$(VVP_DUMP) 2>&1 | tee irqload$(1).log
+	@grep -q "IRQ-LOAD: PASS" sim/irqload$(1).log && grep -q "RAMBOOT TEST PASSED" sim/irqload$(1).log || \
+	    { echo "sim_irqload$(1) FAILED"; exit 1; }
+endef
+$(eval $(call IRQLOAD_VARIANT,,))
+$(eval $(call IRQLOAD_VARIANT,_split,-DNPU_SRC_SDRAM))
+$(eval $(call IRQLOAD_VARIANT,_heavy,-DCPU_BUS_HEAVY))
+$(eval $(call IRQLOAD_VARIANT,_heavysplit,-DCPU_BUS_HEAVY -DNPU_SRC_SDRAM))
+$(eval $(call IRQLOAD_VARIANT,_slow,-DIRQ_PERIOD=8000u))
+
+irqload_matrix:
+	bash sim/irqload_matrix.sh
 
 # ---- Atomics against DDR3 (Phase 9 Stage 2, Part 7) ----
 #
