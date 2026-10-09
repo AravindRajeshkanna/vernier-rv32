@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 28: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, and two of the fabric's four cycles an access cut away); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 29: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, and the fabric's area measured); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1299,7 +1299,7 @@ area be recorded against the bus: the first two are met, the latency is recorded
 result is that **on this SoC the router fabric loses to the bus everywhere** (16 to 67% more
 cycles). That is the outcome Stage 0 expected. Bandwidth was not measured separately (Linux's
 cycles to userspace and the SDRAM boot check are the workloads), and area and timing were not
-measured at all.
+measured at all. (Update, Part 29: area is now measured, and it is the larger problem: 74,133 LUTs in a one-hart SoC, 88% of an 85F. Timing still is not.)
 
 **What this does not establish.** No area or LUT figure, no Fmax, no board; no CI job builds the
 network; the two-hart Linux boots are one run each; the late-ack guard's cost is a guess; and nothing
@@ -1726,13 +1726,60 @@ The NPU's DMA racing a hart (Part 25's four forms; cycles, in-order core):
 
 **What this does not establish.** Timing. The bypass makes the slave's ack and the request path combinational
 through the interface, which the bus has always been; whether a board's clock holds with the fabric in the SoC
-is not measured (the board builds use the bus), and the structural estimate above is all there is. Area beyond
+is not measured (the board builds use the bus), and the structural estimate above is all there is. (Update, Part 29: the fabric as built is 88% of an 85F and its place-and-route does not finish, so this still has no answer.) Area beyond
 that estimate. The routers' two FIFOs, the other two cycles: removing them would put a master's address decode,
 the arbitration and the slave interface in one cycle's path, and is not built. The wide pair's 36%. Four
 harts, interrupt traffic, and stores in the stream, as in Part 27. The default stays off: whether to turn it on
 for `INTERCONNECT=xbar` is a decision for the maintainer once its timing is known. The Stage 3 Done-when's
 "measured improvement" is met in simulation for two workloads with the bypass on (the stream, and the in-order
 two-hart boot), and the trade-off is recorded for the rest, where the bus is still ahead.
+
+**Update, Part 29: what the router fabric costs in an ECP5, and how much a netlist moves Fmax by itself.**
+Every part so far has said "no area or timing figure", and Part 28's own caveat was that the bypass's
+timing was unknown. This runs the repository's place-and-route flow (`fpga/synth/synth_ecp5.sh`: the 85F
+with the board's real pins, the framebuffer shrunk to 8x8, six placement seeds, the bundle `20261002`, the
+protocol of `fpga/README.md`) on the bus SoC and on the SoC with `INTERCONNECT=xbar`. The tables and the
+method are in `fpga/README.md`, "Re-measured 2026-10-09"; `fpga/synth/fmax_seeds.sh` and
+`fpga/synth/noc_router_area.sh` repeat them. No RTL changes.
+
+| SoC, one hart, in-order, seed 1 | TRELLIS_COMB | flip-flops | after placement | after routing |
+|---|---|---|---|---|
+| bus | 33,810 (40% of an 85F) | 11,528 | 12.39 MHz | 17.49 MHz |
+| router fabric | **74,133 (88%)** | 14,894 | 15.25 MHz | **not finished**: 117,405 of 308,100 arcs left after 4 h 53 min |
+
+**What it shows.**
+
+- **The fabric as built is 40,323 LUTs, 119% of the bus SoC.** It leaves 88% of an 85F used for one hart; a second
+  hart would add its own core and caches and widen the fabric, so two would not fit (an inference, not a build). At that utilisation place-and-route does not finish in any useful time (the bus's took 5 minutes; the fabric's router was stopped after 4 h 53 min with 38% of its arcs still to route), so the fabric
+  has no Fmax here, and the bypass of Part 28 has none either. This is the first area figure the NoC has had,
+  and it is worse than the speed deficit of any part so far: every cycle count above is of a design that, as
+  written, cannot be put on the board.
+- **Two routers are nearly all of it, and the cause is how their FIFOs are written.** The response router (14
+  inputs, 5 outputs) is 66,302 LUT4s on its own and the request router 12,456; the next largest module in
+  the SoC is the branch predictor at 8,245, and `cpu_wb` is 5,524. All the inputs' two entries are one array,
+  `mem [0:NUM_IN*DEPTH-1]`, read and written at `gi*DEPTH + pointer` with an 8-bit pointer, so as far as yosys can
+  tell any input reaches any entry. Giving each input its own two-entry array in a scratch copy, and nothing else,
+  takes the response router from 65,805 LUT4s to 7,110 and the request router from 12,632 to 6,274. That the
+  array is the cause is measured; that it is the all-to-all addressing is a reading of yosys' result, not traced
+  cell by cell. Fixing it means changing a formally proved module whose behaviour must stay exactly the same,
+  which is Part 30.
+- **The bus build's Fmax moved by 1.7 MHz since the last measurement, and no RTL change did it.** At
+  `570993e`, the tree of the 2026-10-03 measurement in `fpga/README.md`, the same flow reproduces its six seeds to the digit (mean 19.79 MHz);
+  at HEAD the mean is 18.05 (all six seeds lower, 33,218 to 33,810 LUTs). The non-NoC performance levers
+  in between cost nothing (`9de80dc`: 19.96). The drop falls in Part 23, whose changes to the bus build are
+  logically empty, and **adding one unused output port to the earlier tree, which changes no logic, moves
+  the mean by -1.39 MHz and the LUT count by +627**. The critical path of the fast and the slow netlists is the same CPU
+  chain (pipeline registers, instruction-side MMU, instruction-cache tag compare). So the netlist is itself a
+  random draw of at least 1.4 MHz on a six-seed mean, on top of the seed spread, and a difference of about
+  2 MHz between two netlists cannot be attributed to the RTL that differs. That includes the PMP result of
+  2026-10-03, whose +1.67 MHz is the size of this noise; its LUT saving stands.
+- **The default build is not cheaper for being default-off.** The Phase 8 parts claim the fabric is "unchanged
+  to the cycle" when off; that is about cycles. The bus SoC's LUT count differs by 592 between `570993e` and HEAD,
+  and the measurement above cannot say how much of that is these parts.
+
+**What this does not establish.** Any Fmax for the fabric or the bypass. The bus drop's cause beyond "not the RTL that
+changed": the noise was shown with one logic-free edit, not characterised. Two harts, the 45F, `CORE=ooo`, and the
+wide core's area. That the per-input array is behaviour-preserving, which Part 30 has to prove.
 
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
@@ -1754,8 +1801,8 @@ controller in this tree is already held to.
 
 **Stage 2 - the smallest router that could replace the bus** (done, in simulation,
 at the maintainer's request: Parts 21 to 23 built the router, a fabric on it, and ran the SoC and
-Linux over it; the cycles are recorded in Part 23, and the bus is faster; area and timing
-are not measured). A real router
+Linux over it; the cycles are recorded in Part 23, and the bus is faster; the fabric's area is Part 29's, 40,323 LUTs more than the
+bus SoC, and timing is not measured). A real router
 (wormhole or virtual-cut-through, 2-5 ports) in the smallest topology that
 says anything real - a 2x2 mesh, a small crossbar, or a ring, whichever
 Stage 0's own measurements favor - carrying a real first configuration: two
@@ -1769,7 +1816,8 @@ numbers are recorded against the classic bus, not estimated.
 **Stage 3 - scaling past the minimal case** (begun at the maintainer's request:
 Part 24 built the quality-of-service mechanism, Part 25 measured the NPU's DMA racing a hart, Part 26
 ran CoreMark on two harts in one memory and in two, Part 27 streamed through memory on two harts, and
-Part 28 found where the fabric's four cycles an access go and removed two of them; four or more harts,
+Part 28 found where the fabric's four cycles an access go and removed two of them, and Part 29 measured
+its area (74,133 LUTs in a one-hart SoC, 88% of an 85F, nearly all in two routers); four or more harts,
 the coherence check at that size and the interrupt-traffic workload are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
