@@ -36,7 +36,7 @@ mkdir -p "$BUILD"
 # cannot reach in any reasonable time and boolector does in about a minute and a half.
 DDR3_SOLVER="${DDR3_SOLVER:-boolector}"
 DDR3_DEPTH="${DDR3_DEPTH:-250}"
-solver_for() { case "$1" in ddr3_ecp5_top) echo "$DDR3_SOLVER" ;; fv_pmp_equiv|fv_noc_router|fv_noc_router_qos|fv_noc_ni_slave|fv_noc_ni_slave_bypass) echo boolector ;; *) echo "$SOLVER" ;; esac; }
+solver_for() { case "$1" in ddr3_ecp5_top) echo "$DDR3_SOLVER" ;; fv_pmp_equiv|fv_noc_router|fv_noc_router_qos|fv_noc_ni_slave|fv_noc_ni_slave_bypass|fv_noc_router_equiv|fv_noc_router_qos_equiv) echo boolector ;; *) echo "$SOLVER" ;; esac; }
 depth_for()  { case "$1" in ddr3_ecp5_top) echo "$DDR3_DEPTH"  ;; fv_pmp_equiv) echo 2 ;; *) echo "$DEPTH"  ;; esac; }
 
 # What to check: "<top module> <verilog files>".
@@ -64,6 +64,16 @@ TARGETS=(
     "fv_pmp_equiv    $ROOT/rtl/pmp.v $HERE/pmp_ref.v $HERE/fv_pmp_equiv.v"
     "ddr3_ecp5_top   $ROOT/rtl/soc/ddr3_ecp5_top.v $ROOT/rtl/soc/ddr3_write_seq.v $ROOT/rtl/soc/ddr3_read_seq.v $ROOT/rtl/soc/ddr3_read_burst_ext.v $ROOT/rtl/soc/ddr3_refresh_ctrl.v $HERE/ddr3_stubs.v"
 )
+
+# Proofs that are right to run once and too slow to run always: a refactor held equal to the module it
+# replaced, over every input sequence. The router's storage was changed in Phase 8 Part 30 to cut its
+# area, and these hold the result equal to the original (formal/noc_router_ref.v) at every port; they
+# take about a quarter of an hour. `make formal_router_equiv`, or FORMAL_SLOW=1 formal/run.sh equiv.
+SLOW_TARGETS=(
+    "fv_noc_router_equiv $ROOT/rtl/soc/noc_router.v $HERE/noc_router_ref.v $HERE/fv_noc_router_equiv.v"
+    "fv_noc_router_qos_equiv $ROOT/rtl/soc/noc_router.v $HERE/noc_router_ref.v $HERE/fv_noc_router_equiv.v"
+)
+if [ -n "${FORMAL_SLOW:-}" ]; then TARGETS+=("${SLOW_TARGETS[@]}"); fi
 
 # Returns 0 if the solver proved the properties, 1 if it found a
 # counterexample, 2 if the flow itself broke.

@@ -1,3 +1,12 @@
+// The router as it was before Phase 8 Part 30, kept verbatim as the reference that
+// formal/fv_noc_router_equiv.v holds rtl/soc/noc_router.v equal to. Part 30 changed how the input FIFOs
+// are stored (one array per input instead of one array for all of them) to cut the response router
+// from 65,805 LUT4s to a small fraction of that, and that must change nothing a port can see. This copy
+// keeps the original single-array storage, so that the proof compares the new storage with the old,
+// cycle for cycle, over every input sequence, instead of resting on the tests alone.
+//
+// It is the router's text at commit a947eba with the module renamed and its `ifdef FORMAL block
+// (which is proved on the real module) removed. Nothing else is different; do not "improve" it.
 // A packet router (Phase 8 Stage 2): NUM_IN input ports and NUM_OUT output
 // ports joined by a crossbar, so packets bound for *different* outputs move in
 // the same cycle - which noc_node1.v, carrying one transaction at a time like
@@ -16,16 +25,6 @@
 // A grant, once an output has offered a packet, is held until the receiver
 // takes it (`out_valid` never drops and the packet never changes while it
 // waits), so the receiver may rely on the usual valid/ready contract.
-//
-// ---- Storage ----
-//
-// Each input's FIFO is an array of its own (`fifo`, inside the input's generate block), written
-// only by that input and read only for that input's head. It was one array for all the inputs,
-// indexed by `input * DEPTH + pointer`, and with an eight-bit pointer every input could, as far as
-// synthesis can tell, read and write every entry: in the fabric's fourteen-input response router
-// that cost 65,805 4-input LUTs, nine times what the same router costs with an array to an input
-// (Part 29 and 30 of docs/roadmap/phase-08-noc.md). Nothing a port sees differs, and
-// formal/fv_noc_router_equiv.v proves it against the original.
 //
 // ---- Ordering ----
 //
@@ -64,7 +63,7 @@
 // discarded, `misroute` goes high and stays high, and nothing waits for it:
 // better a flag a test can see than a deadlock that looks like a hang. The
 // network interfaces' address decode never produces one.
-module noc_router #(
+module noc_router_ref #(
     parameter NUM_IN    = 2,
     parameter NUM_OUT   = 2,
     parameter DEPTH     = 2,
@@ -88,7 +87,7 @@ module noc_router #(
     output reg                 misroute
 );
     // ---- the input FIFOs ----
-    localparam PW = (DEPTH > 1) ? $clog2(DEPTH) : 1;      // bits of a pointer into one input's FIFO
+    reg [81:0] mem   [0:NUM_IN*DEPTH-1];
     reg [7:0]  rd    [0:NUM_IN-1];
     reg [7:0]  wr    [0:NUM_IN-1];
     reg [7:0]  cnt   [0:NUM_IN-1];
@@ -112,10 +111,7 @@ module noc_router #(
         end
         for (gi = 0; gi < NUM_IN; gi = gi + 1) begin : g_in
             assign f_valid[gi] = (cnt[gi] != 8'd0);
-            reg [81:0] fifo [0:DEPTH-1];
-            assign head[gi]    = fifo[rd[gi][PW-1:0]];
-            always @(posedge clk)
-                if (in_valid[gi] && in_ready[gi]) fifo[wr[gi][PW-1:0]] <= in_pkt[gi*82 +: 82];
+            assign head[gi]    = mem[gi*DEPTH + {24'b0, rd[gi]}];
             assign h_dst[gi]   = head[gi][15:12];
             assign h_src[gi]   = head[gi][11:8];
             assign h_lock[gi]  = head[gi][0];
@@ -239,6 +235,7 @@ module noc_router #(
             for (k = 0; k < NUM_IN; k = k + 1) begin
                 // push (a packet arriving this cycle) and pop (the head leaving)
                 if (in_valid[k] && in_ready[k]) begin
+                    mem[k*DEPTH + {24'b0, wr[k]}] <= in_pkt[k*82 +: 82];
                     wr[k] <= (wr[k] == DEPTH - 1) ? 8'd0 : wr[k] + 8'd1;
                 end
                 if (take[k] || drop[k]) rd[k] <= (rd[k] == DEPTH - 1) ? 8'd0 : rd[k] + 8'd1;
@@ -255,40 +252,4 @@ module noc_router #(
         end
     end
 
-`ifdef FORMAL
-    // The arbiter's choice, proved: when an output picks afresh (it holds no earlier
-    // grant) no input that could have been served had a higher effective class, and
-    // among equal classes none had a lower number.
-    reg f_init = 1'b0;
-    always @(posedge clk) f_init <= 1'b1;
-    always @(*) if (!f_init) assume (rst);
-    integer fo, fi;
-    reg     fok;
-    // The effective class is what the arbiter trusts, so it is checked against its
-    // definition on its own: a head that has waited AGE_LIMIT cycles is the top class,
-    // and any other head carries its own class (or none, with QOS_EN clear).
-    always @(*) if (f_init && !rst) begin
-        for (fi = 0; fi < NUM_IN; fi = fi + 1) begin
-            if (AGE_LIMIT != 0 && agev[16*fi +: 16] >= AGE_LIMIT)
-                assert (eqv[2*fi +: 2] == 2'd3);
-            else if (QOS_EN != 0)
-                assert (eqv[2*fi +: 2] == head[fi][7:6]);
-            else
-                assert (eqv[2*fi +: 2] == 2'd0);
-        end
-    end
-    always @(*) if (f_init && !rst) begin
-        for (fo = 0; fo < NUM_OUT; fo = fo + 1)
-            if (sel_v[fo] && !gnt_v[fo])
-                for (fi = 0; fi < NUM_IN; fi = fi + 1) begin
-                    fok = f_valid[fi] && h_dst[fi] == fo[3:0] &&
-                          (!lk_v[fo] || lk_own[fo] == h_src[fi]) &&
-                          !(hold_v && last_out[hold_id] == fo[3:0] && h_src[fi] != hold_id);
-                    if (fok) begin
-                        assert (eqv[2*fi +: 2] <= eqv[2*sel_i[fo] +: 2]);
-                        if (eqv[2*fi +: 2] == eqv[2*sel_i[fo] +: 2]) assert (sel_i[fo] <= fi[3:0]);
-                    end
-                end
-    end
-`endif
 endmodule

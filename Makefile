@@ -2900,6 +2900,16 @@ sim_noc_router_qos: sim/sim_noc_router_qos.out
 	@grep -aq "NOC ROUTER QOS TEST PASSED" sim/noc_router_qos.log && echo "NOC ROUTER QOS OK" || \
 	    { echo "FAILED: the Phase 8 packet router's quality of service"; exit 1; }
 
+# A router's area must not silently grow back (Phase 8 Stage 3, Part 30): each shape of the
+# fabric's routers, synthesised on its own, under a budget (fpga/synth/noc_router_area.sh).
+noc_router_area_check:
+	sh fpga/synth/noc_router_area.sh --check
+
+# The router's current storage held equal, at every port and every cycle, to the original it replaced
+# (Phase 8 Stage 3, Part 30). About a quarter of an hour, so not in `verify`; run it when the router changes.
+formal_router_equiv:
+	FORMAL_SLOW=1 bash formal/run.sh equiv
+
 sim/sim_noc_xbar.out: sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
 	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_noc_xbar.v rtl/soc/wb_interconnect.v $(NOC_XBAR_RTL)
 
@@ -3850,6 +3860,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_noc_ni_bypass \
         sim_noc_router \
         sim_noc_router_qos \
+        noc_router_area_check \
         sim_noc_xbar \
         sim_noc_xbar_bypass \
         sim_noc_latency \
