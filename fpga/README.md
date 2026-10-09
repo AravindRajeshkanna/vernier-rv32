@@ -28,7 +28,7 @@ retries seeds and stops at the first close — the normal build closes by seed
 | Full SoC synthesis (yosys) | ✅ **runs, ~19 s** as of August; at today's HEAD the real-scale build does not finish in an hour, see [Re-measured 2026-10-02](#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause) |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs** — 4 min on an 85F, 11 min on a 45F |
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
-| Resource usage | ✅ **measured** — (the Phase 8 router fabric, `INTERCONNECT=xbar`: 74,133 TRELLIS_COMB, 88% of an 85F, against the bus's 33,810 — see [Re-measured 2026-10-09](#re-measured-2026-10-09-the-router-fabric-in-the-soc-and-how-much-a-netlist-moves-fmax-by-itself)) 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F (August; at HEAD, with the framebuffer shrunk to 8x8, 36,817 TRELLIS_COMB / 44%); the 45F figures are stale |
+| Resource usage | ✅ **measured** — (the Phase 8 router fabric, `INTERCONNECT=xbar`: 41,439 TRELLIS_COMB, 49% of an 85F, against the bus's 33,810; it was 74,133, 88%, before Phase 8 Part 30 — see [Re-measured 2026-10-09](#re-measured-2026-10-09-the-router-fabric-in-the-soc-and-how-much-a-netlist-moves-fmax-by-itself)) 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F (August; at HEAD, with the framebuffer shrunk to 8x8, 36,817 TRELLIS_COMB / 44%); the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
 | **Fmax with I/O constrained** | ⚠️ **23.18–25.92 MHz as of 2026-08-26** (HEAD measures 17.4–19.1 MHz, see below) (85F, six placement seeds, with the registered ack) — **4 of 6 land under the board's 25 MHz**. Margin is thin; `synth_ecp5.sh` retries seeds and normally closes by seed 3 (confirmed 2026-08-26: seed 3, 25.96 MHz routed). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
 | **`CORE=ooo` synthesis** | ✅ **runs, real numbers** — 78 DP16KD (37%, essentially unchanged from in-order's 80/38%), 52,042 TRELLIS_COMB (**62%**, ~3x in-order), 12 MULT18X18D. First time this core has been synthesized at all — `synth_ecp5.sh` had no `CORE=` knob before this. |
@@ -344,7 +344,7 @@ deliberately perturbed netlists. LUT counts are steadier: 33,218 to 33,974 acros
 | router fabric, one hart | **74,133 (88%)** | 14,894 | 42 | 15.25 MHz | **not finished**: 117,405 of 308,100 arcs left after 4 h 53 min |
 
 The fabric adds **40,323 LUTs, 119% of the whole bus SoC**, to a one-hart design; the netlist file is 116 MB
-against 65 MB. (A placement estimate is not a routed Fmax: the README above finds it about 6 MHz pessimistic, and the fabric's 15.25 MHz against the bus's 12.39 says only that nothing in the fabric dominates the CPU's chain at that stage.) At 88% of an 85F its place-and-route does not finish in any useful time: the bus's took 5 minutes; the fabric's router was stopped after 4 h 53 min with 117,405 of its 308,100 arcs still to route, the count falling by 3,129 in the last 744 seconds, which is eight hours or more at that rate. A two-hart fabric
+against 65 MB. (A placement estimate is not a routed Fmax: the README above finds it about 6 MHz pessimistic, and the fabric's 15.25 MHz against the bus's 12.39 says only that nothing in the fabric dominates the CPU's chain at that stage.) At 88% of an 85F its place-and-route did not finish in any useful time (**Update:** it does after Part 30, see below): the bus's took 5 minutes; the fabric's router was stopped after 4 h 53 min with 117,405 of its 308,100 arcs still to route, the count falling by 3,129 in the last 744 seconds, which is eight hours or more at that rate. A two-hart fabric
 would not fit: a second hart adds its own core and caches and widens the fabric (an inference, not a build). Its Fmax therefore has no number here, and the bypass's (Phase 8 Part 28) could not be
 measured at all.
 
@@ -374,9 +374,31 @@ all-to-all addressing is the reading of yosys' result, not traced cell by cell. 
 and covered by the equivalence and Linux suites, so making that change properly is its own piece of work
 (Phase 8 Part 30), not part of this measurement.
 
-**What this does not establish.** Any Fmax for the fabric. Whether the bypass holds a clock. The
+**What this does not establish.** Any Fmax for the fabric. Whether the bypass holds a clock. (Update: both are measured in the next update, below.) The
 cause of the bus drop beyond "not the RTL that changed": the netlist-level noise was shown with one no-op edit,
 not characterised. The 45F, `CORE=ooo` and the other board targets. A second hart.
+
+**Update, the same day (Phase 8 Part 30): with each router input's FIFO stored in an array of its own, the
+fabric fits and closes.** `rtl/soc/noc_router.v` now keeps one small array per input instead of one for all of
+them, and nothing a port can see changed (`formal/fv_noc_router_equiv.v` holds it equal to the original; see
+`docs/roadmap/phase-08-noc.md`, Part 30). Same flow, same protocol, same bundle:
+
+| SoC, one hart, `ulx3s85`, 8x8 | TRELLIS_COMB | TRELLIS_FF | Seeds 0 to 5, MHz | Mean |
+|---|---|---|---|---|
+| bus | 33,810 (40%) | 11,528 | 18.15 17.49 17.93 18.21 18.50 18.03 | 18.05 |
+| router fabric, before | 74,133 (88%) | 14,894 | did not finish routing | |
+| router fabric, after | **41,439 (49%)** | 12,710 | 19.99 21.05 19.12 20.39 19.97 20.78 | 20.22 |
+| router fabric, after, with the slave interfaces' bypass | 42,669 (51%) | 12,710 | 18.91 20.23 21.26 20.31 20.86 20.81 | 20.40 |
+
+The fabric is 7,629 LUTs over the bus (it was 40,323), finishes place-and-route on every seed (14 to 17 minutes for
+five of the six, 141 for the other, against about five for the bus; wall-clock, with other jobs running), and closes where the bus does not: none of
+these meets 25 MHz. **The netlist noise above applies in full**, so a difference of 2 MHz between the bus and the
+fabric says that the fabric does not lower Fmax, not that it raises it; the older bus netlists (19.79, 19.96) are where
+the fabric is. Critical path, by whose cells are on it: in the six bus seeds and the six fabric seeds without the bypass, none
+is in the router fabric (it is the CPU's pipeline registers and the instruction-side MMU, as in the section
+before the last). With the bypass, five of six seeds end with a 2 to 3 ns hop into the CLINT's slave interface,
+and one (20.81 MHz) passes 17 ns through the request router's fetch-master FIFO, so the fabric is closer to the limit
+than before but is not what sets it at this CPU speed. The bypass costs 1,230 LUTs and no flip-flops.
 
 ## Fmax is a distribution, not a number
 
