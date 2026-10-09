@@ -28,7 +28,7 @@ retries seeds and stops at the first close — the normal build closes by seed
 | Full SoC synthesis (yosys) | ✅ **runs, ~19 s** as of August; at today's HEAD the real-scale build does not finish in an hour, see [Re-measured 2026-10-02](#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause) |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs** — 4 min on an 85F, 11 min on a 45F |
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
-| Resource usage | ✅ **measured** — 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F (August; at HEAD, with the framebuffer shrunk to 8x8, 36,817 TRELLIS_COMB / 44%); the 45F figures are stale |
+| Resource usage | ✅ **measured** — (the Phase 8 router fabric, `INTERCONNECT=xbar`: 74,133 TRELLIS_COMB, 88% of an 85F, against the bus's 33,810 — see [Re-measured 2026-10-09](#re-measured-2026-10-09-the-router-fabric-in-the-soc-and-how-much-a-netlist-moves-fmax-by-itself)) 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F (August; at HEAD, with the framebuffer shrunk to 8x8, 36,817 TRELLIS_COMB / 44%); the 45F figures are stale |
 | **Real pinout** | ✅ **`constraints/ulx3s.lpf`**, every pin placed, no `--lpf-allow-unconstrained` |
 | **Fmax with I/O constrained** | ⚠️ **23.18–25.92 MHz as of 2026-08-26** (HEAD measures 17.4–19.1 MHz, see below) (85F, six placement seeds, with the registered ack) — **4 of 6 land under the board's 25 MHz**. Margin is thin; `synth_ecp5.sh` retries seeds and normally closes by seed 3 (confirmed 2026-08-26: seed 3, 25.96 MHz routed). See [Fmax is a distribution](#fmax-is-a-distribution-not-a-number) and [the critical path](#the-critical-path-and-one-attempt-that-did-not-work) |
 | **`CORE=ooo` synthesis** | ✅ **runs, real numbers** — 78 DP16KD (37%, essentially unchanged from in-order's 80/38%), 52,042 TRELLIS_COMB (**62%**, ~3x in-order), 12 MULT18X18D. First time this core has been synthesized at all — `synth_ecp5.sh` had no `CORE=` knob before this. |
@@ -258,7 +258,7 @@ all sixteen entries. `fault` is unchanged for every input -
 | mean | 18.12 | 19.78 | +1.67 |
 
 TRELLIS_COMB 36,001 to 33,218 (-2,783, -7.7%). All six seeds improve, so this
-is not noise, but **HEAD still fails the 25 MHz constraint on every seed** and
+is not noise (**Update 2026-10-09:** see [the next section but one](#re-measured-2026-10-09-the-router-fabric-in-the-soc-and-how-much-a-netlist-moves-fmax-by-itself): an edit that adds no logic moved the same six-seed mean by 1.39 MHz, about the size of this +1.67, so the Fmax gain is not established; the LUT saving is, since a no-op moved the count by only 627), but **HEAD still fails the 25 MHz constraint on every seed** and
 the 23.8 MHz of 2026-08-26 is not recovered: the remaining 3 to 4 MHz sits in
 the NPU, the CSR file, the framebuffer and the rest of the area growth listed
 above. The critical path was not re-read after this change.
@@ -295,6 +295,88 @@ effect on Fmax was not isolated.
 **Not re-measured:** `ulx3s85-ram`, `CORE=ooo`, the 45F, the video targets and
 the underclocked bitstream. Their figures stand as recorded and name the bundle
 they came from.
+
+## Re-measured 2026-10-09: the router fabric in the SoC, and how much a netlist moves Fmax by itself
+
+Phase 8's router fabric (`INTERCONNECT=xbar`, `rtl/soc/wb_noc_xbar.v`) had never been through this flow;
+every part of `docs/roadmap/phase-08-noc.md` from 15 to 28 said "no area or timing figure". Part 29
+measured it, and found two things that matter more than the number asked for.
+
+**Method.** The flow above, unchanged, with four hooks added to `synth_ecp5.sh` (all empty by default):
+`BUILD` (an output directory, so builds can run side by side), `EXTRA_RTL` (extra files, read in
+SystemVerilog mode because the fabric uses casts), `SYNTH_EXTRA` (arguments for `synth_ecp5`, such as
+`-noflatten`) and `SYNTH_ONLY` (stop once the netlist is written). The protocol is the one of the tables
+above: `BOARD=ulx3s85`, framebuffer 8x8, seeds 0 to 5, the bundle `20261002` (yosys `0.69+185`, nextpnr
+`0.11.1-47`) first on `PATH`. `fpga/synth/fmax_seeds.sh [bus|xbar|bypass]` does it: one synthesis, then every
+seed at once. `fpga/synth/noc_router_area.sh` is the router's area on its own.
+
+**The control reproduces the 2026-10-03 table to the digit.** The tree of the PMP change (`570993e`) gives
+19.60, 20.23, 19.41, 19.62, 19.59 and 20.26 MHz on seeds 0 to 5, 33,218 TRELLIS_COMB, exactly as above. nextpnr
+is deterministic per seed, so this machine and flow are the ones the numbers above came from.
+
+**1. The bus build at HEAD is 1.7 MHz slower than that, and no RTL change did it.**
+
+| Tree (bus, `ulx3s85`, 8x8) | Seeds 0 to 5, MHz | Mean | TRELLIS_COMB |
+|---|---|---|---|
+| `570993e`, the PMP change | 19.60 20.23 19.41 19.62 19.59 20.26 | 19.79 | 33,218 |
+| `9de80dc`, after the instruction-cache line fills | 20.84 20.57 18.89 19.66 19.94 19.83 | 19.96 | 33,347 |
+| `9de80dc` plus **one unused output port** on `cpu_core.v`, no logic | 18.59 18.44 17.86 19.47 18.43 18.62 | **18.57** | 33,974 |
+| `53a91b4`, Phase 8 Part 23 | 18.15 17.49 17.93 18.21 18.50 18.03 | 18.05 | 33,810 |
+| `0f555eb`, HEAD (identical to `53a91b4` seed for seed) | 18.15 17.49 17.93 18.21 18.50 18.03 | 18.05 | 33,810 |
+
+The performance levers of 2026-10-03 to 04 (the snooping data cache, the data cache over SDRAM, the SDRAM
+burst and the line fills) cost nothing: 19.79 to 19.96. The drop falls between `9de80dc` and `53a91b4`, whose
+changes to the bus build are logically empty (per-slave wires that are copies of the shared ones, a second
+snoop port tied to zero, an output nothing reads). The one-port control shows why that does not matter: **an edit
+that adds no logic moved the six-seed mean by -1.39 MHz and the LUT count by +627**. The critical path of all
+three slow and fast netlists is the same chain (the CPU's pipeline registers, the instruction-side MMU's TLB match
+muxes, the instruction cache's tag compare), with nothing from the snoop logic or the NoC on it. So
+**the netlist is itself a random draw, of at least 1.4 MHz on a six-seed mean, on top of the seed spread of
+1.1 to 1.7 MHz recorded above.** A difference of about 2 MHz between two netlists, such as the 570993e table's own,
+cannot be attributed to the RTL that differs; it takes either a much larger effect or the mean over several
+deliberately perturbed netlists. LUT counts are steadier: 33,218 to 33,974 across these five.
+
+**2. The fabric as built does not fit this flow.**
+
+| SoC, seed 1 | TRELLIS_COMB | TRELLIS_FF | DP16KD | after placement | after routing |
+|---|---|---|---|---|---|
+| bus | 33,810 (40%) | 11,528 | 42 | 12.39 MHz | 17.49 MHz |
+| router fabric, one hart | **74,133 (88%)** | 14,894 | 42 | 15.25 MHz | **not finished**: 117,405 of 308,100 arcs left after 4 h 53 min |
+
+The fabric adds **40,323 LUTs, 119% of the whole bus SoC**, to a one-hart design; the netlist file is 116 MB
+against 65 MB. (A placement estimate is not a routed Fmax: the README above finds it about 6 MHz pessimistic, and the fabric's 15.25 MHz against the bus's 12.39 says only that nothing in the fabric dominates the CPU's chain at that stage.) At 88% of an 85F its place-and-route does not finish in any useful time: the bus's took 5 minutes; the fabric's router was stopped after 4 h 53 min with 117,405 of its 308,100 arcs still to route, the count falling by 3,129 in the last 744 seconds, which is eight hours or more at that rate. A two-hart fabric
+would not fit: a second hart adds its own core and caches and widens the fabric (an inference, not a build). Its Fmax therefore has no number here, and the bypass's (Phase 8 Part 28) could not be
+measured at all.
+
+**Where the area is** (`SYNTH_EXTRA=-noflatten`, each module's own cells; the figures do not propagate
+constants across module boundaries, so they add up to more than the flat 74k):
+
+| Module | LUT4 | Flip-flops |
+|---|---|---|
+| `noc_router`, the response router (14 inputs, 5 outputs) | **66,302** | 2,817 |
+| `noc_router`, the request router (5 inputs, 14 outputs) | 12,456 | 1,145 |
+| `btb` | 8,245 | 3,776 |
+| `cpu_wb` | 5,524 | 582 |
+| `csr_file` | 3,166 | 1,218 |
+| `pmp` | 3,071 | 0 |
+| `wb_npu` | 2,990 | 1,581 |
+| `cpu_core` | 2,540 | 701 |
+| `wb_noc_xbar` itself | 753 | 0 |
+
+The two routers are nearly all of it. **The response router alone is 66,000 LUTs because of how its
+FIFOs are written**: all the inputs' two entries are one array, `mem [0:NUM_IN*DEPTH-1]`, and each input
+reads and writes it at `gi*DEPTH + pointer` with an 8-bit pointer, so as far as yosys can tell any input can
+reach any entry. `fpga/synth/noc_router_area.sh` gives 12,632 LUT4 for the request router and 65,805 for the
+response router on their own. Giving each input its own two-entry array (written only by that input, read
+through a one-bit pointer) in a scratch copy, and nothing else, gives **6,274 and 7,110**: 89% off the
+response router and 50% off the request router. That the flat array is the cause is measured; that it is the
+all-to-all addressing is the reading of yosys' result, not traced cell by cell. The router is formally proved
+and covered by the equivalence and Linux suites, so making that change properly is its own piece of work
+(Phase 8 Part 30), not part of this measurement.
+
+**What this does not establish.** Any Fmax for the fabric. Whether the bypass holds a clock. The
+cause of the bus drop beyond "not the RTL that changed": the netlist-level noise was shown with one no-op edit,
+not characterised. The 45F, `CORE=ooo` and the other board targets. A second hart.
 
 ## Fmax is a distribution, not a number
 

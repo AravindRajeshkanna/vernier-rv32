@@ -47,7 +47,9 @@ case "$CORE" in
 esac
 
 PACKAGE=${PACKAGE:-CABGA381}
-BUILD=fpga/build
+# Overridable so that several builds can run side by side (fpga/synth/fmax_seeds.sh does,
+# one per interconnect); the default is where every other use finds its output.
+BUILD=${BUILD:-fpga/build}
 
 # Diagnostic-only overrides on rtl/soc/soc_top.v's own real parameters -
 # unset by default, so every existing board target's own real,
@@ -405,6 +407,10 @@ esac
 # simulation only and which yosys unrolls into one assignment per word - the
 # single thing that used to make this script appear to hang. See
 # rtl/soc/wb_ram.v.
+# BOARD_DEFINES and EXTRA_RTL are how a build is given something the defaults leave out, such as
+# the router fabric (Phase 8): BOARD_DEFINES="-DINTERCONNECT_XBAR" EXTRA_RTL="$NOC_XBAR_RTL".
+# Empty by default. EXTRA_RTL is read in SystemVerilog mode (the fabric uses casts); the rest
+# of the design is read as it always was.
 YOSYS_DEFINES="-DSYNTHESIS $CORE_DEFINES ${BOARD_DEFINES:-}"
 
 if [ "$PRELOAD_RAM" = "1" ]; then
@@ -535,12 +541,22 @@ CHPARAM_TOP=""
 # Stated up front and again at the end: a bitstream is device-specific, and
 # loading one built for the wrong ECP5 fails in ways that look like a broken
 # design rather than a broken command line.
+EXTRA_ABS=$(echo "${EXTRA_RTL:-}" | sed "s|[^ ][^ ]*|$ROOT/&|g")
 echo "=== target: ${BOARD:-generic}, LFE5U-${DEVICE%k}F, $PACKAGE ==="
 echo "=== yosys ==="
 ( cd "$BUILD" && yosys -p "read_verilog $YOSYS_DEFINES $(echo "$RTL" | sed "s|[^ ][^ ]*|$ROOT/&|g"); \
+    ${EXTRA_RTL:+read_verilog -sv $YOSYS_DEFINES $EXTRA_ABS;} \
     ${CHPARAM_SOC_TOP:+chparam $CHPARAM_SOC_TOP soc_top;} \
     ${CHPARAM_TOP:+chparam $CHPARAM_TOP $TOP;} \
-    synth_ecp5 -top $TOP -json $TOP.json" )
+    synth_ecp5 -top $TOP ${SYNTH_EXTRA:-} -json $TOP.json" )
+
+# SYNTH_ONLY stops here, with the netlist written: for a build whose place-and-route is the
+# slow part and whose synthesis report is what is wanted (SYNTH_EXTRA=-noflatten gives one
+# area figure per module). Unset by default.
+if [ -n "${SYNTH_ONLY:-}" ]; then
+    echo "=== synthesis only: $BUILD/$TOP.json ==="
+    exit 0
+fi
 
 # ---- place and route, retrying seeds until timing closes ----
 #
