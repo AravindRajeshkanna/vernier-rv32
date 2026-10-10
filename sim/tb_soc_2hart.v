@@ -116,6 +116,18 @@ module tb_soc_2hart;
               {31'b0, ^DUT.g_hart[1].CPU.rob_count !== 1'bx}, 32'b1);
 `endif
 
+`ifdef INTERCONNECT_XBAR
+        // The router fabric returns an access's ack some cycles late, so each hart's cache has to drop the update
+        // such an ack would make (rtl/soc/cpu_wb.v's SNOOP_LATE_ACK, proved on its own by
+        // sim/tb_cpu_wb_snoop_race.v). soc_top.v turns it on for this build and nothing checked that it did:
+        // with it off every two-hart test still passed, because the race needs an interleaving they do not
+        // make (Phase 8 Part 33's mutation test). This is the check.
+        check("the router fabric build has the late-ack guard on in hart 0's cache",
+              {31'b0, DUT.BUSADAPT.SNOOP_LATE_ACK == 1}, 32'b1);
+        check("the router fabric build has the late-ack guard on in hart 1's cache",
+              {31'b0, DUT.g_hart[1].BUSADAPT.SNOOP_LATE_ACK == 1}, 32'b1);
+`endif
+
         if (failures == 0) $display("\nSOC-2HART-TEST: PASS");
         else                $display("\nSOC-2HART-TEST: FAIL (%0d)", failures);
         $finish;

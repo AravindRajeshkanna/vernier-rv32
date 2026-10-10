@@ -2978,6 +2978,20 @@ sim_noc_router_qos: sim/sim_noc_router_qos.out
 	@grep -aq "NOC ROUTER QOS TEST PASSED" sim/noc_router_qos.log && echo "NOC ROUTER QOS OK" || \
 	    { echo "FAILED: the Phase 8 packet router's quality of service"; exit 1; }
 
+# The Phase 8 network's simulations that need nothing but Icarus: the interfaces, the routers, the
+# fabric against the bus on random traffic, its latency stage by stage, a four-word burst carried
+# over the bus and over the network to the real SDRAM controller, and the data cache's snoop against the
+# late acknowledgement a router fabric makes possible (the one test of a guard that the two-hart SoC
+# tests do not exercise). The one place their list lives:
+# `verify` runs it, and so does the `rtl` job in .github/workflows/ci.yml, which until this target
+# existed ran none of them (a change to the routers or the interfaces could only be caught by a
+# contributor's own `make verify`). Seconds in all. The router area budget below needs yosys, and
+# is a step of CI's `formal` job instead.
+.PHONY: noc_check_sim
+noc_check_sim: sim_interconnect_burst sim_noc_ni sim_noc_ni_bypass sim_noc_router sim_noc_router_qos \
+               sim_noc_xbar sim_noc_xbar_bypass sim_noc_latency sim_noc_fabric sim_interconnect_burst_noc \
+               sim_cpu_wb_snoop_race
+
 # A router's area must not silently grow back (Phase 8 Stage 3, Part 30): each shape of the
 # fabric's routers, synthesised on its own, under a budget (fpga/synth/noc_router_area.sh).
 noc_router_area_check:
@@ -3933,19 +3947,9 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence \
         sim_soc_2hart_coherence_hetero \
         sim_soc_2hart_coherence_sdram \
-        sim_interconnect_burst \
-        sim_noc_ni \
-        sim_noc_ni_bypass \
-        sim_noc_router \
-        sim_noc_router_qos \
+        noc_check_sim \
         noc_router_area_check \
-        sim_noc_xbar \
-        sim_noc_xbar_bypass \
-        sim_noc_latency \
-        sim_noc_fabric \
-        sim_interconnect_burst_noc \
         sim_cpu_wb_ifill \
-        sim_cpu_wb_snoop_race \
         sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_amoswap_sdram \
         sim_soc_2hart_amoswap_sdram_hetero \
