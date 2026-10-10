@@ -540,14 +540,17 @@ jobs:
   #
   # Measured on a local machine, in-order core, over the fabric: the nine two-hart
   # tests 1 to 9 seconds each, the PLIC, UART and Sv32 tests 14 to 26 seconds, the
-  # preloaded-path boot 5.6 minutes and the SDRAM boot 10. The firmware job's own
-  # comment records this runner at two to three times a local machine on the wider
-  # core, so the budget is the firmware job's until the first real runs say otherwise.
+  # preloaded-path boot 5.6 minutes and the SDRAM boot 10. On this runner, in the first
+  # run (PR #249), the job took 25.9 minutes on the in-order core and 25.6 on the wide
+  # one: the two-hart tests 34 and 43 seconds, the device tests 82 and 91, the
+  # preloaded-path boot 503 and 460, the SDRAM boot 911 and 913. That is about 1.3 times
+  # a local machine, not the two to three the firmware job's comment records for its own
+  # tests, and the budget is this file's rule of roughly double the observed time.
   # ---------------------------------------------------------------------
   noc:
     name: SoC over the router fabric (${{ matrix.core }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:

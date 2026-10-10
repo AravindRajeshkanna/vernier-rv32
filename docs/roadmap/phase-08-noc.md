@@ -2148,9 +2148,12 @@ for something CI would have to build, every step of the three groups passes. Sec
 simulations 12, the area budget 14, the images 2, the two-hart tests 27 and 34, the device tests 66 and 75, the preloaded-path
 boot 391 and 377, the SDRAM boot 691 and 720: about twenty minutes a core on a local machine. `actionlint` is clean.
 
-**What this does not establish.** A run on a GitHub runner: the `noc` job's 90 minutes are the firmware job's, a guess until it
-has run, to be set from the observed time (the firmware job's own comment puts these runners at two to three times a local
-machine on the wide core). The Linux boots, the riscv-tests and the Spike co-simulation over the fabric, which stay local
+**On a GitHub runner,** in its first run, the `noc` job took 25.9 minutes on the in-order core and 25.6 on the wide one (the
+two-hart tests 34 and 43 seconds, the device tests 82 and 91, the preloaded-path boot 503 and 460, the SDRAM boot 911 and 913),
+about 1.3 times a local machine, and passed. Its budget is 50 minutes, roughly double, as the other jobs' are; the `rtl` job
+went from about one minute to one and a half, and the `formal` job stayed at nine.
+
+**What this does not establish.** The Linux boots, the riscv-tests and the Spike co-simulation over the fabric, which stay local
 gates; the SD boot path (`sim_soc`), the one-node network's SoC build (`INTERCONNECT=noc`) and the heterogeneous pair over the
 fabric. The proof of Part 30 that the router equals its predecessor stays opt-in: it holds the router to a snapshot, so it
 would fail any deliberate change. The two-hart tests over the bus are not in CI either, which is the same gap in the bus's
