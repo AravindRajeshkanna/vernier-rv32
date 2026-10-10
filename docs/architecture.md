@@ -903,7 +903,12 @@ explicitly rather than leaving it as folklore.
 
 Starvation isn't possible despite the fetch master always losing: a data
 access is one transaction that then completes, and while it is outstanding
-the whole pipeline is frozen, so nothing can queue behind it.
+the whole pipeline is frozen, so nothing can queue behind it. (Update, Phase 8
+Part 34: that is the one-hart argument. It bounds one master's access and not
+another's wait, and the router fabric, with the same fixed priority, did
+starve a lock holder's fetch once three harts contended for a lock. The bus
+passed the same test but is not shown immune; `rtl/soc/wb_interconnect.v`'s
+header and `docs/roadmap/phase-08-noc.md` have the account.)
 
 An access decoding to no slave is acked immediately with zero data rather
 than left hanging — a bus that never acks would wedge the CPU permanently,

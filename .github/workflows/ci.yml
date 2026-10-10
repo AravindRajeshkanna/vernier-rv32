@@ -375,6 +375,15 @@ jobs:
       - name: Check UART loader verdict
         run: grep -q "UARTLOAD TEST PASSED" uartload.log
 
+      # Four harts on the shared bus (Phase 8 Part 34, docs/roadmap/phase-08-noc.md): amoadd, a
+      # lock, LR/SC, a token round the harts' caches and reservations held by every hart but one,
+      # with the shared data in block RAM and in SDRAM. Every multi-hart test before it ran two,
+      # and a design that is right for a pair has not been shown right for four: a mutant of the
+      # reservation monitor that ignores harts 2 and 3 passes every two-hart test and fails this.
+      # Seconds. -k so that every failing test is reported, not just the first.
+      - name: Four harts over the bus
+        run: make -k sim_soc_4hart sim_soc_4hart_sdram
+
   # ---------------------------------------------------------------------
   # Architectural tests: somebody else's suite, pinned to a commit.
   # ---------------------------------------------------------------------
@@ -579,6 +588,15 @@ jobs:
           make -k sim_ramboot_2hart sim_soc_2hart sim_soc_2hart_lrsc sim_soc_2hart_amoswap
           sim_soc_2hart_coherence sim_soc_2hart_ordinary sim_soc_2hart_coherence_sdram
           sim_soc_2hart_lrsc_sdram sim_soc_2hart_amoswap_sdram
+
+      # Four harts over the fabric, the same test as in the `firmware` job over the bus. It is
+      # here for a reason that only four harts show: with three or more, two harts spinning on a
+      # lock with AMOs keep the data inputs of the request router busy every cycle, and fixed
+      # priority never lets the lock holder's instruction fetch through to run its release. The
+      # routers' aging (XBAR_AGE_LIMIT, which soc_top.v turns on from three harts) is what stops
+      # that, and this fails without it.
+      - name: Four harts over the fabric
+        run: make -k sim_soc_4hart sim_soc_4hart_sdram
 
       - name: Interrupts and Sv32 over the fabric
         run: make -k sim_plic sim_uartirq sim_mmusdram

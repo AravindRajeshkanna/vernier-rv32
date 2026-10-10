@@ -176,13 +176,17 @@ declaring a winner.
   validates its own CRCs and nothing more; there is no published
   CoreMark/MHz figure to set against SweRV's or Ibex's, certified or
   otherwise, and this file is not going to manufacture one.
-- **Video output is unbuilt; a Network-on-Chip interconnect is a plan
-  only; DDR is real, in-progress work.** `docs/roadmap/phase-04-video-out.md` Phase 4 -
+- **Video output is unbuilt; a Network-on-Chip interconnect is built in
+  simulation and not on a board; DDR is real, in-progress work.** `docs/roadmap/phase-04-video-out.md` Phase 4 -
   framebuffer logic exists and is verified in simulation, but nothing is
   routed to HDMI pins. Phase 8 (a Network-on-Chip fabric to replace
   `rtl/soc/wb_interconnect.v`'s own shared-bus arbitration) is not blocked
-  on anything - just not yet started, gated on whether a real measurement
-  of that bus's own contention under multi-master load ever justifies it.
+  on anything and is well under way in simulation: a packet network and a
+  router fabric run the SoC, Linux included, with one and two harts, and
+  four harts run the atomics and coherence tests over it. The measured
+  result is that the bus wins on cycles (the fabric costs 16 to 67% more;
+  an opt-in bypass wins back some of it), so the bus stays the default
+  (`docs/roadmap/phase-08-noc.md`).
   Phase 9 (DDR) is no longer blocked either - a real target (ECPIX-5) is
   adopted, and twenty-five real, gated, mutation-tested PHY slices exist in
   simulation, including a first real command-driven read/write round

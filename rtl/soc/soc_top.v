@@ -669,12 +669,25 @@ module soc_top #(
     // default; nothing here is chosen by anything else.
     // `XBAR_NI_BYPASS=1` (make XBAR_NI_BYPASS=1, with INTERCONNECT=xbar) turns on the slave
     // interfaces' bypass (rtl/soc/noc_ni_slave.v): two cycles less on every access, off by default.
+    // `XBAR_AGE_LIMIT` is the routers' aging bound (rtl/soc/noc_router.v): a packet that has waited
+    // this many cycles at the head of an input outranks the ones that have not; 0 is no aging. The
+    // routers arbitrate by input number alone, which is fixed priority, and with three or more harts
+    // that starves: two harts spinning on a lock with AMOs keep the data inputs busy every cycle, the
+    // lock holder's instruction fetch (a lower input) never wins, and the lock is never released
+    // (Phase 8 Part 34, sim/tb_soc_4hart.v). So the default is 256 from three harts. With one or two
+    // it is 0, as in every measurement before Part 34: nothing starved there, and aging at 256 moved
+    // the wide pair's Linux boot, so it is not turned on there unasked (make XBAR_AGE_LIMIT=256). A
+    // number given on the command line replaces the default at any hart count.
 `ifndef XBAR_NI_BYPASS
 `define XBAR_NI_BYPASS 0
 `endif
+`ifndef XBAR_AGE_LIMIT
+`define XBAR_AGE_LIMIT ((NUM_HARTS >= 3) ? 256 : 0)
+`endif
 `ifdef INTERCONNECT_XBAR
     wb_noc_xbar #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
-                  .BURST_SLAVES(1 << S_SDRAM), .NI_BYPASS(`XBAR_NI_BYPASS)) BUS (
+                  .BURST_SLAVES(1 << S_SDRAM), .NI_BYPASS(`XBAR_NI_BYPASS),
+                  .AGE_LIMIT(`XBAR_AGE_LIMIT)) BUS (
 `elsif INTERCONNECT_NOC
     wb_noc_fabric #(.NUM_SLAVES(NUM_SLAVES), .NUM_HARTS(NUM_HARTS),
                     .BURST_SLAVES(1 << S_SDRAM)) BUS (

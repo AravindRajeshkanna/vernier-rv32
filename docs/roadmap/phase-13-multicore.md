@@ -280,7 +280,9 @@ fixed priority order (debug > data > walker > fetch) replicated per hart
 via a plain "lowest hart index wins" tie-break within each tier, proven
 safe rather than assumed (every candidate's own access is one bounded
 transaction that then completes, the same reasoning the original order's
-own fetch-starvation argument already used). `NUM_HARTS=1` - what
+own fetch-starvation argument already used; Update, Phase 8 Part 34: that
+bounds one master's access and not another's wait, see
+`rtl/soc/wb_interconnect.v`'s header). `NUM_HARTS=1` - what
 `rtl/soc/soc_top.v` still instantiates - collapses every array to exactly
 the original four ports and behavior; nothing observable changes for the
 SoC that exists today, confirmed by the full `make verify`/`make

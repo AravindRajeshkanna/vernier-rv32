@@ -39,6 +39,15 @@
 // outstanding), so losing arbitration costs whoever else wants the bus a
 // few extra cycles' wait per access, never an unbounded one.
 //
+// That bounds one master's access, not the time another master waits for the bus, and the two are
+// not the same once three harts can ask without a pause: the router fabric (rtl/soc/noc_router.v)
+// has the same fixed priority, and with three harts contending for a lock (one holding it, two
+// spinning on it with AMOs) it never let the holder's instruction fetch through, so the lock was
+// never released (Phase 8 Stage 3, Part 34, sim/tb_soc_4hart.v). The fabric now ages its heads
+// from three harts (XBAR_AGE_LIMIT in soc_top.v). The bus passed the same four-hart test on every
+// core build, and nothing here proves it cannot starve fetch under a pattern that keeps a data
+// master asking at every grant.
+//
 // **Data still outranks the walker**, which looks wrong for a requester
 // everything else is waiting on, and is what keeps atomics atomic. Each
 // hart's own core holds `cyc` across both phases of an AMO's

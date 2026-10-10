@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 33: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, and the network put into CI); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 34: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, and four harts run, which found a starvation in the fabric that aging now prevents); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1322,7 +1322,8 @@ bounded by the limit plus the time to serve every other aged head ahead of it, w
 traffic (0 turns aging off). `wb_noc_xbar.v` takes the switches and one class per master role
 (`QOS_DBG`, `QOS_D`, `QOS_W`, `QOS_F`, `QOS_N`) and applies them to both routers, so a
 response travels in the class of its request. Everything defaults off and equal, which is the
-behaviour of Parts 21 to 23.
+behaviour of Parts 21 to 23. (Update, Part 34: `wb_noc_xbar.v` still defaults that way, and `soc_top.v` now passes it an
+`AGE_LIMIT` of 256 from three harts, aging without the classes.)
 
 **Evidence.**
 
@@ -1374,7 +1375,9 @@ Linux have not yet been run with the classes on. (Update: Parts 25 and 31 ran th
 traffic, with the classes on; they changed no cycle.) The aging bound is tested, not proved (the
 formal property is the pick rule, not a latency bound, which needs fairness assumptions the
 bounded check does not give). The rest of Stage 3 is not done: four or more harts, the reservation
-monitor and coherence at that size, and the workload measurements.
+monitor and coherence at that size, and the workload measurements. (Update, Part 34: the monitor and the coherence are
+checked at four harts, which found that the fabric starved a lock holder and put aging on in the SoC's build from three
+harts; the classes stay off.)
 
 **Update, Part 25: the NPU's DMA racing a hart, over the bus and the router fabric.** Stage 3 names
 "NPU DMA racing CPU traffic" as one of the workloads that decides it. `software/soc/npuload.c`
@@ -1580,7 +1583,8 @@ as the latency shrinks and are not a measurement of a faster router. The bus's u
 (these testbenches have no bus monitor), so "contended" rests on the beside/alone ratios, and RAM and RAM on
 the bus is not saturated. Why the NPU's master pays twice the processor's has not been traced (Update, Part 28: it makes two reads for each word it counts). More masters raise the
 bus's contention and not the fabric's per-word cost, so the crossover may lie at four harts; that is not run,
-because the SoC has not been built with four harts. No area or timing. The streams are hand-run, not part of
+because the SoC has not been built with four harts (Update, Part 34: it has since, for a correctness test; the streams are
+not run on it). No area or timing. The streams are hand-run, not part of
 `make verify`.
 
 **Update, Part 28: where the fabric's four cycles go, and getting two of them back.** Part 27 found the fabric
@@ -2000,7 +2004,7 @@ decision, and this adds one more place where it wins (under a racing NPU) and on
 All three workloads named in Stage 3's Done-when have now been measured. The record is that the fabric comes out ahead
 of the bus only with the bypass and only where masters interfere on the bus, and behind it elsewhere; whether that
 meets the Done-when is the maintainer's judgement. Four or more harts, and the coherence check at that size, are still
-open.
+open. (Update, Part 34: the coherence check at four harts is done; the performance at four is not.)
 
 **Update, Part 32: interrupt service beside a hart that streams through memory.** Part 31 left out the case it guessed
 would show the most: a second hart in the NPU's place. `software/bench/irq2.S` (run by `sim/tb_soc_2hart_irq.v`;
@@ -2109,7 +2113,8 @@ decision, and this adds one more place where it wins (beside a streaming hart); 
 (An error in Part 31, found while building this one: it said a build with two or more harts runs with its data cache
 off. Every hart's has been on since Phase 8 Part 5, and the comments in `npuload.c` and the Makefile that said otherwise
 are corrected.) All three workloads in Stage 3's Done-when are measured, interrupt traffic on one hart and on two; four
-or more harts and the coherence check at that size are still open.
+or more harts and the coherence check at that size are still open. (Update, Part 34: the coherence check at four harts is
+done; the performance at four is not.)
 
 **Update, Part 33: the network is in CI.** Nothing in `.github/workflows/ci.yml` ran any of the Phase 8 network. Parts 15
 to 32 were gated by whatever a contributor ran locally (`make verify`, `make verify_xbar`), and this document has listed "a CI
@@ -2159,6 +2164,122 @@ fabric. The proof of Part 30 that the router equals its predecessor stays opt-in
 would fail any deliberate change. The two-hart tests over the bus are not in CI either, which is the same gap in the bus's
 own coverage and not closed here. And four mutants are evidence about those four bugs, not about every bug.
 
+**Update, Part 34: four harts, and a starvation the fabric had.** Stage 3 asks for growth "to four or more nodes" and for "a
+real check that the reservation monitor and any future coherence traffic still work correctly" with routing between the harts
+and the bus. Every multi-hart test until now ran two harts. Nothing in `rtl/soc/` is written for two (`reservation_monitor.v`
+compares every hart's stores with every other hart's reservation; the data caches snoop the memories and not the harts; the
+fabric has 2 + 3 × harts masters, 14 at four, and its 4-bit ids stop at four harts), but a test that runs two cannot tell a
+design that scales from one that happens to work for a pair.
+
+**The test.** `software/bench/mh4.S` is one image that every hart runs from the reset vector; `mhartid` picks the part, and a
+hart numbered `nharts` or more parks, so the same image runs on one to four harts. `sim/tb_soc_4hart.v` builds the SoC with
+`NUM_HARTS=4`, writes the run's parameters into a mailbox and checks the result from outside. Five phases, each ending in a
+barrier, with hart 0 checking the shared state after it:
+
+1. every hart does `amoadd` on one word, 64 times;
+2. a spin lock made of `amoswap` guards a plain load, add and store of another word;
+3. every hart increments a third word with LR/SC and retries, the failed attempts counted (a run in which none failed proved
+   nothing about contention, and the testbench fails it at three harts or more);
+4. a token goes round the harts by plain stores: each waits for its turn, checks the word the previous hart wrote and writes its
+   own, so a cache that never sees another hart's store spins for ever or reads a stale word;
+5. reservations: every hart but 0 holds one on the same word, and hart 0 stores to it (every SC must fail), then does an
+   AMO on it (every SC must fail), then nobody but the holders touches it (exactly one of their attempts may succeed; each
+   success is a store that must kill the other holders' reservations, which is the part that is about more than two).
+
+The shared data lives in block RAM and, in a second run, in SDRAM (`make sim_soc_4hart`, `make sim_soc_4hart_sdram`; both are
+in `make verify`, and in CI in the `firmware` job over the bus and the `noc` job over the fabric, both cores). `make
+mh4_matrix` runs them over every core build (in-order, wide, and hart 0 in-order with the others wide) and every interconnect
+build (the bus, the one-node network, the fabric, the fabric with the bypass, the fabric with traffic classes), and at one,
+two and three harts as well, so that a pass at four is not a program that only knows how to pass. **All 75 runs pass** (3 × 5
+× 5), each with the checks above, and every run at three or four harts has failed SC attempts (69 to 568). At two harts the
+bus with an in-order hart 0 has one failed attempt in the whole run (the other builds 59 to 67), which is the sense in which
+two harts on the bus test LR/SC contention hardly at all.
+
+**What it found: the fabric starved a lock holder.** The first run over the fabric did not finish. At four harts it was still
+in phase 2, the lock, when its limit ran out, and at three it did not finish either (the limits were a few hundred thousand
+cycles; a passing run takes 40,000 to 56,000). Sampling the harts' program counters showed the others spinning on the lock
+and the holder at the instruction that releases it, its data side idle: its instruction fetch was not getting through. The
+routers arbitrate by input number, the lowest winning among equals, and the request router's inputs run debug, data (one a
+hart), walker, fetch, NPU, so every hart's fetch ranks below every hart's data access. Two harts spinning with `amoswap` keep
+the request router's output to the RAM busy on every cycle: an AMO's read and write hold the output between them with the
+packet's `lock` bit, and the other spinner's next read is already waiting when the first one's write ends. The trace of that
+output alternates between the two spinners' data inputs while the holder's fetch input holds a valid head and is never
+granted. So the lock is never released. One spinner cannot do this, because it has to wait for each response before it asks
+again and its gaps let the fetch through; that is the reading of why no two-hart test saw it, an inference from the trace and
+from the two-hart pass and not a separate measurement. The starvation is per output: with the shared data in SDRAM the
+spinners hold the SDRAM's output while the fetches go to the RAM's, and that run completes without aging (74,074 cycles, only
+the named check described below failing).
+
+The remedy was in the router already: `AGE_LIMIT` (Part 24) promotes a head that has waited that many cycles above the rest.
+With no aging the four-hart test fails at three and at four harts; with 256 it passes, as it did at 48 and 200 in an
+experiment before the knob existed, and with the traffic classes on. **The SoC's fabric build now ages from three harts, at
+256 cycles.** `XBAR_AGE_LIMIT` is the knob: `rtl/soc/soc_top.v` computes its default from the hart count (read from the
+elaborated design: 0 at one and at two harts, 256 at three and at four), and `make XBAR_AGE_LIMIT=N` replaces it at any hart
+count (0 is no aging). With one or two harts the default stays no aging, as in every measurement before this part, and that
+is a decision on a measurement: forcing 256 on at two harts leaves the in-order pair's Linux boot at 255,309,022 cycles, as
+it was, and moves the wide pair's from 266,594,156 to 266,015,174 (578,982 fewer, 0.22%). Nothing starved at two harts, so a
+published figure was not moved unasked; whether to age at every hart count is the maintainer's call. The testbench checks the
+setting by name when three or more harts take part, so that a build without aging fails on that line and not only on the
+unfinished harts it causes.
+
+**The bus has the same fixed priority, and the test passes on it on every core build.** That is not a proof. The header of
+`wb_interconnect.v` argued that fetch cannot starve because every candidate's access is one bounded transaction; that bounds
+one master's access and not the time another waits, and it stopped being the whole argument once three harts can ask without a
+pause. Why the bus's spinners leave gaps the fabric's do not was not traced (the fabric's longer round trip is the obvious
+difference, a guess). The header now says so; nothing here proves the bus cannot starve fetch under a pattern that keeps a data
+master asking at every grant.
+
+**The test catches what the two-hart tests cannot, by mutation.** Four bugs, one at a time, in a scratch copy; the tree without
+the bug passes everything, on the bus and on the fabric:
+
+| the bug | the two-hart tests (eight of them, block RAM and SDRAM) | `sim_soc_4hart` |
+|---|---|---|
+| the reservation monitor ignores the stores of harts 2 and 3 | all pass | **fails** (195 of 256 LR/SC increments land; harts report errors) |
+| hart 3's data cache never snoops another hart's store, on the bus and on the fabric | all pass | **fails** (the run never finishes) |
+| the fabric's default ages from five harts and not three | all pass | **fails** (the named check; with the data in block RAM the lock phase never finishes either) |
+| the fabric build ties the AMO read-lock off | **fail** `sim_soc_2hart_amoswap`, in block RAM and SDRAM | **fails** (the run never finishes) |
+
+The first three are bugs that only show above two harts; the last is a control, a bug the two-hart tests do catch and this one
+catches too.
+
+**Nothing at one or two harts moved.** The default there is no aging, which is the design as it was, and the figures bear it
+out. Over the fabric, `make verify_xbar` passes on both cores and with the bypass, and the figures Parts 23 to 30 published
+are the figures now, to the cycle: the Linux boot takes 183,452,079 cycles on the in-order core and 181,536,850 on the wide
+one, the SDRAM boot check 2,887,536 and 2,428,528, the two-hart boots 255,309,022 and 266,594,156, and with the bypass the
+Linux boot and the SDRAM boot check take 162,404,559 and 2,578,170. (The rows of Parts 25 to 32 are the same design by
+construction and were not re-run.)
+
+**What aging costs.** Nothing where it is off: the board's one-hart SoC does not age by default, so it is the design Part 30
+measured. Where it is on, a router grows. `synth_ecp5` on one router alone, by the method of `fpga/synth/noc_router_area.sh`
+(Yosys 0.69+185), without aging and with `AGE_LIMIT` 256, in LUT4s and flip-flops:
+
+| router (inputs by outputs) | LUT4, no aging | LUT4, aging | flip-flops, no aging | flip-flops, aging |
+|---|---|---|---|---|
+| 14 by 14 (both routers at four harts) | 18,300 | 20,205 (+10%) | 541 | 765 |
+| 5 by 14 (the request router, one hart) | 6,274 | 6,662 | 256 | 336 |
+| 14 by 5 (the response router, one hart) | 7,110 | 6,981 | 334 | 558 |
+
+Two things follow. A router is quadratic in its inputs: at four harts the two are 36,600 LUT4s without aging and 40,410 with,
+against 13,384 for the one-hart pair, so four harts over this fabric is a different size from the one-hart SoC that Part 30
+fits into 49% of an 85F (the routers alone would be 44% of the device before any core is counted); the four-hart SoC was not
+synthesised, nor placed and routed. And the aging costs more than its counters: they are 224 flip-flops and 168 carry cells
+in a 14 by 14 router, and the rest of the growth is in the arbiter, which can no longer treat every head as equal (inferred
+from the counts, not traced). A one-bit "aged" flag per input, or counters as narrow as the bound needs (they are 16 bits),
+would be cheaper; the router is formally proved, and changing it was not this part's job.
+
+**What this does not establish.** Performance at four harts: the program is a correctness test, its phases mostly spin, and
+its cycle counts (in-order, four harts, block RAM: 29,760 on the bus, 56,706 over the fabric, 41,350 with the bypass) depend on
+who wins the lock, so they are not a measurement; the streams, CoreMark and the interrupt workloads were not run on four harts,
+and Stage 3's "measured improvement under real multi-master workloads" is open at that size. Linux SMP at four harts (the
+device tree and OpenSBI are the two-hart ones). More than four harts: the fabric's ids stop there. The `hetero` build is one
+in-order hart and three wide, not two and two, and it and the matrix are local; CI runs the single test on the bus and on the
+fabric, both cores. The aging bound is tested at 48, 200 and 256 and not proved (the formal properties are of the pick rule,
+at a bound of 3, Part 24; the SoC's setting of no classes and a bound of 256 is covered by simulation and by the structure of
+the code, not by a proof at those values), 256 is the value that was enabled and not a tuned one, and the holder's wait with it
+is not measured as a distribution. The bus is not shown immune (above). No board. "Any future coherence traffic" does not exist
+yet, so the check is of the coherence that does: the write-through caches' snoop and the reservation monitor. And four mutants
+are evidence about four bugs, not about every bug.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -2198,7 +2319,8 @@ Part 28 found where the fabric's four cycles an access go and removed two of the
 its area (74,133 LUTs in a one-hart SoC, 88% of an 85F, nearly all in two routers), and Part 30 stored each router
 input's FIFO separately, taking that to 41,439 LUTs (49%) with an Fmax in step with the bus's, and Part 31 measured
 interrupt traffic, the last of the three workloads in the Done-when, and Part 32 measured it beside a hart streaming memory, and Part 33 put the network's simulations, its area budget and the
-SoC over the fabric into CI; four or more harts and the coherence check at that size are still open). Real growth to four or more
+SoC over the fabric into CI, and Part 34 ran four harts: it checked the reservation monitor and the caches' coherence at that size,
+and found that the fabric starved a lock holder's instruction fetch, which aging now prevents; four harts' performance is still unmeasured). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -2257,4 +2379,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 33). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 34). Stages 4 onward are a plan.
