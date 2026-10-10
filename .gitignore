@@ -92,6 +92,8 @@ software/bench/stream2.elf
 software/bench/stream2.bin
 software/bench/irq2.elf
 software/bench/irq2.bin
+software/bench/mh4.elf
+software/bench/mh4.bin
 formal/build/
 
 # FPGA build products (bitstream, PnR logs, synthesis JSON)

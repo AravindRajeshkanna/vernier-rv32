@@ -286,8 +286,8 @@ them.
 ## Running these in CI
 
 `.github/workflows/ci.yml` runs the architectural suite and formal on every
-push, alongside the RTL regression and both SoC boot paths, and (since Phase 8 Part 33) the
-packet network's simulations and the SoC over the router fabric.
+push, alongside the RTL regression and both SoC boot paths, and (since Phase 8 Parts 33 and 34) the
+packet network's simulations, the SoC over the router fabric and four harts on the bus and over the fabric.
 
 **Spike co-simulation is deliberately not in CI.** It needs Spike built from
 source, which would dominate the run time, and it is the layer least likely to

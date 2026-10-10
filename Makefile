@@ -128,6 +128,12 @@ INTERCONNECT ?= bus
 # Phase 8 Stage 3, Part 28), which takes two cycles off every access. Off by default; like
 # INTERCONNECT it changes the build, so `verify_xbar` clears the built simulations before it.
 XBAR_NI_BYPASS ?= 0
+# With INTERCONNECT=xbar: the routers' aging bound in cycles (rtl/soc/noc_router.v). Empty leaves it to
+# rtl/soc/soc_top.v, which ages (256 cycles) from three harts, where Phase 8 Stage 3, Part 34 found that
+# three harts contending for a lock starve the holder's instruction fetch for ever, and does not with one
+# or two, as in every measurement before it. A number replaces that at any hart count (0 is no aging).
+# Like INTERCONNECT it changes the build, so clear the built simulations when you change it.
+XBAR_AGE_LIMIT ?=
 CHECKREADS = +checkreads
 ifeq ($(INTERCONNECT),noc)
 # The UART loader test sends at 4 clocks per bit, a simulation shortcut: the boot
@@ -142,7 +148,7 @@ DIV64_DEFINES = -DTIMER_INTERVAL=200u
 else ifeq ($(INTERCONNECT),xbar)
 # The router fabric (Phase 8 Stage 2): the same two timing knobs as `noc`, for the
 # same reasons, and no +checkreads, which reads the shared bus's wires.
-CORE_DEFINES += -DINTERCONNECT_XBAR -DUARTLOAD_CPB=8 -DXBAR_NI_BYPASS=$(XBAR_NI_BYPASS)
+CORE_DEFINES += -DINTERCONNECT_XBAR -DUARTLOAD_CPB=8 -DXBAR_NI_BYPASS=$(XBAR_NI_BYPASS) $(if $(XBAR_AGE_LIMIT),-DXBAR_AGE_LIMIT=$(XBAR_AGE_LIMIT))
 DIV64_DEFINES = -DTIMER_INTERVAL=200u
 CHECKREADS =
 else ifneq ($(INTERCONNECT),bus)
@@ -260,7 +266,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix sim_soc_2hart_irq irq2_matrix busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix sim_soc_2hart_irq irq2_matrix sim_soc_4hart sim_soc_4hart_sdram mh4_matrix busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1379,6 +1385,41 @@ sim_soc_2hart_irq: sim/irq2.hex sim/sim_soc_2hart_irq.out
 
 irq2_matrix:
 	python3 sim/irq2_matrix.py
+
+# ---- four harts (Phase 8 Stage 3, Part 34) ----
+#
+# sim/tb_soc_4hart.v runs software/bench/mh4.S on a four-hart SoC: amoadd, a lock, LR/SC, a token
+# round the harts' caches, and reservations held by every hart but one. Every multi-hart test before
+# it ran two. `sim_soc_4hart` keeps the shared data in block RAM, `sim_soc_4hart_sdram` in SDRAM; both
+# take whichever core and interconnect the build selects, and MH4_ARGS the testbench's plusargs (its
+# header lists them). `make mh4_matrix` runs them over every core and interconnect.
+software/bench/mh4.elf: software/bench/mh4.S software/bench/link_mh4.ld
+	$(RISCV_CC) -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_mh4.ld -o $@ software/bench/mh4.S
+
+sim/mh4.hex: software/bench/mh4.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/mh4.elf software/bench/mh4.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/mh4.bin > $@
+
+MH4_DEFS ?=
+
+sim/sim_soc_4hart.out: sim/tb_soc_4hart.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) $(MH4_DEFS) -o $@ sim/tb_soc_4hart.v sim/sdram_model.v $(SOC_RTL)
+
+MH4_ARGS ?=
+
+sim_soc_4hart: sim/mh4.hex sim/sim_soc_4hart.out
+	cd sim && $(VVP) sim_soc_4hart.out $(VVP_DUMP) $(MH4_ARGS) | tee soc_4hart.log
+	@grep -aq "SOC-4HART: PASS" sim/soc_4hart.log && echo "FOUR-HART OK" || \
+	    { echo "FAILED: four harts (CORE=$(CORE), INTERCONNECT=$(INTERCONNECT))"; exit 1; }
+
+sim_soc_4hart_sdram: sim/mh4.hex sim/sim_soc_4hart.out
+	cd sim && $(VVP) sim_soc_4hart.out $(VVP_DUMP) +base=90000000 $(MH4_ARGS) | tee soc_4hart_sdram.log
+	@grep -aq "SOC-4HART: PASS" sim/soc_4hart_sdram.log && echo "FOUR-HART (SDRAM) OK" || \
+	    { echo "FAILED: four harts, shared data in SDRAM (CORE=$(CORE), INTERCONNECT=$(INTERCONNECT))"; exit 1; }
+
+mh4_matrix:
+	python3 sim/mh4_matrix.py
 
 # ---- hardware bring-up (docs/roadmap/phase-02-memory-ceiling.md Phase 2, on a board) ----
 #
@@ -3963,6 +4004,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_ramboot_2hart_hetero \
         sim_soc_2hart_amoswap \
         sim_soc_2hart_amoswap_hetero \
+        sim_soc_4hart \
+        sim_soc_4hart_sdram \
         sim_ooo_csr_hazard \
         sim_pmp \
         sim_pmp_csr \
