@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 32: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, and interrupt service beside a hart streaming memory); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 33: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, and the network put into CI); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1080,7 +1080,7 @@ every core's and both interconnects' suites; all four combinations pass it, and 
 suites (`make verify`, `make verify_ooo`) pass with it.
 
 **What this does not establish.** The same caveats as Part 18: no CI job builds the
-network, so it is run by hand; area and timing are unmeasured; `+busmon` only
+network, so it is run by hand (Update, Part 33: CI runs it now); area and timing are unmeasured; `+busmon` only
 approximates grants. The suites `verify_noc` and `verify_noc CORE=ooo` ran before a final
 no-logic edit (explicit four-bit casts on two parameters of the fabric, to satisfy a
 Verilator width lint that only the two-hart builds reached); after it, the fabric's
@@ -1124,7 +1124,7 @@ LR/SC/AMO survive the crossing (the hold, and the two-hart atomics tests over th
 network); and the node and both interfaces carry formal properties. **That meets the
 Done-when, in simulation.** What it does not do, and the cost it carries, is in Parts
 17 to 19: 16 to 41% more cycles, nothing run on a board, no area or timing figure, and no CI job
-for the network build. Stage 2 (a real router) stays behind the phase's own trigger,
+for the network build (Update, Part 33: there is one now). Stage 2 (a real router) stays behind the phase's own trigger,
 which Stage 0's measurement says has not occurred: the bus is saturated by one memory,
 and a network does not add a second.
 
@@ -1302,7 +1302,7 @@ cycles to userspace and the SDRAM boot check are the workloads), and area and ti
 measured at all. (Update, Part 29: area is now measured, and it is the larger problem: 74,133 LUTs in a one-hart SoC, 88% of an 85F. Timing still is not. Update, Part 30: the cause was how the routers stored their FIFOs; stored per input the fabric is 41,439 LUTs, 49% of an 85F and 7,629 over the bus, and its Fmax is measured, in step with the bus's.)
 
 **What this does not establish.** No area or LUT figure, no Fmax, no board; no CI job builds the
-network; the two-hart Linux boots are one run each; the late-ack guard's cost is a guess; and nothing
+network (Update, Part 33: one does now); the two-hart Linux boots are one run each; the late-ack guard's cost is a guess; and nothing
 has run with the NPU's DMA racing a hart over the router fabric, the case where two slaves are
 genuinely busy together.
 
@@ -2111,11 +2111,56 @@ off. Every hart's has been on since Phase 8 Part 5, and the comments in `npuload
 are corrected.) All three workloads in Stage 3's Done-when are measured, interrupt traffic on one hart and on two; four
 or more harts and the coherence check at that size are still open.
 
+**Update, Part 33: the network is in CI.** Nothing in `.github/workflows/ci.yml` ran any of the Phase 8 network. Parts 15
+to 32 were gated by whatever a contributor ran locally (`make verify`, `make verify_xbar`), and this document has listed "a CI
+job for the network build" as open since Part 20. Three changes close it:
+
+- **The `rtl` job runs `make -k noc_check_sim`.** That target is new and is the one place the list of the network's pure-RTL
+  simulations lives; `make verify` runs it too, and a dry run of `make -n verify` lists the same 98 simulations before and
+  after. It holds eleven tests: the network interfaces with and without the bypass, the routers with and without traffic
+  classes, the fabric against the bus on random traffic with and without the bypass, its latency stage by stage, the one-node
+  network fabric, a four-word burst carried over the bus and over the network to the real SDRAM controller, and the data
+  cache's snoop against the late acknowledgement that only a router fabric can produce. A dozen seconds.
+- **The `formal` job runs `make noc_router_area_check`**, Part 30's area budget, because yosys is already installed there.
+  Fourteen seconds.
+- **A new job, `noc`, runs the SoC over the router fabric (`INTERCONNECT=xbar`) on both cores:** the nine two-hart tests (the
+  boot with the second hart released; LR/SC, AMOs, coherence and ordinary stores, in block RAM and in SDRAM), the PLIC, UART
+  interrupt and Sv32-in-SDRAM tests, the preloaded-path boot and the SDRAM boot.
+
+**What each group can and cannot see, by mutation.** Four bugs, one at a time, in a scratch copy, against the `rtl` steps and
+the two-hart tests of the `noc` job (the boots and device tests were not run for these):
+
+| the bug | `rtl` job: `noc_check_sim` | `noc` job: two-hart tests over the fabric |
+|---|---|---|
+| a router's read pointer never advances | **fails** four tests | not run |
+| `soc_top.v` ties the fabric build's AMO read-lock off | passes | **fails** `sim_soc_2hart_amoswap`, in block RAM and in SDRAM |
+| the cache ignores its late-ack guard (`cpu_wb.v`) | **fails** `sim_cpu_wb_snoop_race` | passes |
+| `soc_top.v` turns the guard off in the fabric build | passes | **fails** `sim_soc_2hart`, by an assertion added here |
+
+The original tree passes both. Two things came of it. The first version of the job's comment said the two-hart tests cover the
+late-ack guard; the mutation showed they do not, which is why `sim_cpu_wb_snoop_race` (in `make verify` already, but never in
+CI) is in `noc_check_sim`. And the fabric build's setting of the guard was checked by nothing, in `make verify` as well as in CI:
+switched off, every two-hart test stayed green, because the race needs an interleaving they do not make. `sim_soc_2hart` now
+asserts, in the fabric build only, that both harts' caches have it on.
+
+**Rehearsed as CI will run it.** In clean clones of the repository, one a core, so that no build product left over from an earlier run can stand in
+for something CI would have to build, every step of the three groups passes. Seconds, in-order core and wide core: the network
+simulations 12, the area budget 14, the images 2, the two-hart tests 27 and 34, the device tests 66 and 75, the preloaded-path
+boot 391 and 377, the SDRAM boot 691 and 720: about twenty minutes a core on a local machine. `actionlint` is clean.
+
+**What this does not establish.** A run on a GitHub runner: the `noc` job's 90 minutes are the firmware job's, a guess until it
+has run, to be set from the observed time (the firmware job's own comment puts these runners at two to three times a local
+machine on the wide core). The Linux boots, the riscv-tests and the Spike co-simulation over the fabric, which stay local
+gates; the SD boot path (`sim_soc`), the one-node network's SoC build (`INTERCONNECT=noc`) and the heterogeneous pair over the
+fabric. The proof of Part 30 that the router equals its predecessor stays opt-in: it holds the router to a snapshot, so it
+would fail any deliberate change. The two-hart tests over the bus are not in CI either, which is the same gap in the bus's
+own coverage and not closed here. And four mutants are evidence about those four bugs, not about every bug.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
 Linux boot over it with one and two harts and both cores, at 16 to 41% more cycles, with formal properties of the node and both interfaces; a
-CI job for the network build is still open). The boundary
+CI job for the network build was open until Part 33). The boundary
 between today's Wishbone masters/slaves and tomorrow's network: a real
 packet format (address, data, command, source/destination ID, and room for
 a QoS tag), and real Wishbone-to-NoC network interfaces on both the master
@@ -2149,8 +2194,8 @@ ran CoreMark on two harts in one memory and in two, Part 27 streamed through mem
 Part 28 found where the fabric's four cycles an access go and removed two of them, and Part 29 measured
 its area (74,133 LUTs in a one-hart SoC, 88% of an 85F, nearly all in two routers), and Part 30 stored each router
 input's FIFO separately, taking that to 41,439 LUTs (49%) with an Fmax in step with the bus's, and Part 31 measured
-interrupt traffic, the last of the three workloads in the Done-when, and Part 32 measured it beside a hart streaming memory;
-four or more harts and the coherence check at that size are still open). Real growth to four or more
+interrupt traffic, the last of the three workloads in the Done-when, and Part 32 measured it beside a hart streaming memory, and Part 33 put the network's simulations, its area budget and the
+SoC over the fabric into CI; four or more harts and the coherence check at that size are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -2209,4 +2254,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 32). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 33). Stages 4 onward are a plan.

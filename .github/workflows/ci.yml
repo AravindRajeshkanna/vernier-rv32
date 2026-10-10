@@ -119,6 +119,19 @@ jobs:
       - name: Check probe verdict
         run: grep -q "SDRAM PROBE TEST PASSED" sdramprobe.log
 
+      # The Phase 8 packet network (docs/roadmap/phase-08-noc.md), unit by unit: the
+      # interfaces, the routers, the router fabric against the bus on random traffic,
+      # its latency stage by stage, a four-word burst carried over the bus and over the
+      # network to the real SDRAM controller, and the data cache's snoop against the late
+      # acknowledgement that only a router fabric can produce. Pure RTL and a dozen
+      # seconds in all, and until this step nothing here ran any of it: the whole network
+      # was gated only by whatever a contributor ran locally. `make noc_check_sim` is the
+      # one place the list lives, and `make verify` runs it too. -k so that every failing
+      # test is reported, not just the first; each test checks its own verdict and fails
+      # the target when it is missing.
+      - name: Phase 8 network, unit and fabric simulations
+        run: make -k noc_check_sim
+
   # ---------------------------------------------------------------------
   # Everything that needs firmware built.
   #
@@ -507,6 +520,73 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------
+  # The SoC over the Phase 8 router fabric (docs/roadmap/phase-08-noc.md), in the bus's
+  # place: INTERCONNECT=xbar, both cores.
+  #
+  # The unit simulations in the `rtl` job drive the fabric from testbenches, so they
+  # cannot see what only software on a whole SoC does to it. A mutation test says which
+  # steps below are the ones that can: tying off the AMO read-lock in soc_top.v's fabric
+  # build passes every unit simulation and fails `sim_soc_2hart_amoswap` (block RAM and
+  # SDRAM) over the fabric. The converse holds too: the cache's late-ack guard
+  # (rtl/soc/cpu_wb.v's SNOOP_LATE_ACK) is what `sim_cpu_wb_snoop_race` in the `rtl` job
+  # tests, and switching it off in the fabric build leaves every two-hart SoC test green,
+  # which is why `sim_soc_2hart` now asserts that the build has it on. The rest is the
+  # fabric under real software: the cache line fills of the two boots, the SDRAM one
+  # reading its code through four-word bursts, and interrupts and MMIO across it. This is
+  # the part of `make verify_xbar` that is cheap and specific to the fabric. The rest of
+  # it (the Linux boots, which need an image CI does not have, the riscv-tests and the
+  # Spike co-simulation) is the same software on the same cores as the bus's jobs, and
+  # stays a local gate.
+  #
+  # Measured on a local machine, in-order core, over the fabric: the nine two-hart
+  # tests 1 to 9 seconds each, the PLIC, UART and Sv32 tests 14 to 26 seconds, the
+  # preloaded-path boot 5.6 minutes and the SDRAM boot 10. The firmware job's own
+  # comment records this runner at two to three times a local machine on the wider
+  # core, so the budget is the firmware job's until the first real runs say otherwise.
+  # ---------------------------------------------------------------------
+  noc:
+    name: SoC over the router fabric (${{ matrix.core }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [inorder, ooo]
+    env:
+      CORE: ${{ matrix.core }}
+      INTERCONNECT: xbar
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/iverilog
+
+      - uses: ./.github/actions/riscv-toolchain
+
+      # `make soc` reaches `make dtb`; see the firmware job.
+      - uses: ./.github/actions/dtc
+
+      - name: Build boot ROM, SoC program and images
+        run: make soc ramimage probeimage
+
+      # Two harts over the fabric: the boot with the second hart released, then LR/SC,
+      # AMOs, coherence and ordinary stores, in block RAM and in SDRAM. -k so that every
+      # failing test is reported, not just the first.
+      - name: Two harts over the fabric
+        run: >-
+          make -k sim_ramboot_2hart sim_soc_2hart sim_soc_2hart_lrsc sim_soc_2hart_amoswap
+          sim_soc_2hart_coherence sim_soc_2hart_ordinary sim_soc_2hart_coherence_sdram
+          sim_soc_2hart_lrsc_sdram sim_soc_2hart_amoswap_sdram
+
+      - name: Interrupts and Sv32 over the fabric
+        run: make -k sim_plic sim_uartirq sim_mmusdram
+
+      - name: SoC on the board's preloaded path over the fabric
+        run: make sim_ramboot
+
+      - name: SoC running from external SDRAM over the fabric
+        run: make sim_sdramboot
+
+  # ---------------------------------------------------------------------
   # Formal: bounded model checking. No RISC-V toolchain needed.
   # ---------------------------------------------------------------------
   formal:
@@ -542,6 +622,15 @@ jobs:
       # minutes of the SoC's own place-and-route, and this is the job that has nextpnr.
       - name: DDR3 PHY places and routes on the ECPIX-5's device
         run: make pnr_probe_ddr3
+
+      # The Phase 8 routers' area, each shape the fabric uses synthesised on its own and
+      # held to a budget several times what they cost and several times under what one
+      # mistake costs. Part 29 found the response router at 65,805 4-input LUTs, nine
+      # times what it needs, because its FIFOs were one array that every input could
+      # reach, in a design whose every test passed; this is what stops it coming back.
+      # Needs yosys, which is why it is here and not in `rtl`.
+      - name: Phase 8 routers, area budget
+        run: make noc_router_area_check
 
   # ---------------------------------------------------------------------
   # The DDR3 PHY (Phase 9, Stage 1): every simulation test, the same tests again
