@@ -12,8 +12,8 @@
  *
  * The CPU loop re-reads a 1 KB buffer, exactly the size of the 256-word
  * direct-mapped data cache: with the cache on its loads hit and barely touch
- * the bus, with it off (sim_npuload_nodcache, which is how every build with
- * more than one hart runs) every load is a bus access. A first version swept
+ * the bus, with it off (sim_npuload_nodcache, which is how every multi-hart build
+ * ran until Phase 8 Part 5 turned a coherent cache on) every load is a bus access. A first version swept
  * 8 KB, which misses either way and so could not tell the two apart. The NPU job is 32768 elements long, over the static
  * 32 KB of RAM that holds the program image (nothing writes there while it
  * runs), so its result can be computed in plain C beforehand and it overlaps

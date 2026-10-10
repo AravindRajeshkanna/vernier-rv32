@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 31: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, and interrupt traffic measured); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 32: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, and interrupt service beside a hart streaming memory); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -140,7 +140,7 @@ closed: Linux SMP and the NPU's DMA are not measured.
 load and the earlier parts did not generate it: the NPU DMA checks in
 `software/soc/main.c` run the NPU alone. `software/soc/npuload.c`
 (`make sim_npuload`, and `make sim_npuload_nodcache` with the data cache off as
-every multi-hart build has it) times a CPU loop that re-reads a 1 KB buffer and
+every multi-hart build has it (Update: until Part 5 below; a coherent cache has been on in every hart since)) times a CPU loop that re-reads a 1 KB buffer and
 one 32768-element NPU DMA job over static RAM, first each alone, then together,
 with `sim/bus_monitor.v` reporting each phase through a GPIO marker
 (`sim/tb_ramboot.v` with `-DBUS_MONITOR`; without the define the preprocessed
@@ -1985,10 +1985,12 @@ bypass 100.3.
   prints FAILED for a cell that does not.) The simulations are deterministic, so each figure is one run.
 - cppcheck, as `make lint-c` runs it, is clean on the new C. No RTL changed.
 
-**What this does not establish.** One hart. With two or more the data cache is off in this SoC, so every one of the
-handler's loads reaches the interconnect, and the neighbour that matters is another hart rather than a DMA engine:
-interrupt service beside a hart streaming from SDRAM, where Part 27 found the bus letting one stream pull another down
-to 0.45 of its rate, is the case this leaves out, and probably the one that shows the most. A short handler (five registers saved; Linux's saves about thirty, which
+**What this does not establish.** One hart. With two the neighbour that matters is another hart rather than a DMA
+engine, and the data caches snoop each other's stores: interrupt service beside a hart streaming from SDRAM, where
+Part 27 found the bus letting one stream pull another down to 0.45 of its rate, is the case this leaves out (Update,
+Part 32: measured, below). (An earlier version of this paragraph said that a build with two or more harts runs with
+the data cache off. That was taken from comments in `npuload.c` and the Makefile that Phase 8 Part 5 had made
+stale: every hart's cache has been on since then, and they are corrected in Part 32.) A short handler (five registers saved; Linux's saves about thirty, which
 by the fixed price above would add about 4 cycles on the fabric to each extra access, a figure not run). One
 source, periodic, taken in machine mode: no bursts, no nesting, no delegation to supervisor mode, no software or
 UART interrupts. Two rates, and the wide core in two forms (the `hetero` build not at all). The NPU kept running by
@@ -1999,6 +2001,115 @@ All three workloads named in Stage 3's Done-when have now been measured. The rec
 of the bus only with the bypass and only where masters interfere on the bus, and behind it elsewhere; whether that
 meets the Done-when is the maintainer's judgement. Four or more harts, and the coherence check at that size, are still
 open.
+
+**Update, Part 32: interrupt service beside a hart that streams through memory.** Part 31 left out the case it guessed
+would show the most: a second hart in the NPU's place. `software/bench/irq2.S` (run by `sim/tb_soc_2hart_irq.v`;
+`make irq2_matrix`, `sim/irq2_matrix.py`) runs two harts from one image, as Part 27's `stream2.S` does. Hart 0 runs a
+loop (a pass over a 1 KB buffer, which fits its data cache, repeated for a window of 200,000 cycles) and takes Part 31's
+timer interrupt every 2,000 cycles, through the PLIC, with Part 31's handler written in assembly. Hart 1 either parks or
+streams a 4 KB array one word at a time, as Part 27 does: from block RAM (`same`, the memory hart 0's stack and counters
+are in) or from SDRAM (`split`). Each case runs with the interrupt on and off, over the bus, the router fabric and the
+fabric with the bypass, and on the in-order and the wide core: eighteen simulations a core, and six more for the fabric
+with its traffic classes on the in-order core. The measures are Part 31's (**reach**, **served**, **cost**; the cost is the
+cycles the interrupted passes took beyond what the same passes take without the interrupt, over the interrupts taken),
+and the testbench also counts hart 0's accesses on the interconnect in its window.
+
+**How it came out right, after coming out wrong three ways.**
+
+- **Hart 0's cache must start warm.** The first matrix charged the neighbour cases for a cold start. Hart 1's
+  initialisation stores invalidate entries of hart 0's data cache, which snoops other harts' stores by index
+  (`rtl/soc/cpu_wb.v`), and whether the last of them land before or after hart 0 is ready depends on how long its own set-up
+  took, which differs between a run with the interrupt and one without. The access count showed it: a window with no
+  interrupts held 256 accesses (a pass of misses) with hart 1 present and 2 with it parked. The baseline was dearer than it
+  should have been, and the cost of an interrupt came out about 4 cycles too low. Hart 0 now runs one more pass after the
+  barrier, which is not timed, and the in-order count is 0.04 a pass in every case.
+- **A mutant that changed nothing, and a plusarg that meant something else.** Removing hart 0's wait at the barrier
+  changes nothing when the two harts happen to finish their set-up together, so the first barrier mutant passed; with hart 1
+  streaming 4,096 words of SDRAM, which takes it far longer, the testbench catches it. And two testbench arguments in one pair of quotes
+  read as `mode=x` and ran a case the table did not say; the testbench now fails any mode other than 0 or 2.
+- **The period check was one too strict.** The wide core's run showed 102 interrupts in a window of 100.6 periods: the first
+  can have been raised, and left pending, before the window began, so the count may be one more than the periods in it. (The
+  first interrupt stays out of reach and served for the same reason.)
+
+**The cost model holds here too.** With hart 1 parked an interrupt makes 21.4 accesses on the bus, 21.1 on the fabric and
+21.3 with the bypass (21.8 to 21.9 on the wide core), and no instruction fetches (to within 0.1), which is Part 31's
+21.8. The fabric's extra cost divides the same way: 172.0 less 88.1 is 3.9 cycles an access, and the bypass's 42.4 is
+2.0 (in-order); on the wide core 2.9 and 1.3, Part 31's 2.9 and 1.2. With hart 1 streaming the count is the same, 21.0 to 21.4.
+
+In-order core (cycles; one interrupt every 2,000; the change from hart 1 parked beside each cost):
+
+| hart 1 | measure | bus | router fabric | fabric with the bypass |
+|---|---|---|---|---|
+| parked | cost an interrupt | 88.1 | 172.0 | 130.5 |
+| | served, mean (worst) | 40.5 (43) | 78.4 (80) | 59.4 (64) |
+| | reach, worst | 11 | 12 | 14 |
+| streams block RAM | cost an interrupt | 95.9 (+9%) | 187.4 (+9%) | 131.7 (+1%) |
+| | served, mean (worst) | 44.3 (48) | 82.0 (89) | 59.6 (62) |
+| | reach, worst | 12 | 18 | 11 |
+| streams SDRAM | cost an interrupt | 141.9 (**+61%**) | 172.4 (+0.2%) | 130.2 (-0.2%) |
+| | served, mean (worst) | 75.6 (87) | 78.5 (85) | 59.3 (61) |
+| | reach, worst | 14 | 17 | 11 |
+
+Wide core:
+
+| hart 1 | measure | bus | router fabric | fabric with the bypass |
+|---|---|---|---|---|
+| parked | cost an interrupt | 82.9 | 146.7 | 110.9 |
+| | served, mean (worst) | 39.6 (42) | 77.1 (80) | 58.4 (61) |
+| streams block RAM | cost an interrupt | 90.9 (+10%) | 157.8 (+8%) | 111.9 (+1%) |
+| | served, mean (worst) | 44.9 (49) | 81.7 (94) | 58.7 (71) |
+| streams SDRAM | cost an interrupt | 151.1 (**+82%**) | 146.8 (+0.1%) | 110.8 (-0.1%) |
+| | served, mean (worst) | 76.3 (89) | 77.5 (87) | 58.5 (61) |
+
+**What it shows.**
+
+- **A streaming hart stretches an interrupt on the bus as the NPU did, and the fabric does not let it.** Beside a hart
+  streaming SDRAM the bus's cost rises by 61% (82% on the wide core) and its mean time to serve by 87% (93%), worst case 43
+  to 87 cycles; the fabric's moves by 0.2% and 0.1%, the bypassed fabric's by nothing. Part 31 guessed this case would show
+  more than the NPU's race (+74% and +79%); it shows about the same.
+- **With the bypass the fabric then beats the bus; without it, it ties on the wide core and loses in-order.** Beside the
+  SDRAM stream an interrupt costs 130.2 cycles through the bypassed fabric against 141.9 on the bus (**8% less**; **27%
+  less** on the wide core, 110.8 against 151.1), and is served in 59.3 against 75.6 (22% less; worst case 61 against 87, and
+  on the wide core 61 against 89). The fabric without the bypass costs 21% more than the bus in-order and 3% less on the
+  wide core (146.8 against 151.1), and serves in about the same time (78.5 against 75.6, worst 85 against 87). Parked, the
+  bus is cheaper everywhere: 88.1 against 172.0 and 130.5.
+- **Where hart 1 streams the memory the handler uses, nothing isolates it.** The cost rises 9% on the bus (10% on the
+  wide core), 9% on the fabric (8%) and 1% with the bypass; the fabric's slave interface stays busy for a whole round trip
+  (Part 25's finding, not traced here), and the fabric's worst reach is 18 cycles in-order and 23 on the wide core
+  against 12 and 14 on the bus.
+- **The stretch falls on the interrupt, not on the loop.** Hart 0's pass takes 2,064.2 to 2,065.0 cycles in all nine
+  in-order cases, with hart 1 parked or streaming, because its loads hit its cache; only the handler's stores and device
+  loads reach the interconnect. The interrupts barely disturb the streamer: its rate falls by at most 1.1% (words per
+  thousand cycles from SDRAM and from block RAM: bus 105.3 and 225.6, fabric 74.2 and 118.4, bypass 87.1 and 155.4; the
+  wide core 104.8 and 257.9, 74.1 and 127.4, 87.0 and 171.7).
+- **The traffic classes decide nothing**: every cell of the in-order matrix is cycle for cycle the same with them on.
+
+**What it was checked against.**
+
+- **The program and the testbench fail when their subject is broken.** Eight mutants each make the testbench print FAIL
+  where the original passes: the handler never silences the timer, never completes the claim, clobbers the loop's
+  accumulator, enables the wrong PLIC source, the timer at twice the rate, hart 0 not waiting at the barrier (with hart 1
+  streaming 4,096 words of SDRAM; the same run without the mutation passes), hart 1 streaming although asked to park, and
+  a mistyped plusarg. The sources were restored and compared byte for byte.
+- **All 42 simulations of the matrices pass the testbench's checks**: hart 0's checksum right, every period delivered,
+  every claim the timer's, no sample as long as the period, hart 1's every block sum right, the windows starting within 5%
+  of the window, and a hart asked to park doing nothing.
+- **How much to trust a cost.** Adding one instruction ahead of the window (the extra pass) changed the cost of an
+  interrupt with hart 1 parked, which the cold-start flaw did not touch, by 2.7 to 3.6 cycles in-order and 10.9 to 11.6 on
+  the wide core, the same for all three interconnects; whether through where the code sits or through the extra pass's
+  effect on the predictor was not traced. So a difference between two builds under about 4 cycles in-order, or 11 on the
+  wide core, is not a finding. Comparisons within one build, and the price per access, are not affected.
+
+**What this does not establish.** Two harts, not four. Hart 1 only reads in its window; a hart that wrote would invalidate
+entries of hart 0's cache as its initialisation does, and that is not measured. The interrupt goes to hart 0 only, from
+a timer: no interrupt between harts. A short machine-mode handler (five registers saved; Linux's saves about thirty).
+One period, 2,000 cycles. The `hetero` build not run; no board. The reasons for the stretch and for the fabric's loss at a
+shared slave are Part 25's, not traced here. The bypass stays off by default, whether to turn it on is the maintainer's
+decision, and this adds one more place where it wins (beside a streaming hart); parked, it still does not.
+(An error in Part 31, found while building this one: it said a build with two or more harts runs with its data cache
+off. Every hart's has been on since Phase 8 Part 5, and the comments in `npuload.c` and the Makefile that said otherwise
+are corrected.) All three workloads in Stage 3's Done-when are measured, interrupt traffic on one hart and on two; four
+or more harts and the coherence check at that size are still open.
 
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
@@ -2038,8 +2149,8 @@ ran CoreMark on two harts in one memory and in two, Part 27 streamed through mem
 Part 28 found where the fabric's four cycles an access go and removed two of them, and Part 29 measured
 its area (74,133 LUTs in a one-hart SoC, 88% of an 85F, nearly all in two routers), and Part 30 stored each router
 input's FIFO separately, taking that to 41,439 LUTs (49%) with an Fmax in step with the bus's, and Part 31 measured
-interrupt traffic, the last of the three workloads in the Done-when; four or more harts and the coherence check at that
-size are still open). Real growth to four or more
+interrupt traffic, the last of the three workloads in the Done-when, and Part 32 measured it beside a hart streaming memory;
+four or more harts and the coherence check at that size are still open). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -2098,4 +2209,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 31). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 32). Stages 4 onward are a plan.

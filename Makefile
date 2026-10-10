@@ -260,7 +260,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix sim_soc_2hart_irq irq2_matrix busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1348,6 +1348,38 @@ sim_soc_2hart_stream: sim/stream2.hex sim/sim_soc_2hart_stream.out
 stream2_matrix:
 	python3 sim/stream2_matrix.py
 
+# ---- interrupt service beside a streaming hart (Phase 8 Stage 3, Part 32) ----
+#
+# sim/tb_soc_2hart_irq.v runs software/bench/irq2.S on both harts: hart 0 runs a loop and takes a
+# periodic timer interrupt through the PLIC, hart 1 (when it is asked to) streams through an array
+# bigger than its data cache for the same window, as in Part 27. Whether hart 1 streams, whether hart
+# 0 is interrupted, the period and where hart 1's array lives are plusargs (see the testbench's
+# header), so one simulation per interconnect covers every row. `make irq2_matrix` runs the cases
+# over the bus and the router fabric; IRQ2_QOS=1 adds the fabric with its traffic classes, and
+# CORE=ooo the wide core. A measurement, not a gate.
+software/bench/irq2.elf: software/bench/irq2.S software/bench/link_irq2.ld
+	$(RISCV_CC) -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_irq2.ld -o $@ software/bench/irq2.S
+
+sim/irq2.hex: software/bench/irq2.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/irq2.elf software/bench/irq2.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/irq2.bin > $@
+
+IRQ2_DEFS ?=
+
+sim/sim_soc_2hart_irq.out: sim/tb_soc_2hart_irq.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) $(IRQ2_DEFS) -o $@ sim/tb_soc_2hart_irq.v sim/sdram_model.v $(SOC_RTL)
+
+IRQ2_ARGS ?=
+
+sim_soc_2hart_irq: sim/irq2.hex sim/sim_soc_2hart_irq.out
+	cd sim && $(VVP) sim_soc_2hart_irq.out $(VVP_DUMP) $(IRQ2_ARGS) | tee soc_2hart_irq.log
+	@grep -aq "SOC-2HART-IRQ: PASS" sim/soc_2hart_irq.log && echo "DUAL-HART IRQ OK" || \
+	    { echo "FAILED: interrupt service beside a streaming hart (CORE=$(CORE))"; exit 1; }
+
+irq2_matrix:
+	python3 sim/irq2_matrix.py
+
 # ---- hardware bring-up (docs/roadmap/phase-02-memory-ceiling.md Phase 2, on a board) ----
 #
 # Two steps, in the order they narrow the problem. Both have a simulation
@@ -2083,8 +2115,9 @@ $(eval $(call NPULOAD_VARIANT,heavysplit,-DCPU_BUS_HEAVY -DNPU_SRC_SDRAM))
 npuload_matrix:
 	bash sim/npuload_matrix.sh
 
-# The same with the data cache off, which is how any build with more than one
-# hart runs, so the CPU loop's bus traffic roughly doubles.
+# The same with the data cache off, which is how every multi-hart build ran until Phase 8
+# Part 5 turned a coherent one on (soc_top.v's HART_DCACHE_ENABLE), so the CPU loop's bus traffic
+# roughly doubles.
 sim/sim_npuload_nodcache.out: sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
 	$(IVERILOG) $(IVFLAGS) -DBUS_MONITOR -DNO_DCACHE -DRAM_IMAGE='"npuloadimage.hex"' -DROM_IMAGE='"bootrom_$(CORE).hex"' \
 	    -o $@ sim/tb_ramboot.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
