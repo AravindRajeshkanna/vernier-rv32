@@ -90,6 +90,8 @@ software/bench/coremark_dispatch_split.elf
 software/bench/coremark_dispatch_split.bin
 software/bench/stream2.elf
 software/bench/stream2.bin
+software/bench/irq2.elf
+software/bench/irq2.bin
 formal/build/
 
 # FPGA build products (bitstream, PnR logs, synthesis JSON)
