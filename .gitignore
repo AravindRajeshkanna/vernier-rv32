@@ -94,6 +94,8 @@ software/bench/stream4.elf
 software/bench/stream4.bin
 software/bench/irq2.elf
 software/bench/irq2.bin
+software/bench/irq4.elf
+software/bench/irq4.bin
 software/bench/mh4.elf
 software/bench/mh4.bin
 formal/build/
