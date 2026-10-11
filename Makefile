@@ -266,7 +266,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix sim_soc_2hart_irq irq2_matrix sim_soc_4hart sim_soc_4hart_sdram mh4_matrix busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix sim_soc_4hart_stream stream4_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix sim_soc_2hart_irq irq2_matrix sim_soc_4hart sim_soc_4hart_sdram mh4_matrix busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1353,6 +1353,38 @@ sim_soc_2hart_stream: sim/stream2.hex sim/sim_soc_2hart_stream.out
 
 stream2_matrix:
 	python3 sim/stream2_matrix.py
+
+# ---- four harts streaming through memory (Phase 8 Stage 3, Part 35) ----
+#
+# sim/tb_soc_4hart_stream.v runs software/bench/stream4.S, Part 27's streaming workload with a parameter
+# block for four harts: each sweeps an array bigger than its data cache, so nearly every load is a
+# single-word read on the interconnect, for a fixed window of cycles, and counts how many words it got
+# through. Where the arrays live and which harts run are plusargs (see the testbench's header), so one
+# simulation per interconnect covers every row; STREAM4_DEFS=-DBUS_MONITOR adds the shared bus's counters
+# (the matrix does, for the bus only). `make stream4_matrix` runs the placements over the bus and the
+# router fabric. A measurement, not a gate.
+software/bench/stream4.elf: software/bench/stream4.S software/bench/link_stream4.ld
+	$(RISCV_CC) -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_stream4.ld -o $@ software/bench/stream4.S
+
+sim/stream4.hex: software/bench/stream4.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/stream4.elf software/bench/stream4.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/stream4.bin > $@
+
+STREAM4_DEFS ?=
+
+sim/sim_soc_4hart_stream.out: sim/tb_soc_4hart_stream.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) $(STREAM4_DEFS) -o $@ sim/tb_soc_4hart_stream.v sim/bus_monitor.v sim/sdram_model.v $(SOC_RTL)
+
+STREAM4_ARGS ?=
+
+sim_soc_4hart_stream: sim/stream4.hex sim/sim_soc_4hart_stream.out
+	cd sim && $(VVP) sim_soc_4hart_stream.out $(VVP_DUMP) $(STREAM4_ARGS) | tee soc_4hart_stream.log
+	@grep -aq "SOC-4HART-STREAM: PASS" sim/soc_4hart_stream.log && echo "FOUR-HART STREAM OK" || \
+	    { echo "FAILED: four harts streaming (CORE=$(CORE), INTERCONNECT=$(INTERCONNECT))"; exit 1; }
+
+stream4_matrix:
+	python3 sim/stream4_matrix.py
 
 # ---- interrupt service beside a streaming hart (Phase 8 Stage 3, Part 32) ----
 #

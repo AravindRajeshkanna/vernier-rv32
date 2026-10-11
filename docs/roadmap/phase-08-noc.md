@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 34: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, and four harts run, which found a starvation in the fabric that aging now prevents); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 35: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, and four harts streaming through memory); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1583,8 +1583,8 @@ as the latency shrinks and are not a measurement of a faster router. The bus's u
 (these testbenches have no bus monitor), so "contended" rests on the beside/alone ratios, and RAM and RAM on
 the bus is not saturated. Why the NPU's master pays twice the processor's has not been traced (Update, Part 28: it makes two reads for each word it counts). More masters raise the
 bus's contention and not the fabric's per-word cost, so the crossover may lie at four harts; that is not run,
-because the SoC has not been built with four harts (Update, Part 34: it has since, for a correctness test; the streams are
-not run on it). No area or timing. The streams are hand-run, not part of
+because the SoC has not been built with four harts (Update, Part 34: it has since, for a correctness test; Update, Part 35: the streams
+are run on it, and the crossover depends on the placement and on the bypass). No area or timing. The streams are hand-run, not part of
 `make verify`.
 
 **Update, Part 28: where the fabric's four cycles go, and getting two of them back.** Part 27 found the fabric
@@ -2004,7 +2004,7 @@ decision, and this adds one more place where it wins (under a racing NPU) and on
 All three workloads named in Stage 3's Done-when have now been measured. The record is that the fabric comes out ahead
 of the bus only with the bypass and only where masters interfere on the bus, and behind it elsewhere; whether that
 meets the Done-when is the maintainer's judgement. Four or more harts, and the coherence check at that size, are still
-open. (Update, Part 34: the coherence check at four harts is done; the performance at four is not.)
+open. (Update, Part 34: the coherence check at four harts is done; the performance at four is not, except the streams, Part 35.)
 
 **Update, Part 32: interrupt service beside a hart that streams through memory.** Part 31 left out the case it guessed
 would show the most: a second hart in the NPU's place. `software/bench/irq2.S` (run by `sim/tb_soc_2hart_irq.v`;
@@ -2114,7 +2114,7 @@ decision, and this adds one more place where it wins (beside a streaming hart); 
 off. Every hart's has been on since Phase 8 Part 5, and the comments in `npuload.c` and the Makefile that said otherwise
 are corrected.) All three workloads in Stage 3's Done-when are measured, interrupt traffic on one hart and on two; four
 or more harts and the coherence check at that size are still open. (Update, Part 34: the coherence check at four harts is
-done; the performance at four is not.)
+done; the performance at four is not, except the streams, Part 35.)
 
 **Update, Part 33: the network is in CI.** Nothing in `.github/workflows/ci.yml` ran any of the Phase 8 network. Parts 15
 to 32 were gated by whatever a contributor ran locally (`make verify`, `make verify_xbar`), and this document has listed "a CI
@@ -2269,7 +2269,7 @@ would be cheaper; the router is formally proved, and changing it was not this pa
 
 **What this does not establish.** Performance at four harts: the program is a correctness test, its phases mostly spin, and
 its cycle counts (in-order, four harts, block RAM: 29,760 on the bus, 56,706 over the fabric, 41,350 with the bypass) depend on
-who wins the lock, so they are not a measurement; the streams, CoreMark and the interrupt workloads were not run on four harts,
+who wins the lock, so they are not a measurement; the streams (Update, Part 35: they are run now), CoreMark and the interrupt workloads were not run on four harts,
 and Stage 3's "measured improvement under real multi-master workloads" is open at that size. Linux SMP at four harts (the
 device tree and OpenSBI are the two-hart ones). More than four harts: the fabric's ids stop there. The `hetero` build is one
 in-order hart and three wide, not two and two, and it and the matrix are local; CI runs the single test on the bus and on the
@@ -2279,6 +2279,131 @@ the code, not by a proof at those values), 256 is the value that was enabled and
 is not measured as a distribution. The bus is not shown immune (above). No board. "Any future coherence traffic" does not exist
 yet, so the check is of the coherence that does: the write-through caches' snoop and the reservation monitor. And four mutants
 are evidence about four bugs, not about every bug.
+
+**Update, Part 35: four harts streaming through memory, where the fabric's slave interface is what limits it.** Part 27 ended
+on a guess: two harts streaming through memory keep the bus busy only where a slow memory is involved, and "more masters raise
+the bus's contention and not the fabric's per-word cost, so the crossover may lie at four harts". Part 34 built the four-hart
+SoC for a correctness test and did not run the streams on it. They are run here.
+
+**The workload.** `software/bench/stream4.S` is `stream2.S` with a parameter block for four harts; the loop is the same
+instructions. Each hart sweeps a 1,024-word array (4 KB, four times its data cache) one word at a time for a 200,000-cycle
+window, so nearly every load is a single-word read on the interconnect, and checks the sum of every 64-word block.
+`sim/tb_soc_4hart_stream.v` fills in the block and reads the results back. `make stream4_matrix` (`sim/stream4_matrix.py`)
+runs, on each interconnect and each core build: hart 0 alone in each memory; Part 27's pair (hart 0 in block RAM, hart 1 in
+SDRAM) as a control; and six placements of the four arrays, written hart 0 first, R for block RAM and S for SDRAM: RRRR, SSSS,
+RRSS, SSRR, RRRS and SRRR. Over the bus the testbench also reads the shared bus's counters (`sim/bus_monitor.v`), and on every
+interconnect it counts at the memories how many accesses each served and for how many cycles its strobe was up. The result
+is words read per thousand cycles, for each hart.
+
+**The first measurement was biased, and the program changed for it.** Part 27's harts waited at a barrier, and their windows
+started within 109 cycles of each other. With four harts the first run showed a window start skew of 16,654 cycles of 200,000
+(in-order core, bus, SSRR): the lowest-priority hart had reached the barrier, but its read of the counter waited behind the
+others', so it started its window that much later, and the 56 blocks it counted (17.9 words per thousand cycles) are about
+what it reads alone in the 16,200 cycles after the others had finished. With the windows aligned its rate is 1.9. Every
+window now opens at the same cycle count, agreed in advance (`+start`, 80,000; the slowest array was written by cycle
+40,000), and a hart that is not ready by then fails the run (status 3). The skew is now 1 or 2 cycles, and the pair control
+gives Part 27's numbers (below). Part 27 is not affected: its windows were checked to start together.
+
+**The testbench's checks, by mutation.** Three bugs, one at a time, in a scratch copy; the tree without the bug passes: a
+program that expects a wrong sum fails every hart's check; a hart that was not asked to stream but does is caught by the
+`start` word it writes when its window opens (the first version of that check, on `status` and `blocks`, missed it, because the
+run ends when the streaming harts finish and the stray hart had not yet); a start time before the arrays are written fails with
+status 3 on every hart.
+
+Words read per thousand cycles, each hart (0 to 3) and the sum, with the control the pair of Part 27 gives on this SoC.
+In-order core; a hart alone reads 225.9 from block RAM and 105.4 from SDRAM on the bus, 118.6 and 74.2 on the fabric, 155.5
+and 87.1 with the bypass.
+
+| arrays (hart 0 to 3) | bus: harts 0, 1, 2, 3 (sum) | fabric | bypass |
+|---|---|---|---|
+| RRRR | 184.6, 184.3, 92.1, 34.5 (495.4) | 75.8, 75.5, 75.5, 22.0 (248.7) | 134.0, 133.9, 133.6, 67.1 (468.7) |
+| SSSS | 58.0, 56.7, 8.6, 1.0 (124.3) | 31.9, 31.9, 31.6, 5.1 (100.6) | 39.6, 39.6, 37.4, 7.7 (124.2) |
+| RRSS | 162.8, 162.5, 26.5, 17.9 (369.7) | 108.7, 108.7, 48.5, 48.3 (314.2) | 155.5, 155.5, 59.9, 59.9 (430.8) |
+| SSRR | 61.1, 60.9, 16.0, 1.9 (139.9) | 48.9, 48.9, 108.2, 108.1 (314.2) | 60.0, 60.0, 155.5, 155.4 (430.9) |
+| RRRS | 187.6, 187.6, 32.3, 23.6 (431.1) | 80.1, 80.1, 80.1, 73.5 (313.8) | 145.1, 145.1, 145.0, 86.9 (522.1) |
+| SRRR | 95.9, 95.9, 36.1, 23.6 (251.5) | 74.1, 82.1, 82.0, 81.9 (320.2) | 87.1, 145.3, 145.2, 145.1 (522.8) |
+
+| arrays | fabric / bus (sum) | bypass / bus (sum) | slowest hart: bus | fabric | bypass |
+|---|---|---|---|---|---|
+| RRRR | 0.50 | 0.95 | 34.5 | 22.0 | 67.1 |
+| SSSS | 0.81 | 1.00 | 1.0 | 5.1 | 7.7 |
+| RRSS | 0.85 | 1.17 | 17.9 | 48.3 | 59.9 |
+| SSRR | 2.25 | 3.08 | 1.9 | 48.9 | 60.0 |
+| RRRS | 0.73 | 1.21 | 23.6 | 73.5 | 86.9 |
+| SRRR | 1.27 | 2.08 | 23.6 | 74.1 | 87.1 |
+
+| arrays | bus busy | block RAM accesses per thousand cycles: bus, fabric, bypass | SDRAM: bus, fabric, bypass |
+|---|---|---|---|
+| RRRR | 99.2% | 495.9, 249.0, 469.3 | 0.0, 0.0, 0.0 |
+| SSSS | 100.0% | 0.9, 0.9, 0.9 | 124.0, 100.1, 124.1 |
+| RRSS | 99.9% | 325.3, 217.9, 310.4 | 44.3, 96.7, 119.7 |
+| SSRR | 100.0% | 18.8, 217.0, 311.1 | 121.8, 97.6, 120.0 |
+| RRRS | 98.3% | 407.5, 241.0, 436.0 | 23.6, 73.3, 86.9 |
+| SRRR | 98.8% | 156.4, 246.7, 435.5 | 95.7, 74.0, 87.1 |
+
+The out-of-order core; a hart alone reads 258.6 and 105.1 on the bus, 127.7 and 74.1 on the fabric, 172.1 and 87.0 with the
+bypass.
+
+| arrays (hart 0 to 3) | bus: harts 0, 1, 2, 3 (sum) | fabric | bypass |
+|---|---|---|---|
+| RRRR | 211.4, 211.4, 69.7, 5.8 (498.2) | 79.0, 78.9, 65.8, 25.5 (249.2) | 145.1, 144.7, 143.3, 59.1 (492.2) |
+| SSSS | 58.0, 56.1, 9.2, 1.3 (124.5) | 32.1, 32.0, 31.4, 5.1 (100.5) | 39.5, 39.3, 35.0, 10.5 (124.3) |
+| RRSS | 190.1, 185.0, 31.3, 3.2 (409.6) | 112.3, 112.3, 48.4, 48.4 (321.3) | 172.0, 172.0, 59.7, 59.5 (463.2) |
+| SSRR | 61.1, 61.0, 16.9, 0.6 (139.7) | 48.9, 48.9, 114.1, 114.0 (325.9) | 60.0, 60.0, 172.0, 171.9 (463.9) |
+| RRRS | 188.4, 188.4, 30.4, 25.9 (433.0) | 82.7, 82.7, 82.6, 73.4 (321.5) | 152.7, 152.7, 152.6, 86.8 (544.6) |
+| SRRR | 95.5, 117.5, 36.7, 8.6 (258.3) | 74.0, 82.7, 82.7, 82.6 (322.1) | 86.9, 152.6, 152.5, 152.4 (544.4) |
+
+| arrays | fabric / bus (sum) | bypass / bus (sum) | slowest hart: bus | fabric | bypass |
+|---|---|---|---|---|---|
+| RRRR | 0.50 | 0.99 | 5.8 | 25.5 | 59.1 |
+| SSSS | 0.81 | 1.00 | 1.3 | 5.1 | 10.5 |
+| RRSS | 0.78 | 1.13 | 3.2 | 48.4 | 59.5 |
+| SSRR | 2.33 | 3.32 | 0.6 | 48.9 | 60.0 |
+| RRRS | 0.74 | 1.26 | 25.9 | 73.4 | 86.8 |
+| SRRR | 1.25 | 2.11 | 8.6 | 74.0 | 86.9 |
+
+**What it shows.**
+
+- **The bus is saturated, as guessed, and fixed priority decides who gets it.** Its monitor reads 98.3 to 100.0% busy in all six
+  placements (99.8 to 100.0 on the out-of-order core), and four harts in block RAM get 2.2 times one hart's rate (495.4 against
+  225.9): the bus does not scale. The lowest-priority hart pays: it gets 0.01 to 0.22 of its rate alone on the in-order core
+  (0.00 to 0.25 on the wide one), 1.0 words per thousand cycles in SSSS, and 0.6 in SSRR on the wide core, which is two blocks in
+  the window (a block is 64 words, so a rate is good to 0.3).
+- **The fabric's limit is its slave interface, not its path.** With four harts in one memory the bus serves 496 block-RAM
+  accesses per thousand cycles with the strobe up 99.2% of the time (2.0 cycles an access); the fabric serves 249, the strobe up
+  49.8% (4.0 cycles an access); the bypassed fabric 469 (2.1). In SDRAM, 124.0 (8.06 cycles), 100.1 (9.99) and 124.1 (8.06). The
+  out-of-order core gives the same (499.7, 249.8 and 493.2 in block RAM). The reading, from the interface's own header and not
+  traced: `noc_ni_slave.v` takes one request at a time and accepts the next only when the last response has left, and the
+  latch and the response queue it crosses are the two registers the bypass skips (Part 28 measured them as two cycles an
+  access). In Part 27 that was a latency, four cycles a word, which two harts hid behind their own rates. With four harts on one
+  memory it is the memory's throughput, halved.
+- **Net, in aggregate, the guess is half right.** Without the bypass the fabric is ahead in two placements of six, SSRR (2.25)
+  and SRRR (1.27), where a slow SDRAM reader outranks the block-RAM readers on the bus and the bus is held for it; it is behind in
+  four (0.50, 0.81, 0.85 and 0.73). With the bypass it is ahead in four (1.17, 3.08, 1.21 and 2.08), level in SSSS (1.00), and
+  5% behind in RRRR (0.95). The out-of-order core agrees (0.50 to 2.33 without the bypass, 0.99 to 3.32 with it). It is the
+  first workload in this phase on which the bypass is decisive (RRRR goes from 0.50 to 0.95).
+- **The slowest hart is better off on the fabric in all but one placement** (none, on the wide core). The lowest rate of any
+  hart, bus against fabric against bypass, in-order: RRRR 34.5, 22.0 and 67.1; SSSS 1.0, 5.1 and 7.7; RRSS 17.9, 48.3 and 59.9; SSRR 1.9, 48.9 and 60.0;
+  RRRS 23.6, 73.5 and 86.9; SRRR 23.6, 74.1 and 87.1. The harts the bus favours lose: up to 59% on the fabric (hart 0 in RRRR has 0.41 of its
+  bus rate) and up to 32% with the bypass (hart 0 in SSSS, 0.68). The sum hides how much of the bus's total went to two harts.
+- **Isolation is still the fabric's own property.** In RRRS the SDRAM reader runs at 0.99 of its rate alone beside three block-RAM
+  readers (1.00 with the bypass), where the bus gives it 0.22; in SRRR hart 0 on SDRAM is at 1.00.
+- **Aging costs little here.** The four-hart fabric ages by default (Part 34). With it off, the sums agree within 0.2
+  except RRRS on the in-order core (321.4 against 313.8, so aging costs 2.4%) and RRSS on the wide one (326.6 against 321.3,
+  1.6%).
+- **The control holds.** Alone and in Part 27's pair, the four-hart SoC gives Part 27's numbers within 0.1 words per thousand
+  cycles (bus 101.9 and 96.8, fabric 118.5 and 74.2 on the in-order core), so the extra harts change nothing for the harts that run.
+
+**What this does not establish.** A read stream, not a real workload: no stores, atomics or line fills, no NPU, no
+interrupts, the loop is in the instruction cache, and Linux at four harts is not run, so Stage 3's "measured improvement
+under real multi-master workloads" is not met by this alone (whether the bypassed fabric's wins here are that is the
+maintainer's judgement). One array size, one window, one start time. The bus is this project's fixed-priority bus: a fairer
+arbiter would change the bus's per-hart rates, and less its sums. The slave interface's pitch is read from its source and its
+header, not traced in a waveform. The bypass's area and timing at four harts are not measured (Part 28 estimated 3.5% more
+LUTs, and Part 30 measured an Fmax in step at one hart). The router FIFOs' own two cycles are not removed, and the throughput
+limit found here is not theirs. The `hetero` build and the one-node network were not run. And whether the bypass should
+become the default for `INTERCONNECT=xbar` is still the maintainer's decision: this adds one more place where it wins (four
+harts), and none where it loses by more than 5% in aggregate.
 
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
@@ -2320,7 +2445,9 @@ its area (74,133 LUTs in a one-hart SoC, 88% of an 85F, nearly all in two router
 input's FIFO separately, taking that to 41,439 LUTs (49%) with an Fmax in step with the bus's, and Part 31 measured
 interrupt traffic, the last of the three workloads in the Done-when, and Part 32 measured it beside a hart streaming memory, and Part 33 put the network's simulations, its area budget and the
 SoC over the fabric into CI, and Part 34 ran four harts: it checked the reservation monitor and the caches' coherence at that size,
-and found that the fabric starved a lock holder's instruction fetch, which aging now prevents; four harts' performance is still unmeasured). Real growth to four or more
+and found that the fabric starved a lock holder's instruction fetch, which aging now prevents, and Part 35 streamed through memory on four harts, where
+the bus is saturated and the fabric's slave interface, one request at a time, is what limits it (ahead of the bus only with the bypass, or where slow
+readers outrank fast ones); four harts' performance under Linux, CoreMark and interrupts is still unmeasured). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -2379,4 +2506,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 34). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 35). Stages 4 onward are a plan.
