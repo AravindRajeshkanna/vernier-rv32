@@ -266,7 +266,7 @@ SD_BLOCKS = 128
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
         linux_trapdiff linux-if-built \
         lint lint-markdown lint-vale bom sbom hbom \
-        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix sim_soc_4hart_stream stream4_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix sim_soc_2hart_irq irq2_matrix sim_soc_4hart sim_soc_4hart_sdram mh4_matrix busmon_check \
+        lint-rtl lint-rtl-flat lint-rtl-soc lint-rtl-ddr3 lint-rtl-noc verify_noc verify_xbar sim_soc_2hart_coremark_same sim_soc_2hart_coremark_split coremark2_matrix sim_soc_2hart_stream stream2_matrix sim_soc_4hart_stream stream4_matrix sim_soc_4hart_irq irq4_matrix lint-c lint-py code-quality coremark_nodcache sim_npuload sim_npuload_split sim_npuload_heavy sim_npuload_heavysplit npuload_matrix sim_npuload_nodcache sim_irqload sim_irqload_split sim_irqload_heavy sim_irqload_heavysplit sim_irqload_slow irqload_matrix sim_soc_2hart_irq irq2_matrix sim_soc_4hart sim_soc_4hart_sdram mh4_matrix busmon_check \
         verilator_coverage_build verilator_coverage verilator_coverage_report
 
 all: sim
@@ -1417,6 +1417,34 @@ sim_soc_2hart_irq: sim/irq2.hex sim/sim_soc_2hart_irq.out
 
 irq2_matrix:
 	python3 sim/irq2_matrix.py
+
+# ---- interrupt service on one of four harts, beside the others streaming (Phase 8 Stage 3, Part 36) ----
+#
+# sim/tb_soc_4hart_irq.v runs software/bench/irq4.S on four harts: one, chosen by a plusarg, runs a loop and
+# takes a periodic timer interrupt through the PLIC, and any of the others stream an array bigger than the data
+# cache (Part 35's loop). Which hart takes the interrupt, which stream, and where their arrays live are plusargs
+# (see the testbench's header), so one simulation per interconnect covers every row. `make irq4_matrix` runs the
+# cases over the bus and the router fabric. A measurement, not a gate.
+software/bench/irq4.elf: software/bench/irq4.S software/bench/link_irq4.ld
+	$(RISCV_CC) -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_irq4.ld -o $@ software/bench/irq4.S
+
+sim/irq4.hex: software/bench/irq4.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/irq4.elf software/bench/irq4.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/irq4.bin > $@
+
+sim/sim_soc_4hart_irq.out: sim/tb_soc_4hart_irq.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_soc_4hart_irq.v sim/sdram_model.v $(SOC_RTL)
+
+IRQ4_ARGS ?=
+
+sim_soc_4hart_irq: sim/irq4.hex sim/sim_soc_4hart_irq.out
+	cd sim && $(VVP) sim_soc_4hart_irq.out $(VVP_DUMP) $(IRQ4_ARGS) | tee soc_4hart_irq.log
+	@grep -aq "SOC-4HART-IRQ: PASS" sim/soc_4hart_irq.log && echo "FOUR-HART IRQ OK" || \
+	    { echo "FAILED: interrupts on four harts (CORE=$(CORE), INTERCONNECT=$(INTERCONNECT))"; exit 1; }
+
+irq4_matrix:
+	python3 sim/irq4_matrix.py
 
 # ---- four harts (Phase 8 Stage 3, Part 34) ----
 #
