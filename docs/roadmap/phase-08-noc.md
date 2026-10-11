@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 has begun (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts; Linux and CoreMark at four harts were not run, and the account after Part 36 lists what is carried forward); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
 board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -837,7 +837,8 @@ the Stage 1 boundary:
 The packet is one 80-bit word (82 since Part 16 added burst and last bits) for request and response alike: `lock`, `we`
 (`err` in a response), byte enables, a 2-bit `qos`, 4-bit `src` and `dst`, 32-bit
 address, 32-bit data. `qos` is carried end to end and echoed in the response,
-and nothing arbitrates on it; that is Stage 3.
+and nothing arbitrates on it; that is Stage 3. (Update, Part 24: the router arbitrates on it when `QOS_EN` is set,
+which the SoC's build leaves clear.)
 
 **Atomics.** A bus holds `cyc` across an AMO's two phases and the arbiter keeps
 everyone else out; a network cannot see that, so the master says it in the packet.
@@ -1377,7 +1378,7 @@ formal property is the pick rule, not a latency bound, which needs fairness assu
 bounded check does not give). The rest of Stage 3 is not done: four or more harts, the reservation
 monitor and coherence at that size, and the workload measurements. (Update, Part 34: the monitor and the coherence are
 checked at four harts, which found that the fabric starved a lock holder and put aging on in the SoC's build from three
-harts; the classes stay off.)
+harts; the classes stay off. Update, Stage 3 marked done: the workload measurements were made in Parts 25 to 36, except Linux and CoreMark at four harts, which the account after Part 36 carries forward.)
 
 **Update, Part 25: the NPU's DMA racing a hart, over the bus and the router fabric.** Stage 3 names
 "NPU DMA racing CPU traffic" as one of the workloads that decides it. `software/soc/npuload.c`
@@ -2003,7 +2004,7 @@ that the bypass should be on: whether it becomes the default for `INTERCONNECT=x
 decision, and this adds one more place where it wins (under a racing NPU) and one where it does not (quiet).
 All three workloads named in Stage 3's Done-when have now been measured. The record is that the fabric comes out ahead
 of the bus only with the bypass and only where masters interfere on the bus, and behind it elsewhere; whether that
-meets the Done-when is the maintainer's judgement. Four or more harts, and the coherence check at that size, are still
+meets the Done-when is the maintainer's judgement (Update: they marked Stage 3 done on 2026-10-11; see the account after Part 36). Four or more harts, and the coherence check at that size, are still
 open. (Update, Part 34: the coherence check at four harts is done; the performance at four is not, except the streams, Part 35, and interrupts, Part 36.)
 
 **Update, Part 32: interrupt service beside a hart that streams through memory.** Part 31 left out the case it guessed
@@ -2270,7 +2271,7 @@ would be cheaper; the router is formally proved, and changing it was not this pa
 **What this does not establish.** Performance at four harts: the program is a correctness test, its phases mostly spin, and
 its cycle counts (in-order, four harts, block RAM: 29,760 on the bus, 56,706 over the fabric, 41,350 with the bypass) depend on
 who wins the lock, so they are not a measurement; the streams (Update, Part 35: they are run now), CoreMark and the interrupt workloads (Update, Part 36: interrupts too) were not run on four harts,
-and Stage 3's "measured improvement under real multi-master workloads" is open at that size. Linux SMP at four harts (the
+and Stage 3's "measured improvement under real multi-master workloads" is open at that size (Update: Stage 3 is marked done, with this carried forward; see the account after Part 36). Linux SMP at four harts (the
 device tree and OpenSBI are the two-hart ones). More than four harts: the fabric's ids stop there. The `hetero` build is one
 in-order hart and three wide, not two and two, and it and the matrix are local; CI runs the single test on the bus and on the
 fabric, both cores. The aging bound is tested at 48, 200 and 256 and not proved (the formal properties are of the pick rule,
@@ -2397,7 +2398,7 @@ bypass.
 **What this does not establish.** A read stream, not a real workload: no stores, atomics or line fills, no NPU, no
 interrupts (Update, Part 36: measured there), the loop is in the instruction cache, and Linux at four harts is not run, so Stage 3's "measured improvement
 under real multi-master workloads" is not met by this alone (whether the bypassed fabric's wins here are that is the
-maintainer's judgement). One array size, one window, one start time. The bus is this project's fixed-priority bus: a fairer
+maintainer's judgement; Update: they marked Stage 3 done on 2026-10-11, see the account after Part 36). One array size, one window, one start time. The bus is this project's fixed-priority bus: a fairer
 arbiter would change the bus's per-hart rates, and less its sums. The slave interface's pitch is read from its source and its
 header, not traced in a waveform. The bypass's area and timing at four harts are not measured (Part 28 estimated 3.5% more
 LUTs, and Part 30 measured an Fmax in step at one hart). The router FIFOs' own two cycles are not removed, and the throughput
@@ -2518,6 +2519,51 @@ become the default for `INTERCONNECT=xbar` is still the maintainer's decision: t
 starved hart's interrupt); where it costs more than the bus (hart 0 alone or beside block-RAM streamers) it is by at most 45
 cycles an interrupt (148 against 103).
 
+**Update: Stage 3 marked done, at the maintainer's decision.** On 2026-10-11, after Part 36, the maintainer decided to mark
+Stage 3 done and move to Stage 4. That is a decision on the record below, not a new measurement: the Done-when asks for "a
+measured improvement (or an honestly-recorded, acceptable trade-off) under real multi-master workloads", Part 31 left to the
+maintainer whether the record meets it, and Parts 34 and 35 said that it was open at four harts. What the record holds, all
+of it in simulation and none of it on a board:
+
+- **The three workloads the Done-when names are measured.** The NPU's DMA racing a hart (Parts 25 and 31), concurrent
+  multi-hart Linux (one and two harts, Parts 23 and 28) and real interrupt traffic (one, two and four harts, Parts 31,
+  32 and 36); beside them CoreMark on two harts (Part 26) and streams through memory on two and four (Parts 27 and 35).
+- **The result is a recorded trade-off.** The fabric comes out ahead of the bus only with the bypass and only where masters
+  interfere on the bus (Part 31): two harts streaming from two memories read 22% faster with the bypass (Part 28), and the
+  lowest-priority hart of four, beside three streamers in SDRAM, pays 176 cycles an interrupt over the fabric where the bus
+  makes it pay 20,021 (Part 36). Isolation without a net win: with the NPU's buffer in a second memory the NPU stops slowing
+  the hart, which the bus lets it slow by 11.7%, but the fabric's latency costs 44% more cycles on a cache-missing loop
+  (Part 25). Elsewhere it is behind: Linux to userspace takes 20 to 25% more cycles with one hart or two in-order harts and
+  67% more with the wide pair (Part 28's table; 2.9% fewer with the bypass on two in-order harts), CoreMark is 41 to 46%
+  slower per iteration in one memory (Part 26), and at four harts the fabric delivers half the bus's words from one memory
+  (0.95 of them with the bypass; Part 35).
+- **Four harts are built, and checked at that size.** Atomics, a lock, LR/SC and a token round the harts' caches and
+  reservations pass 75 of 75 runs on the bus, the one-node network and the fabric (Part 34), which also found the fabric
+  starving a lock holder's instruction fetch, now prevented by aging from three harts.
+- **No default at one or two harts moved.** The traffic classes and the bypass are off by default, aging applies only from
+  three harts, and every one- and two-hart figure is unchanged (Parts 24, 28 and 34); the routers' new storage is held equal
+  to the old by a formal equivalence proof (Part 30). The network has been in CI since Part 33, and Part 36's pull request
+  passed all 19 checks.
+
+**What marking it done leaves open**, carried forward and not dropped; each item is stated in the Part named.
+
+- Linux at four harts, for which the device tree and OpenSBI are still the two-hart ones (Part 34): Stage 4's Done-when, a
+  full Linux boot single- and multi-hart, is where it belongs. CoreMark at four harts (Part 34); the NPU's DMA racing several
+  harts, and stores, atomics and line fills in the streams (Part 35).
+- Two decisions that are the maintainer's: whether `XBAR_NI_BYPASS` becomes the default for `INTERCONNECT=xbar` (Parts 28, 31,
+  32, 35 and 36; Part 30 measured that it costs no Fmax at one hart), and whether the fabric ages at every hart count rather
+  than from three (Part 34).
+- Not built or not measured: the routers' own two cycles an access (Parts 28 and 35); a cheaper aging, a one-bit flag per
+  input or counters as narrow as the bound (Part 34); a proof of the aging bound at the values in use, which is tested at 48,
+  200 and 256 (Part 34); the bypass's area and timing at four harts (Part 35); a fairer bus arbiter to compare with (Parts 35
+  and 36); more than four harts, where the fabric's ids stop (Part 34).
+- Not run: the `hetero` build and the one-node network on the four-hart measurements (Parts 35 and 36); any measurement with
+  the DDR3 window as its target; a board (Stage 5).
+- Unexplained (Part 36): the wide core's interrupt control, 8 to 12 cycles under Part 32's, and the larger interrupt period
+  costing 2 to 3% more on the fabric.
+- Hand-run, and in neither `make verify` nor CI: `make mh4_matrix` (its single test is in CI), `make stream4_matrix` and
+  `make irq4_matrix`.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -2550,7 +2596,7 @@ while the new path is proven separately. **Done when:** that same
 Linux SMP still reaches userspace on it, and real latency/bandwidth/area
 numbers are recorded against the classic bus, not estimated.
 
-**Stage 3 - scaling past the minimal case** (begun at the maintainer's request:
+**Stage 3 - scaling past the minimal case** (marked done, in simulation, at the maintainer's decision of 2026-10-11; begun at their request:
 Part 24 built the quality-of-service mechanism, Part 25 measured the NPU's DMA racing a hart, Part 26
 ran CoreMark on two harts in one memory and in two, Part 27 streamed through memory on two harts, and
 Part 28 found where the fabric's four cycles an access go and removed two of them, and Part 29 measured
@@ -2561,7 +2607,7 @@ SoC over the fabric into CI, and Part 34 ran four harts: it checked the reservat
 and found that the fabric starved a lock holder's instruction fetch, which aging now prevents, and Part 35 streamed through memory on four harts, where
 the bus is saturated and the fabric's slave interface, one request at a time, is what limits it (ahead of the bus only with the bypass, or where slow
 readers outrank fast ones), and Part 36 took an interrupt on each of four harts, where the bus lets three SDRAM streamers
-starve the lowest-priority hart's interrupt service 228-fold and the fabric does not move; four harts' performance under Linux and CoreMark is still unmeasured). Real growth to four or more
+starve the lowest-priority hart's interrupt service 228-fold and the fabric does not move; Linux and CoreMark at four harts were not run, and the account after Part 36 lists what is carried forward). Real growth to four or more
 nodes, a real quality-of-service mechanism (priority, virtual channels, or
 simple traffic classes) so bulk DMA cannot starve CPU fetch traffic, and a
 real check that the reservation monitor and any future coherence traffic
@@ -2620,4 +2666,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 has begun (Parts 24 to 36). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36). Stages 4 onward are a plan.
