@@ -69,7 +69,9 @@ module cpu_core #(
     // Passed straight through to csr_file.v's mhartid. Defaults to 0,
     // matching the one hart every instantiation of this core builds today -
     // see docs/roadmap/phase-13-multicore.md's Phase 13 entry.
-    parameter [31:0] HARTID = 32'h0
+    parameter [31:0] HARTID = 32'h0,
+    // 1: a wfi waits until an interrupt enabled in mie is pending (Phase 8 Stage 4, Part 38). 0: a no-op.
+    parameter WFI_WAIT = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -260,6 +262,7 @@ module cpu_core #(
     wire sfence_en;
     wire ex_commit;
     wire ex_busy_stall;
+    wire wfi_wait;       // a wfi in decode, held until an enabled interrupt is pending (WFI_WAIT)
     wire [31:0] csr_mcounteren, csr_scounteren;
     wire [1:0]  current_priv;
     wire        satp_mode;
@@ -545,14 +548,17 @@ module cpu_core #(
     wire is_mret   = is_priv && (d_funct12 == 12'h302);
     wire is_sret   = is_priv && (d_funct12 == 12'h102);
     wire is_sfence_vma = is_priv && (d_funct7 == 7'b0001001); // has real rs1/rs2, not a fixed funct12
-    // WFI retires as a plain no-op. The spec explicitly permits that ("a
-    // legal implementation is to simply implement WFI as a NOP"), and it is
-    // the honest choice for this core: there is no clock gating or power
-    // state to enter, so a stall loop would burn exactly the same energy
-    // while making the pipeline harder to reason about. What matters
-    // architecturally is that WFI does not trap - software (including
-    // OpenSBI's idle path and any Linux cpuidle driver) executes it
-    // unconditionally and expects to keep running.
+    // WFI retires as a plain no-op unless WFI_WAIT is set. The spec explicitly permits that ("a
+    // legal implementation is to simply implement WFI as a NOP"), and it was the honest choice for
+    // this core: there is no clock gating or power state to enter, so a stall loop would burn
+    // exactly the same energy while making the pipeline harder to reason about. What matters
+    // architecturally is that WFI does not trap - software (including OpenSBI's idle path and any
+    // Linux cpuidle driver) executes it unconditionally and expects to keep running.
+    // (Update, Phase 8 Stage 4, Parts 37 and 38: that reasoning counted only this hart's energy. On a
+    // shared interconnect the loop a no-op wfi sits in costs the other harts bus cycles, and four
+    // harts could not boot Linux because of it. WFI_WAIT holds the hart at the wfi until an
+    // interrupt enabled in mie is pending; it is off by default, which leaves every figure as it was.
+    // docs/roadmap/phase-08-noc.md, Part 38.)
     wire is_wfi        = is_priv && (d_funct12 == 12'h105);
 
     // mstatus.TVM/TW/TSR let M-mode trap the supervisor operations it wants
@@ -862,8 +868,9 @@ module cpu_core #(
     // Loads AND AMO/LR (their rd value, like a load's, only exists once
     // MEM computes it) share the same load-use hazard shape.
     wire id_ex_is_load_like = id_ex_is_load || id_ex_is_amo;
-    wire load_use_stall = if_id_valid && id_ex_valid && id_ex_is_load_like && (id_ex_rd != 5'd0) &&
-                           ((uses_rs1 && (id_ex_rd == d_rs1)) || (uses_rs2 && (id_ex_rd == d_rs2)));
+    wire load_use_stall = (if_id_valid && id_ex_valid && id_ex_is_load_like && (id_ex_rd != 5'd0) &&
+                           ((uses_rs1 && (id_ex_rd == d_rs1)) || (uses_rs2 && (id_ex_rd == d_rs2)))) ||
+                          wfi_wait;   // the same hold-in-decode, bubble-behind shape; see wfi_wait
 
     wire id_ex_stall = load_use_stall || ex_busy_stall;
     // The IF-stage ITLB-miss stall is independent of id_ex_stall: it's
@@ -917,6 +924,7 @@ module cpu_core #(
     reg [11:0] id_ex_csr_addr;
     reg [31:0] id_ex_zimm;
     reg        id_ex_is_trap_event, id_ex_is_mret, id_ex_is_sret;
+    reg        id_ex_is_wfi;         // a legal wfi (see WFI_WAIT, and interrupt_taken)
     reg [31:0] id_ex_trap_cause, id_ex_trap_val;
     reg        id_ex_is_muldiv, id_ex_is_sfence_vma, id_ex_is_fence_i;
     reg [4:0]  id_ex_funct5;
@@ -1293,6 +1301,14 @@ module cpu_core #(
     wire any_m_candidate = m_mei || m_msi || m_mti || m_sei || m_ssi || m_sti;
     wire m_enabled = (current_priv != PRIV_M) || csr_mstatus_mie;
 
+    // A wfi waits in decode while no interrupt that is enabled in mie is pending in mip, whatever mstatus says
+    // about taking it (the specification's condition), and only when it is legal (wfi_priv_ok: a user-mode wfi, or
+    // a supervisor one under mstatus.TW, traps at once instead). A debugger can still halt or step the hart: a
+    // parked wfi would otherwise keep decode occupied, and dbg_pipeline_quiescent needs it empty. Off (WFI_WAIT
+    // 0), this is 0 and nothing above changes.
+    assign wfi_wait = (WFI_WAIT != 0) && if_id_valid && is_wfi && wfi_priv_ok && !(|(csr_mip & csr_mie)) &&
+                      !dbg_haltreq && !dbg_halt_pending && !dbg_stepping_r;
+
     wire s_sei = pend_sei && tgt_s_sei;
     wire s_ssi = pend_ssi && tgt_s_ssi;
     wire s_sti = pend_sti && tgt_s_sti;
@@ -1308,7 +1324,12 @@ module cpu_core #(
                                 m_sei ? 32'h8000_0009 : m_ssi ? 32'h8000_0001 : 32'h8000_0005) :
                                (s_sei ? 32'h8000_0009 : s_ssi ? 32'h8000_0001 : 32'h8000_0005);
 
-    assign interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall;
+    // With WFI_WAIT a wfi in execute is not interrupted: it retires, and the interrupt is taken at the next
+    // instruction, so that mepc is the instruction after the wfi as the specification says. Interrupted, mepc
+    // would be the wfi itself, which runs again after the handler's mret and waits for an interrupt that may
+    // never come. (A no-op wfi is harmless to run twice, which is why this did not matter before.)
+    assign interrupt_taken = id_ex_valid && any_interrupt_pending && !ex_busy_stall &&
+                             !((WFI_WAIT != 0) && id_ex_is_wfi);
 
     wire synchronous_trap = id_ex_is_trap_event || mmu_fault_now || pmp_fault_now ||
                             mem_misaligned || fetch_misaligned;
@@ -1816,6 +1837,7 @@ module cpu_core #(
             id_ex_is_muldiv     <= is_muldiv;
             id_ex_is_sfence_vma <= is_sfence_vma;
             id_ex_is_fence_i    <= is_fence_i;
+            id_ex_is_wfi        <= is_wfi && wfi_priv_ok;
             id_ex_is_amo        <= is_amo;
             id_ex_funct5        <= d_funct5;
             id_ex_pred_taken    <= if_id_pred_taken;

@@ -287,8 +287,8 @@ them.
 
 `.github/workflows/ci.yml` runs the architectural suite and formal on every
 push, alongside the RTL regression and both SoC boot paths, and (since Phase 8 Parts 33 and 34) the
-packet network's simulations, the SoC over the router fabric, four harts on the bus and over the fabric, and (Part 37) the device trees' hart lists
-(`make dtb_check`).
+packet network's simulations, the SoC over the router fabric, four harts on the bus and over the fabric, and (Parts 37 and 38) the device trees' hart lists
+(`make dtb_check`) and a `wfi` that waits (`make sim_soc_wfi sim_wfi_dbg`).
 
 **Spike co-simulation is deliberately not in CI.** It needs Spike built from
 source, which would dominate the run time, and it is the layer least likely to

@@ -109,3 +109,5 @@ sim/trap_*.txt
 bom/sbom.json
 bom/hbom.json
 sim/vl_ddr3/
+software/bench/wfi.elf
+software/bench/wfi.bin

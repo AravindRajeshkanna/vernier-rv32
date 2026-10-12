@@ -154,6 +154,13 @@ CHECKREADS =
 else ifneq ($(INTERCONNECT),bus)
 $(error INTERCONNECT must be bus, noc or xbar, not $(INTERCONNECT))
 endif
+# 1 makes a wfi wait for an enabled interrupt in every hart (rtl/cpu_core.v, rtl/ooo/core_ooo.v; Phase 8
+# Stage 4, Part 38); empty leaves it the no-op it has always been, and every figure in this tree is of that
+# build. Like INTERCONNECT it changes the build, so clear the built simulations when you change it.
+CPU_WFI_WAIT ?=
+ifneq ($(CPU_WFI_WAIT),)
+CORE_DEFINES += -DCPU_WFI_WAIT=$(CPU_WFI_WAIT)
+endif
 IVFLAGS       = -g2012 $(CORE_DEFINES)
 VVP           = vvp
 VERILATOR     = verilator
@@ -260,7 +267,7 @@ SD_BLOCKS = 128
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi sim_opensbi_2hart sim_opensbi_4hart \
-        linuximage linuxpayload sim_linux sim_linux_2hart sim_linux_4hart linux_matrix \
+        linuximage linuxpayload sim_linux sim_linux_2hart sim_linux_4hart linux_matrix sim_soc_wfi sim_wfi_dbg \
         mmuimage plicimage uart16550image \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
@@ -1999,6 +2006,66 @@ sim_linux_4hart: sim/linuximage_$(CORE)_4hart.hex $(VERILATOR_4HART_BIN)
 # a simulation of its own (sim/linux_matrix.py). Hand-run, not part of `verify` or CI.
 linux_matrix:
 	python3 sim/linux_matrix.py
+
+# ---- a wfi that waits (Phase 8 Stage 4, Part 38) ----
+#
+# sim/tb_soc_wfi.v runs software/bench/wfi.S on two harts: six tests of how long a wfi lasts and what ends it. The
+# cores' parameter WFI_WAIT (soc_top's, and `make CPU_WFI_WAIT=1` for a whole build) is 0 by default, a wfi that is a
+# no-op, and the checks describe the one that waits, so the testbench is compiled twice: with WAIT=1 it must
+# pass, and with WAIT=0 it must fail (the test insists on its own failing, because a test that cannot fail on the
+# thing it tests is testing the testbench). CORE=ooo runs it on the wide core.
+software/bench/wfi.elf: software/bench/wfi.S software/bench/link_wfi.ld
+	$(RISCV_CC) -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib -nostartfiles \
+	    -T software/bench/link_wfi.ld -o $@ software/bench/wfi.S
+
+sim/wfi.hex: software/bench/wfi.elf software/bin2hex.py Makefile
+	$(RISCV_OBJCOPY) -O binary software/bench/wfi.elf software/bench/wfi.bin
+	python3 software/bin2hex.py --word-size=4 software/bench/wfi.bin > $@
+
+sim/sim_soc_wfi.out: sim/tb_soc_wfi.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -Ptb_soc_wfi.WAIT=1 -o $@ sim/tb_soc_wfi.v sim/sdram_model.v $(SOC_RTL)
+
+sim/sim_soc_wfi_nop.out: sim/tb_soc_wfi.v sim/sdram_model.v $(SOC_RTL)
+	$(IVERILOG) $(IVFLAGS) -Ptb_soc_wfi.WAIT=0 -o $@ sim/tb_soc_wfi.v sim/sdram_model.v $(SOC_RTL)
+
+sim_soc_wfi: sim/wfi.hex sim/sim_soc_wfi.out sim/sim_soc_wfi_nop.out
+	cd sim && $(VVP) sim_soc_wfi.out $(VVP_DUMP) | tee soc_wfi.log
+	@grep -aq "SOC-WFI: PASS" sim/soc_wfi.log || { echo "FAILED: a wfi that waits (CORE=$(CORE))"; exit 1; }
+	cd sim && $(VVP) sim_soc_wfi_nop.out $(VVP_DUMP) | tee soc_wfi_nop.log
+	@grep -aq "SOC-WFI: FAIL" sim/soc_wfi_nop.log && grep -aq "FAIL T1 wfi lasts" sim/soc_wfi_nop.log && \
+	    echo "WFI WAIT OK (and the test fails on a wfi that does not wait)" || \
+	    { echo "FAILED: the test did not notice a wfi that does not wait (CORE=$(CORE))"; exit 1; }
+
+# A debugger and a wfi that waits (sim/tb_wfi_dbg.v): a hart parked at a wfi must still halt on request, resume past
+# the wfi, and single-step onto one. Each core is built directly, as sim_cpu_halt and sim_ooo_halt build them, and
+# twice: with WAIT=1 the test must pass, and with WAIT=0 it must fail (x5 is already 2 when the hart is halted).
+WFI_DBG_INORDER = rtl/regfile.v rtl/imem.v rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/cpu_core.v
+WFI_DBG_OOO     = rtl/imem.v rtl/dmem.v rtl/csr_file.v rtl/muldiv_div.v rtl/mmu.v rtl/btb.v rtl/pmp.v rtl/ooo/core_ooo.v rtl/ooo/regfile_phys.v
+
+sim/sim_wfi_dbg.out: sim/tb_wfi_dbg.v $(WFI_DBG_INORDER)
+	$(IVERILOG) $(IVFLAGS) -Ptb_wfi_dbg.WAIT=1 -o $@ sim/tb_wfi_dbg.v $(WFI_DBG_INORDER)
+
+sim/sim_wfi_dbg_nop.out: sim/tb_wfi_dbg.v $(WFI_DBG_INORDER)
+	$(IVERILOG) $(IVFLAGS) -Ptb_wfi_dbg.WAIT=0 -o $@ sim/tb_wfi_dbg.v $(WFI_DBG_INORDER)
+
+sim/sim_wfi_dbg_ooo.out: sim/tb_wfi_dbg.v $(WFI_DBG_OOO)
+	$(IVERILOG) $(IVFLAGS) -DCORE_OOO_DUT -Ptb_wfi_dbg.WAIT=1 -o $@ sim/tb_wfi_dbg.v $(WFI_DBG_OOO)
+
+sim/sim_wfi_dbg_ooo_nop.out: sim/tb_wfi_dbg.v $(WFI_DBG_OOO)
+	$(IVERILOG) $(IVFLAGS) -DCORE_OOO_DUT -Ptb_wfi_dbg.WAIT=0 -o $@ sim/tb_wfi_dbg.v $(WFI_DBG_OOO)
+
+sim_wfi_dbg: sim/sim_wfi_dbg.out sim/sim_wfi_dbg_nop.out sim/sim_wfi_dbg_ooo.out sim/sim_wfi_dbg_ooo_nop.out
+	cd sim && $(VVP) sim_wfi_dbg.out $(VVP_DUMP) | tee wfi_dbg.log
+	@grep -aq "WFI-DBG-TEST: PASS" sim/wfi_dbg.log || { echo "FAILED: a debugger and a waiting wfi (in-order core)"; exit 1; }
+	cd sim && $(VVP) sim_wfi_dbg_nop.out $(VVP_DUMP) | tee wfi_dbg_nop.log
+	@grep -aq "WFI-DBG-TEST: FAIL" sim/wfi_dbg_nop.log && grep -aq "FAILED" sim/wfi_dbg_nop.log || \
+	    { echo "FAILED: the test did not notice a wfi that does not wait (in-order core)"; exit 1; }
+	cd sim && $(VVP) sim_wfi_dbg_ooo.out $(VVP_DUMP) | tee wfi_dbg_ooo.log
+	@grep -aq "WFI-DBG-TEST: PASS" sim/wfi_dbg_ooo.log || { echo "FAILED: a debugger and a waiting wfi (wide core)"; exit 1; }
+	cd sim && $(VVP) sim_wfi_dbg_ooo_nop.out $(VVP_DUMP) | tee wfi_dbg_ooo_nop.log
+	@grep -aq "WFI-DBG-TEST: FAIL" sim/wfi_dbg_ooo_nop.log && grep -aq "FAILED" sim/wfi_dbg_ooo_nop.log || \
+	    { echo "FAILED: the test did not notice a wfi that does not wait (wide core)"; exit 1; }
+	@echo "WFI DEBUG OK (both cores, and the test fails on a wfi that does not wait)"
 
 # ---- the ns16550 register map, and the UART's interrupt ----
 #
@@ -4157,6 +4224,8 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_cpu_resv_ports \
         sim_ooo_resv_ports \
         sim_ooo_halt \
+        sim_wfi_dbg \
+        sim_soc_wfi \
         sim_soc_2hart \
         sim_soc_2hart_hetero \
         sim_soc_2hart_coherence \
@@ -4255,6 +4324,9 @@ clean:
 	       sim/linuximage_inorder.hex sim/linuximage_ooo.hex sim/linuximage_hetero.hex \
 	       sim/linux.log \
 	       sim/linuximage_inorder_4hart.hex sim/linuximage_ooo_4hart.hex sim/linuximage_hetero_4hart.hex sim/linux_4hart.log \
+	       sim/wfi.hex software/bench/wfi.elf software/bench/wfi.bin sim/sim_soc_wfi.out sim/sim_soc_wfi_nop.out \
+	       sim/soc_wfi.log sim/soc_wfi_nop.log sim/sim_wfi_dbg.out sim/sim_wfi_dbg_nop.out sim/sim_wfi_dbg_ooo.out \
+	       sim/sim_wfi_dbg_ooo_nop.out sim/wfi_dbg.log sim/wfi_dbg_nop.log sim/wfi_dbg_ooo.log sim/wfi_dbg_ooo_nop.log \
 	       software/linux/build/sdram.bin \
 	       software/opensbi/build/sbi_stub.elf \
 	       software/opensbi/build/sbi_stub.bin \

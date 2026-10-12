@@ -214,6 +214,13 @@ jobs:
       - name: Device tree hart lists
         run: make dtb_check
 
+      # A wfi that waits (Phase 8 Stage 4, Part 38), which is off by default: the directed test of how long a
+      # wfi lasts and what ends it, on this job's core, and the debugger halting and stepping a hart parked at
+      # one, on both. Each is built twice and the build without the wait must fail, so a test that cannot
+      # fail on what it tests cannot pass here.
+      - name: A wfi that waits, and the debugger
+        run: make sim_soc_wfi sim_wfi_dbg
+
       - name: SoC over the SD boot path
         run: make sim_soc | tee soc.log
       - name: Check SoC verdict
