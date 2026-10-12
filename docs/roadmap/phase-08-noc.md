@@ -3,8 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts; Linux and CoreMark at four harts were not run, and the account after Part 36 lists what is carried forward); Stage 4 has begun (Parts 37 and 38: the same software on four harts, which does not boot until the cores' `wfi` waits, and the option that makes it wait); Stage 5 is a plan, not an account,
-and nothing about any of it is blocked on a board.** `rtl/soc/wb_interconnect.v` is a real,
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts; CoreMark at four harts was not run and Linux at four harts was left for Stage 4, and the account after Part 36 lists what is carried forward); Stage 4's Done-when is met in simulation (Parts 37 and 38: the same software on four harts, which does not boot until the cores' `wfi` waits, and the option that makes it wait, with which one, two and four harts boot Linux over the router fabric), so Phase 8 is marked done in simulation, up to Stage 5; Stage 5 is the hardware stage, a plan and not an account: it needs a board, and it is not authorised.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
 `NUM_HARTS` (Phase 13's own real 2-hart configuration proves it), with a
@@ -2854,6 +2853,59 @@ default, 0, is the no-op both cores have always had.
 - **A debugger over JTAG at a parked hart.** Halt and single step at a parked `wfi` are tested through the hart-control port
   (`sim_wfi_dbg`); the JTAG path, which `make verify CPU_WFI_WAIT=1` runs with the option on, is not exercised with a parked hart.
 
+**Update: Phase 8 marked done in simulation, up to its hardware stage.** On 2026-10-12, after Part 38 was merged, the maintainer
+asked whether Phase 8 can be marked done in simulation. This is the check, stage against Done-when, on the tree of that merge
+(`make verify` and `make verify_ooo` exit 0 with the option off and on, and all 19 checks of Part 38's pull request passed). It
+is a reading of the record, not a new measurement, and the judgement it rests on is the maintainer's, as it was for Stage 3:
+whether a boot that needs an option, and a trade-off in which the bus is ahead, meet the Done-whens. The convention is the one
+Phases 11, 13, 14 and 15 use: "done in simulation", with what has run on a board recorded under Hardware. **The answer is yes
+for Stages 0 to 4, with the limits below, and no for Stage 5, which needs a board.**
+
+| Stage | Its Done-when asks for | Met, in simulation, by |
+|---|---|---|
+| 0 | the current bus measured before a replacement is designed | Parts 1 to 4; the decision (no network yet) confirmed by the maintainer on 2026-10-03 |
+| 1 | a master reaching a slave through network interfaces with the bus's behaviour: directed tests of round trips, per-master order and back-pressure, and formal properties | Parts 15 to 20; in CI since Part 33 |
+| 2 | two harts running over the network, Linux SMP at userspace, and latency, bandwidth and area recorded against the bus | Parts 21 to 23, with the area and Fmax in Parts 29 and 30 |
+| 3 | a measured improvement, or an honestly-recorded acceptable trade-off, under multi-master workloads, with no regression | Parts 24 to 36; marked done at the maintainer's decision of 2026-10-11 |
+| 4 | a full Linux boot, single- and multi-hart, on the network configuration, with a transcript and performance numbers | Parts 37 and 38 |
+| 5 | the configuration building and running on real hardware, both build paths stable | not started |
+
+**Stage 4, in detail.** The software is unchanged: the same kernel image, OpenSBI and stub, with a four-hart device tree as the
+only file that differs, which Stage 4 allows as a configuration difference (Part 37). One and two harts boot over the fabric to
+Part 28's cycle counts exactly. With `CPU_WFI_WAIT=1`, four harts boot to userspace over the router fabric on the in-order build
+in 369,417,669 cycles (269,380,771 with the bypass), on the wide build in 372,496,088 (256,220,334) and on `hetero` in
+381,281,052 (299,025,452), with `processor : 0` to `3` in the kernel's `/proc/cpuinfo`. Each cell's log is the transcript, and
+Part 38's table is the numbers.
+
+**The limits of the label.**
+
+- **Four harts boot only with the option on, and only over the fabric.** `CPU_WFI_WAIT` is off by default, and whether that
+  changes is the maintainer's decision (Part 38). Over the bus four harts do not reach userspace with the option or without it
+  (Parts 37 and 38). The Done-when asks for the boot on the network configuration, which this meets; Stage 5's plan names the
+  bus as the path for small configurations.
+- **The bus is ahead on cycles at one and two harts.** With the waiting `wfi`, Linux takes 21.5 to 40.5% more cycles to boot
+  over the fabric and 7.0 to 14.1% more with the bypass (Part 38's table). The fabric is ahead only where masters interfere on
+  the bus (Stage 3's account). Marking the phase done does not say that the network should replace the bus.
+- **The optional performance counters were not built.** They are a software-visible interface, and no design for them has been
+  brought to the maintainer.
+- **Nothing has run on a board, and the clock is not there.** The place-and-route Fmax of the SoC is 18.05 MHz on the bus, 20.22
+  on the router fabric and 20.40 with the bypass (the mean of six seeds, Part 30) against the 25 MHz the board needs, and the
+  bus build missed 25 MHz when it was last measured at the head of the tree (17.4 to 19.1 MHz on 2026-10-02; the index's common
+  known defects). Stage 5 is the hardware stage and stays a plan; it is not authorised.
+
+**What it leaves open**, carried forward and not dropped; each item is stated in the Part named.
+
+- Decisions that are the maintainer's: the default of `CPU_WFI_WAIT`, and whether four harts over the bus is recorded as a limit
+  or the bus is made fair (Part 38); the bypass as the default for the fabric, and aging at every hart count (Stage 3's
+  account).
+- Stage 4's performance counters, above.
+- What Part 38 does not establish: the wide core's equivalence with the option off (the yosys check gave no result in two
+  hours) and its area, a debugger over JTAG at a parked hart, power (the clock still runs), three harts, more than four.
+- Everything the account after Part 36 carries forward.
+- Hand-run, and in neither `make verify` nor CI: the four-hart Linux boots and the matrix (`make sim_linux_4hart`,
+  `make linux_matrix`).
+- Stage 5, all of it.
+
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
 fabric with the bus on random traffic, and ran the whole `make verify` suite and a
@@ -2909,9 +2961,9 @@ workloads - concurrent multi-hart Linux, NPU DMA racing CPU traffic, real
 interrupt traffic - with zero regression anywhere in the existing
 verification suite.
 
-**Stage 4 - software should not need to know.** (Begun, in simulation: Part 37 gave four harts a device tree, showed that one and
+**Stage 4 - software should not need to know.** (Done, in simulation: Part 37 gave four harts a device tree, showed that one and
 two harts boot the same files to Part 28's cycle counts, and found that four do not, because the cores' `wfi` is a no-op; Part 38 built the wait as an option, with which four harts boot Linux
-over the router fabric.) Device tree and memory-map
+over the router fabric; the optional performance counters were not built.) Device tree and memory-map
 updates if node IDs or address decoding change, OpenSBI and Linux SMP
 booting unchanged (or with configuration differences only, not code
 changes), and optionally, real performance counters (packets, stalls,
@@ -2922,7 +2974,7 @@ configuration with a real transcript and real performance numbers recorded,
 the same standard Phase 5's own OpenSBI/Linux work already set.
 
 **Stage 5 - real hardware, and a build-time choice that keeps both paths
-alive.** Timing closed on a real target (ULX3S today, ECPIX-5 once Phase 9
+alive.** (Not started, and not authorised: it needs a board. Part 30 measured the place-and-route Fmax of the SoC for the board's part, the mean of six seeds: bus 18.05 MHz, router fabric 20.22, with the bypass 20.40, against the 25 MHz the board needs.) Timing closed on a real target (ULX3S today, ECPIX-5 once Phase 9
 gets there), router buffering and pipeline stages tuned for the ECP5's own
 real resources, and a real, permanent build switch - `INTERCONNECT=bus` for
 the classic path (the default for small configurations), `INTERCONNECT=noc`
@@ -2952,10 +3004,10 @@ None recorded against this phase. The common, cross-cutting entries are in the [
 
 *Physical board testing: what has and has not run on a real board.*
 
-Not started: nothing here has been run on a board. Stage 5 (timing closed on a real target, a build-time choice that keeps both interconnects) is the hardware stage.
+Not started: nothing here has been run on a board. Stage 5 (timing closed on a real target, a build-time choice that keeps both interconnects) is the hardware stage. The Fmax that place-and-route reports for the SoC (Part 30: 18.05 MHz on the bus, 20.22 on the fabric, 20.40 with the bypass) is below the 25 MHz the board needs.
 
 ## Software
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36). Stage 4 has begun (Parts 37 and 38). Stage 5 is a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36). Stage 4 is done in simulation (Parts 37 and 38), and with it Phase 8 as far as simulation goes. Stage 5 is a plan.
