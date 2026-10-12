@@ -46,7 +46,10 @@
 // never released (Phase 8 Stage 3, Part 34, sim/tb_soc_4hart.v). The fabric now ages its heads
 // from three harts (XBAR_AGE_LIMIT in soc_top.v). The bus passed the same four-hart test on every
 // core build, and nothing here proves it cannot starve fetch under a pattern that keeps a data
-// master asking at every grant.
+// master asking at every grant. (Update, Phase 8 Stage 4, Part 37: it can. In a four-hart Linux boot,
+// with the cores' idle harts made to wait at wfi, two harts spinning in the kernel's stop_machine
+// barrier held the bus, 84% of its cycles with instruction fetches, and the other two harts'
+// instruction fetches were granted no cycle in 50,000,000; the router fabric did not stall there.)
 //
 // **Data still outranks the walker**, which looks wrong for a requester
 // everything else is waiting on, and is what keeps atomics atomic. Each

@@ -91,6 +91,25 @@ also close; its Phase 15 entry proves the same mailbox holds when the
 parked hart is a genuinely different microarchitecture from the one
 that released it.
 
+**Four harts: the same files, and no boot yet.** `make sim_linux_4hart` packs this kernel, this OpenSBI and this stub with a
+four-hart device tree (`dts/soc_$(CORE)_4hart.dtb`, the only file that differs: 1,158 words of the image, all inside the
+blob) and runs a `NUM_HARTS=4` SoC. Over the bus the kernel prints
+
+```
+smp: Bringing up secondary CPUs ...
+CPU1: failed to come online
+CPU2: failed to come online
+CPU3: failed to come online
+smp: Brought up 1 node, 3 CPUs
+```
+
+and stops; over the router fabric all four CPUs come up and the boot still does not reach `/init` in 2,000,000,000 cycles.
+The cause is measured: both cores execute `wfi` as a no-op, so the harts that are waiting (OpenSBI's `sbi_hsm_hart_wait`, then
+the kernel's idle loop) poll, and on this fixed-priority bus they take the cycles the booting hart's instruction fetches need
+(OpenSBI's banner comes at cycle 77.9 million with four harts against 22.4 with two). A core whose `wfi` waits, tried and not
+kept, boots all four over the fabric (`processor : 0` to `3`, 364.5 million cycles). `docs/roadmap/phase-08-noc.md`'s Part 37
+has the numbers, and `make linux_matrix` the cycle counts of every cell.
+
 | | |
 |---|---|
 | OpenSBI banner, platform, root domain, hand off to S-mode | ✅ |

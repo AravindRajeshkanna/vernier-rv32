@@ -161,6 +161,62 @@
                 interrupt-controller;
             };
         };
+
+#ifdef DTS_FOUR_HARTS
+        /* Phase 8 Stage 4, Part 37: harts 2 and 3, for rtl/soc/soc_top.v's
+         * NUM_HARTS=4 (simulation only, like cpu@1 above). Only the
+         * dts/soc_$(CORE)_4hart.dtb build defines DTS_FOUR_HARTS, so every
+         * other target packs the tree it always did and the blob a one- or
+         * two-hart SoC boots is unchanged to the byte. A four-hart SoC wants
+         * this tree and no other: it is the only one that names all four.
+         * Harts 1 and up share a core type under every $(CORE), as in the
+         * generate loop (see cpu1), so these two carry cpu1's `compatible`.
+         * tests/check_dtb_harts.py checks that `reg`, the cpu-intc nodes and
+         * the CLINT and PLIC lists below agree. */
+        cpu2: cpu@2 {
+            device_type = "cpu";
+            reg = <2>;
+#if defined(CORE_OOO) || defined(CORE_HETERO)
+            compatible = "riscv-fpga-cpu,cpu-ooo", "riscv";
+#else
+            compatible = "riscv-fpga-cpu,cpu-inorder", "riscv";
+#endif
+            riscv,isa = "rv32ima_zicsr_zifencei";
+            riscv,isa-base = "rv32i";
+            riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei";
+            mmu-type = "riscv,sv32";
+            clock-frequency = <25000000>;
+            status = "okay";
+
+            cpu2_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                compatible = "riscv,cpu-intc";
+                interrupt-controller;
+            };
+        };
+
+        cpu3: cpu@3 {
+            device_type = "cpu";
+            reg = <3>;
+#if defined(CORE_OOO) || defined(CORE_HETERO)
+            compatible = "riscv-fpga-cpu,cpu-ooo", "riscv";
+#else
+            compatible = "riscv-fpga-cpu,cpu-inorder", "riscv";
+#endif
+            riscv,isa = "rv32ima_zicsr_zifencei";
+            riscv,isa-base = "rv32i";
+            riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei";
+            mmu-type = "riscv,sv32";
+            clock-frequency = <25000000>;
+            status = "okay";
+
+            cpu3_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                compatible = "riscv,cpu-intc";
+                interrupt-controller;
+            };
+        };
+#endif
     };
 
     memory@80000000 {
@@ -253,7 +309,12 @@
              * already match it: hart h's msip is bit h, hart h's mtip is
              * bit h, independently of each other. */
             interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7
-                                    &cpu1_intc 3 &cpu1_intc 7>;
+                                    &cpu1_intc 3 &cpu1_intc 7
+#ifdef DTS_FOUR_HARTS
+                                    &cpu2_intc 3 &cpu2_intc 7
+                                    &cpu3_intc 3 &cpu3_intc 7
+#endif
+                                    >;
         };
 
         plic0: plic@3000000 {
@@ -276,7 +337,12 @@
              * level's threshold register and fails silently, by never
              * delivering. */
             interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9
-                                    &cpu1_intc 11 &cpu1_intc 9>;
+                                    &cpu1_intc 11 &cpu1_intc 9
+#ifdef DTS_FOUR_HARTS
+                                    &cpu2_intc 11 &cpu2_intc 9
+                                    &cpu3_intc 11 &cpu3_intc 9
+#endif
+                                    >;
             interrupt-controller;
             #interrupt-cells = <1>;
             riscv,ndev = <8>;
