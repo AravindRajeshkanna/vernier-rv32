@@ -206,6 +206,14 @@ jobs:
       - name: Build boot ROM, SoC program and images
         run: make soc ramimage probeimage
 
+      # The device trees' hart lists (Phase 8 Stage 4, Part 37): the cpu
+      # nodes, and the CLINT's and PLIC's interrupts-extended lists, which are
+      # indexed by position and which nothing else compares. It builds the
+      # four-hart tree beside the default one, checks both, and seeds seven
+      # mistakes into the four-hart tree to require that each is caught.
+      - name: Device tree hart lists
+        run: make dtb_check
+
       - name: SoC over the SD boot path
         run: make sim_soc | tee soc.log
       - name: Check SoC verdict

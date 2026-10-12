@@ -908,7 +908,10 @@ Part 34: that is the one-hart argument. It bounds one master's access and not
 another's wait, and the router fabric, with the same fixed priority, did
 starve a lock holder's fetch once three harts contended for a lock. The bus
 passed the same test but is not shown immune; `rtl/soc/wb_interconnect.v`'s
-header and `docs/roadmap/phase-08-noc.md` have the account.)
+header and `docs/roadmap/phase-08-noc.md` have the account. Update, Part 37: it is
+not immune. In a four-hart Linux boot, with the cores' idle harts made to wait at
+`wfi`, two harts spinning in the kernel's `stop_machine` barrier took the bus and
+the other two's instruction fetches were granted no cycle in 50,000,000.)
 
 An access decoding to no slave is acked immediately with zero data rather
 than left hanging — a bus that never acks would wedge the CPU permanently,

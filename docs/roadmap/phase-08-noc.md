@@ -3,8 +3,8 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts; Linux and CoreMark at four harts were not run, and the account after Part 36 lists what is carried forward); Stages 4 onward are a plan, not an account, and nothing about any of it is blocked on a
-board.** `rtl/soc/wb_interconnect.v` is a real,
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts; Linux and CoreMark at four harts were not run, and the account after Part 36 lists what is carried forward); Stage 4 has begun (Part 37: the same software on four harts, which does not boot, and why); Stage 5 is a plan, not an account,
+and nothing about any of it is blocked on a board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
 `NUM_HARTS` (Phase 13's own real 2-hart configuration proves it), with a
@@ -2228,7 +2228,7 @@ unfinished harts it causes.
 one master's access and not the time another waits, and it stopped being the whole argument once three harts can ask without a
 pause. Why the bus's spinners leave gaps the fabric's do not was not traced (the fabric's longer round trip is the obvious
 difference, a guess). The header now says so; nothing here proves the bus cannot starve fetch under a pattern that keeps a data
-master asking at every grant.
+master asking at every grant. (Update, Part 37: it can, in a Linux boot at four harts.)
 
 **The test catches what the two-hart tests cannot, by mutation.** Four bugs, one at a time, in a scratch copy; the tree without
 the bug passes everything, on the bus and on the fabric:
@@ -2272,12 +2272,12 @@ would be cheaper; the router is formally proved, and changing it was not this pa
 its cycle counts (in-order, four harts, block RAM: 29,760 on the bus, 56,706 over the fabric, 41,350 with the bypass) depend on
 who wins the lock, so they are not a measurement; the streams (Update, Part 35: they are run now), CoreMark and the interrupt workloads (Update, Part 36: interrupts too) were not run on four harts,
 and Stage 3's "measured improvement under real multi-master workloads" is open at that size (Update: Stage 3 is marked done, with this carried forward; see the account after Part 36). Linux SMP at four harts (the
-device tree and OpenSBI are the two-hart ones). More than four harts: the fabric's ids stop there. The `hetero` build is one
+device tree and OpenSBI are the two-hart ones; Update, Part 37: four harts have a device tree now, and do not boot Linux). More than four harts: the fabric's ids stop there. The `hetero` build is one
 in-order hart and three wide, not two and two, and it and the matrix are local; CI runs the single test on the bus and on the
 fabric, both cores. The aging bound is tested at 48, 200 and 256 and not proved (the formal properties are of the pick rule,
 at a bound of 3, Part 24; the SoC's setting of no classes and a bound of 256 is covered by simulation and by the structure of
 the code, not by a proof at those values), 256 is the value that was enabled and not a tuned one, and the holder's wait with it
-is not measured as a distribution. The bus is not shown immune (above). No board. "Any future coherence traffic" does not exist
+is not measured as a distribution. The bus is not shown immune (above; Update, Part 37: it is not immune). No board. "Any future coherence traffic" does not exist
 yet, so the check is of the coherence that does: the write-through caches' snoop and the reservation monitor. And four mutants
 are evidence about four bugs, not about every bug.
 
@@ -2396,7 +2396,7 @@ bypass.
   cycles (bus 101.9 and 96.8, fabric 118.5 and 74.2 on the in-order core), so the extra harts change nothing for the harts that run.
 
 **What this does not establish.** A read stream, not a real workload: no stores, atomics or line fills, no NPU, no
-interrupts (Update, Part 36: measured there), the loop is in the instruction cache, and Linux at four harts is not run, so Stage 3's "measured improvement
+interrupts (Update, Part 36: measured there), the loop is in the instruction cache, and Linux at four harts is not run (Update, Part 37: it is run now, and does not boot), so Stage 3's "measured improvement
 under real multi-master workloads" is not met by this alone (whether the bypassed fabric's wins here are that is the
 maintainer's judgement; Update: they marked Stage 3 done on 2026-10-11, see the account after Part 36). One array size, one window, one start time. The bus is this project's fixed-priority bus: a fairer
 arbiter would change the bus's per-hart rates, and less its sums. The slave interface's pitch is read from its source and its
@@ -2548,7 +2548,7 @@ of it in simulation and none of it on a board:
 **What marking it done leaves open**, carried forward and not dropped; each item is stated in the Part named.
 
 - Linux at four harts, for which the device tree and OpenSBI are still the two-hart ones (Part 34): Stage 4's Done-when, a
-  full Linux boot single- and multi-hart, is where it belongs. CoreMark at four harts (Part 34); the NPU's DMA racing several
+  full Linux boot single- and multi-hart, is where it belongs (Update, Part 37: it has a device tree now, and does not boot). CoreMark at four harts (Part 34); the NPU's DMA racing several
   harts, and stores, atomics and line fills in the streams (Part 35).
 - Two decisions that are the maintainer's: whether `XBAR_NI_BYPASS` becomes the default for `INTERCONNECT=xbar` (Parts 28, 31,
   32, 35 and 36; Part 30 measured that it costs no Fmax at one hart), and whether the fabric ages at every hart count rather
@@ -2563,6 +2563,168 @@ of it in simulation and none of it on a board:
   costing 2 to 3% more on the fabric.
 - Hand-run, and in neither `make verify` nor CI: `make mh4_matrix` (its single test is in CI), `make stream4_matrix` and
   `make irq4_matrix`.
+
+**Update, Part 37: Stage 4 begun - four harts under Linux, the software unchanged, and what the idle harts do to the one that boots.**
+Stage 4 asks for the device tree and memory map to change only if node IDs or address decoding do, for OpenSBI and Linux SMP
+to boot "unchanged (or with configuration differences only, not code changes)", and for "a full Linux boot, single- and
+multi-hart, ... on the NoC configuration with a real transcript and real performance numbers". At one and two harts that was
+already recorded: Parts 23 and 28 boot one kernel image, one OpenSBI and one device tree on the bus and on the fabric and give
+the cycles. Part 34 left four: "Linux SMP at four harts (the device tree and OpenSBI are the two-hart ones)". This part gives
+four harts a device tree and boots them. **They do not boot.** The cause is not the network.
+
+**What changed in the tree.** No RTL.
+
+- `dts/soc.dts`: `DTS_FOUR_HARTS` adds `cpu@2` and `cpu@3` and their entries in the CLINT's and the PLIC's lists. Only the new
+  `make dtb_4hart` (`dts/soc_$(CORE)_4hart.dtb`) defines it, so the six trees every other target packs (three cores, each with
+  and without DDR3) are the same bytes as before: compared with `cmp` before and after the edit.
+- `tests/check_dtb_harts.py` (`make dtb_check`, in `make verify` and in the firmware job in CI): the CPU nodes are `cpu@0` to
+  `cpu@N-1` with `reg` their number, and the CLINT's and PLIC's `interrupts-extended` lists name, hart by hart, causes 3 and 7
+  and causes 11 and 9 of that hart's interrupt controller (context 2h is hart h's M-mode, 2h+1 its S-mode). Nothing compared
+  these lists with each other before; a pair swapped by hand compiles, boots and fails nothing, because Linux routes every
+  interrupt to hart 0. **Red first:** asked for four harts of today's tree it said the tree has CPU nodes `cpu@0` and `cpu@1`
+  where `cpu@0` to `cpu@3` were wanted; it passes the three two-hart trees, which had never been checked, and the three four-hart ones. Its
+  self-test (`--selftest`) compiles the four-hart tree with seven mistakes, one at a time (two PLIC entries swapped, a hart
+  listed out of order, a hart's machine and supervisor entries swapped, a CLINT pair swapped, a CLINT entry naming the wrong
+  hart, a wrong `reg`, a CPU node not "okay") and requires each to be caught: all seven are.
+- `make sim_opensbi_4hart`, `make sim_linux_4hart`: the same stub, OpenSBI and kernel image as `sim_opensbi_2hart` and
+  `sim_linux_2hart`, the four-hart tree in the image, and a Verilator build at `NUM_HARTS=4` (no warnings). `make linux_matrix`
+  (`sim/linux_matrix.py`) runs one, two and four harts on the bus, the fabric and the fabric with the bypass, on the in-order
+  and the wide core (and the `hetero` build at four), each cell in a simulation of its own. Hand-run: not in `make verify` or CI.
+
+**The software is the same bytes.** The default image (`sim/linuximage_inorder.hex`) and the four-hart one differ in 1,158 of
+their 4,091,040 sixteen-bit words, every one of them between 0x90008006 and 0x90008f5d, where the device tree blob sits. The
+stub, OpenSBI (0x90080000) and the kernel (0x90400000) are byte-identical, and the same image file serves the bus and the fabric
+(the device tree does not depend on `INTERCONNECT`). That is Stage 4's "configuration differences only".
+
+**OpenSBI sees four harts, and takes three and a half times as long to say so.** With the two-hart tree in the four-hart SoC
+the banner says `Platform HART Count : 2` and `Domain0 HARTs : 0x0*,0x1*` and `sim_opensbi_4hart` fails; with the four-hart
+tree it says 4 and `0x0*,0x1*,0x2*,0x3*` and passes. The cycle at which the banner's last line (`Boot HART MEDELEG`) is out:
+
+| SoC, device tree | harts in the tree | banner at cycle |
+|---|---|---|
+| one hart, default tree | 2 | 20,371,793 |
+| two harts, default tree | 2 | 22,376,776 |
+| four harts, default tree (harts 2 and 3 hang quietly in OpenSBI) | 2 | 22,377,756 |
+| four harts, four-hart tree | 4 | **77,920,722** |
+
+**Linux: one and two harts give Part 28's numbers to the cycle, and four harts do not boot.** The matrix repeats Part 28's twelve
+boots (one and two harts, both cores, the bus, the fabric and the fabric with the bypass) on today's tree, which has Parts 29 to 36
+in it, and all twelve end on Part 28's cycle counts exactly. That is Stage 3's "zero regression" for the Linux boots, to the
+cycle, and Stage 4's "transcript and performance numbers" for one and two harts (each cell's log is the transcript; the two-hart
+fabric one ends `smp: Brought up 1 node, 2 CPUs`, `processor : 0` and `1` with `rv32ima_zicntr_zicsr_zifencei_zaamo_zalrsc`, and
+`=== VERNIER-RV32-LINUX-BOOT-OK ===` at cycle 254,861,022). Cycles to userspace (the run's end, after the console has drained):
+
+| harts | in-order: bus | fabric | bypass | wide: bus | fabric | bypass |
+|---|---|---|---|---|---|---|
+| 1 | 146,914,531 | 183,452,079 (+24.9%) | 162,404,559 (+10.5%) | 149,304,491 | 181,536,850 (+21.6%) | 159,628,520 (+6.9%) |
+| 2 | 212,175,721 | 255,309,022 (+20.3%) | 206,015,745 (-2.9%) | 159,893,093 | 266,594,156 (+66.7%) | 218,212,208 (+36.5%) |
+| **4** | **not in 2,000,000,000** | **not in 2,000,000,000** | **not in 2,000,000,000** | **not in 2,000,000,000** | **not in 2,000,000,000** | **not in 2,000,000,000** |
+
+At four harts, with the same kernel, OpenSBI and stub, no cell reached userspace (`make sim_linux_4hart` fails). What each did:
+
+| four harts, as the cores are | the kernel | hart 0 at 2,000,000,000 cycles |
+|---|---|---|
+| in-order, bus | `CPU1`, `CPU2` and `CPU3: failed to come online`, then `Brought up 1 node, 3 CPUs` | `smp_call_function_many_cond` |
+| in-order, fabric | `Brought up 1 node, 4 CPUs` | the idle loop (`arch_cpu_idle_enter`) |
+| in-order, bypass | `Brought up 1 node, 4 CPUs` | the idle loop (`arch_cpu_idle_enter`) |
+| wide, bus | stops at `Bringing up secondary CPUs ...` | the idle loop (`default_idle_call`, `ct_idle_enter`) |
+| wide, fabric | `Brought up 1 node, 4 CPUs` | the timer tick (`tick_periodic`, `update_wall_time`) |
+| wide, bypass | `Brought up 1 node, 4 CPUs` | the timer tick (`sched_tick`) |
+| hetero, bus | stops at `Bringing up secondary CPUs ...` | the timer tick (`tick_handle_periodic`, `riscv_timer_interrupt`) |
+| hetero, fabric | `Brought up 1 node, 4 CPUs` | the timer tick (`rcu_sched_clock_irq`) |
+| hetero, bypass | `Brought up 1 node, 4 CPUs` | the idle loop (`arch_cpu_idle_enter`, `ct_idle_enter`) |
+
+**Why: the idle harts.** In the order they were found.
+
+- **The banner shows it first.** The bus monitor over the 78.4 million cycles to the banner at four harts: the bus is in use
+  98.8% of them and has a master waiting for 91.8%; hart 0's instruction fetch asked on 56.6 million cycles and was granted 8.0
+  (14.1%); the data sides of harts 1, 2 and 3 asked on 46.7, 50.0 and 61.8 million and the SDRAM's strobe was up for 76.9 million
+  of the 78.4. Those three harts are not working: sampling their program counters over 200,000 cycles at cycles 5, 30 and 60
+  million finds each in the same sixteen instructions every time. They are OpenSBI's wait for a hart that has not been started,
+  `sbi_hsm_hart_wait` inlined into `sbi_hsm_init` (0x9009e024 to 0x9009e064: a load, `wfi`, a call, a compare), and the call is
+  `atomic_read` (0x90099150 to 0x90099170), a real function with a frame: it stores `s0` and `ra` to the stack, loads the word,
+  executes `fence ir,ir`, and reloads both. Two stores to SDRAM a pass, through write-through caches, so each is a write on the
+  bus, from three harts at once. And the `wfi` between the passes does nothing: both cores decode it to check it is legal and then
+  execute it as a no-op (`is_wfi` is used only in the illegal-instruction check, `rtl/cpu_core.v` and `rtl/ooo/core_ooo.v`),
+  which the privileged specification allows. The bus ranks instruction fetch below every hart's data access (Part 34), and
+  a polling hart is a data master.
+- **Linux inherits it.** The harts wait in that loop until the kernel starts them, and once online and idle they run the kernel's
+  idle loop (`do_idle`, `default_idle_call`, `arch_cpu_idle`, whose `wfi` is the same no-op): that is where harts 1 to 3 stand
+  at cycle 400 million of the bus run. The kernel allows a CPU one second, 25,000,000 cycles at 25 MHz, to come
+  online and prints `CPUn: failed to come online` when it does not: all three, on the in-order core over the bus, after which it
+  stops in `smp_call_function_many_cond`, waiting for another CPU to run a function (hart 0 stood there at 2,000,000,000
+  cycles). That the CPUs came up late or not at all is not separated here; what is shown is the timeout and the hang.
+- **Changing the core settles it.** One term in the in-order core, in no tree: a `wfi` waits in decode until an interrupt that
+  is enabled is pending, whatever `mstatus` says (the runs below were built with the term added to `load_use_stall` in
+  `rtl/cpu_core.v`, `|| (if_id_valid && is_wfi && wfi_priv_ok && !(|(csr_mip & csr_mie)))`, and the file
+  was restored with `git checkout` after each build). OpenSBI on four harts then says its banner at cycle 30,124,361 instead of
+  77,920,722: the bus is in use 42.7% of the time instead of 98.8% (with a master waiting 4.4% instead of 91.8%), hart 0's fetch
+  waits 0.12% of what it asks for instead of 85.9%, and each idle hart's data side asks on about 1,400 cycles instead of 47
+  to 62 million. Linux on four harts, in-order (cycles to the marker, the run's end in brackets):
+
+| four harts, in-order, `wfi` waits | to userspace | kernel | `/proc/cpuinfo` |
+|---|---|---|---|
+| fabric | 364,059,726 (364,507,726) | `Brought up 1 node, 4 CPUs` | processors 0 to 3 |
+| fabric with the bypass | 277,858,318 (278,306,318) | `Brought up 1 node, 4 CPUs` | processors 0 to 3 |
+| fabric, aging off (`XBAR_AGE_LIMIT=0`) | 345,368,936 (345,816,936) | `Brought up 1 node, 4 CPUs` | processors 0 to 3 |
+| bus | **not in 2,000,000,000** | `Brought up 1 node, 4 CPUs` | - |
+
+  Against Part 28's two-hart boots (where `wfi` is as it is), four harts with `wfi` waiting cost 35 to 43% more cycles over the
+  fabric: 364.5 million against 255.3 (+42.8%), the bypass 278.3 against 206.0 (+35.1%), aging off 345.8 against 255.3 (+35.5%).
+- **On the bus a second thing stops it.** With the idle harts asleep the bus brings up all four CPUs and then stops, 677 traps in
+  2,000,000,000 cycles. The program counters at cycle 500 million: harts 0 and 1 cycle through 46 addresses in
+  `multi_cpu_stop`, `stop_machine_yield`, `rcu_momentary_eqs` and `rcu_preempt_deferred_qs` (the barrier every CPU must reach
+  for `stop_machine`); hart 2 stands on one address for all 200,000 samples, 0x900804a0, a stack store in OpenSBI's
+  `_trap_handler`; hart 3 on one, 0xc00b6560, the call to `stop_machine_yield`. The bus monitor over three consecutive windows of
+  50,000,000 cycles from cycle 450 million agrees with itself to within about twenty cycles and says: the bus is in use on every
+  cycle (the SDRAM's strobe up on 49.6 million of them); the instruction fetches of hart 2 and of hart 3 asked on every cycle and
+  were granted **none**; hart 0's fetch was granted 28.1 million cycles (of 35.7 asked) and hart 1's 14.0 million (of 42.1); the
+  data sides of hart 0 and hart 1 5.2 and 2.6 million. Harts 0 and 1 hold the bus, 84% of its cycles with their instruction fetches and 16% with their
+  data, and the other two get nothing: the livelock of Part 34's lock, under the same fixed priority, in a kernel. Why two harts fetch so much
+  from a loop of 46 instructions is a reading of the addresses, not a trace of the cache: the instruction cache is 256 words,
+  direct-mapped by address bits 9:2, and `stop_machine_yield` (0xc00b64a0) and `rcu_preempt_deferred_qs` (0xc00920a0) are both
+  entry 0x28, `multi_cpu_stop` (0xc00b6560) and `rcu_momentary_eqs` (0xc0092160) both 0x58, so the loop refills the lines it
+  has just lost.
+- **Aging is not what separates the fabric from the bus.** Part 34's aging was the first guess, and the fabric with aging off
+  boots (345.4 million), so it is not. Why the fabric does not stall where the bus does is not traced; its accesses take 4.0
+  cycles against the bus's 2.0 (Part 35), which changes the timing of every spin loop, and that is a guess.
+
+**What it shows.**
+
+- **The software is not the obstacle, and the network is not the cause.** Four harts' device tree is a build-time configuration:
+  the image differs in the blob and nowhere else, and OpenSBI and the kernel need nothing to learn about the interconnect.
+  Yet no four-hart cell reaches userspace, on the bus or on the fabric, on either core. At one and two harts the same
+  files give Part 28's numbers to the cycle.
+- **Idle harts cost a great deal, because `wfi` is a no-op.** One idle hart costs the banner 2.0 million cycles (22.4 against
+  20.4 with none); three cost 57.5 million (77.9 against 20.4). On this bus an instruction fetch ranks below every hart's data access, and a
+  hart that polls with stores is a data master that never stops asking.
+- **With the idle harts asleep, the fabric boots four harts and the bus does not.** In-order, 364.5 million cycles over the fabric,
+  278.3 million with the bypass, 345.8 million with aging off; on the bus the livelock above. That is a workload the router fabric
+  completes and the bus does not, at four harts, the size at which Phase 8's plan said a network might start to pay. Why is the
+  open part: the bus loses because two spinning harts take every cycle, and the fabric's accesses are longer and its timing
+  differs, which is a guess and not a trace.
+- **Aging is not the difference** (345.4 million with it off), so Part 34's aging has no part in this boot's result either way.
+- **The bypass helps more at four harts than at two**: it takes the fabric's 364.5 million to 278.3 (-24%), where at two harts it
+  takes 255.3 to 206.0 (-19%).
+- **Nothing moved at one and two harts**: twelve boots, twelve identical cycle counts.
+
+**What this does not establish.**
+
+- **A fix.** The one-term change to the in-order core is in no tree and was run in the four configurations above only: not under
+  the riscv-tests, the Spike co-simulation, the debug tests or `make verify`, not on the wide core or the `hetero` build, and not
+  at one or two harts, where a kernel whose idle loop sleeps until the next interrupt would change every cycle count in Part 28's
+  table. Whether the cores should wait at `wfi` is a design decision that touches both cores, so it is brought to the
+  maintainer and not made here. Stage 4's optional performance counters are not designed either: they would be a
+  software-visible interface, and what found this was a simulation-only monitor and a program-counter sampler.
+- **Why the wide core and the `hetero` build do not boot.** Their bus cells stop at `Bringing up secondary CPUs ...`, earlier than
+  the in-order one, and their fabric and bypass cells bring up four CPUs and end in the idle loop or the timer tick, as the
+  in-order ones do. That the cause is the same `wfi` is the reading, not a trace; the change above was not made to them.
+- **That the bus's stall is general.** One kernel, one boot, in-order cores with the change; the I-cache conflicts are read from
+  the addresses. And whether the in-order fabric's NOP-`wfi` boot is stuck or only slow is not separated: hart 0 stands in the
+  idle loop at 2,000,000,000 cycles, with all four CPUs online.
+- **Three harts** (no tree), **more than four** (the fabric's ids stop there, Part 34), **a board** (the board builds use
+  `NUM_HARTS=1`), and **a pass**: `make sim_linux_4hart` fails on the tree as it is, which is the finding, and it is in
+  neither `make verify` nor CI.
 
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
@@ -2619,7 +2781,8 @@ workloads - concurrent multi-hart Linux, NPU DMA racing CPU traffic, real
 interrupt traffic - with zero regression anywhere in the existing
 verification suite.
 
-**Stage 4 - software should not need to know.** Device tree and memory-map
+**Stage 4 - software should not need to know.** (Begun, in simulation: Part 37 gave four harts a device tree, showed that one and
+two harts boot the same files to Part 28's cycle counts, and found that four do not, because the cores' `wfi` is a no-op.) Device tree and memory-map
 updates if node IDs or address decoding change, OpenSBI and Linux SMP
 booting unchanged (or with configuration differences only, not code
 changes), and optionally, real performance counters (packets, stalls,
@@ -2666,4 +2829,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36). Stages 4 onward are a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36). Stage 4 has begun (Part 37). Stage 5 is a plan.

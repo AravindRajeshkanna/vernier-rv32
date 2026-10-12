@@ -255,12 +255,12 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
-        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 \
+        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 dtb_4hart dtb_check \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
-        sim_uartload uartload-host sbiimage sim_opensbi \
-        linuximage linuxpayload sim_linux \
+        sim_uartload uartload-host sbiimage sim_opensbi sim_opensbi_2hart sim_opensbi_4hart \
+        linuximage linuxpayload sim_linux sim_linux_2hart sim_linux_4hart linux_matrix \
         mmuimage plicimage uart16550image \
         check-program regen-program verify_ooo \
         isa isa-build isa-fetch cosim formal coremark coremark-fetch verify clean \
@@ -900,6 +900,25 @@ dts/soc_$(CORE)_ddr3.dtb: dts/soc.dts
 	@dtc -I dtb -O dts $@ > /dev/null && echo "device tree OK"
 	@dtc -I dtb -O dts $@ | grep -q 'memory@a0000000' || \
 	    { echo "dts/soc_$(CORE)_ddr3.dtb: DDR3 memory node missing"; exit 1; }
+
+# The four-hart variant (Phase 8 Stage 4, Part 37): the same source built with
+# DTS_FOUR_HARTS, which adds cpu@2 and cpu@3 and their entries in the CLINT's
+# and the PLIC's lists. A separate build product, as the DDR3 one is, so that
+# dts/soc_$(CORE).dtb and every image packed from it stay the bytes they were.
+dtb_4hart: dts/soc_$(CORE)_4hart.dtb
+dts/soc_$(CORE)_4hart.dtb: dts/soc.dts
+	cc -E -x assembler-with-cpp -P -DDTS_FOUR_HARTS $(CORE_DEFINES) dts/soc.dts | dtc -I dts -O dtb -o $@
+	@echo "--- round-tripping back to source as a sanity check ---"
+	@dtc -I dtb -O dts $@ > /dev/null && echo "device tree OK"
+
+# What the device trees say about their harts, checked against themselves: the
+# cpu nodes, and the CLINT's and PLIC's lists, which are indexed by position and
+# which nothing else compares. The self-test seeds seven mistakes into the
+# four-hart tree and requires each one to be caught.
+dtb_check: dts/soc_$(CORE).dtb dts/soc_$(CORE)_4hart.dtb tests/check_dtb_harts.py
+	python3 tests/check_dtb_harts.py 2 dts/soc_$(CORE).dtb
+	python3 tests/check_dtb_harts.py 4 dts/soc_$(CORE)_4hart.dtb
+	python3 tests/check_dtb_harts.py --selftest
 
 # =====================================================================
 # Verification
@@ -1708,6 +1727,48 @@ sim_opensbi_2hart: sim/sbiimage_$(CORE).hex $(VERILATOR_2HART_BIN)
 	    { echo "OPENSBI 2-HART BOOT FAILED - hart count not 2, or no banner"; \
 	      exit 1; }
 
+# ---- OpenSBI, with four harts (Phase 8 Stage 4, Part 37) ----
+#
+# The same stub and the same OpenSBI binary as the one- and two-hart targets
+# above; the only things that differ are the device tree in the image
+# (dts/soc_$(CORE)_4hart.dtb) and the hardware (a soc_top built at
+# NUM_HARTS=4), which is what Stage 4's "software should not need to know"
+# asks for. Not part of `verify`, like its two-hart sibling: it needs the cloned
+# OpenSBI tree. The build directory is keyed on the core and not on the
+# interconnect, so clear it when changing INTERCONNECT (`verify_xbar` does the
+# same for the others).
+VERILATOR_4HART_MDIR = obj_dir_soc_4hart_$(CORE)
+VERILATOR_4HART_BIN  = $(VERILATOR_4HART_MDIR)/Vsoc_top
+
+$(VERILATOR_4HART_BIN): $(SOC_RTL) sim/verilator_soc.cpp sim/verilator_soc.vlt Makefile
+	$(VERILATOR) --cc --exe --build -j 4 -O3 -CFLAGS "-O2 $(CORE_DEFINES) -DBUSMON_HARTS=4" \
+	    --top-module soc_top $(CORE_DEFINES) $(VERILATOR_LINT_FLAGS) \
+	    -GRAM_BYTES=65536 -GRESET_PC=0x90000000 -GNUM_HARTS=4 \
+	    --Mdir $(VERILATOR_4HART_MDIR) \
+	    $(SOC_RTL) sim/verilator_soc.vlt sim/verilator_soc.cpp
+
+sim/sbiimage_$(CORE)_4hart.hex: software/opensbi/build/sbi_stub.bin dts/soc_$(CORE)_4hart.dtb \
+                   software/opensbi/mkimage.py Makefile
+	@test -f $(OPENSBI_FW) || { \
+	    echo "$(OPENSBI_FW) is missing - run ./software/opensbi/build-opensbi.sh first"; \
+	    exit 1; }
+	python3 software/opensbi/mkimage.py --nm=$(RISCV_NM) \
+	    software/opensbi/build/sbi_stub.bin dts/soc_$(CORE)_4hart.dtb \
+	    $(OPENSBI_FW) $(OPENSBI_ELF) > $@
+
+OPENSBI_4HART_CYCLES ?= 300000000
+
+sim_opensbi_4hart: sim/sbiimage_$(CORE)_4hart.hex $(VERILATOR_4HART_BIN)
+	@cd sim && ../$(VERILATOR_4HART_BIN) +sdram=sbiimage_$(CORE)_4hart.hex +uart_clks=224 \
+	    +maxcycles=$(OPENSBI_4HART_CYCLES) +sdram_words=16777216 \
+	    +stopon="Boot HART MEDELEG" | tee opensbi_4hart.log
+	@grep -q "Platform HART Count         : 4" sim/opensbi_4hart.log && \
+	    grep -q "Domain0 HARTs               : 0x0\*,0x1\*,0x2\*,0x3\*" sim/opensbi_4hart.log && \
+	    grep -q "Boot HART Base ISA          : rv32ima" sim/opensbi_4hart.log && \
+	    echo "OPENSBI 4-HART BOOT PASSED" || \
+	    { echo "OPENSBI 4-HART BOOT FAILED - hart count not 4, harts missing from the domain, or no banner"; \
+	      exit 1; }
+
 # ---- Linux, packed into the same SDRAM image ----
 #
 # Not part of `verify`, for the same reason OpenSBI is not: building it needs
@@ -1885,6 +1946,59 @@ sim_linux_2hart: sim/linuximage_$(CORE).hex $(VERILATOR_2HART_BIN)
 	    echo "LINUX 2-HART BOOT PASSED - both harts reached userspace" || \
 	    { echo "LINUX 2-HART BOOT FAILED - never reached /init, or only one hart did"; \
 	      exit 1; }
+
+# ---- Linux, with four harts (Phase 8 Stage 4, Part 37) ----
+#
+# The kernel Image, OpenSBI and the stub are the ones sim_linux and
+# sim_linux_2hart pack: only the device tree (dts/soc_$(CORE)_4hart.dtb) and
+# the SoC (NUM_HARTS=4, $(VERILATOR_4HART_BIN) above) differ, and no other
+# file changes. The check is the kernel's own accounting, as the two-hart
+# target's is: it must say it brought up four CPUs, and /proc/cpuinfo in
+# userspace must list all four. Not part of `verify`: it needs a kernel off the
+# network, and the run takes hours. Clear $(VERILATOR_4HART_MDIR) when changing
+# INTERCONNECT, as above.
+#
+# On the cores as they are this FAILS, and that is the finding of Part 37
+# (docs/roadmap/phase-08-noc.md): both cores execute wfi as a no-op, so the idle
+# harts poll and starve the one that boots. The default budget is the longest a
+# run is worth waiting for, and a failing run spends all of it.
+sim/linuximage_$(CORE)_4hart.hex: software/opensbi/build/sbi_stub.bin dts/soc_$(CORE)_4hart.dtb \
+                     software/opensbi/mkimage.py Makefile \
+                     $(wildcard $(LINUX_IMAGE))
+	@test -f $(OPENSBI_FW) || { \
+	    echo "$(OPENSBI_FW) is missing - run ./software/opensbi/build-opensbi.sh first"; \
+	    exit 1; }
+	@test -f $(LINUX_IMAGE) || { \
+	    echo "$(LINUX_IMAGE) is missing - run ./software/linux/build-linux.sh first"; \
+	    exit 1; }
+	python3 software/opensbi/mkimage.py --nm=$(RISCV_NM) \
+	    --kernel=$(LINUX_IMAGE) \
+	    software/opensbi/build/sbi_stub.bin dts/soc_$(CORE)_4hart.dtb \
+	    $(OPENSBI_FW) $(OPENSBI_ELF) > $@
+
+LINUX_4HART_CYCLES ?= 2000000000
+
+sim_linux_4hart: sim/linuximage_$(CORE)_4hart.hex $(VERILATOR_4HART_BIN)
+	@cd sim && ../$(VERILATOR_4HART_BIN) +sdram=linuximage_$(CORE)_4hart.hex +uart_clks=224 \
+	    +sdram_words=16777216 +maxcycles=$(LINUX_4HART_CYCLES) +checkuart \
+	    +stopon=$(LINUX_MARKER) $(SIM_EXTRA) | tee linux_4hart.log
+	@grep -aq "dropped by the transmitter" sim/linux_4hart.log && \
+	    { echo "LINUX 4-HART BOOT FAILED - the console did not send every byte"; \
+	      exit 1; } || true
+	@grep -aq "=== $(LINUX_MARKER) ===" sim/linux_4hart.log && \
+	    grep -aq "smp: Brought up 1 node, 4 CPUs" sim/linux_4hart.log && \
+	    grep -aq "processor	: 0" sim/linux_4hart.log && \
+	    grep -aq "processor	: 1" sim/linux_4hart.log && \
+	    grep -aq "processor	: 2" sim/linux_4hart.log && \
+	    grep -aq "processor	: 3" sim/linux_4hart.log && \
+	    echo "LINUX 4-HART BOOT PASSED - all four harts reached userspace" || \
+	    { echo "LINUX 4-HART BOOT FAILED - never reached /init, or fewer than four harts did"; \
+	      exit 1; }
+
+# One, two and four harts, on the bus and the router fabric, both cores: the cycles to userspace, each cell in
+# a simulation of its own (sim/linux_matrix.py). Hand-run, not part of `verify` or CI.
+linux_matrix:
+	python3 sim/linux_matrix.py
 
 # ---- the ns16550 register map, and the UART's interrupt ----
 #
@@ -4036,7 +4150,7 @@ verify_xbar:
 	rm -rf obj_dir_soc_*
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 dtb_ddr3 ddr3_check \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 dtb_ddr3 dtb_check ddr3_check \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
@@ -4137,8 +4251,10 @@ clean:
 	       sim/sim_jtag.out sim/jtagram.hex sim/jtag.log \
 	       sim/sbiimage_inorder.hex sim/sbiimage_ooo.hex sim/sbiimage_hetero.hex \
 	       sim/opensbi.log \
+	       sim/sbiimage_inorder_4hart.hex sim/sbiimage_ooo_4hart.hex sim/sbiimage_hetero_4hart.hex sim/opensbi_4hart.log \
 	       sim/linuximage_inorder.hex sim/linuximage_ooo.hex sim/linuximage_hetero.hex \
 	       sim/linux.log \
+	       sim/linuximage_inorder_4hart.hex sim/linuximage_ooo_4hart.hex sim/linuximage_hetero_4hart.hex sim/linux_4hart.log \
 	       software/linux/build/sdram.bin \
 	       software/opensbi/build/sbi_stub.elf \
 	       software/opensbi/build/sbi_stub.bin \
