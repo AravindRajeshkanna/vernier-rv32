@@ -107,7 +107,9 @@ module core_ooo #(
     // Passed straight through to csr_file.v's mhartid. Defaults to 0,
     // matching the one hart every instantiation of this core builds today -
     // see docs/roadmap/phase-13-multicore.md's Phase 13 entry.
-    parameter [31:0] HARTID = 32'h0
+    parameter [31:0] HARTID = 32'h0,
+    // 1: a wfi waits until an interrupt enabled in mie is pending (Phase 8 Stage 4, Part 38). 0: a no-op.
+    parameter WFI_WAIT = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -226,6 +228,7 @@ module core_ooo #(
     wire        head_ex_commit;
     wire        head_dbus_stall;
     wire        head_fence_drain_stall;
+    wire        head_wfi_wait;      // a wfi at the head of the reorder buffer, held until an enabled interrupt is pending (WFI_WAIT)
     wire        head_mmu_busy;
     wire        btb_train_en;
     wire [31:0] btb_train_pc, btb_train_target;
@@ -743,6 +746,7 @@ module core_ooo #(
     // `rob_is_fence_i`/`rob_is_sfence_vma` so `head_fence_drain_stall`
     // below can wait on it exactly the same way.
     reg        rob_is_plain_fence[0:ROB_DEPTH-1];
+    reg        rob_is_wfi[0:ROB_DEPTH-1];        // a legal wfi (see WFI_WAIT and head_wfi_wait)
     reg        rob_is_alu_class[0:ROB_DEPTH-1];
     reg        rob_needs_mmu[0:ROB_DEPTH-1]; // a load that turned out to need translation - held to the head
 
@@ -1541,13 +1545,25 @@ module core_ooo #(
     // has no such guard.
     wire head_busy_now = head_div_stall || head_mmu_wait_stall || head_dbus_stall ||
                          (rob_is_amo[rob_head] && amo_done);
+    // A wfi at the head waits while no interrupt that is enabled in mie is pending in mip, whatever mstatus says
+    // about taking it (the specification's condition), and only when it is legal (wfi_priv_ok decided at dispatch:
+    // a user-mode wfi, or a supervisor one under mstatus.TW, traps at once instead). It waits at the head, not in
+    // decode: everything older has retired, and what is behind it is speculative and bounded by the reorder buffer,
+    // which fills and stops fetching. A debugger can still halt or step the hart: dbg_pipeline_quiescent needs the
+    // reorder buffer empty, which a parked wfi would prevent. Off (WFI_WAIT 0), this is 0 and nothing changes.
+    assign head_wfi_wait = (WFI_WAIT != 0) && headS_valid && rob_is_wfi[rob_head] && !(|(csr_mip & csr_mie)) &&
+                           !dbg_haltreq && !dbg_halt_pending && !dbg_stepping_r;
+    // With WFI_WAIT a wfi at the head is not interrupted: it retires, and the interrupt is taken at the next
+    // instruction, so mepc is the instruction after the wfi, as the specification says. Interrupted, mepc
+    // would be the wfi, which runs again after the handler's mret and waits for an interrupt that may never come.
     assign interrupt_taken = headS_valid && rob_r1_ready[rob_head] && rob_r2_ready[rob_head] &&
-                             any_interrupt_pending && !head_busy_now;
+                             any_interrupt_pending && !head_busy_now &&
+                             !((WFI_WAIT != 0) && rob_is_wfi[rob_head]);
 
     wire head_synchronous_trap = (headS_valid && rob_is_trap_event[rob_head]) || head_mmu_fault_now ||
                                  head_pmp_fault_now ||
                                  head_mem_misaligned || head_fetch_misaligned;
-    assign head_ex_commit = !head_dbus_stall && !head_fence_drain_stall;
+    assign head_ex_commit = !head_dbus_stall && !head_fence_drain_stall && !head_wfi_wait;
     wire head_take_trap = headS_valid && (interrupt_taken || head_synchronous_trap) && head_ex_commit;
 
     // Misalignment outranks a page fault, which outranks a PMP access
@@ -2601,6 +2617,7 @@ module core_ooo #(
                 rob_is_sfence_vma[rob_tail]<= is_sfence_vma;
                 rob_is_fence_i[rob_tail] <= is_fence_i;
                 rob_is_plain_fence[rob_tail] <= is_miscmem && !is_fence_i;
+                rob_is_wfi[rob_tail]     <= is_wfi && wfi_priv_ok;
                 // A load/store/AMO/branch/CSR/trap-event is never alu-class,
                 // even if suppressed (illegal etc.) - suppressed instructions
                 // still execute the Class-S path once at the head, producing

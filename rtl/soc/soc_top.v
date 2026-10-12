@@ -67,6 +67,15 @@ module soc_top #(
     parameter GPIO_WIDTH      = 16,
     parameter RESET_PC        = 32'h0000_0000,
 
+    // Whether a wfi waits (Phase 8 Stage 4, Part 38). 0, the default, runs it as a no-op, as both cores always
+    // have; 1 stops the hart at it until an interrupt that is enabled in mie is pending (rtl/cpu_core.v and
+    // rtl/ooo/core_ooo.v say how). `-DCPU_WFI_WAIT=1` (make CPU_WFI_WAIT=1) sets the default for a whole build.
+`ifdef CPU_WFI_WAIT
+    parameter WFI_WAIT        = `CPU_WFI_WAIT,
+`else
+    parameter WFI_WAIT        = 0,
+`endif
+
     // The clock actually driving `clk`, in Hz. Only the SDRAM controller
     // reads it - the UART takes a divisor instead, because every testbench
     // here runs the UART far faster than a real one to keep simulations
@@ -388,9 +397,9 @@ module soc_top #(
 
     // ---- hart 0 ----
 `ifdef CORE_OOO
-    core_ooo #(.RESET_PC(RESET_PC), .HARTID(0)) CPU (
+    core_ooo #(.RESET_PC(RESET_PC), .HARTID(0), .WFI_WAIT(WFI_WAIT)) CPU (
 `else
-    cpu_core #(.RESET_PC(RESET_PC), .HARTID(0)) CPU (
+    cpu_core #(.RESET_PC(RESET_PC), .HARTID(0), .WFI_WAIT(WFI_WAIT)) CPU (
 `endif
         .clk(clk), .rst(rst_soc),
         .imem_addr(imem_addr[31:0]), .imem_rdata(imem_rdata[31:0]),
@@ -483,11 +492,11 @@ module soc_top #(
     generate
         for (h = 1; h < NUM_HARTS; h = h + 1) begin : g_hart
 `ifdef CORE_HETERO
-            core_ooo #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (
+            core_ooo #(.RESET_PC(RESET_PC), .HARTID(h), .WFI_WAIT(WFI_WAIT)) CPU (
 `elsif CORE_OOO
-            core_ooo #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (
+            core_ooo #(.RESET_PC(RESET_PC), .HARTID(h), .WFI_WAIT(WFI_WAIT)) CPU (
 `else
-            cpu_core #(.RESET_PC(RESET_PC), .HARTID(h)) CPU (
+            cpu_core #(.RESET_PC(RESET_PC), .HARTID(h), .WFI_WAIT(WFI_WAIT)) CPU (
 `endif
                 .clk(clk), .rst(rst_soc),
                 .imem_addr(imem_addr[32*h +: 32]), .imem_rdata(imem_rdata[32*h +: 32]),

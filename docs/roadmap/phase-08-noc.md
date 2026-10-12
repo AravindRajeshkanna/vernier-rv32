@@ -3,7 +3,7 @@
 **Stage 0 is closed (Parts 1 to 4 below, with the maintainer's confirmation of its
 decision: no network yet). Stage 1 is built and its Done-when met in simulation (Parts 15 to 20: the network interfaces, a
 packet format with a four-word burst, a one-node network, a drop-in fabric that runs the SoC, Linux included, on both cores and with two harts, at a measured 16 to 41% more cycles, and formal properties of the node and both interfaces);
-Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts; Linux and CoreMark at four harts were not run, and the account after Part 36 lists what is carried forward); Stage 4 has begun (Part 37: the same software on four harts, which does not boot, and why); Stage 5 is a plan, not an account,
+Stage 2's Done-when is met in simulation (Parts 21 to 23: a packet router, a fabric built on routers, and the SoC and Linux, one and two harts, over it); the measured result is that the bus wins, by 16 to 67% in cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36: traffic classes in the router, the NPU's DMA racing a hart, CoreMark on two harts in one memory and in two, two harts streaming through memory, two of the fabric's four cycles an access cut away, the fabric's area measured, the routers' storage fixed so that it fits, interrupt traffic measured, interrupt service beside a hart streaming memory, the network put into CI, four harts run, which found a starvation in the fabric that aging now prevents, four harts streaming through memory, and an interrupt on each of four harts; Linux and CoreMark at four harts were not run, and the account after Part 36 lists what is carried forward); Stage 4 has begun (Parts 37 and 38: the same software on four harts, which does not boot until the cores' `wfi` waits, and the option that makes it wait); Stage 5 is a plan, not an account,
 and nothing about any of it is blocked on a board.** `rtl/soc/wb_interconnect.v` is a real,
 existing file this project can measure and extend today. `wb_interconnect.v` is a shared
 Wishbone B4 bus with priority arbitration, already parameterized for
@@ -1658,7 +1658,7 @@ The two routers' input FIFOs are the other two cycles, and are left alone.
 (Corrected in Part 30. The four Linux rows of the last column first stopped counting at the cycle the boot marker was
 seen, 448,000 cycles before the count, after the console has drained, that the other columns and Part 23 use; they are on
 the same basis now, and every percentage derived from them moved by 0.2 to 0.3 points. The two-hart in-order boot is
-2.9% under the bus, not 3.1%. The SDRAM boot check rows were always on the final count.)
+2.9% under the bus, not 3.1%. The SDRAM boot check rows were always on the final count.) (Update, Part 38: with `CPU_WFI_WAIT=1` the two-hart rows are 136,975,899, 186,299,199 and 155,776,218 in-order and 138,238,209, 194,268,418 and 157,661,260 wide; the 2.9% was the bus paying for the idle hart.)
 
 CoreMark on two harts (Part 26's runs, one iteration in cycles on each hart and the wall-clock, in-order):
 
@@ -2548,7 +2548,7 @@ of it in simulation and none of it on a board:
 **What marking it done leaves open**, carried forward and not dropped; each item is stated in the Part named.
 
 - Linux at four harts, for which the device tree and OpenSBI are still the two-hart ones (Part 34): Stage 4's Done-when, a
-  full Linux boot single- and multi-hart, is where it belongs (Update, Part 37: it has a device tree now, and does not boot). CoreMark at four harts (Part 34); the NPU's DMA racing several
+  full Linux boot single- and multi-hart, is where it belongs (Update, Part 37: it has a device tree now, and does not boot; Part 38: with `CPU_WFI_WAIT=1` it boots over the fabric). CoreMark at four harts (Part 34); the NPU's DMA racing several
   harts, and stores, atomics and line fills in the streams (Part 35).
 - Two decisions that are the maintainer's: whether `XBAR_NI_BYPASS` becomes the default for `INTERCONNECT=xbar` (Parts 28, 31,
   32, 35 and 36; Part 30 measured that it costs no Fmax at one hart), and whether the fabric ages at every hart count rather
@@ -2654,7 +2654,7 @@ At four harts, with the same kernel, OpenSBI and stub, no cell reached userspace
   online and prints `CPUn: failed to come online` when it does not: all three, on the in-order core over the bus, after which it
   stops in `smp_call_function_many_cond`, waiting for another CPU to run a function (hart 0 stood there at 2,000,000,000
   cycles). That the CPUs came up late or not at all is not separated here; what is shown is the timeout and the hang.
-- **Changing the core settles it.** One term in the in-order core, in no tree: a `wfi` waits in decode until an interrupt that
+- **Changing the core settles it.** One term in the in-order core, in no tree (Update, Part 38: it is the option `WFI_WAIT` now): a `wfi` waits in decode until an interrupt that
   is enabled is pending, whatever `mstatus` says (the runs below were built with the term added to `load_use_stall` in
   `rtl/cpu_core.v`, `|| (if_id_valid && is_wfi && wfi_priv_ok && !(|(csr_mip & csr_mie)))`, and the file
   was restored with `git checkout` after each build). OpenSBI on four harts then says its banner at cycle 30,124,361 instead of
@@ -2710,11 +2710,11 @@ At four harts, with the same kernel, OpenSBI and stub, no cell reached userspace
 
 **What this does not establish.**
 
-- **A fix.** The one-term change to the in-order core is in no tree and was run in the four configurations above only: not under
+- **A fix.** (Update, Part 38: the change is in the tree now, as an option, tested, and not the default.) The one-term change to the in-order core is in no tree and was run in the four configurations above only: not under
   the riscv-tests, the Spike co-simulation, the debug tests or `make verify`, not on the wide core or the `hetero` build, and not
   at one or two harts, where a kernel whose idle loop sleeps until the next interrupt would change every cycle count in Part 28's
   table. Whether the cores should wait at `wfi` is a design decision that touches both cores, so it is brought to the
-  maintainer and not made here. Stage 4's optional performance counters are not designed either: they would be a
+  maintainer and not made here (Update, Part 38: built, as an option, off by default). Stage 4's optional performance counters are not designed either: they would be a
   software-visible interface, and what found this was a simulation-only monitor and a program-counter sampler.
 - **Why the wide core and the `hetero` build do not boot.** Their bus cells stop at `Bringing up secondary CPUs ...`, earlier than
   the in-order one, and their fabric and bypass cells bring up four CPUs and end in the idle loop or the timer tick, as the
@@ -2725,6 +2725,134 @@ At four harts, with the same kernel, OpenSBI and stub, no cell reached userspace
 - **Three harts** (no tree), **more than four** (the fabric's ids stop there, Part 34), **a board** (the board builds use
   `NUM_HARTS=1`), and **a pass**: `make sim_linux_4hart` fails on the tree as it is, which is the finding, and it is in
   neither `make verify` nor CI.
+
+**Update, Part 38: a `wfi` that waits, as an option, and what four harts do with it.** Part 37 found that both cores
+execute `wfi` as a no-op and that this, not the network, is what stops four harts booting Linux: the harts that are waiting
+for work poll, and on a fixed-priority bus the poll takes the cycles the hart that has work needs. It brought the decision
+to build the cure to the maintainer, with a recommendation (an option, off by default, cycle-identical when off); the
+pull request was merged without objection, and this builds it. **With the option off, nothing moves. With it on, four
+harts boot Linux to userspace over the router fabric, and two harts boot over the bus in about two thirds of the cycles.**
+
+**What it is.** `WFI_WAIT`, a parameter of `rtl/cpu_core.v` and `rtl/ooo/core_ooo.v` that `rtl/soc/soc_top.v` sets for every
+hart (its own `WFI_WAIT`, whose default is `-DCPU_WFI_WAIT`, so `make CPU_WFI_WAIT=1` turns it on for a whole build). The
+default, 0, is the no-op both cores have always had.
+
+- **The rule** is the privileged specification's: a `wfi` stops the hart until some interrupt that is enabled in `mie` is
+  pending in `mip`, whatever `mstatus.MIE` or `mideleg` say about taking it. Only a legal `wfi` waits: in user mode, or in
+  supervisor mode under `mstatus.TW`, it traps at once, as it did.
+- **The in-order core** holds it in decode, the way it holds a load-use hazard (a bubble goes in behind it), so nothing
+  more is fetched and nothing reaches the bus. **The wide core** holds it at the head of the reorder buffer
+  (`head_ex_commit`); what is behind it is speculative and bounded by the buffer, which fills and stops fetching.
+- **The interrupt is taken after the `wfi`.** A `wfi` in execute, or at the head, is not itself interrupted, so `mepc` is
+  the instruction after it, as the specification says. Interrupted, `mepc` would be the `wfi`, which runs again after
+  the handler's `mret` and waits for an interrupt that may never come. A no-op `wfi` is harmless to run twice, which is why
+  it did not matter before.
+- **The debugger.** A halt request, and a single step, release the wait. Otherwise a halt, which waits for the pipeline
+  (the reorder buffer, in the wide core) to drain, could never finish while a hart is parked. A hart halted at a parked
+  `wfi` resumes past it.
+- **Where it was decided.** The comment in `rtl/cpu_core.v` that recorded the decision to make `wfi` a no-op ("a stall loop
+  would burn exactly the same energy") counted only this hart's energy; it carries an update note now.
+
+**The tests, red first.**
+
+- `make sim_soc_wfi` (`sim/tb_soc_wfi.v`, `software/bench/wfi.S`) runs six tests on two harts, hart 1 doing what hart 0 cannot do to
+  itself, and measures with the cycle counter how long each `wfi` lasts: the timer 3,000 cycles ahead with interrupts off
+  (T1); the timer already due, which must not wait (T2); a software interrupt from hart 1 after 4,000 cycles (T3); a
+  software interrupt that is pending but not enabled, then, 4,000 cycles later, the timer, which is: the `wfi` must
+  last 6,000 (T4); the timer with interrupts on, taken once after the `wfi` with `mepc` at the next instruction (T5); and a
+  user-mode `wfi`, which must trap at once (T6). **Red first:** with the parameter plumbed through and the cores' `wfi` still a
+  no-op, it failed seven checks (T1, T3 and T4 returned in 3 cycles, T5 never took its interrupt); T2 and T6 passed, being
+  true of a no-op too. Both cores pass it now (T1 2,980 cycles, T3 4,020, T4 6,047, T5 2,530 with `mepc` right, T6 37).
+- `make sim_wfi_dbg` (`sim/tb_wfi_dbg.v`) drives the hart-control port directly: a hart parked at a `wfi` retires nothing
+  for 100 cycles, halts on request, and resumes past the `wfi`; and a single step onto a `wfi` completes it. It counts retired instructions, not
+  registers, because the two cores differ in what a halt leaves behind (the in-order core halts with `x5` at 1 and `dpc` after the `wfi`; the
+  wide core retires what it had already dispatched behind it first, as it does for any halt), which my first version of
+  the test asserted and was wrong about for the wide core.
+- **Each test is built twice and the build without the wait must fail.** The Makefile requires it: a test that cannot fail on
+  what it tests is testing the testbench. In `make verify`, and in the firmware CI job.
+- **Twelve mutants, six a core, each caught by a simulation that ran and said so:** the wait no longer let go for a halt request, nor for a
+  single step, the legality gate dropped (the user-mode `wfi` then waits for ever), the interrupt allowed to hit the `wfi`
+  (`mepc` is the `wfi`), the wake-up made to wait for an interrupt that would be taken (T1 never ends), and the enable mask
+  ignored (T4 ends at 2,000). My first script counted a compile error as a catch, and one in-order mutant did not compile;
+  it is fixed, and a catch now needs the simulation to have run.
+
+**With the option off, nothing moves.**
+
+- **The in-order core is the same machine.** The yosys equivalence check (`equiv_make`, `equiv_simple`, `equiv_induct`; the state matched
+  by name) of the flattened old core against the flattened new core with `WFI_WAIT` 0 proved all 24,368 points it matched equal
+  (`Equivalence successfully proven`). The same check of the wide core had not finished when this was written.
+- **The Linux boots are the same to the cycle.** The twelve one- and two-hart boots with the option off (both cores; the bus, the
+  fabric and the bypass) end on Part 28's cycle counts exactly, compared by program with the table in this document, on a tree
+  that has Parts 29 to 37 and this in it. `make verify` and `make verify_ooo` exit 0 with the Linux markers at cycles
+  146,466,531 and 148,856,491, where Part 28's counts put them.
+- **The new test's own total is unchanged:** the in-order `sim_soc_wfi` build with a no-op `wfi` runs 10,416 cycles before the
+  behaviour was written and after.
+- **Area.** Synthesised alone with yosys for the ECP5, the in-order core is 13,082 LUT4 on main, 13,345 with the option off and 13,213
+  with it on. The off build is the old core (above), so the spread is the mapper's, about 2%, and the option's own logic is too
+  small to see in it. The wide core was not synthesised (its mapping takes hours).
+
+
+**With the option on.**
+
+- **The whole suite passes.** `make verify CPU_WFI_WAIT=1` and `make verify_ooo CPU_WFI_WAIT=1` exit 0: riscv-tests 82 passed, 0 failed,
+  2 xfail; Spike co-simulation 84/84; 14 formal proofs; Linux to userspace at cycle 146,282,543 (in-order, against 146,466,531
+  with the option off) and 148,748,727 (wide, against 148,856,491).
+- **OpenSBI on four harts** says its banner at cycle 30,124,361 instead of 77,920,722, with the bus in use 42.7% of the time instead
+  of 98.8%: the very cycle and figures of Part 37's one-term experiment, which the built option reproduces.
+- **Linux, the matrix** (cycles to userspace, the run's end; the percentages are against the bus in the same row). The four-hart
+  rows with a no-op `wfi` are Part 37's, 2,000,000,000 cycles each; the four-hart bus cells with the wait were given 1,000,000,000:
+
+| harts | core | `wfi` | bus | router fabric | with the bypass |
+|---|---|---|---|---|---|
+| 1 | in-order | a no-op | 146,914,531 | 183,452,079 (+24.9%) | 162,404,559 (+10.5%) |
+| 1 | in-order | waits | 146,730,543 | 183,412,606 (+25.0%) | 162,114,479 (+10.5%) |
+| 1 | wide | a no-op | 149,304,491 | 181,536,850 (+21.6%) | 159,628,520 (+6.9%) |
+| 1 | wide | waits | 149,196,727 | 181,294,543 (+21.5%) | 159,613,540 (+7.0%) |
+| 2 | in-order | a no-op | 212,175,721 | 255,309,022 (+20.3%) | 206,015,745 (-2.9%) |
+| 2 | in-order | waits | 136,975,899 | 186,299,199 (+36.0%) | 155,776,218 (+13.7%) |
+| 2 | wide | a no-op | 159,893,093 | 266,594,156 (+66.7%) | 218,212,208 (+36.5%) |
+| 2 | wide | waits | 138,238,209 | 194,268,418 (+40.5%) | 157,661,260 (+14.1%) |
+| 4 | in-order | a no-op | not in 2,000,000,000 | not in 2,000,000,000 | not in 2,000,000,000 |
+| 4 | in-order | waits | **not in 1,000,000,000** | 369,417,669 | 269,380,771 |
+| 4 | wide | a no-op | not in 2,000,000,000 | not in 2,000,000,000 | not in 2,000,000,000 |
+| 4 | wide | waits | **not in 1,000,000,000** | 372,496,088 | 256,220,334 |
+| 4 | hetero | a no-op | not in 2,000,000,000 | not in 2,000,000,000 | not in 2,000,000,000 |
+| 4 | hetero | waits | **not in 1,000,000,000** | 381,281,052 | 299,025,452 |
+
+- **One hart: nothing to gain, nothing lost** (-0.18% to -0.01% in the six cells): an idle loop with nobody to starve.
+- **Two harts: the poll was costing the boot hart between 13.5% and 35.4% of its cycles.** With the wait the two-hart boots take 13.5%
+  (the wide pair, bus) to 35.4% (the in-order pair, bus) fewer cycles, and 24.4 to 27.8% fewer over the fabric and the bypass. The
+  comparison with the fabric moves with them. The in-order pair's fabric is now 36.0% behind its bus (it was 20.3%), and the bypass,
+  which Part 28 found 2.9% ahead of the bus on that pair, is 13.7% behind: **that win was the bus paying for the idle hart more than
+  the fabric did.** The wide pair's fabric is 40.5% behind its bus (it was 66.7%), its bypass 14.1% (it was 36.5%).
+- **Four harts boot Linux to userspace over the router fabric, on every core build**: in-order 369,417,669 cycles (269,380,771 with
+  the bypass), wide 372,496,088 (256,220,334), `hetero` 381,281,052 (299,025,452 with the bypass). That is Stage 4's Done-when at four harts, with the option on. With
+  the wait, four harts take 1.98 and 1.73 times the two-hart boots (in-order, fabric and bypass), 1.92 and 1.63 (wide).
+- **Four harts still do not boot over the bus**, on any core build, with the option on: all three runs stop at the cap with four CPUs
+  up, hart 0 in `rcu_preempt_deferred_qs` or `multi_cpu_stop`, the stall of Part 37 (two harts spinning in the `stop_machine` barrier take
+  every cycle, and the other two harts' fetches are granted none). The option does not touch it; a fairer bus arbiter would be the lever.
+
+**What it shows.**
+
+- **The cure works where Part 37 said it would, and costs nothing where it is not needed.** Idle harts no longer take the bus: the
+  banner, the CPU bring-up and the whole boot get the cycles back, and four harts boot over the fabric with the same kernel, OpenSBI,
+  stub, and the four-hart device tree of Part 37.
+- **The fabric is the interconnect on which four harts boot.** The bus does not, with or without the wait, because of its own
+  fixed priority. Why the fabric completes the run where the bus does not is not traced (Part 37 showed it is not the aging).
+- **Part 28's one win for the fabric is gone.** The two-hart in-order pair over the bypassed fabric took 2.9% fewer cycles than the
+  bus; with the cores no longer polling it takes 13.7% more. Everything in this tree that quotes that figure is a statement about the
+  no-op `wfi`, which is the default.
+
+**What this does not establish.**
+
+- **That the option should be the default.** For: it is off-equivalent, the whole suite passes with it on, two harts boot 13.5 to 35.4% faster, and
+  four harts boot. Against, or unknown: it changes a core's behaviour for any software that used `wfi` as a no-op (none in this tree,
+  and OpenSBI and Linux use it to wait), it would restate every published two-hart cycle count, and nothing has run on a board.
+  Which way to set it is the maintainer's decision, as the bypass's is.
+- **The bus at four harts**, which the option does not fix; **three harts** (no device tree); more than four (the fabric's ids stop).
+- **Power.** The hart stalls but the clock runs, and nothing is gated: this is a bus-traffic cure, not an energy one.
+- **A debugger over JTAG at a parked hart.** Halt and single step at a parked `wfi` are tested through the hart-control port
+  (`sim_wfi_dbg`); the JTAG path, which `make verify CPU_WFI_WAIT=1` runs with the option on, is not exercised with a parked hart.
 
 **Stage 1 - a network interface and a real packet format** (done, in simulation: Parts 15 to 20 made
 the interfaces, the packet, the one-node network and a drop-in fabric, compared the
@@ -2782,7 +2910,8 @@ interrupt traffic - with zero regression anywhere in the existing
 verification suite.
 
 **Stage 4 - software should not need to know.** (Begun, in simulation: Part 37 gave four harts a device tree, showed that one and
-two harts boot the same files to Part 28's cycle counts, and found that four do not, because the cores' `wfi` is a no-op.) Device tree and memory-map
+two harts boot the same files to Part 28's cycle counts, and found that four do not, because the cores' `wfi` is a no-op; Part 38 built the wait as an option, with which four harts boot Linux
+over the router fabric.) Device tree and memory-map
 updates if node IDs or address decoding change, OpenSBI and Linux SMP
 booting unchanged (or with configuration differences only, not code
 changes), and optionally, real performance counters (packets, stalls,
@@ -2829,4 +2958,4 @@ Not started: nothing here has been run on a board. Stage 5 (timing closed on a r
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36). Stage 4 has begun (Part 37). Stage 5 is a plan.
+Stage 0 has begun: `sim/bus_monitor.v` measures the existing shared bus, and Parts 1 to 4 record it under one- and two-hart CoreMark, with and without the data cache, under an NPU DMA job racing a CPU loop, and under one- and two-hart Linux boots. The written Stage 0 decision is in Part 4 and the maintainer confirmed it on 2026-10-03: no network yet, work the levers instead. Stage 0 is closed. Stage 1 is built and its Done-when met in simulation (Parts 15 to 20). Stage 2 is done in simulation (Parts 21 to 23), with the bus winning on cycles. Stage 3 is marked done, at the maintainer's decision of 2026-10-11 (Parts 24 to 36). Stage 4 has begun (Parts 37 and 38). Stage 5 is a plan.

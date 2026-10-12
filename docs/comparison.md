@@ -182,7 +182,8 @@ declaring a winner.
   routed to HDMI pins. Phase 8 (a Network-on-Chip fabric to replace
   `rtl/soc/wb_interconnect.v`'s own shared-bus arbitration) is not blocked
   on anything and is well under way in simulation: a packet network and a
-  router fabric run the SoC, Linux included, with one and two harts, and
+  router fabric run the SoC, Linux included, with one and two harts (and
+  four, when the cores' `wfi` is made to wait, Part 38: it is off by default), and
   four harts run the atomics and coherence tests over it. The measured
   result is that the bus wins on cycles (the fabric costs 16 to 67% more;
   an opt-in bypass wins back some of it), so the bus stays the default
