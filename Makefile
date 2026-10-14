@@ -263,7 +263,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 dtb_4hart dtb_check \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi sim_opensbi_2hart sim_opensbi_4hart \
@@ -2460,8 +2460,7 @@ irqload_matrix:
 # re-verification against the new controller's own latency profile, not
 # assumed unaffected. Part 2 only proved a plain load/store round trip.
 # Same testbench and DDR3_ENABLE gate as sim_ddrcheck; gated in `verify`
-# unlike the paging investigation (sim_ddrmmutest), since this one passes
-# in ordinary time, not a multi-minute-or-more hang.
+# (as the paging test, sim_ddrmmutest, is since Part 11).
 software/soc/ddratomics.elf: $(SOCRT_SRCS) software/soc/ddratomics.c \
                               software/soc/link_ram.ld $(SOC_HDRS)
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
@@ -2481,22 +2480,20 @@ sim_ddratomics: sim/bootrom_$(CORE).hex sim/ddratomicsimage.hex sim/sim_ddratomi
 	@grep -q "RAMBOOT TEST PASSED" sim/ddratomics.log || \
 	    { echo "sim_ddratomics FAILED"; exit 1; }
 
-# ---- Sv32 with the page table in DDR3 (Phase 9 Stage 2, Parts 3-4 - a
-# survey, not a shipped feature) ----
+# ---- Sv32 with the page tables in DDR3 (Phase 9 Stage 2, Parts 3-11) ----
 #
-# NOT in `verify` and NOT `.PHONY` - this reproduces a real, currently
-# unresolved hang, not a passing test. docs/roadmap/phase-09-ddr.md's own Known Defects
-# section has the full account. Part 3's own first trace (from a process
-# killed mid-write) wrongly blamed rtl/soc/wb_ptw.v for the hang - Part 4
-# re-measured with a trace run to real completion and cleared it: multiple
-# real PTE reads from DDR3 complete correctly on both the instruction and
-# data walker, and execution genuinely enters S-mode and runs real code.
-# The actual hang is later, needs no new translation, and does not touch
-# DDR3 or the walker in its own stuck state - s_mode_main's own first UART
-# message never transmits, confirmed against the decoded serial capture.
-# Root cause still not found. Same testbench and DDR3_ENABLE gate as
-# sim_ddrcheck otherwise. Runs to sim/tb_ramboot.v's own timeout if
-# invoked - real wall-clock minutes, not a quick failure.
+# A paged program (S-mode, satp on) whose root table and a level-2 table live in
+# DDR3, reaching a DDR3 frame through a translated megapage and the UART
+# through a two-level path; gated in `verify` since Part 11. For Parts 3 to 10
+# this was a known hang that was chased through the walker, the D-cache and
+# the UART, and none of them was at fault: the program never mapped the UART,
+# S-mode's first console access walked into a root entry nothing had ever
+# written, Icarus returns `x` for such a DDR3 location, and the walker's
+# second-level read (which rtl/mmu.v makes after every first-level read, leaf
+# or not) took its address from that `x` and waited for a grant that never
+# came. The header of software/soc/ddrmmutest.c and docs/roadmap/phase-09-ddr.md
+# (Stage 2, Part 11) have the measurements. Same testbench and DDR3_ENABLE gate
+# as sim_ddrcheck.
 software/soc/ddrmmutest.elf: $(SOCRT_SRCS) software/soc/ddrmmutest.c \
                               software/soc/link_ram.ld $(SOC_HDRS)
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
@@ -4217,7 +4214,7 @@ verify_xbar:
 	rm -rf obj_dir_soc_*
 
 verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_uartload_ddr3 dtb_ddr3 dtb_check ddr3_check \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 dtb_ddr3 dtb_check ddr3_check \
         verilator_sdramfull \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_cpu_halt \
