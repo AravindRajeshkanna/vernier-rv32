@@ -69,7 +69,13 @@ BUILD=${BUILD:-fpga/build}
 # among them) - a cheap, real way to reach synthesis without needing a
 # hand-rolled, one-off invocation outside this script every time - not
 # because the framebuffer crash it was first built to route around is
-# still open.
+# still open. It was also used to route around a second problem with the
+# same module, a hang at 320x240 rather than a crash (docs/roadmap/index.md,
+# "Common known defects"), and that one is fixed as well: the pixel memory
+# was written from the FSM's asynchronous-reset block, which yosys turns
+# into 614,400 registers, and it is written from a clock-only port now
+# (`make framebuffer_synth_check` holds that). The default build is the
+# real 320x240 again; shrink it only to make place-and-route quicker.
 FB_WIDTH=${FB_WIDTH:-}
 FB_HEIGHT=${FB_HEIGHT:-}
 

@@ -161,7 +161,9 @@ Info: Max frequency for clock '$glbnet$soc_clk': 25.91 MHz (PASS at 25.00 MHz)
 `fpga/build/ecpix5_top.bit` is real. **What this does not establish:**
 whether synthesis closes at the real 320x240 scale on a machine with
 more headroom than this one - genuinely unknown, not assumed either
-way. Whether the board actually boots anything - no ECPIX-5 is attached
+way. (Update 2026-10-15: the cause is known and fixed. The framebuffer's pixel memory was written from an asynchronous-reset block, which yosys turns
+into 614,400 registers; it is written from a clock-only port now. The ECPIX-5 build at the real 320x240 synthesises in 131 seconds and 741 MB, closes 25 MHz on its second placement seed (25.71 MHz; 82 `DP16KD`, 32,491 `TRELLIS_COMB`) and writes a bitstream. See
+[docs/roadmap/index.md](index.md#common-known-defects).) Whether the board actually boots anything - no ECPIX-5 is attached
 to this session; the bitstream has never been loaded onto real
 hardware, and this stage's own "Done when" bar (a real boot banner, a
 real measured Fmax on silicon) stays explicitly unmet on both counts.

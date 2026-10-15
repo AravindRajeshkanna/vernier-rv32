@@ -46,7 +46,7 @@ Work that sits outside the phase order is in [Beyond the phases](beyond-the-phas
 
 Open, unscheduled, and written down so they are not rediscovered. These entries cut across phases (the verification flow, the simulators and CI); defects that belong to one phase are in that phase's file.
 
-**HEAD no longer closes 25 MHz, and real-scale synthesis no longer finishes.**
+**HEAD no longer closes 25 MHz on the ULX3S, and real-scale synthesis stopped finishing too (that half is fixed, 2026-10-15).**
 Measured 2026-10-02 while bumping the synthesis bundle, and not attributed.
 At current HEAD, with the framebuffer shrunk to 8x8, no placement seed of
 either oss-cad-suite bundle closes 25 MHz (17.4 to 19.1 MHz); the same method
@@ -55,7 +55,7 @@ RTL since then, not the toolchain. The critical path is routing-dominated
 (11.78 ns logic, 40.52 ns routing) from the `ex_mem_rd` forwarding register
 through the MMU address adder to the CSR file. Separately, full-scale
 (320x240) synthesis does not finish within an hour: Yosys is converting
-`wb_framebuffer.v` memories to registers. Bisected on 2026-10-03: the drop falls between 2026-09-03 and
+`wb_framebuffer.v` memories to registers. (Fixed 2026-10-15; see the last paragraph of this entry.) Bisected on 2026-10-03: the drop falls between 2026-09-03 and
 2026-09-20 but the window is cannot be built on this bundle (Yosys aborts or
 stalls), and the PMP accounts for about 13,000 of the 19,000 LUTs added.
 The PMP match was then rewritten in word space (proved equal to the original):
@@ -65,6 +65,21 @@ address, instruction-side MMU, I-cache tag compare, the memory stall network.
 Shortening it means registering part of that chain, a pipeline-timing
 decision for the maintainer. The area growth in the NPU, `csr_file` and
 framebuffer is the other lever. The full account is in [fpga/README.md](../../fpga/README.md#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause).
+
+**Update 2026-10-15: real-scale synthesis finishes again, and the cause was neither the size nor the banking.** The framebuffer's
+pixel memory was written from three places inside the FSM's `always @(posedge clk or posedge rst)` block. Yosys's front end replaces
+a memory written from a block with an asynchronous reset by a list of registers (`Replacing memory \mem0 with list of registers`,
+once per bank), here 614,400 flip-flops, and the passes after it crawl. That is the hang above, and it is very probably the
+ten-hour `yosys-abc` stage in [Phase 4](phase-04-video-out.md) Update 9 and the ECPIX-5 build killed after about 7.5 hours in
+[Phase 9](phase-09-ddr.md) Stage 0 (the same module, the same symptom; those runs were not repeated). The memory is now written
+from one `posedge clk` block with no reset, and each bank has its own registered read. Measured: `wb_framebuffer` alone at 320x240
+goes from not finishing to 7 seconds, 80 block RAMs (`DP16KD`), 3,819 LUT4 and 401 flip-flops; the ULX3S 85F SoC at 320x240, with
+no 8x8 substitution, synthesises in 120 seconds and 792 MB and places and routes, its first placement seed at 18.28 MHz (82 `DP16KD` and 33,451 `TRELLIS_COMB`, 39% of the device each); the ECPIX-5 build synthesises in 131 seconds and 741 MB, closes 25 MHz on its second placement seed (25.71 MHz; 82 `DP16KD`, 32,491 `TRELLIS_COMB`) and writes a bitstream. Behaviour is unchanged
+to the cycle (`sim/tb_fb_equiv.v` holds the module equal to the old one over random traffic, and the frame `sim_video` writes is
+byte-identical), and `make framebuffer_synth_check` fails if a pixel memory ever turns into registers again. No change in Fmax
+is claimed: the critical path above is the CPU's, not the framebuffer's, and one seed is the only timing figure here. The 8x8
+substitution stays the quicker way to run place-and-route. The 35 other memories yosys still turns into registers (the MMU's TLB, the PLIC, the CLINT, the BTB, the NPU,
+the FIR and the CSR file) are small, except the BTB, which is about 7,200 4-input LUTs on its own and is the one worth a look.
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that

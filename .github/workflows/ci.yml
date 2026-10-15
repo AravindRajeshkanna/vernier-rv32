@@ -83,6 +83,12 @@ jobs:
       - name: Check video verdict
         run: grep -q "VIDEO TEST PASSED" video.log
 
+      # The framebuffer's memory writes sit in one clock-only write port so that yosys maps the pixel buffer to
+      # block RAM (the `formal` job holds that); this holds the module equal, cycle for cycle, to the one it was
+      # restructured from, over random traffic. Pure RTL, seconds. The target checks its own verdict.
+      - name: Framebuffer equals the module it was restructured from
+        run: make sim_fb_equiv
+
       - name: SD CMD0 probe against the card model
         run: make sim_cmd0 | tee cmd0.log
       - name: Check CMD0 probe verdict
@@ -667,6 +673,13 @@ jobs:
       # Needs yosys, which is why it is here and not in `rtl`.
       - name: Phase 8 routers, area budget
         run: make noc_router_area_check
+
+      # The framebuffer at its real size, 320x240, must synthesise, and into block RAM. A pixel memory written from
+      # a block with an asynchronous reset is turned into 614,400 flip-flops by yosys's front end and synthesis then
+      # does not finish; every simulation passes either way, which is how it went unseen. Seconds. Needs yosys,
+      # which is why it is here and not in `rtl`.
+      - name: Framebuffer synthesises into block RAM
+        run: make framebuffer_synth_check
 
   # ---------------------------------------------------------------------
   # The DDR3 PHY (Phase 9, Stage 1): every simulation test, the same tests again
