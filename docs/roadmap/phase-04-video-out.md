@@ -816,9 +816,11 @@ the cycle: `sim/tb_fb_equiv.v` drives this module and the old one (`sim/wb_frame
 shapes including 320x240, about 5,700 operations, and compares every output every cycle and every stored word every 1,000 cycles,
 with no difference; 14 of 15 deliberate breakages of the new write and read ports fail it (the fifteenth removes a term that is
 redundant, so no test can see it), and the frame `sim_video` writes is byte-identical. `make framebuffer_synth_check` keeps it so.
-**What this does not establish:** the Fmax effect (none was expected and none was looked for beyond the SoC figure above), or the
-framebuffer on a monitor (nothing has driven one). The 2026-10-02 account counted 51 conversions where one module shows 8 here;
-that difference was not looked into.
+Fmax, old module against new, at 8x8 with the same bundle and seeds 0 to 5 (`fpga/synth/fmax_seeds.sh`), the old module gives a mean of 18.86 MHz (17.54 to 19.42) and 34,058 `TRELLIS_COMB`, the new one 18.80 MHz (17.66 to 19.81) and 32,408 (the 8x8
+memories were registers too). The 51 conversions counted on 2026-10-02 are the whole SoC's: 16 from the framebuffer (its eight banks,
+reported twice in a whole-SoC run) and 35 from other modules; the new tree reports 35 and none from the framebuffer.
+**What this does not establish:** Fmax at the full size, where the old module cannot be run for comparison, or the framebuffer on a
+monitor (nothing has driven one).
 
 ## Hardware
 

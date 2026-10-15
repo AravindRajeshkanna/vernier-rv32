@@ -76,9 +76,10 @@ from one `posedge clk` block with no reset, and each bank has its own registered
 goes from not finishing to 7 seconds, 80 block RAMs (`DP16KD`), 3,819 LUT4 and 401 flip-flops; the ULX3S 85F SoC at 320x240, with
 no 8x8 substitution, synthesises in 120 seconds and 792 MB and places and routes, its first placement seed at 18.28 MHz (82 `DP16KD` and 33,451 `TRELLIS_COMB`, 39% of the device each); the ECPIX-5 build synthesises in 131 seconds and 741 MB, closes 25 MHz on its second placement seed (25.71 MHz; 82 `DP16KD`, 32,491 `TRELLIS_COMB`) and writes a bitstream. Behaviour is unchanged
 to the cycle (`sim/tb_fb_equiv.v` holds the module equal to the old one over random traffic, and the frame `sim_video` writes is
-byte-identical), and `make framebuffer_synth_check` fails if a pixel memory ever turns into registers again. No change in Fmax
-is claimed: the critical path above is the CPU's, not the framebuffer's, and one seed is the only timing figure here. The 8x8
-substitution stays the quicker way to run place-and-route. The 35 other memories yosys still turns into registers (the MMU's TLB, the PLIC, the CLINT, the BTB, the NPU,
+byte-identical), and `make framebuffer_synth_check` fails if a pixel memory ever turns into registers again. Fmax did not move
+beyond the seed spread: at 8x8 with the same bundle and seeds 0 to 5 (`fpga/synth/fmax_seeds.sh`), the old module gives a mean of 18.86 MHz (17.54 to 19.42) and 34,058 `TRELLIS_COMB`, the new one 18.80 MHz (17.66 to 19.81) and 32,408, 1,650 fewer, because the 8x8
+memories were registers too. The critical path above is the CPU's, not the framebuffer's. The 8x8 substitution stays the quicker way
+to run place-and-route. The 35 other memories yosys still turns into registers (the MMU's TLB, the PLIC, the CLINT, the BTB, the NPU,
 the FIR and the CSR file) are small, except the BTB, which is about 7,200 4-input LUTs on its own and is the one worth a look.
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -

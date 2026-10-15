@@ -301,7 +301,10 @@ target, no `FB_WIDTH`/`FB_HEIGHT`: yosys 120 s and 792 MB, no "Replacing memory"
 other modules, all small), and the SoC places and routes, its first placement seed at 18.28 MHz (82 `DP16KD` and 33,451 `TRELLIS_COMB`, 39% of the device each). The ECPIX-5 target, same way: synthesises in 131 seconds and 741 MB, closes 25 MHz on its second placement seed (25.71 MHz; 82 `DP16KD`, 32,491 `TRELLIS_COMB`) and writes a bitstream. `framebuffer_synth.sh --check`
 (`make framebuffer_synth_check`) is the guard: the module alone at 320x240 in about 7 seconds, 80 `DP16KD`, 3,819 LUT4, 401
 flip-flops. The 8x8 substitution still makes place-and-route quicker and is still what the Fmax tables above used; their figures
-stand.
+stand. The change did not move Fmax beyond the seed spread: ULX3S 85F, 8x8, seeds 0 to 5, this bundle, old module against new,
+18.86 MHz mean (17.54 to 19.42) against 18.80 (17.66 to 19.81), and `TRELLIS_COMB` 34,058 against 32,408 (the 8x8 memories were
+registers too). The 51 "Replacing memory" warnings counted above are the whole SoC's: 16 from the framebuffer (its eight banks,
+reported twice) and 35 from other modules; 35 remain.
 
 **Not re-measured:** `ulx3s85-ram`, `CORE=ooo`, the 45F, the video targets and
 the underclocked bitstream. Their figures stand as recorded and name the bundle
