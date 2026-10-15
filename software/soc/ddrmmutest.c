@@ -42,6 +42,41 @@
  *     test (software/soc/trap.h); the handler runs in M-mode, which does not
  *     translate, and resumes S-mode after the faulting instruction.
  *
+ * ---- Part 13: the list Part 12 said it had not established ----
+ * Part 12 found a bug in one place and listed the places it had not looked.
+ * They are checks now. The accesses walk (the TLB is emptied with sfence.vma
+ * first, or the entry is invalid and so never cached), and the register an
+ * access needs is made by the instruction just before it - the shape that made
+ * mtval wrong. Two are taken deliberately on a TLB hit:
+ *
+ *   - Atomics through a walk: amoadd.w with its address, then with its addend,
+ *     made just before; lr.w then sc.w. They must read and write the right word.
+ *   - A page S-mode may read but not write (root[272] -> a level-2 table in
+ *     DDR3 whose entry 0 is a read-only leaf onto the test frame, a second name
+ *     for the same word): a store, an amoadd.w and an sc.w must fault with
+ *     cause 15 - an AMO is a store as far as permissions go - and an lr.w must
+ *     not fault. The store is taken on a TLB hit, the AMO on a miss.
+ *   - Alignment under paging: a misaligned lw and amoadd.w with the TLB empty
+ *     must trap as misaligned (4 and 6) at the right address, not as a page fault.
+ *   - PMP after a walk: lw, sw, amoadd.w and lr.w on a frame PMP denies to
+ *     S-mode (entry 0 of PMP, 4 KB, no permissions; M-mode, unlocked, still
+ *     reaches it) must raise access faults (5 and 7, not page faults) with the
+ *     virtual address in mtval - the other half of Part 12's fix, which that part
+ *     could only reason about.
+ *   - Instruction page faults: a jalr to an invalid root entry, to an invalid
+ *     level-2 entry and to a page that is mapped but not executable (the UART's)
+ *     must raise cause 12 with the target in both mepc and mtval.
+ *   - Delegation: the same faults with medeleg set, taken in S-mode and read
+ *     back from scause, stval and sepc; and no trap may reach M-mode.
+ *
+ * Two small trap front ends make the last two possible without touching the
+ * shared runtime (crt0_ram.S): m_front sits in front of trap_vector and
+ * handles only an ecall from S-mode (which sets medeleg, since S-mode cannot)
+ * and an armed instruction page fault (which has to resume at ra, where the
+ * runtime's armed path would resume at mepc+4, an unmapped address); everything
+ * else goes on to trap_vector untouched, still loud. s_front is the S-mode
+ * handler for the delegated faults.
+ *
  * Mirrors software/soc/mmutest.c's own two claims - "the walkers are bus
  * masters" and "the window is bigger than the old ceiling" - one more time,
  * against a third kind of slave: DDR3 is neither block RAM nor SDRAM, is
@@ -78,6 +113,10 @@
 #include "soc.h"
 #include "console.h"
 #include "trap.h"
+
+/* The A extension is not in the build's -march (software/soc ddratomics.c and main.c
+ * do the same): turn it on for just these instructions. */
+#define ASM_ATOMIC(insn) ".option push\n.option arch, +a\n" insn "\n.option pop"
 
 #define PTE_V (1u << 0)
 #define PTE_R (1u << 1)
@@ -124,6 +163,18 @@
 #define FAULT_VA_ROOT 0x50000000u
 #define FAULT_VA_L2   (UART_BASE_A + 0x1000u)
 
+/* Part 13. A page S-mode may read and not write: root index 272 points at a
+ * second level-2 table (clear of the root table, the UART's table, the test
+ * frame and the code), whose entry 0 is a read-only leaf onto TEST_PA - the
+ * same physical word that TEST_VA + 0x1000 reaches, by a second name. */
+#define RO_VA   0x44000000u
+#define L2B_PA  (DDR3_BASE + 0x00003000u)
+
+/* A frame PMP denies to S-mode (and not to M-mode: the entry is not locked): the
+ * second page of the same level-2 table, a read/write leaf onto PMP_PA. */
+#define PMP_VA  (RO_VA + 0x1000u)
+#define PMP_PA  (DDR3_BASE + 0x00005000u)
+
 /* An unused virtual megapage - not RAM_BASE, not SDRAM_BASE, not
  * DDR3_BASE itself - chosen so this is a genuine translation, not an
  * identity map that would not distinguish "the walk happened" from "the
@@ -160,6 +211,18 @@ static inline uint32_t device_page_pte(uint32_t phys_page_base)
     return ((phys_page_base >> 12) << 10) | (PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
 }
 
+/* A 4 KB leaf that can be read and written, not executed. */
+static inline uint32_t rw_page_pte(uint32_t phys_page_base)
+{
+    return ((phys_page_base >> 12) << 10) | (PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
+}
+
+/* A 4 KB leaf that can be read and not written or executed. */
+static inline uint32_t readonly_page_pte(uint32_t phys_page_base)
+{
+    return ((phys_page_base >> 12) << 10) | (PTE_V | PTE_R | PTE_A);
+}
+
 #define MAGIC 0x5A7A5A7Au
 
 /* The routine that runs out of DDR3. Position-independent by construction (only
@@ -187,6 +250,76 @@ __asm__(
     "ddr_code_end:\n"
     "    .text\n");
 
+/* Part 13's two trap front ends (see the header). Records they fill in, in .bss
+ * so crt0_ram.S zeroes them: m_front_rec = mcause, mtval, mepc, armed;
+ * s_front_rec = scause, stval, sepc, traps taken, (t1 parked), resume-at-ra. */
+extern void m_front(void);
+extern void s_front(void);
+volatile uint32_t m_front_rec[4];
+volatile uint32_t s_front_rec[6];
+__asm__(
+    "    .section .text\n"
+    "    .balign 4\n"
+    "    .globl m_front\n"
+    "m_front:\n"
+    "    csrw  mscratch, t0\n"              /* trap_vector parks its own t0 in mscratch */
+    "    csrr  t0, mcause\n"
+    "    addi  t0, t0, -9\n"
+    "    beqz  t0, 10f\n"                   /* 9: ecall from S-mode        */
+    "    addi  t0, t0, -3\n"
+    "    bnez  t0, 30f\n"                   /* 12: instruction page fault  */
+    "    csrw  sscratch, t1\n"
+    "    la    t0, m_front_rec\n"
+    "    lw    t1, 12(t0)\n"
+    "    beqz  t1, 20f\n"                   /* nobody armed it: not ours   */
+    "    sw    zero, 12(t0)\n"
+    "    csrr  t1, mcause\n"
+    "    sw    t1, 0(t0)\n"
+    "    csrr  t1, mtval\n"
+    "    sw    t1, 4(t0)\n"
+    "    csrr  t1, mepc\n"
+    "    sw    t1, 8(t0)\n"
+    "    csrw  mepc, ra\n"                  /* the jalr's link: mepc+4 is unmapped */
+    "    csrr  t1, sscratch\n"
+    "    csrr  t0, mscratch\n"
+    "    mret\n"
+    "10: csrw  medeleg, a0\n"               /* the caller's mask */
+    "    csrr  t0, mepc\n"
+    "    addi  t0, t0, 4\n"
+    "    csrw  mepc, t0\n"
+    "    csrr  t0, mscratch\n"
+    "    mret\n"
+    "20: csrr  t1, sscratch\n"
+    "30: csrr  t0, mscratch\n"
+    "    j     trap_vector\n"               /* everything else stays loud */
+    "\n"
+    "    .balign 4\n"
+    "    .globl s_front\n"
+    "s_front:\n"
+    "    csrw  sscratch, t0\n"
+    "    la    t0, s_front_rec\n"
+    "    sw    t1, 16(t0)\n"
+    "    csrr  t1, scause\n"
+    "    sw    t1, 0(t0)\n"
+    "    csrr  t1, stval\n"
+    "    sw    t1, 4(t0)\n"
+    "    csrr  t1, sepc\n"
+    "    sw    t1, 8(t0)\n"
+    "    lw    t1, 12(t0)\n"
+    "    addi  t1, t1, 1\n"
+    "    sw    t1, 12(t0)\n"
+    "    lw    t1, 20(t0)\n"
+    "    bnez  t1, 1f\n"
+    "    csrr  t1, sepc\n"                  /* a data fault: step over the access */
+    "    addi  t1, t1, 4\n"
+    "    csrw  sepc, t1\n"
+    "    j     2f\n"
+    "1:  csrw  sepc, ra\n"                  /* a fetch fault: back to the caller  */
+    "2:  lw    t1, 16(t0)\n"
+    "    csrr  t0, sscratch\n"
+    "    sret\n"
+    "    .text\n");
+
 static int failures = 0;
 static void report(const char *name, int ok)
 {
@@ -194,6 +327,307 @@ static void report(const char *name, int ok)
     put_pad(name, 40);
     put_str(ok ? "ok\n" : "FAILED\n");
     if (!ok) failures++;
+}
+
+/* Part 13's reporters. Each says what it saw when a check fails, because a
+ * check that fails here is read from a simulation log with nothing else to go on. */
+static void report_eq(const char *name, uint32_t got, uint32_t want)
+{
+    report(name, got == want);
+    if (got != want) {
+        put_str("      got "); put_hex(got); put_str(", wanted "); put_hex(want); put_str("\n");
+    }
+}
+
+/* One deliberate trap taken in M-mode through trap_vector: exactly one more
+ * than `before`, with this cause and this trap value. */
+static void report_m_trap(const char *name, uint32_t before, uint32_t cause, uint32_t tval)
+{
+    int ok = TRAP_COUNT == before + 1u && TRAP_MCAUSE == cause && TRAP_MTVAL == tval;
+    report(name, ok);
+    if (!ok) {
+        put_str("      traps +"); put_dec((int)(TRAP_COUNT - before));
+        put_str(", mcause "); put_dec((int)TRAP_MCAUSE);
+        put_str(", mtval "); put_hex(TRAP_MTVAL); put_str("\n");
+    }
+}
+
+/* An instruction page fault taken in M-mode through m_front: the target in
+ * both mepc and mtval, and the arming consumed. */
+static void report_m_fetch(const char *name, uint32_t target)
+{
+    int ok = m_front_rec[0] == 12u && m_front_rec[1] == target &&
+             m_front_rec[2] == target && m_front_rec[3] == 0u;
+    report(name, ok);
+    if (!ok) {
+        put_str("      mcause "); put_dec((int)m_front_rec[0]);
+        put_str(", mtval "); put_hex(m_front_rec[1]);
+        put_str(", mepc "); put_hex(m_front_rec[2]);
+        put_str(", armed "); put_dec((int)m_front_rec[3]); put_str("\n");
+    }
+}
+
+/* A fault delegated to S-mode and taken by s_front: one more than `before`,
+ * this scause, this stval, this sepc - and no trap at all reached M-mode. */
+static void report_s_trap(const char *name, uint32_t before, uint32_t cause, uint32_t tval,
+                          uint32_t pc, uint32_t m_traps)
+{
+    int ok = s_front_rec[3] == before + 1u && s_front_rec[0] == cause &&
+             s_front_rec[1] == tval && s_front_rec[2] == pc && TRAP_COUNT == m_traps;
+    report(name, ok);
+    if (!ok) {
+        put_str("      taken +"); put_dec((int)(s_front_rec[3] - before));
+        put_str(", scause "); put_dec((int)s_front_rec[0]);
+        put_str(", stval "); put_hex(s_front_rec[1]);
+        put_str(", sepc "); put_hex(s_front_rec[2]);
+        put_str(", M-mode traps +"); put_dec((int)(TRAP_COUNT - m_traps)); put_str("\n");
+    }
+}
+
+/* Ask M-mode (m_front) to set medeleg: S-mode cannot write it. */
+static void set_medeleg(uint32_t mask)
+{
+    __asm__ volatile("mv a0, %0\n ecall" :: "r"(mask) : "a0", "memory");
+}
+
+/* Part 13 (see the header). `test` is the word at TEST_VA + 0x1000; RO_VA is a
+ * read-only name for the same physical word. */
+static void part13_checks(volatile uint32_t *test)
+{
+    volatile uint32_t *ro = (volatile uint32_t *)RO_VA;
+    uint32_t n, old, res, pc, s, m_traps;
+
+    put_str("\n  Part 13: atomics, a read-only page, alignment, fetch faults, delegation\n");
+
+    /* ---- atomics through a walk ---- */
+    *test = 100;
+    __asm__ volatile(
+        "sfence.vma\n"
+        "li    a1, 5\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("amoadd.w %[old], a1, (a2)") "\n"
+        : [old] "=&r"(old) : [hi] "i"((TEST_VA + 0x1000u) >> 12) : "a1", "a2", "memory");
+    report_eq("amoadd.w, address just made: old", old, 100u);
+    report_eq("... memory holds the sum", *test, 105u);
+
+    __asm__ volatile(
+        "sfence.vma\n"
+        "lui   a2, %[hi]\n"
+        "li    a1, 7\n"
+        ASM_ATOMIC("amoadd.w %[old], a1, (a2)") "\n"
+        : [old] "=&r"(old) : [hi] "i"((TEST_VA + 0x1000u) >> 12) : "a1", "a2", "memory");
+    report_eq("amoadd.w, addend just made: old", old, 105u);
+    report_eq("... memory holds the sum", *test, 112u);
+
+    __asm__ volatile(
+        "sfence.vma\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("lr.w  %[lr], (a2)") "\n"
+        "li    a1, 77\n"
+        ASM_ATOMIC("sc.w  %[sc], a1, (a2)") "\n"
+        : [lr] "=&r"(old), [sc] "=&r"(res)
+        : [hi] "i"((TEST_VA + 0x1000u) >> 12) : "a1", "a2", "memory");
+    report_eq("lr.w through a walk reads the word", old, 112u);
+    report_eq("sc.w after it succeeds (rd = 0)", res, 0u);
+    report_eq("... and stored its value", *test, 77u);
+
+    /* ---- a page S-mode may read but not write ---- */
+    *test = 0x13572468u;
+    __asm__ volatile("sfence.vma" ::: "memory");
+    report_eq("read-only page: loads the same word", *ro, 0x13572468u);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    *ro = 1;                               /* the load above left the entry in the TLB: no walk */
+    report_m_trap("store, read-only page (TLB hit): 15", n, 15u, RO_VA);
+    report_eq("... and the word is unchanged", *test, 0x13572468u);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "sfence.vma\n"
+        "li    a1, 3\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("amoadd.w a0, a1, (a2)") "\n"
+        :: [hi] "i"(RO_VA >> 12) : "a0", "a1", "a2", "memory");
+    report_m_trap("amoadd.w, read-only page: 15, not 13", n, 15u, RO_VA);
+    report_eq("... and the word is unchanged", *test, 0x13572468u);
+
+    n = TRAP_COUNT;
+    __asm__ volatile(
+        "sfence.vma\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("lr.w  %[lr], (a2)") "\n"
+        : [lr] "=&r"(old) : [hi] "i"(RO_VA >> 12) : "a2", "memory");
+    report("lr.w, read-only page: reads, no fault", old == 0x13572468u && TRAP_COUNT == n);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "lui   a2, %[hi]\n"
+        "li    a1, 9\n"
+        ASM_ATOMIC("lr.w  a0, (a2)") "\n"
+        ASM_ATOMIC("sc.w  a0, a1, (a2)") "\n"
+        :: [hi] "i"(RO_VA >> 12) : "a0", "a1", "a2", "memory");
+    report_m_trap("sc.w, read-only page: 15", n, 15u, RO_VA);
+
+    /* ---- atomics and loads that fault on an invalid entry ---- */
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("amoswap.w a0, a1, (a2)") "\n"
+        :: [hi] "i"(FAULT_VA_L2 >> 12) : "a0", "a1", "a2", "memory");
+    report_m_trap("amoswap.w, invalid L2 entry: 15", n, 15u, FAULT_VA_L2);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("amoswap.w a0, a1, (a2)") "\n"
+        :: [hi] "i"(FAULT_VA_ROOT >> 12) : "a0", "a1", "a2", "memory");
+    report_m_trap("amoswap.w, invalid root entry: 15", n, 15u, FAULT_VA_ROOT);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("lr.w  a0, (a2)") "\n"
+        :: [hi] "i"(FAULT_VA_L2 >> 12) : "a0", "a2", "memory");
+    report_m_trap("lr.w, invalid L2 entry: 13", n, 13u, FAULT_VA_L2);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("sc.w  a0, a1, (a2)") "\n"
+        :: [hi] "i"(FAULT_VA_L2 >> 12) : "a0", "a1", "a2", "memory");
+    report_m_trap("sc.w, invalid L2 entry: 15", n, 15u, FAULT_VA_L2);
+
+    /* ---- alignment under paging: judged on the virtual address, before any walk ---- */
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "sfence.vma\n"
+        "lui   a2, %[hi]\n"
+        "lw    a0, 2(a2)\n"
+        :: [hi] "i"((TEST_VA + 0x1000u) >> 12) : "a0", "a2", "memory");
+    report_m_trap("misaligned lw, TLB empty: 4", n, 4u, TEST_VA + 0x1002u);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "sfence.vma\n"
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        "addi  a2, a2, 2\n"
+        ASM_ATOMIC("amoadd.w a0, a1, (a2)") "\n"
+        :: [hi] "i"((TEST_VA + 0x1000u) >> 12) : "a0", "a1", "a2", "memory");
+    report_m_trap("misaligned amoadd.w, TLB empty: 6", n, 6u, TEST_VA + 0x1002u);
+
+    /* ---- PMP, after a successful walk: the fault is an access fault (5, 7), at the virtual address ---- */
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "sfence.vma\n"
+        "lui   a2, %[hi]\n"
+        "lw    a0, 0(a2)\n"
+        :: [hi] "i"(PMP_VA >> 12) : "a0", "a2", "memory");
+    report_m_trap("lw, PMP-denied frame: 5", n, 5u, PMP_VA);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "sfence.vma\n"
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        "sw    a1, 0(a2)\n"
+        :: [hi] "i"(PMP_VA >> 12) : "a1", "a2", "memory");
+    report_m_trap("sw, PMP-denied frame: 7", n, 7u, PMP_VA);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "sfence.vma\n"
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("amoadd.w a0, a1, (a2)") "\n"
+        :: [hi] "i"(PMP_VA >> 12) : "a0", "a1", "a2", "memory");
+    report_m_trap("amoadd.w, PMP-denied frame: 7", n, 7u, PMP_VA);
+
+    n = TRAP_COUNT;
+    trap_arm(1);
+    __asm__ volatile(
+        "sfence.vma\n"
+        "lui   a2, %[hi]\n"
+        ASM_ATOMIC("lr.w a0, (a2)") "\n"
+        :: [hi] "i"(PMP_VA >> 12) : "a0", "a2", "memory");
+    report_m_trap("lr.w, PMP-denied frame: 5", n, 5u, PMP_VA);
+
+    /* ---- instruction page faults, taken in M-mode: m_front resumes at ra ---- */
+    m_front_rec[3] = 1;
+    __asm__ volatile("lui a1, %[hi]\n jalr ra, 0(a1)\n"
+                     :: [hi] "i"(FAULT_VA_ROOT >> 12) : "a1", "ra", "memory");
+    report_m_fetch("fetch, invalid root entry: 12", FAULT_VA_ROOT);
+
+    m_front_rec[3] = 1;
+    __asm__ volatile("lui a1, %[hi]\n jalr ra, 0(a1)\n"
+                     :: [hi] "i"(FAULT_VA_L2 >> 12) : "a1", "ra", "memory");
+    report_m_fetch("fetch, invalid L2 entry: 12", FAULT_VA_L2);
+
+    m_front_rec[3] = 1;
+    __asm__ volatile("lui a1, %[hi]\n jalr ra, 0(a1)\n"
+                     :: [hi] "i"(UART_BASE_A >> 12) : "a1", "ra", "memory");
+    report_m_fetch("fetch, mapped but not executable: 12", UART_BASE_A);
+
+    /* ---- the same faults, delegated: S-mode takes them ---- */
+    __asm__ volatile("csrw stvec, %0" :: "r"((uintptr_t)s_front));
+    set_medeleg((1u << 12) | (1u << 13) | (1u << 15));
+    m_traps = TRAP_COUNT;
+
+    s = s_front_rec[3];
+    __asm__ volatile(
+        "lui   a2, %[hi]\n"
+        "1:    lw a0, 0(a2)\n"
+        "la    %[pc], 1b\n"
+        : [pc] "=&r"(pc) : [hi] "i"(FAULT_VA_ROOT >> 12) : "a0", "a2", "memory");
+    report_s_trap("delegated lw, invalid root: 13", s, 13u, FAULT_VA_ROOT, pc, m_traps);
+
+    s = s_front_rec[3];
+    __asm__ volatile(
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        "1:    sw a1, 0(a2)\n"
+        "la    %[pc], 1b\n"
+        : [pc] "=&r"(pc) : [hi] "i"(FAULT_VA_L2 >> 12) : "a1", "a2", "memory");
+    report_s_trap("delegated sw, invalid L2: 15", s, 15u, FAULT_VA_L2, pc, m_traps);
+
+    s = s_front_rec[3];
+    __asm__ volatile(
+        "li    a1, 1\n"
+        "lui   a2, %[hi]\n"
+        "1:\n"
+        ASM_ATOMIC("amoswap.w a0, a1, (a2)") "\n"
+        "la    %[pc], 1b\n"
+        : [pc] "=&r"(pc) : [hi] "i"(RO_VA >> 12) : "a0", "a1", "a2", "memory");
+    report_s_trap("delegated amoswap.w, read-only: 15", s, 15u, RO_VA, pc, m_traps);
+
+    s_front_rec[5] = 1;                    /* a fetch fault returns to ra, not to sepc+4 */
+    s = s_front_rec[3];
+    __asm__ volatile("lui a1, %[hi]\n jalr ra, 0(a1)\n"
+                     :: [hi] "i"(FAULT_VA_L2 >> 12) : "a1", "ra", "memory");
+    report_s_trap("delegated fetch, invalid L2: 12", s, 12u, FAULT_VA_L2, FAULT_VA_L2, m_traps);
+
+    s = s_front_rec[3];
+    __asm__ volatile("lui a1, %[hi]\n jalr ra, 0(a1)\n"
+                     :: [hi] "i"(UART_BASE_A >> 12) : "a1", "ra", "memory");
+    report_s_trap("delegated fetch, not executable: 12", s, 12u, UART_BASE_A, UART_BASE_A, m_traps);
+    s_front_rec[5] = 0;
+
+    set_medeleg(0);
 }
 
 /* Executing this at all means fetch, the stack, and TEST_RESULT_ADDR all
@@ -248,6 +682,9 @@ static void s_mode_main(void)
                TRAP_COUNT == n + 4 && TRAP_MCAUSE == 15u && TRAP_MTVAL == FAULT_VA_L2);
     }
 
+    /* ---- Part 13: atomics, a read-only page, alignment, fetch faults, delegation ---- */
+    part13_checks(test);
+
     put_str("\n---------------------------------------------\n");
     if (failures == 0) {
         put_str("DDR3 PAGED-ACCESS TEST PASSED\n");
@@ -267,8 +704,11 @@ int main(void)
     volatile uint32_t *test_phys = (volatile uint32_t *)TEST_PA;
 
     trap_install();
+    /* Part 13: put m_front in front of trap_vector. It passes everything it does
+     * not handle on to trap_vector unchanged. */
+    __asm__ volatile ("csrw mtvec, %0" :: "r"((uintptr_t)m_front));
 
-    put_str("\n=== Sv32 with the page table in DDR3 (Phase 9 Stage 2, Parts 3-12) ===\n");
+    put_str("\n=== Sv32 with the page table in DDR3 (Phase 9 Stage 2, Parts 3-13) ===\n");
     put_str("root table at "); put_hex(ROOT_PA);
     put_str(", translating "); put_hex(TEST_VA);
     put_str(" -> "); put_hex(TEST_PA); put_str("\n\n");
@@ -317,6 +757,31 @@ int main(void)
         report("routine copied into DDR3 reads back", same);
         report("invalid entries read back as zero",
                root[FAULT_VA_ROOT >> MEGAPAGE_SHIFT] == 0 && l2[(FAULT_VA_L2 >> 12) & 0x3FFu] == 0);
+    }
+
+    /* ---- Part 13 setup, still physical: the read-only alias of the test frame ---- */
+    {
+        volatile uint32_t *l2b = (volatile uint32_t *)L2B_PA;
+        root[RO_VA >> MEGAPAGE_SHIFT]  = table_pte(L2B_PA);
+        l2b[(RO_VA >> 12) & 0x3FFu]    = readonly_page_pte(TEST_PA);
+        report("read-only page entries read back",
+               root[RO_VA >> MEGAPAGE_SHIFT] == table_pte(L2B_PA) &&
+               l2b[(RO_VA >> 12) & 0x3FFu] == readonly_page_pte(TEST_PA));
+
+        /* The PMP-denied frame. Entry 0 becomes a 4 KB NAPOT region at PMP_PA with no
+         * permissions; the runtime's own all-memory entry (crt0_ram.S) moves to entry 1.
+         * M-mode is unaffected - the entry is not locked - which the read-back shows. */
+        volatile uint32_t *pmp_phys = (volatile uint32_t *)PMP_PA;
+        l2b[(PMP_VA >> 12) & 0x3FFu] = rw_page_pte(PMP_PA);
+        *pmp_phys = MAGIC;
+        __asm__ volatile(
+            "csrw pmpaddr1, %[all]\n"
+            "csrw pmpaddr0, %[napot]\n"
+            "csrw pmpcfg0, %[cfg]\n"
+            :: [all] "r"(0xFFFFFFFFu), [napot] "r"((PMP_PA >> 2) | 0x1FFu),
+               [cfg] "r"((0x1Fu << 8) | 0x18u));
+        report("PMP page: entry ok, M-mode reaches it",
+               l2b[(PMP_VA >> 12) & 0x3FFu] == rw_page_pte(PMP_PA) && *pmp_phys == MAGIC);
     }
 
     /* Seed the physical frame under test before satp goes on, the same

@@ -2480,11 +2480,14 @@ sim_ddratomics: sim/bootrom_$(CORE).hex sim/ddratomicsimage.hex sim/sim_ddratomi
 	@grep -q "RAMBOOT TEST PASSED" sim/ddratomics.log || \
 	    { echo "sim_ddratomics FAILED"; exit 1; }
 
-# ---- Sv32 with the page tables in DDR3 (Phase 9 Stage 2, Parts 3-11) ----
+# ---- Sv32 with the page tables in DDR3 (Phase 9 Stage 2, Parts 3-13) ----
 #
-# A paged program (S-mode, satp on) whose root table and a level-2 table live in
+# A paged program (S-mode, satp on) whose root table and level-2 tables live in
 # DDR3, reaching a DDR3 frame through a translated megapage and the UART
-# through a two-level path; gated in `verify` since Part 11. For Parts 3 to 10
+# through a two-level path; gated in `verify` since Part 11. Part 12 added
+# execution out of DDR3 and page faults through DDR3 tables; Part 13 added
+# atomics, a read-only page, a PMP-denied frame, misaligned accesses,
+# instruction page faults and faults delegated to S-mode. For Parts 3 to 10
 # this was a known hang that was chased through the walker, the D-cache and
 # the UART, and none of them was at fault: the program never mapped the UART,
 # S-mode's first console access walked into a root entry nothing had ever
