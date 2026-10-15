@@ -3,23 +3,25 @@
  * attempt at proof that a *paged* caller, not just a bare-metal physical
  * one, reaches DDR3 through the real interconnect.
  *
- * ---- This currently hangs, and is a real, open, unresolved finding, not
- * a passing test - docs/roadmap/phase-09-ddr.md's own Known Defects section and Phase 9
- * Stage 2's "Update, Part 3"/"Update, Part 4" have the full account. Not in
- * `make verify`. ----
- * Every physical-addressing check below passes; after `mret` into S-mode
- * the run hangs with no trap and no further output, until
- * sim/tb_ramboot.v's own timeout. Part 3's own first trace (from a process
- * killed mid-write) wrongly blamed rtl/soc/wb_ptw.v for the hang; Part 4
- * re-measured with a trace run to actual completion and found the walker
- * innocent - multiple real PTE reads from DDR3 complete correctly on both
- * the instruction and data side, with real addresses throughout, and
- * execution genuinely enters S-mode and runs real code. The real hang is
- * later, needs no new translation, and does not touch DDR3 or the walker
- * in its own stuck state - s_mode_main's own first UART message never
- * transmits, confirmed against the decoded serial capture directly. Root
- * cause still not found. Left in the tree as a real, working reproduction
- * for whoever continues this, not removed because it is inconvenient.
+ * ---- History: this used to hang, and the hang was this program's, not
+ * the walker's ----
+ * Parts 3 to 6 of docs/roadmap/phase-09-ddr.md chased a hang after `mret` into
+ * S-mode: the walker (cleared), the D-cache (cleared), the UART's timing
+ * (cleared). None of them was at fault. `s_mode_main` prints through the
+ * UART at 0x0400_0000, and this program never mapped it: the virtual address
+ * walks to root[16], which is a DDR3 location nothing had ever written.
+ * Icarus returns `x` for such a location (sim/ddr3_dq_model.v, on purpose),
+ * and rtl/mmu.v always makes a second-level read after the first, forming
+ * its address from the first-level entry - so the `x` became the bus
+ * address, the interconnect's decode and grant became `x`, and the walker
+ * waited in its second-level state for a grant that never came. Measured by
+ * watching the data MMU: state 3, `pte1_r` and `ptw_addr` both `xxxxxxxx`,
+ * `ptw_req` high, `ptw_gnt` `x`, from the cycle of the first console access
+ * after `mret` for as long as the run lasted. Real hardware would not hang
+ * there (an address that decodes to no slave is acknowledged with zero data,
+ * rtl/soc/wb_interconnect.v), but it would walk whatever bits DDR3 powered
+ * up with - which is why this program maps what S-mode touches instead of
+ * relying on the entries it leaves alone never being read.
  *
 
  * Mirrors software/soc/mmutest.c's own two claims - "the walkers are bus
@@ -35,13 +37,17 @@
  * table lives in DDR3, where each real controller call unwritten by
  * design (rtl/soc/ddr3_ecp5_top.v's own model returns `x` for a location
  * that was never written, sim/ddr3_dq_model.v) costs real time to fill.
- * Only the two megapages this program actually walks into are ever
- * written: one for the code/stack/result word (still in block RAM, needed
+ * Only the entries this program actually walks into are ever written:
+ * one megapage for the code/stack/result word (still in block RAM, needed
  * for fetch to keep working once paging is on), one that translates a
- * genuinely different VA onto DDR3. The other 1022 entries are never
- * touched by this test and never read by the walker either - safe to
- * leave unwritten, the same "no test builds more than it needs to prove
- * its own claim" discipline `sim/tb_wb_ddr.v`'s own directed cases follow.
+ * genuinely different VA onto DDR3, and the console's way to the UART - a
+ * pointer in the root table to a level-2 table that also lives in DDR3,
+ * whose one 4 KB leaf maps the UART's page. That last one is new (it was
+ * missing, and its absence was the hang above) and makes the walk of a
+ * DDR3-resident table two levels deep for the first time. The other
+ * entries stay unwritten, which is only safe because nothing in S-mode
+ * touches them: the same "no test builds more than it needs to prove its
+ * own claim" discipline `sim/tb_wb_ddr.v`'s own directed cases follow.
  *
  * Icarus-only, like mmutest.c: this relies on an unwritten DDR3 location
  * reading as a real unknown value if anything ever touched it by mistake
@@ -81,6 +87,10 @@
  * distinct real block fills, not one aliased together by accident. */
 #define TEST_PA (DDR3_BASE + 0x00001000u)
 
+/* The level-2 table that maps the UART's page: 4 KB aligned, in DDR3, clear
+ * of the root table (+0x000..0xFFF) and of the test frame (+0x1000). */
+#define L2_PA (DDR3_BASE + 0x00002000u)
+
 /* An unused virtual megapage - not RAM_BASE, not SDRAM_BASE, not
  * DDR3_BASE itself - chosen so this is a genuine translation, not an
  * identity map that would not distinguish "the walk happened" from "the
@@ -103,6 +113,18 @@ static inline uint32_t megapage_pte(uint32_t phys_megapage_base)
 {
     return ((phys_megapage_base >> MEGAPAGE_SHIFT) << (MEGAPAGE_SHIFT - 12 + 10))
            | PTE_LEAF_RWX;
+}
+
+/* A level-1 entry that points at a level-2 table: valid, and R=W=X=0. */
+static inline uint32_t table_pte(uint32_t table_pa)
+{
+    return ((table_pa >> 12) << 10) | PTE_V;
+}
+
+/* A 4 KB leaf for a device page: read/write, never execute. */
+static inline uint32_t device_page_pte(uint32_t phys_page_base)
+{
+    return ((phys_page_base >> 12) << 10) | (PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
 }
 
 #define MAGIC 0x5A7A5A7Au
@@ -128,7 +150,7 @@ static void s_mode_main(void)
 
     *test = MAGIC;
     report("store through a DDR3-backed PTE", 1);
-    report("load through a DDR3-backed PTE reads back", *test == MAGIC);
+    report("load through a DDR3 PTE reads back", *test == MAGIC);
 
     put_str("\n---------------------------------------------\n");
     if (failures == 0) {
@@ -173,6 +195,17 @@ int main(void)
            root[0x80000000u >> MEGAPAGE_SHIFT] == megapage_pte(0x80000000u));
     report("DDR3 megapage PTE reads back",
            root[TEST_VA >> MEGAPAGE_SHIFT] == megapage_pte(DDR3_BASE));
+
+    /* The console, for S-mode: root[16] points at a level-2 table in DDR3 and
+     * its entry for the UART's page is a 4 KB leaf (identity: VA == PA, so
+     * soc.h's UART registers work unchanged). */
+    volatile uint32_t *l2 = (volatile uint32_t *)L2_PA;
+    root[UART_BASE_A >> MEGAPAGE_SHIFT] = table_pte(L2_PA);
+    l2[(UART_BASE_A >> 12) & 0x3FFu]     = device_page_pte(UART_BASE_A);
+    report("UART level-1 pointer reads back",
+           root[UART_BASE_A >> MEGAPAGE_SHIFT] == table_pte(L2_PA));
+    report("UART level-2 leaf reads back",
+           l2[(UART_BASE_A >> 12) & 0x3FFu] == device_page_pte(UART_BASE_A));
 
     /* Seed the physical frame under test before satp goes on, the same
      * "separate a broken table from a broken walk" reasoning mmutest.c's

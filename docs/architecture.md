@@ -441,9 +441,11 @@ FSM per instance:
   PTE that could be cached, so a stale hit either succeeds correctly or
   faults correctly as long as that contract is honored. `SFENCE.VMA`
   flushes **both** TLBs together.
-- **TLB miss**: the walker reads up to two PTEs through its request/grant
+- **TLB miss**: the walker reads two PTEs through its request/grant
   port — one state per level, since level 2's address depends on level 1's
-  PTE content. Resolves to either a physical address (installed into the
+  PTE content — and makes the second read even when the first PTE is a
+  leaf or invalid, then ignores the answer (a known defect, recorded in
+  `docs/roadmap/phase-09-ddr.md`, Stage 2, Part 11). Resolves to either a physical address (installed into the
   TLB; the pipeline unstalls and effectively retries as a hit) or a fault.
 
   What answers that port differs between the two integrations, and the

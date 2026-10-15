@@ -19,9 +19,9 @@ neither is done. Stage 2's own "Done when" bar is met in simulation (Part 2:
 a CPU reads and writes DDR3 as data through `rtl/soc/wb_ddr.v`, wired into
 `rtl/soc/soc_top.v` behind `DDR3_ENABLE` so every existing build is untouched;
 Part 9: it fetches and executes instructions from DDR3, which Part 2 had not
-done); Stage 2's Parts 3 to 6, a paged (Sv32) access to DDR3, are an
-open, banked investigation, recorded under Known defects, and Parts 7 and 8
-(atomics, the device-tree node) shipped; Part 10 added a UART loader path into
+done); Stage 2's Parts 3 to 6, a paged (Sv32) access to DDR3, were an
+investigation that Part 11 closed (the test never mapped the UART; the walker, the cache and the DDR3 path were not at fault),
+and Parts 7 and 8 (atomics, the device-tree node) shipped; Part 10 added a UART loader path into
 DDR3 and, with it, fixed a bug in `rtl/soc/wb_ddr.v` that every earlier test
 had missed (a request made before calibration was dropped and acknowledged
 anyway). Stage 3 through Stage 5 remain
@@ -2199,7 +2199,7 @@ default.~~ **Closed, in simulation, at this scale.** A CPU fetches and
 executes code out of DDR3 (Part 9, `make sim_ddrexec`), the program gets
 there through the boot ROM's UART loader (Part 10, `make sim_uartload_ddr3`),
 and `make verify` and `make verify_ooo` are green with the path present but
-off by default (`DDR3_ENABLE`). This is Stage 2's bar only: the phase's own
+off by default (`DDR3_ENABLE`). The Sv32 walker reading page tables out of DDR3, at both levels, is checked too (Part 11, `make sim_ddrmmutest`). This is Stage 2's bar only: the phase's own
 bar (Linux to userspace from DDR on a real ECPIX-5) is not met, and "at this
 scale" means a 256 MB lane-0 window and 4 KB loads, not the full part.
 
@@ -2566,6 +2566,7 @@ Parts 3 through 6 are a real, honest record of what has and has not been
 established, and the next step (measuring `UART_THR` writes directly,
 named in the memory note this investigation kept) remains available, but
 Stage 2 has other, unblocked items of its own to close first.
+(Update, Part 11: closed. The hang was the test's own; see below.)
 
 **Update, Part 7: atomics against DDR3, real for the first time.**
 Stage 2's own plan named this explicitly - "Caches, atomics, and LR/SC
@@ -2597,7 +2598,7 @@ independent of DDR3. Real capacity is still 256MB and the data path is
 still not hardware-faithful per-beat, both unchanged since Part 1.
 `make verify`/`make verify_ooo` were both run, since `sim_ddratomics` is
 now gated inside `verify` itself (unlike the paging investigation, which
-stays deliberately outside it) - no RTL changed, but a new test entering
+stays deliberately outside it; Update, Part 11: it is inside it now) - no RTL changed, but a new test entering
 the shared gate graph gets the same confirmation any other addition to
 it would.
 
@@ -2634,7 +2635,7 @@ actually parses this node and does anything useful with it, only that
 the dts pipeline itself (preprocessor + `dtc`) accepts it. That is
 separate, later work, and probably downstream of the banked paging
 investigation in practice, since Linux's own use of a memory region
-goes through Sv32. No RTL changed.
+goes through Sv32. (Update, Part 11: that investigation is closed and a paged access to DDR3 works in simulation; Linux from DDR3 is still ahead.) No RTL changed.
 
 **Update, Part 9: a CPU fetches and executes instructions from DDR3,
 which is what Stage 2's "Done when" actually asks for.** Parts 2 and 7 ran
@@ -2662,7 +2663,7 @@ fetch path is exercised for a handful of 16-byte blocks, not a large image
 or a full-part sweep. Nothing loads DDR3 except the program itself: there is
 no boot ROM or UART loader path to DDR3 (Part 10 adds the UART loader), so
 a `sim_sdramboot` equivalent (reset straight into DDR3) is still not done. Paged execution out of DDR3
-is still blocked on the banked investigation above. No hardware: this is
+is still blocked on the banked investigation above (Update, Part 11: no longer blocked, but not tried). No hardware: this is
 the simulation DQ model only.
 
 **Update, Part 10: the boot ROM's UART loader can put a program into
@@ -2724,6 +2725,72 @@ still ahead. The image is 4 KB: this is the protocol and the write path, not a
 large transfer, and the 8192-deep model would not hold one. Nothing here is
 on hardware.
 
+**Update, Part 11: the paged-access hang is closed, and it was never the walker, the D-cache or the UART: the test never mapped
+the UART.** `make sim_ddrmmutest` passes on both cores and is in `make verify`. The change is to the test program
+(`software/soc/ddrmmutest.c`) and the Makefile; no RTL changed.
+
+**What was wrong.** The program wrote two root-table entries, the RAM megapage (index 512) and the DDR3 megapage (index 256), and
+left the other 1,022 alone, on the reasoning that S-mode would never touch them. But `s_mode_main` prints through the UART, whose
+register block is at `0x0400_0000`, and a load of `UART_LSR` at `0x0400_0014` walks root-table index 16: a DDR3 location nothing
+had ever written. `sim/ddr3_dq_model.v` returns `x` for a location that was never written, on purpose, and `rtl/mmu.v` goes from
+its first-level read to a second-level read unconditionally (`S_L1W` always goes to `S_L2`), forming the second-level address from
+the first-level entry whatever that entry is. With `x` for the entry, the address was `x`, the interconnect's decode and the
+walker's grant were `x`, and `if (ptw_gnt)` was never true.
+
+**How it was measured**, in the order it was found. A passive monitor (scratch, not committed) that reads the CPU's CSRs, the two
+walkers' handshakes and the data MMU's registers, run on the unmodified program:
+
+- `mret` into S-mode at cycle 26,759. The instruction walker reads root[512] at `0xA0000800` and gets `0x200000CF` (a valid
+  megapage leaf: V, R, W, X, A, D); the data walker reads the same entry. Both then make a second read, at `0x80000004` and
+  `0x8000003C`, which is the leaf's frame plus `vpn0 * 4`, and get zeros: the redundant read described below.
+- Cycle 27,279: the data walker reads root[16] at `0xA0000040` and gets `xxxxxxxx`.
+- Sampled every 20,000 cycles from cycle 40,000 to at least 180,000, the data MMU is in state 3 (`S_L2`) with `pte1_r` and
+  `ptw_addr` both `xxxxxxxx`, `ptw_req` high and `ptw_gnt` `x`, the CPU's program counter held at `0x80001198` by
+  `mmu_wait_stall`. No trap, no further walker read, no UART write (the passive trace shows none) in all that time.
+- The prediction that followed was tested: with the UART mapped, the same run reaches the end. The walks are now the ones the
+  program says it makes: root[16] at `0xA0000040` is `0x28000801` (a pointer to the level-2 table at `0xA0002000`), the level-2
+  entry there is `0x010000C7` (a 4 KB leaf for the UART's page: V, R, W, A, D, no X), and the DDR3 megapage at root[256]
+  (`0xA0000400`) is `0x280000CF`.
+- **Fail first, and back.** The final program with only the UART mapping taken out again reproduces the hang identically: the same
+  walker reads, then `S_L2` with `x` at every 20,000-cycle sample up to the 1.46 million at which it was stopped.
+
+**The fix** is in the program, which now maps what S-mode touches: root[16] is a pointer (`PTE_V` alone) to a level-2 table at
+`DDR3_BASE + 0x2000`, whose entry 0 is a 4 KB leaf for the UART's page, identity (virtual equals physical, so `soc.h`'s registers
+work unchanged). That also makes this the first test to walk a DDR3-resident table two levels deep; before, every walk of a
+DDR3 table ended at a megapage leaf. Two read-back checks for the new entries joined the others.
+
+**Result.** `DDR3 PAGED-ACCESS TEST PASSED` and the result word `PASS`, on the in-order core (the run ends at 2,179,500 ns of
+simulated time, in `make verify`) and on the wide core (2,271,900 ns, in `make verify_ooo`). The store through a translated DDR3 page and the load that reads it back
+both work. `sim_ddrmmutest` is in `verify` beside `sim_ddrexec`; it is not in CI, like the other DDR3 tests that run the whole SoC.
+
+**What this changes in the account.** Parts 3 to 6 chased the walker (Part 3, wrongly), the D-cache and the UART's timing, and
+ended on two explanations that were "open and undistinguished". Neither is supported. The simulator is not expensive per cycle in
+the stuck state: Icarus runs this SoC at about 10,000 cycles a second, so the 40-million-cycle run of Part 6 needed more than an
+hour of wall-clock to do nothing. And Part 6's observation of `UART_LSR` reading `0x00000000` for 1.3 million cycles and then
+`0x00000060` does not match what the monitor sees at this tree: no `UART_LSR` load completes after the first console access,
+because the walk for it never ends. What those traces were reading is not known.
+
+**Found on the way, and not fixed: the walker's second-level read is unconditional.** After a first-level entry that is a leaf
+(a megapage) or invalid, `rtl/mmu.v` still reads `{PPN, 12'b0} + vpn0 * 4` as if the entry were a pointer, then ignores the
+answer (`l1_conclusive` selects the leaf's result). Seen above three times at megapage leaves (`0x80000004`, `0x8000003C`, and
+`0xA0000004`, which returned `x` and was correctly ignored). Four consequences, none of them measured beyond the reads
+themselves: it costs a bus read per megapage walk; for a megapage whose frame is a device it reads device registers (a read of a
+UART receive register or a PLIC claim register has side effects); for an invalid entry the address comes from bits software
+controls, and in simulation `x`; and in hardware that is a wild read, not a hang, because `rtl/soc/wb_interconnect.v`
+acknowledges an address that decodes to no slave with zero data. Skipping the read when the first-level entry is conclusive is
+the spec's walk and would be faster, but it changes the length of every megapage walk and so every cycle count in these
+documents that includes one, which is why it is recorded under Known defects and not done here.
+
+**What this does not establish.**
+
+- Nothing is on hardware: this is the simulation DQ model, and a board's unwritten DDR3 holds arbitrary bits, not `x`.
+- Paged *execution* out of DDR3 (instruction fetch through the instruction MMU from a DDR3 frame) is no longer blocked by this
+  investigation, but has not been tried. Nor has a page *fault* through a DDR3-resident table with defined contents (an
+  invalid entry written as zero); the program still reads an unwritten entry as `x` if it ever walks one, which is the right
+  outcome for a test that touches memory it never initialised.
+- The cost of the redundant read in cycles, for Linux or anything else, was not measured.
+- One run per core.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
@@ -2773,6 +2840,13 @@ for being a bigger phase.
 
 ## Known defects
 
+**RESOLVED - a page-table walk into DDR3 hung the machine; the cause was the test program, which never mapped the UART, and
+no hardware, walker or cache was at fault (Phase 9, Stage 2, Part 11).** Found by Parts 3 to 6, closed by Part 11. S-mode's
+first console access walked into a root-table entry nothing had written; Icarus returns `x` for such a DDR3 location, and the
+walker's unconditional second-level read made the `x` its bus address and waited for a grant that never came. The program now
+maps the UART through a level-2 table in DDR3, and `make sim_ddrmmutest` passes on both cores and is in `verify`. Left here,
+struck rather than deleted, as the record of what this entry used to say:
+
 **OPEN - a page-table walk into DDR3 hangs the machine, cause not yet
 found; the walker itself is cleared, execution reaches real UART MMIO,
 and a real attempt to tell "slow" from "hung" did not settle it either
@@ -2808,6 +2882,17 @@ state costs the simulator disproportionately more per cycle to evaluate
 are both still open, undistinguished. Root cause not found. Reproduces
 identically on every attempt. See Phase 9 Stage 2's own "Update, Part 3"
 through "Update, Part 6" for the full account.
+
+**OPEN - the page-table walker makes a second-level read after every first-level read, even when the first-level entry is a
+leaf or invalid (`rtl/mmu.v`; Phase 9, Stage 2, Part 11).** `S_L1W` always goes to `S_L2`, which reads `{PPN, 12'b0} + vpn0 * 4`
+from the first-level entry and ignores the answer when that entry was conclusive. Measured only as the reads themselves, three
+times in `make sim_ddrmmutest` (`0x80000004`, `0x8000003C`, `0xA0000004`). The consequences are reasoned, not measured: an extra
+bus read per megapage walk; for a megapage whose frame is a device, a read of device registers, some of which have side
+effects (a UART receive register, a PLIC claim register); for an invalid entry, an address taken from bits software controls,
+which in hardware is a wild read (an address that decodes to no slave is acknowledged with zero data, so not a hang) and in
+simulation `x`, which is the hang above. The spec's walk stops at a leaf. Not fixed, because skipping the read changes the
+length of every megapage walk and so every cycle count that includes one; the change would be to leave `S_L1W` for `S_L2W`
+when the entry is conclusive, and whether to make it, behind an option or not, is the maintainer's decision.
 
 
 **OPEN, narrowed - the data path of the DDR3 PHY is not yet hardware-faithful
@@ -2852,4 +2937,4 @@ Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorde
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` is deliberately not in `make verify` because the paged access hangs (Known defects).
+The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang) is in `make verify` as well.
