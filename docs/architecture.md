@@ -488,7 +488,10 @@ known once the walk resolves *in EX* (folded into `synchronous_trap` via
 **IF**, even earlier (folded into ID's `illegal`-equivalent machinery via
 `if_id_ifetch_fault`, `mcause` 12 — section 2b/2c). `mtval` is the
 faulting virtual address (data faults) or faulting PC (instruction
-faults).
+faults). For a data fault the address is the MMU's own `pa_va` (the live
+address on a TLB hit, the walk's snapshot after a walk), not the EX stage's
+`mem_addr_ex`, which is recomputed from forwarding every cycle and decays
+over a multi-cycle walk (found by `sim_ddrmmutest`, Phase 9 Part 12).
 
 `SFENCE.VMA` (SYSTEM/`funct3=0`, distinguished from ECALL/EBREAK/MRET/
 SRET by `funct7=0001001` since it has real `rs1`/`rs2` operands, and

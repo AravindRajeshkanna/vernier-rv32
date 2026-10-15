@@ -24,6 +24,24 @@
  * relying on the entries it leaves alone never being read.
  *
 
+ * ---- Part 12: execution and faults, the two halves Part 11 left untried ----
+ * Part 11 made the data side work (a store and a load through a translated
+ * DDR3 page, the UART through a two-level DDR3 table). Two things a Linux boot
+ * from DDR3 needs were still unchecked, and are now:
+ *
+ *   - Execution: a small routine is copied into DDR3 (physically, before
+ *     paging) and called in S-mode at its *virtual* address, so the fetch goes
+ *     through the instruction MMU's walker and out of DDR3. It reports its own
+ *     pc with `auipc`, which has to be the virtual address - a fetch that
+ *     ignored translation, or ran a stale copy elsewhere, would give another.
+ *   - Faults: entries whose contents are *defined* as invalid (written as
+ *     zero, not left unwritten) must raise the right page fault with the right
+ *     address - at the root (a load and a store) and at the second level (the
+ *     root points at the DDR3-resident table, whose entry is zero). The
+ *     deliberate traps use the same armed-trap mechanism as the acceptance
+ *     test (software/soc/trap.h); the handler runs in M-mode, which does not
+ *     translate, and resumes S-mode after the faulting instruction.
+ *
  * Mirrors software/soc/mmutest.c's own two claims - "the walkers are bus
  * masters" and "the window is bigger than the old ceiling" - one more time,
  * against a third kind of slave: DDR3 is neither block RAM nor SDRAM, is
@@ -91,6 +109,21 @@
  * of the root table (+0x000..0xFFF) and of the test frame (+0x1000). */
 #define L2_PA (DDR3_BASE + 0x00002000u)
 
+/* Part 12. The routine lives at CODE_PA (clear of the root table, the L2
+ * table and the test frame) and is reached through the same translated
+ * megapage as the test frame, so CODE_VA is TEST_VA's megapage plus the same
+ * offset. TEST_VA is defined below; the two stay in step by construction. */
+#define CODE_OFFSET 0x00004000u
+#define CODE_PA     (DDR3_BASE + CODE_OFFSET)
+
+/* Virtual addresses whose page-table entries are written as zero, so that the
+ * contents are defined (an unwritten DDR3 location reads as `x` in simulation,
+ * which hangs the walker: the Part 11 lesson). FAULT_VA_ROOT is an invalid
+ * root entry (index 320); FAULT_VA_L2 is the UART megapage's second page
+ * (vpn0 = 1), whose level-2 entry is zero under a valid root pointer. */
+#define FAULT_VA_ROOT 0x50000000u
+#define FAULT_VA_L2   (UART_BASE_A + 0x1000u)
+
 /* An unused virtual megapage - not RAM_BASE, not SDRAM_BASE, not
  * DDR3_BASE itself - chosen so this is a genuine translation, not an
  * identity map that would not distinguish "the walk happened" from "the
@@ -129,6 +162,31 @@ static inline uint32_t device_page_pte(uint32_t phys_page_base)
 
 #define MAGIC 0x5A7A5A7Au
 
+/* The routine that runs out of DDR3. Position-independent by construction (only
+ * register arithmetic, an `auipc`, and a pc-relative branch), so it runs
+ * unchanged at the virtual address it is called at: it stores its own pc
+ * through the pointer in a0, adds 3 twenty times behind a taken backward
+ * branch, and returns 60. It sits in .rodata (the program image) and is copied
+ * into DDR3 by main(), because nothing else loads DDR3. */
+extern const uint32_t ddr_code_start[], ddr_code_end[];
+__asm__(
+    "    .section .rodata\n"
+    "    .balign 4\n"
+    "    .globl ddr_code_start\n"
+    "ddr_code_start:\n"
+    "    auipc t2, 0\n"
+    "    sw    t2, 0(a0)\n"
+    "    li    t0, 0\n"
+    "    li    t1, 20\n"
+    "1:  addi  t0, t0, 3\n"
+    "    addi  t1, t1, -1\n"
+    "    bnez  t1, 1b\n"
+    "    mv    a0, t0\n"
+    "    ret\n"
+    "    .globl ddr_code_end\n"
+    "ddr_code_end:\n"
+    "    .text\n");
+
 static int failures = 0;
 static void report(const char *name, int ok)
 {
@@ -152,6 +210,44 @@ static void s_mode_main(void)
     report("store through a DDR3-backed PTE", 1);
     report("load through a DDR3 PTE reads back", *test == MAGIC);
 
+    /* ---- Part 12: execute out of DDR3, through the instruction MMU ---- */
+    {
+        volatile uint32_t pc_seen = 0;
+        uint32_t (*fn)(volatile uint32_t *) =
+            (uint32_t (*)(volatile uint32_t *))(uintptr_t)(TEST_VA + CODE_OFFSET);
+        uint32_t r = fn(&pc_seen);
+        report("code fetched through a DDR3 PTE runs", r == 60);
+        report("... at its virtual address", pc_seen == TEST_VA + CODE_OFFSET);
+    }
+
+    /* ---- Part 12: page faults through DDR3-resident tables ---- */
+    {
+        volatile uint32_t *bad_root = (volatile uint32_t *)FAULT_VA_ROOT;
+        volatile uint32_t *bad_l2   = (volatile uint32_t *)FAULT_VA_L2;
+        uint32_t n = TRAP_COUNT;
+
+        trap_arm(1);
+        (void)*bad_root;                         /* one lw: resumed at mepc+4 */
+        report("load, invalid root entry: cause 13",
+               TRAP_COUNT == n + 1 && TRAP_MCAUSE == 13u);
+        report("... and mtval is the address", TRAP_MTVAL == FAULT_VA_ROOT);
+
+        trap_arm(1);
+        *bad_root = 1;                           /* one sw */
+        report("store, invalid root entry: cause 15",
+               TRAP_COUNT == n + 2 && TRAP_MCAUSE == 15u && TRAP_MTVAL == FAULT_VA_ROOT);
+
+        trap_arm(1);
+        (void)*bad_l2;
+        report("load, invalid L2 entry: cause 13",
+               TRAP_COUNT == n + 3 && TRAP_MCAUSE == 13u && TRAP_MTVAL == FAULT_VA_L2);
+
+        trap_arm(1);
+        *bad_l2 = 1;
+        report("store, invalid L2 entry: cause 15",
+               TRAP_COUNT == n + 4 && TRAP_MCAUSE == 15u && TRAP_MTVAL == FAULT_VA_L2);
+    }
+
     put_str("\n---------------------------------------------\n");
     if (failures == 0) {
         put_str("DDR3 PAGED-ACCESS TEST PASSED\n");
@@ -172,7 +268,7 @@ int main(void)
 
     trap_install();
 
-    put_str("\n=== Sv32 with the page table in DDR3 (Phase 9 Stage 2, Part 3) ===\n");
+    put_str("\n=== Sv32 with the page table in DDR3 (Phase 9 Stage 2, Parts 3-12) ===\n");
     put_str("root table at "); put_hex(ROOT_PA);
     put_str(", translating "); put_hex(TEST_VA);
     put_str(" -> "); put_hex(TEST_PA); put_str("\n\n");
@@ -206,6 +302,22 @@ int main(void)
            root[UART_BASE_A >> MEGAPAGE_SHIFT] == table_pte(L2_PA));
     report("UART level-2 leaf reads back",
            l2[(UART_BASE_A >> 12) & 0x3FFu] == device_page_pte(UART_BASE_A));
+
+    /* ---- Part 12 setup, still physical: the routine into DDR3, and the two
+     * entries that must fault written as zero (invalid, but defined). ---- */
+    {
+        volatile uint32_t *code = (volatile uint32_t *)CODE_PA;
+        uint32_t words = (uint32_t)(ddr_code_end - ddr_code_start);
+        for (uint32_t i = 0; i < words; i++) code[i] = ddr_code_start[i];
+        __asm__ volatile ("fence.i" ::: "memory");   /* the I-cache must not hold stale words */
+        root[FAULT_VA_ROOT >> MEGAPAGE_SHIFT] = 0;
+        l2[(FAULT_VA_L2 >> 12) & 0x3FFu]      = 0;
+        int same = 1;
+        for (uint32_t i = 0; i < words; i++) if (code[i] != ddr_code_start[i]) same = 0;
+        report("routine copied into DDR3 reads back", same);
+        report("invalid entries read back as zero",
+               root[FAULT_VA_ROOT >> MEGAPAGE_SHIFT] == 0 && l2[(FAULT_VA_L2 >> 12) & 0x3FFu] == 0);
+    }
 
     /* Seed the physical frame under test before satp goes on, the same
      * "separate a broken table from a broken walk" reasoning mmutest.c's

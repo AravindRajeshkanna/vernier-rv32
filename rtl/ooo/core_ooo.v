@@ -1379,9 +1379,11 @@ module core_ooo #(
         .sum(csr_mstatus_sum), .mxr(csr_mstatus_mxr),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(head_mmu_resolved), .fault(head_mmu_fault), .pa(head_mmu_pa),
-        // Same reasoning as cpu_core.v's own identical tie-off: the data
-        // address cannot move under a stall the way the PC can, so the
-        // data side has no use for mmu.v's speculative-va output. Named
+        // The data address cannot move under a stall the way the PC can,
+        // and this core takes the faulting address when the access issues
+        // and keeps it in the reorder buffer (`rob_trap_val`), so it has no
+        // use for mmu.v's speculative-va output. (cpu_core.v does use it,
+        // for the trap value of a page fault: see its instance.) Named
         // rather than left off, so the port is accounted for.
         /* verilator lint_off PINCONNECTEMPTY */
         .pa_va(),

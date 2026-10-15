@@ -1120,6 +1120,7 @@ module cpu_core #(
     wire need_translate  = is_mem_op_now && !mem_misaligned &&
                            satp_mode && (effective_priv_for_data != PRIV_M);
     wire [31:0] mmu_pa;
+    wire [31:0] mmu_pa_va;   // the virtual address `mmu_pa` is the translation of; see the instance
     assign sfence_en = id_ex_valid && id_ex_is_sfence_vma && !interrupt_taken && ex_commit;
     wire fence_i_en = id_ex_valid && id_ex_is_fence_i && !interrupt_taken && ex_commit;
     assign fence_i = fence_i_en;
@@ -1139,13 +1140,18 @@ module cpu_core #(
         .sum(csr_mstatus_sum), .mxr(csr_mstatus_mxr),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(mmu_resolved), .fault(mmu_fault), .pa(mmu_pa),
-        // The data address cannot move under a stall the way the PC can -
-        // mmu.v snapshots it for exactly that reason - so the data side has
-        // no use for this. Named rather than left off, so the port is
-        // accounted for.
-        /* verilator lint_off PINCONNECTEMPTY */
-        .pa_va(),
-        /* verilator lint_on PINCONNECTEMPTY */
+        // Not for the translation - the data address cannot move under a
+        // stall the way the PC can, and mmu.v snapshots it for exactly that
+        // reason, so `pa` is right - but for the trap value. A page fault
+        // (or a PMP fault after a walk) must report the faulting *virtual
+        // address*, and `mem_addr_ex` is recomputed from live forwarding
+        // every cycle: by the time a multi-cycle walk concludes, an operand
+        // that came from the instruction just before has decayed to whatever
+        // the register file held earlier, and that is what mtval used to
+        // get. `pa_va` is `va` on a TLB hit and the walk's own `va_r` after
+        // a walk. Found by software/soc/ddrmmutest.c (Phase 9 Stage 2,
+        // Part 12): `lui a5,0x50000; lw a5,0(a5)` reported mtval = 1.
+        .pa_va(mmu_pa_va),
         .busy(mmu_busy),
         .ptw_req(ptw_req), .ptw_addr(ptw_addr),
         .ptw_gnt(ptw_gnt), .ptw_rdata(ptw_rdata)
@@ -1354,8 +1360,8 @@ module cpu_core #(
     wire [31:0] val_for_csr   = interrupt_taken ? 32'b0 :
                                  (id_ex_is_trap_event ? id_ex_trap_val :
                                  (mem_misaligned  ? mem_addr_ex :
-                                 (mmu_fault_now   ? mem_addr_ex :
-                                 (pmp_fault_now   ? mem_addr_ex :
+                                 (mmu_fault_now   ? mmu_pa_va :
+                                 (pmp_fault_now   ? (need_translate ? mmu_pa_va : mem_addr_ex) :
                                  (fetch_misaligned ? actual_target : id_ex_trap_val)))));
 
     // MRET/SRET's own privilege-restore side effect must be suppressed

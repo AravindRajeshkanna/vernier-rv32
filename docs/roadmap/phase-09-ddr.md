@@ -20,7 +20,8 @@ a CPU reads and writes DDR3 as data through `rtl/soc/wb_ddr.v`, wired into
 `rtl/soc/soc_top.v` behind `DDR3_ENABLE` so every existing build is untouched;
 Part 9: it fetches and executes instructions from DDR3, which Part 2 had not
 done); Stage 2's Parts 3 to 6, a paged (Sv32) access to DDR3, were an
-investigation that Part 11 closed (the test never mapped the UART; the walker, the cache and the DDR3 path were not at fault),
+investigation that Part 11 closed (the test never mapped the UART; the walker, the cache and the DDR3 path were not at fault)
+and Part 12 extended to execution out of DDR3 and to page faults through DDR3 tables (which found an in-order-core bug in `mtval`),
 and Parts 7 and 8 (atomics, the device-tree node) shipped; Part 10 added a UART loader path into
 DDR3 and, with it, fixed a bug in `rtl/soc/wb_ddr.v` that every earlier test
 had missed (a request made before calibration was dropped and acknowledged
@@ -2663,7 +2664,7 @@ fetch path is exercised for a handful of 16-byte blocks, not a large image
 or a full-part sweep. Nothing loads DDR3 except the program itself: there is
 no boot ROM or UART loader path to DDR3 (Part 10 adds the UART loader), so
 a `sim_sdramboot` equivalent (reset straight into DDR3) is still not done. Paged execution out of DDR3
-is still blocked on the banked investigation above (Update, Part 11: no longer blocked, but not tried). No hardware: this is
+is still blocked on the banked investigation above (Update, Part 11: no longer blocked; Part 12: tried, and it works). No hardware: this is
 the simulation DQ model only.
 
 **Update, Part 10: the boot ROM's UART loader can put a program into
@@ -2786,10 +2787,81 @@ documents that includes one, which is why it is recorded under Known defects and
 - Nothing is on hardware: this is the simulation DQ model, and a board's unwritten DDR3 holds arbitrary bits, not `x`.
 - Paged *execution* out of DDR3 (instruction fetch through the instruction MMU from a DDR3 frame) is no longer blocked by this
   investigation, but has not been tried. Nor has a page *fault* through a DDR3-resident table with defined contents (an
-  invalid entry written as zero); the program still reads an unwritten entry as `x` if it ever walks one, which is the right
-  outcome for a test that touches memory it never initialised.
+  invalid entry written as zero). (Update, Part 12: both are tested now, and the fault test found a bug.) The program still
+  reads an unwritten entry as `x` if it ever walks one, which is the right outcome for a test that touches memory it never
+  initialised.
 - The cost of the redundant read in cycles, for Linux or anything else, was not measured.
 - One run per core.
+
+**Update, Part 12: execution out of DDR3 and page faults through DDR3 tables are tested, and testing them found a real bug in the
+in-order core: `mtval` after a page fault that needed a walk was not the faulting address.** Part 11 left two things untried;
+`software/soc/ddrmmutest.c` now does both, on both cores, in `make verify`.
+
+**What the test adds.**
+
+- **Execution.** A routine of nine instructions (it stores its own `pc` from an `auipc`, adds 3 twenty times behind a taken
+  backward branch, and returns 60) is copied into DDR3 physically, before paging, and called in S-mode at its *virtual* address
+  through the same translated megapage as the data frame. The fetch therefore goes through the instruction MMU's walker, which
+  reads the root entry out of DDR3 (seen in the monitor: a read at `0xA0000400`, the megapage's entry), and out of DDR3 through
+  the instruction cache. The routine reports its own `pc`, which has to
+  be the virtual address: a fetch that ignored translation, or ran a stale copy somewhere else, would report another.
+- **Faults.** Entries whose contents are *defined* as invalid (written as zero; Part 11's lesson is that an unwritten DDR3
+  location is `x` in simulation) must raise the right page fault at the right address: a load and a store at an invalid root
+  entry (index 320), and a load and a store at an invalid level-2 entry under a valid root pointer (the UART megapage's second
+  page). The traps are armed and resumed the way the acceptance test's are (`software/soc/trap.h`): the handler runs in M-mode,
+  which does not translate, and returns to S-mode after the faulting instruction.
+
+**Result: execution works, and the faults found a bug.** On the in-order core the routine ran from DDR3 at its virtual address and
+returned 60, and all four faults raised the right cause (13, 15, 13, 15). The four address checks failed. A passive monitor
+(scratch, not committed) printed the CSRs one cycle after each trap, beside the faulting access's own address as the core had it
+and as the MMU had latched it:
+
+| trap | cause | `mtval` the core wrote | `mem_addr_ex` at the trap cycle | `MMU.va_r` | the faulting address |
+|---|---|---|---|---|---|
+| load, invalid root entry | 13 | `0x00000001` | `0x00000001` | `0x50000000` | `0x50000000` |
+| store, invalid root entry | 15 | `0x04000014` | `0x04000014` | `0x50000000` | `0x50000000` |
+| load, invalid level-2 entry | 13 | `0x04000014` | `0x04000014` | `0x04001000` | `0x04001000` |
+| store, invalid level-2 entry | 15 | `0x04000014` | `0x04000014` | `0x04001000` | `0x04001000` |
+
+**Why.** `rtl/cpu_core.v` took the trap value of an MMU fault from `mem_addr_ex`, which it recomputes every cycle from live
+forwarding. During a multi-cycle walk the pipeline keeps draining under the stalled access, and an operand that had come from the
+instruction just before it decays to whatever the register file held earlier; the core's own comments say so for the address the
+MMU walks (`va_r`) and for store data (`store_data_latched`), and the trap value had been missed. Every faulting access in the
+test follows a `lui` that sets its base register (`lui a5,0x50000; lw a5,0(a5)`), which is exactly that shape, and the values
+written (`0x1`, and `0x04000014`, the UART status register's address that the console code had just used) are earlier contents of
+those registers, not addresses the program formed for these accesses. The wide core takes the address when the access issues and
+keeps it in the reorder buffer (`rob_trap_val`), so it was never affected, and passes the same checks unchanged. A fault on a TLB
+hit has no walk to decay over (reasoned, not provoked). Why riscv-tests and the Spike co-simulation never saw the bug was not
+checked; faults whose base register was settled before the access would not show it.
+
+**The fix** is the instruction the MMU already provided for the purpose: its `pa_va` output, "which virtual address `pa` is the
+translation of", which is the live address on a TLB hit and the walk's own snapshot after a walk. The in-order core left that port
+unconnected, on the reasoning that the translation does not need it; it is now the trap value of a page fault, and of a PMP fault
+on a translated access (which has the same decay). Nothing else changes: no stall, no cycle.
+
+**Evidence.**
+
+- Red, then green: before the fix the in-order core fails four checks (the ones above) and passes the execution checks; after it,
+  `make sim_ddrmmutest` passes. The wide core passes before and after, with its RTL unchanged.
+- The fix moves no published number: the in-order Linux boot reaches `VERNIER-RV32-LINUX-BOOT-OK` at cycle 146,466,531, as
+  before. Identical to the cycle means the boot took no fault the bug changed.
+- The new checks can fail. A mutant of the program that takes the execute permission off the DDR3 megapage stops with an
+  unexpected `INSTRUCTION PAGE FAULT` (cause 12) at the call; a mutant that writes a valid leaf where the level-2 entry is meant
+  to be invalid fails the two level-2 fault checks.
+- `make verify` and `make verify_ooo` exit 0. The new test ends at 3,306,980 ns of simulated time in-order and 3,461,980 ns on the
+  wide core.
+
+**What this does not establish.**
+
+- `stval`. The test takes the faults in M-mode (nothing is delegated), so it reads `mtval`; the same `val_for_csr` feeds `stval`
+  when a fault is delegated, but a delegated fault was not run.
+- Any other path with a stale operand: the instruction fetch of a faulting `jalr` target, AMOs and `lr`/`sc` (they share the
+  data MMU and so the fix, but were not provoked), and the misaligned case, which is detected before translation and is not
+  affected.
+- Paged execution of anything larger than a nine-instruction routine, and execution of the *page tables'* own megapage.
+- Fmax. The fix adds a mux input on the trap-value path; its timing was not measured (the record puts the netlist noise at about
+  1.4 MHz).
+- Nothing is on a board; the DDR3 model is the simulation one.
 
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
@@ -2883,10 +2955,18 @@ are both still open, undistinguished. Root cause not found. Reproduces
 identically on every attempt. See Phase 9 Stage 2's own "Update, Part 3"
 through "Update, Part 6" for the full account.
 
+**RESOLVED - the in-order core wrote a stale register value, not the faulting address, into `mtval` for a page fault that needed a walk
+(`rtl/cpu_core.v`; Phase 9, Stage 2, Part 12).** `val_for_csr` took the address from `mem_addr_ex`, which is recomputed from live
+forwarding and decays during a multi-cycle walk when the base register came from the instruction just before the access. Found by
+`make sim_ddrmmutest`'s page-fault checks (four failures, causes right and addresses wrong), fixed by connecting the MMU's `pa_va`
+output, which holds the faulting address, and using it for MMU faults and for PMP faults on translated accesses. The wide core was
+never affected. The in-order Linux boot is unchanged to the cycle. `stval` for a delegated fault, AMOs and `lr`/`sc` were not
+provoked.
+
 **OPEN - the page-table walker makes a second-level read after every first-level read, even when the first-level entry is a
 leaf or invalid (`rtl/mmu.v`; Phase 9, Stage 2, Part 11).** `S_L1W` always goes to `S_L2`, which reads `{PPN, 12'b0} + vpn0 * 4`
-from the first-level entry and ignores the answer when that entry was conclusive. Measured only as the reads themselves, three
-times in `make sim_ddrmmutest` (`0x80000004`, `0x8000003C`, `0xA0000004`). The consequences are reasoned, not measured: an extra
+from the first-level entry and ignores the answer when that entry was conclusive. Measured only as the reads themselves, four
+times in `make sim_ddrmmutest` (`0x80000004`, `0x8000003C`, `0xA0000004`, and `0xA0000010` on the instruction walker in Part 12). The consequences are reasoned, not measured: an extra
 bus read per megapage walk; for a megapage whose frame is a device, a read of device registers, some of which have side
 effects (a UART receive register, a PLIC claim register); for an invalid entry, an address taken from bits software controls,
 which in hardware is a wild read (an address that decodes to no slave is acknowledged with zero data, so not a hang) and in
@@ -2937,4 +3017,4 @@ Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorde
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang) is in `make verify` as well.
+The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang; Part 12 added execution out of DDR3 and page faults through DDR3 tables) is in `make verify` as well.
