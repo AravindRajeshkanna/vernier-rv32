@@ -1379,12 +1379,16 @@ module core_ooo #(
         .sum(csr_mstatus_sum), .mxr(csr_mstatus_mxr),
         .sfence(sfence_en), .satp_ppn(satp_ppn),
         .resolved(head_mmu_resolved), .fault(head_mmu_fault), .pa(head_mmu_pa),
-        // The data address cannot move under a stall the way the PC can,
-        // and this core takes the faulting address when the access issues
-        // and keeps it in the reorder buffer (`rob_trap_val`), so it has no
-        // use for mmu.v's speculative-va output. (cpu_core.v does use it,
-        // for the trap value of a page fault: see its instance.) Named
-        // rather than left off, so the port is accounted for.
+        // The data address cannot move under a stall the way the PC can: this
+        // core never recomputes it from live forwarding. An access executed
+        // at the head (a store, an AMO, a translated load) forms it from the
+        // operands held in its own reorder-buffer entry (`head_mem_addr_virt`),
+        // which are stable while it waits, and uses that for the trap value
+        // too; a load that traps when it issues records its address in
+        // `rob_trap_val`. Either way it has no use for mmu.v's speculative-va
+        // output. (cpu_core.v does use it, for the trap value of a page
+        // fault: see its instance.) Named rather than left off, so the port
+        // is accounted for.
         /* verilator lint_off PINCONNECTEMPTY */
         .pa_va(),
         /* verilator lint_on PINCONNECTEMPTY */
@@ -1751,7 +1755,16 @@ module core_ooo #(
     wire amo_writes = (rob_is_amo[rob_head] && !head_is_lr_ex && !head_is_sc_ex) || sc_success;
     assign amo_done   = amo_active && (amo_wr_phase ? !dbus_wait
                                                   : (dmem_rvalid && !amo_writes));
-    wire amo_stall  = headS_valid && rob_is_amo[rob_head] && headS_ready && !amo_done;
+    // An AMO/LR/SC that is going to trap - a page fault, a misaligned address, a PMP denial - never reaches
+    // the bus: `amo_active` stays low and `amo_done` never comes. It must not wait for one. `amo_stall` feeds
+    // `head_dbus_stall`, which gates `head_ex_commit` and with it `head_take_trap`, so an AMO that stalled on
+    // its own missing completion could never take the trap that was waiting for it, and the core hung there
+    // for good (found by software/soc/ddrmmutest.c, Phase 9 Stage 2, Part 13: an `amoadd.w` to a read-only
+    // page; the walk resolved with a fault, again and again, and no trap was taken). Nothing is released
+    // early: the walk itself still holds the head (`head_mmu_wait_stall`), and a page fault only shows once it
+    // has resolved.
+    wire head_amo_traps = head_mmu_fault_now || head_mem_misaligned || head_pmp_fault_now;
+    wire amo_stall  = headS_valid && rob_is_amo[rob_head] && headS_ready && !amo_done && !head_amo_traps;
     reg [ROB_AW-1:0] loadL_rob_idx;
     reg [31:0] loadL_addr_phys;
     reg [2:0]  loadL_funct3;

@@ -1679,7 +1679,8 @@ own `amo_done`: a redirect with `keep_culprit=0`, meaning not a plain
 mispredict - it coincides with `head_take_trap`, i.e. `interrupt_taken`.
 Reading `interrupt_taken`'s own gate explains why: `!head_busy_now`, and
 `head_busy_now` folds in `head_dbus_stall`, which folds in `amo_stall`,
-which is defined as `!amo_done` - so on the exact cycle an AMO's `amo_done`
+which is defined as `!amo_done` (since Phase 9 Part 13 it also lets go while the AMO is going to trap, which does not touch this
+argument: it is about an AMO that completes) - so on the exact cycle an AMO's `amo_done`
 turns 1, `amo_stall` turns 0 in the same combinational step, and
 `head_busy_now` goes false with it. If a timer interrupt happens to be
 pending at that exact instant, `interrupt_taken` fires *instead of* the

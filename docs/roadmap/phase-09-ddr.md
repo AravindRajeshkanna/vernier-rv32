@@ -22,6 +22,8 @@ Part 9: it fetches and executes instructions from DDR3, which Part 2 had not
 done); Stage 2's Parts 3 to 6, a paged (Sv32) access to DDR3, were an
 investigation that Part 11 closed (the test never mapped the UART; the walker, the cache and the DDR3 path were not at fault)
 and Part 12 extended to execution out of DDR3 and to page faults through DDR3 tables (which found an in-order-core bug in `mtval`),
+and Part 13 to atomics, a read-only page, a PMP-denied frame, alignment, instruction faults and faults delegated to S-mode (which
+found a wide-core bug: an AMO, `lr` or `sc` that faulted hung the core),
 and Parts 7 and 8 (atomics, the device-tree node) shipped; Part 10 added a UART loader path into
 DDR3 and, with it, fixed a bug in `rtl/soc/wb_ddr.v` that every earlier test
 had missed (a request made before calibration was dropped and acknowledged
@@ -2830,8 +2832,12 @@ MMU walks (`va_r`) and for store data (`store_data_latched`), and the trap value
 test follows a `lui` that sets its base register (`lui a5,0x50000; lw a5,0(a5)`), which is exactly that shape, and the values
 written (`0x1`, and `0x04000014`, the UART status register's address that the console code had just used) are earlier contents of
 those registers, not addresses the program formed for these accesses. The wide core takes the address when the access issues and
-keeps it in the reorder buffer (`rob_trap_val`), so it was never affected, and passes the same checks unchanged. A fault on a TLB
-hit has no walk to decay over (reasoned, not provoked). Why riscv-tests and the Spike co-simulation never saw the bug was not
+keeps it in the reorder buffer (`rob_trap_val`), so it was never affected, and passes the same checks unchanged. (Update, Part 13:
+the conclusion stands and the mechanism is misstated. `rob_trap_val` holds the address only of a load that traps when it issues.
+A store, an AMO or a translated load runs at the head of the reorder buffer and forms its address there, from the operands held
+in its own entry: `head_mem_addr_virt = headS_op1 + rob_imm[rob_head]`, which cannot decay.) A fault on a TLB
+hit has no walk to decay over (reasoned, not provoked; Update, Part 13: provoked for a permission fault, and it reports the right
+address). Why riscv-tests and the Spike co-simulation never saw the bug was not
 checked; faults whose base register was settled before the access would not show it.
 
 **The fix** is the instruction the MMU already provided for the purpose: its `pa_va` output, "which virtual address `pa` is the
@@ -2854,14 +2860,92 @@ on a translated access (which has the same decay). Nothing else changes: no stal
 **What this does not establish.**
 
 - `stval`. The test takes the faults in M-mode (nothing is delegated), so it reads `mtval`; the same `val_for_csr` feeds `stval`
-  when a fault is delegated, but a delegated fault was not run.
+  when a fault is delegated, but a delegated fault was not run. (Update, Part 13: run now; `scause`, `stval` and `sepc` are right.)
 - Any other path with a stale operand: the instruction fetch of a faulting `jalr` target, AMOs and `lr`/`sc` (they share the
   data MMU and so the fix, but were not provoked), and the misaligned case, which is detected before translation and is not
-  affected.
+  affected. (Update, Part 13: all of these are run now, and the AMOs found a bug in the wide core.)
 - Paged execution of anything larger than a nine-instruction routine, and execution of the *page tables'* own megapage.
 - Fmax. The fix adds a mux input on the trap-value path; its timing was not measured (the record puts the netlist noise at about
   1.4 MHz).
 - Nothing is on a board; the DDR3 model is the simulation one.
+
+**Update, Part 13: the list Part 12 left is run, and the atomics found a second bug, this one in the wide core: an AMO, `lr.w` or
+`sc.w` that faulted hung the core.** Part 12 ended with what it had not established. `software/soc/ddrmmutest.c` runs those things
+now, on both cores, in `make verify`: 34 more checks.
+
+**What the test adds.** The accesses walk: the TLB is emptied with `sfence.vma` first (an invalid entry is never cached, so those
+walk anyway), and the register an access needs is made by the instruction just before it, the shape that made `mtval` wrong in
+Part 12. Two checks are taken deliberately on a TLB hit: the store to the read-only page and the `sc.w` after its `lr.w`.
+
+- **Atomics through a walk.** `amoadd.w` with its address made just before, then with its addend made just before, and `lr.w`
+  followed by `sc.w`, on the translated DDR3 frame: the old value, the sum in memory, and the `sc.w` result and stored value.
+- **A page S-mode may read and not write.** `root[272]` points at a second level-2 table in DDR3 whose entry 0 is a read-only
+  leaf onto the test frame (a second name for the same word). A store (on a TLB hit), an `amoadd.w` (on a miss) and an `sc.w` after
+  an `lr.w` must fault with cause 15 (an AMO is a store as far as permissions go), the `lr.w` must not fault, and the word must
+  be unchanged.
+- **A frame PMP denies to S-mode.** PMP entry 0 becomes a 4 KB region with no permissions; the all-memory entry that `crt0_ram.S` sets up moves
+  to entry 1. `lw`, `sw`, `amoadd.w` and `lr.w` through a walk must raise access faults (5, 7, 7, 5) with the virtual address in
+  `mtval`. M-mode still reaches the frame, because the entry is not locked. This is the half of Part 12's fix that covers PMP
+  faults on translated accesses, which that part could only reason about.
+- **Alignment under paging.** A misaligned `lw` and `amoadd.w` with the TLB empty must trap as misaligned (4 and 6), at the right
+  address, not as a page fault.
+- **Instruction page faults.** A `jalr` to an invalid root entry, to an invalid level-2 entry and to a page that is mapped but not
+  executable (the UART's) must raise cause 12 with the target in both `mepc` and `mtval`.
+- **Delegation.** With `medeleg` set for causes 12, 13 and 15, a load, a store, an AMO and two fetch faults are taken in S-mode,
+  by a handler that records `scause`, `stval` and `sepc`, and no trap reaches M-mode.
+
+Two small trap front ends in the test make the last two possible without touching the shared runtime (`crt0_ram.S`): `m_front` sits
+in front of `trap_vector`, handles an `ecall` from S-mode (which sets `medeleg`, since S-mode cannot) and an armed instruction page
+fault (which must resume at `ra`, where the armed path in `crt0_ram.S` would resume at `mepc+4`, an unmapped address), and hands everything
+else to `trap_vector` untouched, so an unexpected trap is still loud; `s_front` is the S-mode handler.
+
+**Result.** On the in-order core every check passed the first time: no bug there. On the wide core the run stopped after
+`store, read-only page (TLB hit)` and the simulator spun until the testbench's cycle limit. A passive monitor (scratch, not
+committed) showed the `amoadd.w` at the head of the reorder buffer walking root entry 272 and then the level-2 entry, the walk
+resolving with a fault, no trap being taken, and the walk starting again: 5,166 resolutions in the 2.6 million cycles watched.
+`head_dbus_stall` was already high when the AMO reached the head, and `head_ex_commit` was low throughout.
+
+**Why.** In `rtl/ooo/core_ooo.v`, `amo_stall` was `headS_valid && rob_is_amo[rob_head] && headS_ready && !amo_done`, and
+`amo_done` requires `amo_active`, which is low whenever the AMO is going to trap (`!head_mmu_fault_now`, `!head_mem_misaligned`,
+`!head_pmp_fault_now` are terms of it). So an AMO that traps never produces the `amo_done` its stall waits for; `amo_stall` is a
+term of `head_dbus_stall`, which gates `head_ex_commit`, which gates `head_take_trap`. The trap waits for the stall and the stall
+waits for the AMO to finish. Loads and plain stores have no such term, which is why Part 12's four faults passed. The in-order core
+does not have it: its `amo_stall` is `amo_active && !amo_done`, with `amo_active` meaning the AMO is in the memory stage, which an
+AMO that traps in the execute stage does not reach. It has been there since stage 1d (#60), where `amo_stall` and the page-fault
+and misaligned terms of `amo_active` first stood side by side (the PMP term followed in #105). Why nothing saw it before was not
+checked. A faulting AMO would have hung the Linux boot, which reaches its marker, so the boot does not do one.
+
+**The fix** is `head_amo_traps = head_mmu_fault_now || head_mem_misaligned || head_pmp_fault_now`, the three terms `amo_active`
+already excludes, and `amo_stall` no longer holds while it is true. Nothing is released early: the walk itself still holds the head
+(`head_mmu_wait_stall`), and a page fault only shows once the walk has resolved. An AMO that does not trap is unchanged.
+
+**Evidence.**
+
+- Red, then green: the unmodified wide core hangs at the first AMO that faults; with the fix, all 34 pass. The in-order core
+  passes before and after (its RTL is unchanged by this part).
+- The fix moves no published number: the Linux boot reaches `VERNIER-RV32-LINUX-BOOT-OK` at cycle 146,466,531 in-order and
+  148,856,491 on the wide core, both as before. A change that acts only on an AMO that traps cannot move a boot that has none.
+- Each term of the fix is needed. Taking out one at a time, the wide core hangs at the case that term covers: without the page-fault
+  term at the `amoadd.w` to the read-only page, without the PMP term at the `amoadd.w` to the PMP-denied frame, without the
+  misaligned term at the misaligned `amoadd.w`.
+- The new checks can fail in other ways, each run on the final test. Reverting Part 12's `mtval` fix on the in-order core fails 12
+  checks, 8 of them in Part 13 (AMO, `lr` and `sc` faults, and the delegated ones); reverting only its PMP half fails the `sw` and
+  `amoadd.w` checks (the `lw` and `lr.w` checks do not catch that one: the address register had not decayed in that program, and
+  why was not examined). Treating an AMO as a load for permissions fails 9 checks on each core. Zeroing `stval` fails the 5
+  delegated checks. Zeroing the fetch-fault trap value fails 5 on each core. Making the read-only page writable fails 7.
+  Switching off the in-order core's misaligned-AMO check fails the misaligned `amoadd.w` check.
+- The test ends at 8,159,620 ns of simulated time in-order and 8,561,460 ns on the wide core.
+
+**What this does not establish.**
+
+- PMP on an instruction fetch, and on `sc.w` (the `amoadd.w` and `lr.w` cases are run); a PMP-denied page-table walk, which the
+  checker does not cover by design.
+- `lr`/`sc` reservation behaviour across a trap; an interrupt arriving on the very cycle a faulting AMO reaches the head (the
+  interrupt would win, and the AMO would run again after the handler).
+- Delegated misaligned accesses and delegated interrupts; only 12, 13 and 15 are delegated here.
+- Fmax. `head_amo_traps` adds three signals to the cone of `amo_stall`, which feeds `head_dbus_stall`; each already fed
+  `amo_active`, so no new dependency, but the timing was not measured.
+- `CORE=hetero`. Nothing on a board.
 
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
@@ -2961,7 +3045,14 @@ forwarding and decays during a multi-cycle walk when the base register came from
 `make sim_ddrmmutest`'s page-fault checks (four failures, causes right and addresses wrong), fixed by connecting the MMU's `pa_va`
 output, which holds the faulting address, and using it for MMU faults and for PMP faults on translated accesses. The wide core was
 never affected. The in-order Linux boot is unchanged to the cycle. `stval` for a delegated fault, AMOs and `lr`/`sc` were not
-provoked.
+provoked. (Update, Part 13: all provoked now, with the PMP half of the fix; the AMOs found the next entry.)
+
+**RESOLVED - the wide core hung on any AMO, `lr.w` or `sc.w` that faulted: a page fault, a misaligned address or a PMP denial
+(`rtl/ooo/core_ooo.v`; Phase 9, Stage 2, Part 13).** `amo_stall` waited for an `amo_done` that an AMO which is going to trap can
+never produce, and the trap it was waiting to take is gated by that same stall (`amo_stall` -> `head_dbus_stall` ->
+`head_ex_commit` -> `head_take_trap`). Found by `make sim_ddrmmutest`: an `amoadd.w` to a read-only page resolved its walk with a
+fault over and over and never trapped. Fixed by not stalling while the AMO is going to trap; each of the three causes is needed
+and was checked by taking it out alone. The in-order core never had it. An AMO that does not trap is unchanged.
 
 **OPEN - the page-table walker makes a second-level read after every first-level read, even when the first-level entry is a
 leaf or invalid (`rtl/mmu.v`; Phase 9, Stage 2, Part 11).** `S_L1W` always goes to `S_L2`, which reads `{PPN, 12'b0} + vpn0 * 4`
@@ -3017,4 +3108,5 @@ Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorde
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang; Part 12 added execution out of DDR3 and page faults through DDR3 tables) is in `make verify` as well.
+The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang; Part 12 added execution out of DDR3 and page faults through DDR3 tables; Part 13 added atomics, a read-only page, a PMP-denied
+frame, alignment, instruction faults and faults delegated to S-mode, and found a wide-core bug) is in `make verify` as well.
