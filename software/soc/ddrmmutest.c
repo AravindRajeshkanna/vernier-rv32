@@ -307,7 +307,7 @@ int main(void)
      * entries that must fault written as zero (invalid, but defined). ---- */
     {
         volatile uint32_t *code = (volatile uint32_t *)CODE_PA;
-        uint32_t words = (uint32_t)(ddr_code_end - ddr_code_start);
+        uint32_t words = (uint32_t)(((uintptr_t)ddr_code_end - (uintptr_t)ddr_code_start) / 4);   /* as ddrexec.c does: two symbols, not one array */
         for (uint32_t i = 0; i < words; i++) code[i] = ddr_code_start[i];
         __asm__ volatile ("fence.i" ::: "memory");   /* the I-cache must not hold stale words */
         root[FAULT_VA_ROOT >> MEGAPAGE_SHIFT] = 0;
