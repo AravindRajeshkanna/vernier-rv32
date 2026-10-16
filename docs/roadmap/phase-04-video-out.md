@@ -801,6 +801,27 @@ also not attempted here - a real, separate, much more expensive
 follow-up, matching Round 6/the underclock work's own standard, worth
 doing once (or alongside) confirming BRAM mapping.
 
+**Update 10 (2026-10-15): the open question is answered, and the cause of the hang was not the one this account was chasing.**
+Update 9 left two things open, whether banking restores block-RAM mapping and a full-scale place-and-route, and both were blocked by
+the same thing. The pixel memory was written from three places inside the FSM's `always @(posedge clk or posedge rst)` block, and
+yosys's front end replaces a memory written from a block with an asynchronous reset by a list of registers (`Replacing memory
+\mem0 with list of registers`, eight of them, one per bank): 614,400 flip-flops at 320x240, and then every pass after it crawls.
+That is very probably the `yosys-abc` stage that ran past ten hours above (the same module and the same symptom; that run was not
+repeated), and it is the hang re-measured on 2026-10-02 in [fpga/README.md](../../fpga/README.md). The banks were never the problem
+for this: they fixed the `CHECK`-pass crash, which was a different one. The fix is to write the memory from one `posedge clk`
+block with no reset and to give each bank its own registered read, so that each read is a plain synchronous read of one memory.
+Measured: the module alone at 320x240 synthesises in 7 seconds to 80 `DP16KD` block RAMs, 3,819 LUT4 and 401 flip-flops, with no
+"Replacing memory" warning; the ULX3S 85F SoC at 320x240 synthesises in 120 seconds and 792 MB and places and routes, its first placement seed at 18.28 MHz (82 `DP16KD` and 33,451 `TRELLIS_COMB`, 39% of the device each). Behaviour is unchanged to
+the cycle: `sim/tb_fb_equiv.v` drives this module and the old one (`sim/wb_framebuffer_ref.v`) with the same random traffic, three
+shapes including 320x240, about 5,700 operations, and compares every output every cycle and every stored word every 1,000 cycles,
+with no difference; 14 of 15 deliberate breakages of the new write and read ports fail it (the fifteenth removes a term that is
+redundant, so no test can see it), and the frame `sim_video` writes is byte-identical. `make framebuffer_synth_check` keeps it so.
+Fmax, old module against new, at 8x8 with the same bundle and seeds 0 to 5 (`fpga/synth/fmax_seeds.sh`), the old module gives a mean of 18.86 MHz (17.54 to 19.42) and 34,058 `TRELLIS_COMB`, the new one 18.80 MHz (17.66 to 19.81) and 32,408 (the 8x8
+memories were registers too). The 51 conversions counted on 2026-10-02 are the whole SoC's: 16 from the framebuffer (its eight banks,
+reported twice in a whole-SoC run) and 35 from other modules; the new tree reports 35 and none from the framebuffer.
+**What this does not establish:** Fmax at the full size, where the old module cannot be run for comparison, or the framebuffer on a
+monitor (nothing has driven one).
+
 ## Hardware
 
 *Physical board testing: what has and has not run on a real board.*

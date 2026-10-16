@@ -25,7 +25,7 @@ retries seeds and stops at the first close — the normal build closes by seed
 
 | Artifact | Status |
 |---|---|
-| Full SoC synthesis (yosys) | ✅ **runs, ~19 s** as of August; at today's HEAD the real-scale build does not finish in an hour, see [Re-measured 2026-10-02](#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause) |
+| Full SoC synthesis (yosys) | ✅ **runs, ~19 s** as of August; the real-scale (320x240) build stopped finishing in October and finishes again since 2026-10-15 (120 s, 792 MB), see [Re-measured 2026-10-02](#re-measured-2026-10-02-the-bundle-bump-and-a-regression-it-did-not-cause) |
 | Place-and-route (`nextpnr-ecp5`) | ✅ **runs** — 4 min on an 85F, 11 min on a 45F |
 | Bitstream (`ecppack`) | ✅ **`ulx3s_top.bit`** — 1.1 MB on a 45F, 2.1 MB on an 85F |
 | Resource usage | ✅ **measured** — (the Phase 8 router fabric, `INTERCONNECT=xbar`: 41,439 TRELLIS_COMB, 49% of an 85F, against the bus's 33,810; it was 74,133, 88%, before Phase 8 Part 30 — see [Re-measured 2026-10-09](#re-measured-2026-10-09-the-router-fabric-in-the-soc-and-how-much-a-netlist-moves-fmax-by-itself)) 17,435 TRELLIS_COMB (20%) / 80 DP16KD (38%) / 4 MULT18X18D on an 85F (August; at HEAD, with the framebuffer shrunk to 8x8, 36,817 TRELLIS_COMB / 44%); the 45F figures are stale |
@@ -291,6 +291,20 @@ entry about this file, now seen as a hang rather than a crash. `FB_WIDTH=8
 FB_HEIGHT=8` is the repo's own diagnostic substitution, as used for the
 `CORE=ooo` numbers. It changes the framebuffer, not the CPU path, but its
 effect on Fmax was not isolated.
+
+**Fixed 2026-10-15: why it hung, and that 8x8 is no longer needed to get through synthesis.** The registers were not a
+consequence of the size. The framebuffer's pixel memory was written from the FSM's asynchronous-reset block, and yosys's front end
+turns any memory written from such a block into a list of registers: 614,400 flip-flops at 320x240, and a `PROC_ARST` pass that
+was 16% done after 25 minutes when it was killed. The memory is now written from one clock-only port and each bank has its own
+registered read (`rtl/soc/wb_framebuffer.v`, "The memory's write port"). Measured with the repo's own script on the ULX3S 85F
+target, no `FB_WIDTH`/`FB_HEIGHT`: yosys 120 s and 792 MB, no "Replacing memory" warning from `wb_framebuffer.v` (35 remain, from
+other modules, all small), and the SoC places and routes, its first placement seed at 18.28 MHz (82 `DP16KD` and 33,451 `TRELLIS_COMB`, 39% of the device each). The ECPIX-5 target, same way: synthesises in 131 seconds and 741 MB, closes 25 MHz on its second placement seed (25.71 MHz; 82 `DP16KD`, 32,491 `TRELLIS_COMB`) and writes a bitstream. `framebuffer_synth.sh --check`
+(`make framebuffer_synth_check`) is the guard: the module alone at 320x240 in about 7 seconds, 80 `DP16KD`, 3,819 LUT4, 401
+flip-flops. The 8x8 substitution still makes place-and-route quicker and is still what the Fmax tables above used; their figures
+stand. The change did not move Fmax beyond the seed spread: ULX3S 85F, 8x8, seeds 0 to 5, this bundle, old module against new,
+18.86 MHz mean (17.54 to 19.42) against 18.80 (17.66 to 19.81), and `TRELLIS_COMB` 34,058 against 32,408 (the 8x8 memories were
+registers too). The 51 "Replacing memory" warnings counted above are the whole SoC's: 16 from the framebuffer (its eight banks,
+reported twice) and 35 from other modules; 35 remain.
 
 **Not re-measured:** `ulx3s85-ram`, `CORE=ooo`, the 45F, the video targets and
 the underclocked bitstream. Their figures stand as recorded and name the bundle

@@ -364,8 +364,9 @@ an axis-aligned rectangle, so this stage doesn't take it on. Instead, every
 step of the line checks whether the pixel it is about to plot is actually
 inside the buffer and skips the write if not, while still advancing the
 algorithm — so any endpoints are safe to pass, including ones off the
-buffer entirely, and the operation always completes in a bounded number of
-cycles (at most `max(|X1-X0|,|Y1-Y0|)+1`). The rasterization itself is
+buffer entirely, and the operation completes in a bounded number of
+cycles (at most `max(|X1-X0|,|Y1-Y0|)+1`) - except that a run of about 1,400
+pixels or more never completes (docs/roadmap/phase-10-gpu.md, Known defects). The rasterization itself is
 standard integer Bresenham, which is what makes it hardware-friendly: no
 floating point, no division, one comparison and one or two additions per
 pixel, covering all eight octants and the single-point case with no

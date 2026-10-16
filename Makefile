@@ -262,7 +262,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
-        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 dtb_4hart dtb_check \
+        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_fb_equiv framebuffer_synth_check sim_ulx3s sim_ecpix5 sim_cmd0 dtb dtb_ddr3 dtb_4hart dtb_check \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
@@ -833,6 +833,19 @@ sim_blit:
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_blit.out sim/tb_blit.v \
 	    rtl/soc/wb_framebuffer.v
 	cd sim && $(VVP) sim_blit.out
+
+# wb_framebuffer.v's memory writes were moved out of the FSM's asynchronous-reset block into one clock-only write
+# port, so that yosys maps the pixel buffer to block RAM and not to 614,400 flip-flops (framebuffer_synth_check
+# below; docs/roadmap/index.md, "Common known defects"). That had to change nothing a program can see, and this holds
+# it so: the module and sim/wb_framebuffer_ref.v, the module as it was, driven with the same random traffic and
+# compared every cycle. Retire it, with the reference, the day the framebuffer's behaviour is changed on purpose.
+sim/sim_fb_equiv.out: sim/tb_fb_equiv.v rtl/soc/wb_framebuffer.v sim/wb_framebuffer_ref.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_fb_equiv.v rtl/soc/wb_framebuffer.v sim/wb_framebuffer_ref.v
+
+sim_fb_equiv: sim/sim_fb_equiv.out
+	cd sim && $(VVP) sim_fb_equiv.out | tee fb_equiv.log
+	@grep -q "FRAMEBUFFER EQUIVALENCE PASSED" sim/fb_equiv.log || \
+	    { echo "sim_fb_equiv FAILED"; exit 1; }
 
 # ---- hardware CMD0 probe ----
 # fpga/ulx3s_cmd0.v goes on a board to answer "does the card reply to CMD0",
@@ -3279,6 +3292,13 @@ noc_check_sim: sim_interconnect_burst sim_noc_ni sim_noc_ni_bypass sim_noc_route
 noc_router_area_check:
 	sh fpga/synth/noc_router_area.sh --check
 
+# The framebuffer must synthesise at its real size, and into block RAM (fpga/synth/framebuffer_synth.sh). A memory
+# written from a block with an asynchronous reset is turned into registers by yosys, and synthesis then does not
+# finish; every simulation passes either way. Needs yosys, so it is a step of CI's `formal` job, like the router
+# area budget above. Seconds.
+framebuffer_synth_check:
+	sh fpga/synth/framebuffer_synth.sh --check
+
 # The router's current storage held equal, at every port and every cycle, to the original it replaced
 # (Phase 8 Stage 3, Part 30). About a quarter of an hour, so not in `verify`; run it when the router changes.
 formal_router_equiv:
@@ -4233,6 +4253,7 @@ verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapche
         sim_soc_2hart_coherence_sdram \
         noc_check_sim \
         noc_router_area_check \
+        framebuffer_synth_check sim_fb_equiv \
         sim_cpu_wb_ifill \
         sim_soc_2hart_coherence_sdram_hetero \
         sim_soc_2hart_amoswap_sdram \
