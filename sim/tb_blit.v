@@ -39,6 +39,12 @@
 // the line's own bounding box, and - the strongest of the four - exactly
 // one pixel per column (shallow) or per row (steep), which rules out
 // both gaps and double-backs regardless of tie-breaking.
+//
+// Long lines: a run out to the 12-bit limit of the registers (4,095), shallow
+// and steep, forward and backward, mostly far off the buffer, must finish in
+// exactly max(|dx|,|dy|)+1 cycles, with one pixel per visible column or row.
+// Until the line engine's error term and its double were widened (docs/roadmap/
+// phase-10-gpu.md, Known defects), a shallow run of 1,400 or more never finished.
 `timescale 1ns/1ps
 module tb_blit;
     localparam FB_W = 320;
@@ -395,6 +401,96 @@ module tb_blit;
         end
     endtask
 
+    // ---- long lines ----
+    // A line may run as far as the 12-bit registers allow, so its run can be thousands of pixels, far past the
+    // buffer, and it must still finish: the operation takes max(|dx|,|dy|)+1 cycles, however far off the buffer
+    // it goes (see the header comment in wb_framebuffer.v). Until the step's error term and its double were widened (to
+    // 14 and 15 bits), a shallow line of 1,400 pixels or more never finished, and `line_wait` above would have polled STATUS until
+    // the whole test timed out; these give up after a bound instead, say which line it was, and carry on.
+
+    // The engine's busy cycles, counted at the clock edge from the flag itself (polling STATUS over the bus costs
+    // cycles of its own): one per edge at which the flag is set, which is one per pixel the engine steps through.
+    integer busy_edges;
+    initial busy_edges = 0;
+    always @(posedge clk) if (FB.blit_busy_r) busy_edges <= busy_edges + 1;
+
+    // Starts a line and returns how many cycles the engine stayed busy, giving up after `limit` of them.
+    task line_timed(input integer x0, input integer y0, input integer x1, input integer y1,
+                    input [7:0] colour, input integer limit,
+                    output integer busy_cycles, output reg finished);
+        integer waited;
+        begin
+            busy_edges = 0;                          // the engine is idle: nothing increments it until the start below
+            blit_write(32'h00, x0[31:0]);
+            blit_write(32'h04, y0[31:0]);
+            blit_write(32'h1C, x1[31:0]);
+            blit_write(32'h20, y1[31:0]);
+            blit_write(32'h10, {24'b0, colour});
+            blit_write(32'h14, 32'h5);               // start, line
+            waited = 0;
+            @(posedge clk); #1;                      // after the edge, so the flag is the one the edge left
+            while (FB.blit_busy_r && waited < limit) begin @(posedge clk); #1; waited = waited + 1; end
+            finished = !FB.blit_busy_r;
+            busy_cycles = busy_edges;
+            if (!finished) begin                     // a hung engine: reset it, so that the next test starts clean
+                rst = 1; repeat (2) @(posedge clk); #1 rst = 0; @(posedge clk);
+            end
+        end
+    endtask
+
+    // A line that does not have to be drawn on the buffer to be drawn: it must finish in exactly
+    // max(|dx|,|dy|)+1 cycles. `visible` says what to look for on the buffer afterwards: 1 = exactly one pixel in
+    // every column the line shares with the buffer (a shallow line whose rows are all on the buffer), 2 = the same
+    // by row (a steep line whose columns are all on the buffer), 0 = nothing to look at.
+    task check_long_line(input integer x0, input integer y0, input integer x1, input integer y1,
+                         input [7:0] fg, input integer visible, input [255:0] label);
+        integer adx, ady, expect_cycles, busy, cx, cy, n, bad, lo, hi;
+        reg finished;
+        begin
+            adx = (x1 > x0) ? x1 - x0 : x0 - x1;
+            ady = (y1 > y0) ? y1 - y0 : y0 - y1;
+            expect_cycles = ((adx > ady) ? adx : ady) + 1;
+            fill_wait(0, 0, FB_W, FB_H, 8'h00);
+            line_timed(x0, y0, x1, y1, fg, expect_cycles + 64, busy, finished);
+            if (!finished) begin
+                $display("  FAIL [%0s]: (%0d,%0d)->(%0d,%0d) was still busy after %0d cycles; it should take %0d",
+                         label, x0, y0, x1, y1, busy, expect_cycles);
+                errors = errors + 1;
+            end else if (busy != expect_cycles) begin
+                $display("  FAIL [%0s]: (%0d,%0d)->(%0d,%0d) took %0d cycles, expected %0d",
+                         label, x0, y0, x1, y1, busy, expect_cycles);
+                errors = errors + 1;
+            end else begin
+                bad = 0;
+                if (visible == 1) begin              // one pixel in each column of [0, FB_W-1] that the line covers
+                    lo = (x0 < x1) ? x0 : x1;  hi = (x0 > x1) ? x0 : x1;
+                    if (hi > FB_W - 1) hi = FB_W - 1;
+                    for (cx = lo; cx <= hi; cx = cx + 1) begin
+                        n = 0;
+                        for (cy = 0; cy < FB_H; cy = cy + 1) begin get_pixel(cx, cy, got); if (got === fg) n = n + 1; end
+                        if (n != 1) bad = bad + 1;
+                    end
+                end else if (visible == 2) begin     // one pixel in each row of [0, FB_H-1] that the line covers
+                    lo = (y0 < y1) ? y0 : y1;  hi = (y0 > y1) ? y0 : y1;
+                    if (hi > FB_H - 1) hi = FB_H - 1;
+                    for (cy = lo; cy <= hi; cy = cy + 1) begin
+                        n = 0;
+                        for (cx = 0; cx < FB_W; cx = cx + 1) begin get_pixel(cx, cy, got); if (got === fg) n = n + 1; end
+                        if (n != 1) bad = bad + 1;
+                    end
+                end
+                if (bad != 0) begin
+                    $display("  FAIL [%0s]: %0d %0s on the buffer do not have exactly one pixel", label, bad,
+                             (visible == 1) ? "columns" : "rows");
+                    errors = errors + 1;
+                end else
+                    $display("  %0s: finished in %0d cycles%0s - ok", label, busy,
+                             (visible == 0) ? "" : (visible == 1) ? ", one pixel per visible column"
+                                                                  : ", one pixel per visible row");
+            end
+        end
+    endtask
+
     task check_all(input [127:0] label);
         integer mismatches;
         begin
@@ -643,6 +739,23 @@ module tb_blit;
         $display("  line entirely off the buffer...");
         line_wait(400, 400, 450, 450, 8'h99);
         check_line_invisible(8'h99, "off-buffer");
+
+        // ---- long lines: far past the buffer, and they must still finish, in max(|dx|,|dy|)+1 cycles ----
+        $display("  long lines...");
+        check_long_line(  0, 100,  600, 105, 8'hA0, 1, "run 600 (control)");
+        check_long_line(  0, 100, 1200, 110, 8'hA1, 1, "run 1200 (control)");
+        check_long_line(  0, 100, 1400, 110, 8'hA2, 1, "run 1400");
+        check_long_line(1400, 110,    0, 100, 8'hA3, 1, "run 1400 backward");
+        check_long_line(  0,  30, 4095,  40, 8'hA4, 1, "run 4095");
+        check_long_line(3000, 200,    0, 190, 8'hA5, 1, "run 3000 backward");
+        check_long_line(100,    0,  110, 1400, 8'hA6, 2, "steep run 1400");
+        check_long_line(110, 4095,  100,    0, 8'hA7, 2, "steep run 4095 backward");
+        check_long_line(  0,    0, 2000, 1990, 8'hA8, 0, "near-diagonal 2000");
+        check_long_line(  0,    0, 4095, 4095, 8'hA9, 0, "diagonal 4095");
+        check_long_line( 10, 4000, 3000,   20, 8'hAA, 0, "steep, far off the buffer");
+        check_long_line(  0,    0, 2047,    0, 8'hAB, 1, "horizontal 2047");
+        check_long_line(  0,  50, 4095, 4000, 8'hAC, 0, "slope near one");
+        check_long_line(  0,  50, 4095,  300, 8'hAD, 1, "run 4095, rise 250");
 
         $display("");
         $display("---------------------------------------------");

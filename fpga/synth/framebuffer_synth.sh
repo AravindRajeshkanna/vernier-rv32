@@ -20,8 +20,8 @@
 # so they hold across yosys versions (counts move by a few per cent between them) and still catch the mistake. The time
 # limit is the real test: the register version does not finish at all, and this one takes seconds.
 #   TIME_LIMIT (default 180)   seconds yosys may take
-#   LIMIT_LUT  (default 12000) 4-input LUTs (3,819 now)
-#   LIMIT_FF   (default 5000)  flip-flops (401 now; the register version has one per stored bit, 614,400)
+#   LIMIT_LUT  (default 12000) 4-input LUTs (3,844 now)
+#   LIMIT_FF   (default 5000)  flip-flops (403 now; the register version has one per stored bit, 614,400)
 #   MIN_BRAM   (default 60)    DP16KD block RAMs (80 now)
 set -u
 cd "$(dirname "$0")/../.."

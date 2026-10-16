@@ -127,7 +127,8 @@
 // buffer draws only the portion that is actually visible, and completes
 // in a bounded number of cycles either way (at most
 // max(|X1-X0|,|Y1-Y0|)+1, the same order of magnitude a fill or copy
-// already costs for a comparable span). A line's endpoints are otherwise
+// already costs for a comparable span; out to the 12-bit limit of the
+// registers, which sim/tb_blit.v checks). A line's endpoints are otherwise
 // unclamped and unchecked - unlike a fill or copy, there is no rectangle
 // whose origin can be "off the buffer" to begin with.
 //
@@ -273,8 +274,11 @@ module wb_framebuffer #(
     // Line-only state: Bresenham's decision variable and the fixed end
     // point, stored the "dy negative" way so both step conditions below
     // are plain comparisons against err<<1. 13 bits signed covers a delta
-    // up to +-4095 with headroom for err's own range.
-    reg signed [12:0] line_dx_r, line_dy_r, line_err_r;
+    // up to +-4095, but not err: each step adds dx or dy to a value that is
+    // within half of the other one, so err reaches one and a half times 4095
+    // (6,142), which needs 14 bits, and err<<1 needs 15 - see line_e2 below.
+    reg signed [12:0] line_dx_r, line_dy_r;
+    reg signed [13:0] line_err_r;
     reg [11:0] line_x1_r, line_y1_r;
 
     // Constant-parameter multiply, like Port B's pixel_index below - yosys
@@ -381,9 +385,25 @@ module wb_framebuffer #(
     // Bresenham step, evaluated every busy cycle while OP_LINE: e2 = 2*err;
     // step x when e2 >= dy (dy stored negative), step y when e2 <= dx. Both
     // can fire the same cycle (a diagonal step) - see the header comment.
-    wire signed [12:0] line_e2     = line_err_r <<< 1;
-    wire               line_cond_x = line_e2 >= line_dy_r;
-    wire               line_cond_y = line_e2 <= line_dx_r;
+    //
+    // err and e2 are wider than dx and dy. err reaches 1.5 * 4095 = 6,142 in
+    // magnitude (14 bits) and e2 = 2*err twice that (15 bits); both were 13,
+    // so once err passed 2047 the comparisons went wrong and the line never
+    // reached its end point: a shallow line of 1,400 pixels or more, or a
+    // steep one of 2,049, left the engine busy until the next reset. Checked
+    // against a software model of this stepping over 2,007 lines, the extremes
+    // included: 965 were wrong or never finished at 13 bits, 199 with only e2
+    // widened, none at 14 and 15. {err, 1'b0} is 2*err exactly. dx and dy are
+    // sign-extended by hand, because a concatenation is unsigned and would
+    // make the comparisons unsigned; these are signed wires.
+    wire signed [14:0] line_e2     = {line_err_r, 1'b0};
+    wire signed [14:0] line_err_x  = {line_err_r[13], line_err_r};
+    wire signed [14:0] line_dx_x   = {{2{line_dx_r[12]}}, line_dx_r};
+    wire signed [14:0] line_dy_x   = {{2{line_dy_r[12]}}, line_dy_r};
+    wire               line_cond_x = line_e2 >= line_dy_x;
+    wire               line_cond_y = line_e2 <= line_dx_x;
+    wire signed [14:0] line_err_nx = line_err_x + (line_cond_x ? line_dy_x : 15'sd0)
+                                                 + (line_cond_y ? line_dx_x : 15'sd0);
     wire               line_plot_ok = (blit_cur_x < FB_WIDTH[11:0]) &&
                                        (blit_cur_y < FB_HEIGHT[11:0]);
 
@@ -482,7 +502,7 @@ module wb_framebuffer #(
                                     // bounded number of cycles.
                                     line_dx_r   <= line_dx_init;
                                     line_dy_r   <= line_dy_init;
-                                    line_err_r  <= line_dx_init + line_dy_init;
+                                    line_err_r  <= {line_dx_init[12], line_dx_init} + {line_dy_init[12], line_dy_init};
                                     blit_xdir_r <= !line_x_fwd;
                                     blit_ydir_r <= !line_y_fwd;
                                     line_x1_r   <= blit_src_x_r;
@@ -533,8 +553,7 @@ module wb_framebuffer #(
                     if (blit_cur_x == line_x1_r && blit_cur_y == line_y1_r) begin
                         blit_busy_r <= 1'b0;
                     end else begin
-                        line_err_r <= line_err_r + (line_cond_x ? line_dy_r : 13'sd0)
-                                                  + (line_cond_y ? line_dx_r : 13'sd0);
+                        line_err_r <= line_err_nx[13:0];       // fits: |err| <= 6,142
                         if (line_cond_x)
                             blit_cur_x <= blit_xdir_r ? (blit_cur_x - 12'd1) : (blit_cur_x + 12'd1);
                         if (line_cond_y)

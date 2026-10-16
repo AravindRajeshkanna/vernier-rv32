@@ -83,6 +83,13 @@ jobs:
       - name: Check video verdict
         run: grep -q "VIDEO TEST PASSED" video.log
 
+      # The fill, copy and line engine, including lines as long as the 12-bit registers allow (a run of 1,400
+      # pixels or more never finished until the line engine's error term was widened). Pure RTL, about a minute
+      # (46 s measured here, on an idle machine). The target checks its own verdict. It was not in this job
+      # before, and nothing else ran it in CI.
+      - name: Framebuffer fill, copy and line engine
+        run: make sim_blit
+
       # The framebuffer's memory writes sit in one clock-only write port so that yosys maps the pixel buffer to
       # block RAM (the `formal` job holds that); this holds the module equal, cycle for cycle, to the one it was
       # restructured from, over random traffic. Pure RTL, seconds. The target checks its own verdict.
