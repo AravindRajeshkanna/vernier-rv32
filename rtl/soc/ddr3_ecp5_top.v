@@ -215,16 +215,39 @@
 // tied high always, both replaced by lane 1's own real CALIB1/DQS1/DQS_WR1/SERDES1/
 // DM_DRV1, run automatically at boot the same way lane 0's always has - the shared
 // `ddr3_ddrdlla_ecp5` instance above is what makes sharing it, rather than duplicating
-// it, correct (Part 24). Not yet reachable from `write_req`/`read_req`: no command
-// sequencer drives lane 1, so `read_active_1` is `CALIB1`'s own signal alone, with no
-// `real_read_active`-style mux the way lane 0 gained in Part 9 - that step, and how a
-// caller would ask for 16 bits at once, is still the maintainer's own open decision
-// (byte-granular versus 16-byte-burst), named since the Part 14/15 survey.
+// it, correct (Part 24). Through Part 25 nothing a caller could ask for reached lane 1:
+// no command sequencer drove it, so `read_active_1` was `CALIB1`'s own signal alone.
+//
+// ---- Part 26: lane 1 carries data, so the controller is x16 ----
+// A request now moves a 16-bit word at its column, the way the x16 part does:
+// `write_data[7:0]` is lane 0's byte and `write_data[15:8]` lane 1's, and a read returns
+// both, `read_data[15:8]` from lane 1. `write_be` says which of the two a write stores. A
+// lane whose bit is 0 has its data mask held high for the whole burst, so the DRAM keeps
+// what the cell holds; a write with `write_be` = 2'b00 runs the whole transaction and
+// stores nothing. Both lanes' strobes toggle for every write and both lanes' read windows
+// open for every read, as on the part, where the strobes are per lane and the controller
+// drives both. Each lane then does what lane 0 has always done: its byte is captured when
+// the burst is triggered and held until the window opens (`dq_data_hold`, `dq_data_hold_1`),
+// and its data mask is low exactly in the burst's first half (Part 22) if that lane is
+// stored, high otherwise. The only new state is `write_be_latch`, captured with
+// `write_data_latch` at request time, and the two flags `lane0_store`/`lane1_store`, captured
+// with the byte when the burst is triggered (a calibration write, which has no request, stores).
+// Commands wait for BOTH lanes' calibration: a read or write before a lane has found its
+// `READCLKSEL` tap would sample that lane at an unproven point, which is what holding the
+// sequencers until `calib_done` always meant for the one lane there was. `read_data_valid`
+// needs both lanes' `datavalid`, so a lane whose capture window never opened cannot return
+// a word that looks complete.
+// Not attempted, and not what this part is: hardware-faithful bursts (the pins still carry one
+// DQ word per sclk, so a burst still moves one column and masks the neighbour, Part 22), the
+// Wishbone side (rtl/soc/wb_ddr.v still uses lane 0 only, and the window is still 256 MB), and
+// any claim about the ECP5's own capture latency on lane 1 - the two lanes calibrate
+// independently and `read_data_valid` assumes their windows open together, which no simulation
+// here can show for real silicon.
 //
 // Still not attempted: bank-state tracking in the controller (this design
 // still opens and closes a bank around every access rather than
-// exploiting open rows), lane 1's own command-driven read/write, and real hardware
-// bring-up - see docs/roadmap/phase-09-ddr.md's own Part 9/10/11/12/13/14/25 accounts for
+// exploiting open rows), and real hardware bring-up - see
+// docs/roadmap/phase-09-ddr.md's own Part 9/10/11/12/13/14/25/26 accounts for
 // the full list of what this does not establish.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
@@ -249,14 +272,8 @@ module ddr3_ecp5_top (
     // ---- lane 0's data mask, from Part 22 ----
     output wire        ddr3_dm,
 
-    // ---- lane 1 (the part is x16; this design transfers through lane 0 only), from
-    // Part 23: real pins, held safely inert rather than left unconnected. ddr3_dqu and
-    // ddr3_udqs are never driven by this design (permanently tri-stated - a real READ
-    // still drives them from the DRAM side, which this design ignores); ddr3_udm is
-    // driven high always, so this design's own writes - all issued through lane 0 -
-    // can never be interpreted as touching the upper byte. See rtl/soc/ddr3_ecp5_top.v's
-    // own DQU_PIN/UDQS_PAD/ddr3_udm wiring below for why this needs no calibration and
-    // no capture/drive primitives the way lane 0 does.
+    // ---- lane 1, the part's upper byte: DQ[15:8], its strobe and its data mask. Real pins
+    // since Part 23, calibrated since Part 25, and carrying data since Part 26. ----
     inout  wire [7:0]  ddr3_dqu,
     inout  wire        ddr3_udqs,
     output wire        ddr3_udm,
@@ -266,7 +283,8 @@ module ddr3_ecp5_top (
     input  wire [2:0]  write_bank,
     input  wire [15:0] write_row,
     input  wire [15:0] write_col,
-    input  wire [7:0]  write_data,
+    input  wire [15:0] write_data,   // {lane 1, lane 0}
+    input  wire [1:0]  write_be,     // which lanes this write stores: bit 0 lane 0, bit 1 lane 1
     output wire        write_busy,
 
     input  wire        read_req,
@@ -274,7 +292,7 @@ module ddr3_ecp5_top (
     input  wire [15:0] read_row,
     input  wire [15:0] read_col,
     output wire        read_busy,
-    output wire [7:0]  read_data,
+    output wire [15:0] read_data,    // {lane 1, lane 0}
     output wire        read_data_valid,
 
     // ---- Part 10: real refresh, observability only - see header ----
@@ -288,10 +306,7 @@ module ddr3_ecp5_top (
     output wire [2:0]  calib_readclksel,
     output wire        calib_error,
 
-    // ---- lane 1's own calibration, from Part 25 - see the wiring below for what
-    // this does and does not establish (no command-driven read/write reaches lane 1
-    // yet; only its own calibration sweep, run automatically, the same way lane 0's
-    // did before Part 9) ----
+    // ---- lane 1's own calibration, from Part 25 ----
     output wire        calib1_done,
     output wire [2:0]  calib1_readclksel,
     output wire        calib1_error
@@ -344,8 +359,8 @@ module ddr3_ecp5_top (
 
     // Part 9: held until calib_done - see header. A real read/write
     // before a working READCLKSEL tap is known would sample data at an
-    // unproven, possibly-wrong point.
-    wire rst_cmd = rst_calib || !calib_done;
+    // unproven, possibly-wrong point. Part 26: until lane 1's tap is known too.
+    wire rst_cmd = rst_calib || !(calib_done && calib1_done);
 
     // Part 12: see header. Declared ahead of the sequencers, which they
     // gate, and the refresh scheduler below, which drives them.
@@ -478,10 +493,16 @@ module ddr3_ecp5_top (
     // ddr3_write_seq.v's own bank/row/col inputs only need to be valid
     // for the one cycle write_req pulses, not held throughout. Neither
     // command sequencer carries its own data path.
-    reg [7:0] write_data_latch;
+    reg [15:0] write_data_latch;
+    reg [1:0]  write_be_latch;   // Part 26; reset to "store nothing", the safe idle default
     always @(posedge sclk or posedge rst_cmd) begin
-        if (rst_cmd) write_data_latch <= 8'b0;
-        else if (wseq_write_req) write_data_latch <= write_data;
+        if (rst_cmd) begin
+            write_data_latch <= 16'b0;
+            write_be_latch   <= 2'b00;
+        end else if (wseq_write_req) begin
+            write_data_latch <= write_data;
+            write_be_latch   <= write_be;
+        end
     end
 
     wire dqsr90, dqsw, dqsw270, burstdet;
@@ -530,8 +551,11 @@ module ddr3_ecp5_top (
     // for what this does and does not establish. FPGA-output-only: no tri-state, so
     // unlike DQ/DQS this needs no BB and no separate synthesis/simulation split at the
     // pad itself.
+    // Part 26: low only if this write stores lane 0's byte. `lane0_store` is captured with the
+    // byte when the burst is triggered (below); a calibration write has no request and stores.
+    reg  lane0_store;
     wire dm_o;
-    wire dm_level = !dq_active0;
+    wire dm_level = !(dq_active0 && lane0_store);
 
     ddr3_dm_drv_ecp5 DM_DRV (
         .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270),
@@ -565,8 +589,13 @@ module ddr3_ecp5_top (
     // the trigger cycle.
     reg [7:0] dq_data_hold;
     always @(posedge sclk or posedge rst_all) begin
-        if (rst_all)                dq_data_hold <= 8'b0;
-        else if (write_start_final) dq_data_hold <= wr_en ? wr_d0 : write_data_latch;
+        if (rst_all) begin
+            dq_data_hold <= 8'b0;
+            lane0_store  <= 1'b0;
+        end else if (write_start_final) begin
+            dq_data_hold <= wr_en ? wr_d0 : write_data_latch[7:0];
+            lane0_store  <= wr_en | write_be_latch[0];
+        end
     end
 
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES (
@@ -611,8 +640,7 @@ module ddr3_ecp5_top (
         else                        datavalid_seen <= 1'b0;
     end
 
-    assign read_data       = rd_q0;
-    assign read_data_valid = read_active_falling && datavalid_seen;
+    // (`read_data` and `read_data_valid` are assigned below, after lane 1's signals exist - Part 26.)
 
     // ---- Part 25: lane 1's own calibration, run automatically at boot the same way
     // lane 0's does - see the module header for scope ----
@@ -634,9 +662,13 @@ module ddr3_ecp5_top (
     wire [2:0] rdpntr_1, wrpntr_1;
     wire dqs_pad_in_1;
 
+    // Part 26: lane 1's read window opens for a command-driven read too, the way lane 0's
+    // does (`read_active_final` above) - calibration's own signal only fires before calib_done.
+    wire read_active_final_1 = read_active_1 | real_read_active;
+
     ddr3_dqs_ecp5 DQS1 (
         .eclk(eclk), .sclk(sclk), .rst(rst_all),
-        .dqs_pad_i(dqs_pad_in_1), .read_active(read_active_1), .readclksel(readclksel_1),
+        .dqs_pad_i(dqs_pad_in_1), .read_active(read_active_final_1), .readclksel(readclksel_1),
         .ddrdel(ddrdel),   // the one, shared DLL (Part 24) - not a second instance
         .dqsr90(dqsr90_1), .dqsw(dqsw_1), .dqsw270(dqsw270_1),
         .datavalid(datavalid_1), .burstdet(burstdet_1),
@@ -644,20 +676,21 @@ module ddr3_ecp5_top (
     );
 
     wire dqs_wr_o_1, dqs_wr_oe_1, dqs_wr_t_1, dq_burst_1, dq_active0_1;
-    // Lane 1's only trigger is its own calibration sweep - no command sequencer drives
-    // it (see the header), so unlike lane 0's `write_start_final` this has one source.
+    // Part 26: the same two sources as lane 0's `write_start_final` - this lane's own
+    // calibration sweep, and the write sequencer (mutually exclusive by the same sequencing).
+    wire write_start_final_1 = wr_en_1 | wseq_write_start;
     ddr3_dqs_write_ecp5 DQS_WR1 (
         .sclk(sclk), .eclk(eclk), .dqsw(dqsw_1), .rst(rst_all),
-        .write_start(wr_en_1),
+        .write_start(write_start_final_1),
         .dqs_o(dqs_wr_o_1), .dqs_oe(dqs_wr_oe_1), .dqs_t(dqs_wr_t_1), .burst_active(dq_burst_1),
         .active0(dq_active0_1)
     );
 
     // Part 22's own data mask, a second instance - lane 1's DM is UDM, masking exactly
-    // the same way lane 0's does, around its own calibration burst rather than a
-    // command-driven one.
+    // the same way lane 0's does. Part 26: low only if this write stores lane 1's byte.
+    reg  lane1_store;
     wire dm_o_1;
-    wire dm_level_1 = !dq_active0_1;
+    wire dm_level_1 = !(dq_active0_1 && lane1_store);
     ddr3_dm_drv_ecp5 DM_DRV1 (
         .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270_1),
         .dm_level(dm_level_1), .dm_o(dm_o_1)
@@ -674,12 +707,17 @@ module ddr3_ecp5_top (
     wire [7:0] dq_o_1, dq_oe_1, dq_t_1, dq_i_1;
     wire [7:0] rd_q3_1, rd_q2_1, rd_q1_1;
 
-    // Calibration's own byte is the only source here (mirrors lane 0's `dq_data_hold`
-    // before Part 9 added a second, command-driven source).
+    // Mirrors lane 0's `dq_data_hold`: calibration's byte for a calibration write, the upper
+    // half of the request's data for a real one (Part 26).
     reg [7:0] dq_data_hold_1;
     always @(posedge sclk or posedge rst_all) begin
-        if (rst_all)      dq_data_hold_1 <= 8'b0;
-        else if (wr_en_1) dq_data_hold_1 <= wr_d0_1;
+        if (rst_all) begin
+            dq_data_hold_1 <= 8'b0;
+            lane1_store    <= 1'b0;
+        end else if (write_start_final_1) begin
+            dq_data_hold_1 <= wr_en_1 ? wr_d0_1 : write_data_latch[15:8];
+            lane1_store    <= wr_en_1 | write_be_latch[1];
+        end
     end
 
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES1 (
@@ -692,6 +730,19 @@ module ddr3_ecp5_top (
         .rd_q3(rd_q3_1), .rd_q2(rd_q2_1), .rd_q1(rd_q1_1), .rd_q0(rd_q0_1),
         .dq_o(dq_o_1), .dq_oe(dq_oe_1), .dq_t(dq_t_1), .dq_i(dq_i_1)
     );
+
+    // Part 26: the word a read returns, and when it is complete. Lane 1's window is judged the
+    // same way lane 0's is above: `datavalid_seen_1` is whether its own DQSBUFM's `datavalid` was
+    // ever high during the window that just closed, and a word is valid only if both lanes saw one.
+    reg datavalid_seen_1;
+    always @(posedge sclk or posedge rst_all) begin
+        if (rst_all)                datavalid_seen_1 <= 1'b0;
+        else if (real_read_active)  datavalid_seen_1 <= datavalid_seen_1 | datavalid_1;
+        else                        datavalid_seen_1 <= 1'b0;
+    end
+
+    assign read_data       = {rd_q0_1, rd_q0};
+    assign read_data_valid = read_active_falling && datavalid_seen && datavalid_seen_1;
 
     genvar i;
     generate

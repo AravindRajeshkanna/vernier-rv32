@@ -37,11 +37,11 @@
 // named, and orthogonal to this stage's own "Done when" bar (a CPU
 // executing real code from DDR in simulation), which does not require it.
 //
-// Lane 1 does not carry real data yet (Part 24/25: calibration only), so
-// this module's own real capacity is lane 0 alone: 8 banks x 32768 rows x
-// 1024 columns x 1 byte = 256MB, not the real part's full 512MB. Wiring
-// lane 1 for real data transfer, doubling this to 512MB, is separate,
-// later work - not attempted here.
+// The controller carries lane 1's data since Part 26 (rtl/soc/ddr3_ecp5_top.v is x16), but this
+// module still uses lane 0 alone: it stores with write_be = 2'b01 and drops the upper byte of
+// every read, so its own real capacity is 8 banks x 32768 rows x 1024 columns x 1 byte =
+// 256MB, not the real part's full 512MB. Using both lanes, which doubles this to 512MB and
+// halves the transactions a block costs, is the next part, not this one.
 //
 // Not wired into rtl/soc/soc_top.v yet - proven standalone first, the same
 // "narrow proof first" discipline every part in Stage 1 already used.
@@ -131,6 +131,7 @@ module wb_ddr (
     reg  [15:0] read_col;
     wire        read_busy;
     wire [7:0]  read_data;
+    wire [7:0]  read_data_hi;   // lane 1's byte of the word (Part 26); not used yet, see the header
     wire        read_data_valid;
 
     ddr3_ecp5_top DDR (
@@ -143,9 +144,10 @@ module wb_ddr (
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
-        .write_col(write_col), .write_data(write_data), .write_busy(write_busy),
+        .write_col(write_col), .write_data({8'h00, write_data}), .write_be(2'b01),
+        .write_busy(write_busy),
         .read_req(read_req), .read_bank(read_bank), .read_row(read_row),
-        .read_col(read_col), .read_busy(read_busy), .read_data(read_data),
+        .read_col(read_col), .read_busy(read_busy), .read_data({read_data_hi, read_data}),
         .read_data_valid(read_data_valid),
         .refresh_busy(refresh_busy),
         .pll_locked(pll_locked), .dll_locked(dll_locked), .init_ready(init_ready),
@@ -213,8 +215,10 @@ module wb_ddr (
                     // machine would wait on a busy that calibration's own
                     // activity raises and then acknowledge a transfer that
                     // never happened. A boot loader writing DDR3 right after
-                    // reset lost the first byte of its image that way.
-                    if (wb_cyc && wb_stb && calib_done) begin
+                    // reset lost the first byte of its image that way. Since
+                    // Part 26 the controller waits for lane 1's calibration
+                    // too, so this does as well.
+                    if (wb_cyc && wb_stb && calib_done && calib1_done) begin
                         if (wb_we) begin
                             // Write-through: correct regardless of whether
                             // the block is resident (Part 22's DM masking
