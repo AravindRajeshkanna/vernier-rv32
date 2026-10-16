@@ -12,6 +12,18 @@
 // the header explains); and a partial-byte store (`wb_sel` not all set)
 // changes only the selected bytes, leaving the others exactly as they
 // were.
+//
+// Since Stage 2, Part 14 the slave is x16 and its window the part's whole 512 MB, and this holds that too:
+//   - the address geometry, written out again here from the part's own addressing (row A[28:14],
+//     bank A[13:11], column A[10:1], lane A[0]) and not from the slave's: a word written at each of
+//     thirteen addresses (the first and the last, a walking one through the row, bank and column, the
+//     edge of the old 256 MB window, the first word above it, and a pair 256 MB apart) lands in the
+//     cell and lane that geometry names, in the right plane of the memory, and reads back as itself
+//     through the bus;
+//   - a single byte stored at each of the 16 offsets of a block, each in turn, changes exactly that
+//     byte of the word and no other, in either lane;
+//   - a random sweep across the whole 512 MB against a byte-wise reference: stores with random
+//     byte selects, then every word read back, each byte compared where the reference holds one.
 `timescale 1ns/1ps
 module tb_wb_ddr;
     localparam CLK_HZ    = 25_000_000;
@@ -103,7 +115,7 @@ module tb_wb_ddr;
     assign ddr3_dqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
 
     // Lane 1's memory (Part 26): the controller takes no request until both lanes have calibrated, and
-    // a lane calibrates by looping its pattern back through a DRAM. This module still uses lane 0 alone.
+    // a lane calibrates by looping its pattern back through a DRAM; the slave stores in it from Part 14.
     ddr3_lane1_mem LANE1 (
         .sclk(WB.DDR.sclk), .rst(WB.DDR.rst_all), .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
@@ -146,6 +158,89 @@ module tb_wb_ddr;
     integer ack_count = 0;
     always @(posedge clk) if (wb_ack) ack_count <= ack_count + 1;
     integer n_ack0, t_wait;
+
+    // ---- the part's own geometry, for the x16 checks (Phase 9 Stage 2, Part 14) ----
+    // byte address -> bank, row, column, lane. Written from the part's addressing, not from rtl/soc/wb_ddr.v.
+    reg [2:0]  c_bank;
+    reg [14:0] c_row;
+    reg [9:0]  c_col;
+    reg        c_lane;
+    task cell_of(input [31:0] a);
+        begin
+            c_row  = a[28:14];
+            c_bank = a[13:11];
+            c_col  = a[10:1];
+            c_lane = a[0];
+        end
+    endtask
+
+    // the byte a lane's memory holds at a cell
+    reg [7:0] p_byte;
+    reg       p_found;
+    task peek_cell(input lane, input [2:0] bk, input [14:0] rw, input [9:0] cl);
+        integer j;
+        begin
+            p_found = 1'b0; p_byte = 8'hxx;
+            if (!lane) begin
+                for (j = 0; j < MEM.n_used; j = j + 1)
+                    if (MEM.k_used[j] && MEM.k_bank[j] === bk && MEM.k_row[j] === rw && MEM.k_col[j] === cl) begin
+                        p_found = 1'b1; p_byte = MEM.k_data[j];
+                    end
+            end else begin
+                for (j = 0; j < LANE1.MEM.n_used; j = j + 1)
+                    if (LANE1.MEM.k_used[j] && LANE1.MEM.k_bank[j] === bk && LANE1.MEM.k_row[j] === rw && LANE1.MEM.k_col[j] === cl) begin
+                        p_found = 1'b1; p_byte = LANE1.MEM.k_data[j];
+                    end
+            end
+        end
+    endtask
+
+    // xorshift32, for the random sweep
+    function [31:0] xorshift(input [31:0] s);
+        reg [31:0] x;
+        begin
+            x = s;
+            x = x ^ (x << 13);
+            x = x ^ (x >> 17);
+            x = x ^ (x << 5);
+            xorshift = x;
+        end
+    endfunction
+
+    // the byte-wise reference for the random sweep: every byte address stored so far, and its value
+    localparam N_OPS = 56;
+    reg [31:0] ref_a [0:N_OPS*4-1];
+    reg [7:0]  ref_v [0:N_OPS*4-1];
+    integer    n_ref;
+    task ref_store(input [31:0] a, input [7:0] v);
+        integer j;
+        reg hit;
+        begin
+            hit = 1'b0;
+            for (j = 0; j < n_ref; j = j + 1)
+                if (ref_a[j] === a) begin ref_v[j] = v; hit = 1'b1; end
+            if (!hit) begin ref_a[n_ref] = a; ref_v[n_ref] = v; n_ref = n_ref + 1; end
+        end
+    endtask
+    reg [7:0] ref_val;
+    reg       ref_has;
+    reg       ref_seen [0:N_OPS*4-1];   // compared at least once
+    integer   ref_idx;
+    task ref_find(input [31:0] a);
+        integer j;
+        begin
+            ref_has = 1'b0; ref_val = 8'h00; ref_idx = -1;
+            for (j = 0; j < n_ref; j = j + 1)
+                if (ref_a[j] === a) begin ref_has = 1'b1; ref_val = ref_v[j]; ref_idx = j; end
+        end
+    endtask
+
+    // the word every address in the geometry test stores: a different one for each
+    reg [31:0] geo_adr [0:12];
+    integer    gi, gj, ok_cells;
+    reg [31:0] seed, wa, wd, rd;
+    reg [3:0]  ws;
+    integer    op;
 
     reg [31:0] got;
 
@@ -202,6 +297,116 @@ module tb_wb_ddr;
         wb_access(1'b0, 32'h0000_0000, 32'b0, 4'b1111, got);
         check("partial wb_sel store changes only the selected bytes", got, 32'hDEAD_0022);
 
+        // ---- the x16 geometry (Part 14): each word lands in the cell and lane the part's addressing names ----
+        $display("  the address geometry...");
+        geo_adr[0]  = 32'h0000_0000;   // the first word
+        geo_adr[1]  = 32'h0000_0014;   // block 1, word 1: an offset inside a block
+        geo_adr[2]  = 32'h0000_0010;   // column bit 3 (block bit 0)
+        geo_adr[3]  = 32'h0000_0400;   // column bit 9 (block bit 6): the top column bit
+        geo_adr[4]  = 32'h0000_0800;   // bank bit 0 (block bit 7)
+        geo_adr[5]  = 32'h0000_2000;   // bank bit 2 (block bit 9)
+        geo_adr[6]  = 32'h0000_4000;   // row bit 0 (block bit 10)
+        geo_adr[7]  = 32'h0800_0000;   // row bit 13
+        geo_adr[8]  = 32'h0FFF_FFFC;   // the last word of the old 256 MB window
+        geo_adr[9]  = 32'h1000_0000;   // the first word above it: row bit 14
+        geo_adr[10] = 32'h1000_0040;   // ... and the old window's mirror of address 0x40, which must not alias
+        geo_adr[11] = 32'h0000_0040;   // the word 256 MB below it, read right after it: the open block must not answer
+        geo_adr[12] = 32'h1FFF_FFFC;   // the last word of the part
+        for (gi = 0; gi < 13; gi = gi + 1)
+            wb_access(1'b1, geo_adr[gi], 32'hA5000000 + {gi[7:0], 8'h11, 8'h22, 8'h33} ^ geo_adr[gi], 4'b1111, got);
+        ok_cells = 0;
+        for (gi = 0; gi < 13; gi = gi + 1) begin
+            wd = 32'hA5000000 + {gi[7:0], 8'h11, 8'h22, 8'h33} ^ geo_adr[gi];
+            for (gj = 0; gj < 4; gj = gj + 1) begin
+                cell_of(geo_adr[gi] + gj);
+                peek_cell(c_lane, c_bank, c_row, c_col);
+                if (!p_found || p_byte !== wd[8*gj +: 8]) begin
+                    $display("  FAIL %08h byte %0d: cell (bank %0d, row %04h, col %03h, lane %0d) holds %02h, expected %02h",
+                             geo_adr[gi], gj, c_bank, c_row, c_col, c_lane, p_byte, wd[8*gj +: 8]);
+                    errors = errors + 1;
+                end else ok_cells = ok_cells + 1;
+            end
+        end
+        check("13 words: every byte in its cell and lane (of 52)", ok_cells, 32'd52);
+        for (gi = 0; gi < 13; gi = gi + 1) begin
+            wb_access(1'b0, geo_adr[gi], 32'b0, 4'b1111, got);
+            wd = 32'hA5000000 + {gi[7:0], 8'h11, 8'h22, 8'h33} ^ geo_adr[gi];
+            if (got !== wd) begin
+                $display("  FAIL read of %08h through the bus: got %08h, expected %08h", geo_adr[gi], got, wd);
+                errors = errors + 1;
+            end
+        end
+
+        // ---- one byte at a time, at each of the 16 offsets of a block ----
+        $display("  a byte at each offset of a block...");
+        for (gi = 0; gi < 4; gi = gi + 1)
+            wb_access(1'b1, 32'h0000_3000 + 4*gi, 32'h00000000, 4'b1111, got);
+        for (gi = 0; gi < 16; gi = gi + 1) begin
+            wa = 32'h0000_3000 + gi;
+            wb_access(1'b1, wa & 32'hFFFF_FFFC, {4{8'h10 + gi[7:0]}}, 4'b0001 << gi[1:0], got);
+            wb_access(1'b0, wa & 32'hFFFF_FFFC, 32'b0, 4'b1111, got);
+            if (got !== ((32'hFF << (8*gi[1:0])) & {4{8'h10 + gi[7:0]}})) begin
+                $display("  FAIL byte offset %0d: the word reads %08h", gi, got);
+                errors = errors + 1;
+            end
+            wb_access(1'b1, wa & 32'hFFFF_FFFC, 32'h00000000, 4'b1111, got);   // clear it for the next
+        end
+        // every offset's byte survives the others, then the whole block together
+        for (gi = 0; gi < 16; gi = gi + 1) begin
+            wa = 32'h0000_3000 + gi;
+            wb_access(1'b1, wa & 32'hFFFF_FFFC, {4{8'h40 + gi[7:0]}}, 4'b0001 << gi[1:0], got);
+        end
+        for (gi = 0; gi < 4; gi = gi + 1) begin
+            wb_access(1'b0, 32'h0000_3000 + 4*gi, 32'b0, 4'b1111, got);
+            wd = {8'h43 + 8'd4*gi[7:0], 8'h42 + 8'd4*gi[7:0], 8'h41 + 8'd4*gi[7:0], 8'h40 + 8'd4*gi[7:0]};
+            if (got !== wd) begin
+                $display("  FAIL block word %0d: got %08h, expected %08h", gi, got, wd);
+                errors = errors + 1;
+            end
+        end
+        // selects that straddle the two columns of a word, and the two lanes
+        wb_access(1'b1, 32'h0000_3000, 32'hAABBCCDD, 4'b0110, got);
+        wb_access(1'b0, 32'h0000_3000, 32'b0, 4'b1111, got);
+        check("select of the inner two bytes (lane 1 col 0, lane 0 col 1)", got, 32'h43BB_CC40);
+        wb_access(1'b1, 32'h0000_3000, 32'h11223344, 4'b1001, got);
+        wb_access(1'b0, 32'h0000_3000, 32'b0, 4'b1111, got);
+        check("a select of the outer two bytes", got, 32'h11BB_CC44);
+
+        // ---- a random sweep over the whole 512 MB against a byte-wise reference ----
+        $display("  a random sweep over the whole part...");
+        seed = 32'h1BADB002;
+        n_ref = 0;
+        for (gi = 0; gi < N_OPS*4; gi = gi + 1) ref_seen[gi] = 1'b0;
+        for (op = 0; op < N_OPS; op = op + 1) begin
+            seed = xorshift(seed); wa = {3'b000, seed[28:2], 2'b00} & 32'h1FFF_FFFC;
+            seed = xorshift(seed); wd = seed;
+            seed = xorshift(seed); ws = seed[3:0];
+            if (ws == 4'b0000) ws = 4'b1111;
+            wb_access(1'b1, wa, wd, ws, got);
+            for (gj = 0; gj < 4; gj = gj + 1)
+                if (ws[gj]) ref_store(wa + gj, wd[8*gj +: 8]);
+        end
+        // each word touched, read back: the bytes the reference holds must match
+        ok_cells = 0;
+        for (gi = 0; gi < n_ref; gi = gi + 1) begin
+            wa = ref_a[gi] & 32'hFFFF_FFFC;
+            wb_access(1'b0, wa, 32'b0, 4'b1111, rd);
+            for (gj = 0; gj < 4; gj = gj + 1) begin
+                ref_find(wa + gj);
+                if (ref_has) begin
+                    if (rd[8*gj +: 8] !== ref_val) begin
+                        $display("  FAIL sweep byte %08h: got %02h, expected %02h", wa + gj, rd[8*gj +: 8], ref_val);
+                        errors = errors + 1;
+                    end else if (!ref_seen[ref_idx]) begin
+                        ref_seen[ref_idx] = 1'b1;
+                        ok_cells = ok_cells + 1;
+                    end
+                end
+            end
+        end
+        $display("  %0d bytes stored by %0d stores, %0d of them read back correctly", n_ref, N_OPS, ok_cells);
+        check("every byte the sweep stored reads back", ok_cells, n_ref);
+
 `ifndef VERILATOR
         // ---- a lane that has not calibrated holds the slave back (Phase 9 Stage 1, Part 26) ----
         // The controller takes no request until both lanes have calibrated, and drops one sent earlier, so
@@ -239,7 +444,7 @@ module tb_wb_ddr;
     end
 
     initial begin
-        #4_000_000;
+        #40_000_000;
         $display("TIMEOUT");
         $finish;
     end

@@ -171,7 +171,7 @@ module tb_ramboot;
     assign ddr3_dqs = ddr3_mem_dqs_oe ? ddr3_mem_dqs_o : 1'bz;
     // Lane 1's memory (Phase 9 Part 26). The controller takes no request until both lanes have
     // calibrated, and a lane calibrates by looping a pattern back through a DRAM, so lane 1 needs
-    // one behind its pins too. rtl/soc/wb_ddr.v still uses lane 0 alone, so nothing is stored in it.
+    // one behind its pins too. rtl/soc/wb_ddr.v stores in it from Stage 2, Part 14.
     ddr3_lane1_mem DDR3MEM1 (
         .sclk(DUT.DDR3.DDR.sclk), .rst(DUT.DDR3.DDR.rst_all), .ck(ddr3_ck),
         .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),

@@ -277,13 +277,12 @@
          * DDR3_ENABLE for this file; no existing sbiimage/linuximage
          * target does.
          *
-         * 256 MB, not the real part's full 512 MB: the controller carries
-         * lane 1's data (Stage 1 Part 26) but rtl/soc/wb_ddr.v does not use
-         * it yet, so only lane 0's own address space is real. Duplicated in
+         * 512 MB, the real part's full capacity: both byte lanes (Stage 1
+         * Part 26, Stage 2 Part 14). Duplicated in
          * software/soc/soc.h (DDR3_BASE/DDR3_SIZE) and
          * soc_top.v's own s_base/s_mask pair - docs/practices.md section
          * 11's own duplication risk, same as the SDRAM node's. */
-        reg = <0xA0000000 0x10000000>;
+        reg = <0xA0000000 0x20000000>;
     };
 #endif
 
