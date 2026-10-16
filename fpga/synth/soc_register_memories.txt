@@ -1,0 +1,39 @@
+# The memories yosys turns into lists of registers when it synthesises the SoC, and that are meant to be.
+# fpga/synth/soc_synth.sh --check holds the SoC to this list (docs/roadmap/index.md, "Common known defects").
+#
+# Yosys prints "Replacing memory \NAME with list of registers" for any memory that is written from a block with an
+# asynchronous reset, whatever its size. For a table of a few dozen bits that is harmless, and it is how these are
+# built. For a frame buffer it was 614,400 flip-flops and a synthesis that did not finish. The check fails on a memory
+# that is not listed, and on a listed one that yosys no longer turns into registers, so the list can only shrink:
+# when you make one of these a real memory (a clock-only write port, like rtl/soc/wb_framebuffer.v's), delete its line.
+#
+# One line per memory, or per family: the file, the memory's name (a * stands for any run of characters, so
+# rob_* is every reorder-buffer field), the core it is in (inorder, ooo, or both), and why it is allowed.
+# A line is "stale" if nothing it names is turned into registers any more. Do not list a memory to make the check
+# pass until you know how many bits it holds: soc_synth.sh's flip-flop budget is what catches one that is big.
+#
+# file                       memory           core     why it is allowed
+rtl/csr_file.v               pmpaddr_r        both     PMP address registers, 16 x 32 bits
+rtl/clint.v                  mtimecmp         both     the timer compare, 64 bits per hart
+rtl/clint.v                  msip_bit         both     the software-interrupt bit, one per hart
+rtl/plic.v                   priority_r       both     interrupt priority, 3 bits per source
+rtl/plic.v                   threshold_r      both     interrupt threshold, 3 bits per context
+rtl/plic.v                   enable_r         both     interrupt enables, one bit per source per context
+rtl/plic.v                   claim_id         both     the claim logic's per-context temporaries, indexed in a combinational block
+rtl/plic.v                   claim_any        both     the claim logic's per-context temporaries, indexed in a combinational block
+rtl/btb.v                    valid            both     branch target buffer, 64 entries; the whole BTB is about 3,800 flip-flops and 7,200 LUT4s (measured 2026-10-14), the one worth converting
+rtl/btb.v                    counter          both     branch target buffer, 64 entries
+rtl/btb.v                    tag              both     branch target buffer, 64 entries
+rtl/btb.v                    target           both     branch target buffer, 64 entries
+rtl/mmu.v                    tlb_*            both     the 8-entry TLB, one array per field
+rtl/soc/wb_npu.v             a_mem            both     NPU activation memory; the whole NPU is about 1,600 flip-flops
+rtl/soc/wb_npu.v             w_mem            both     NPU weight memory
+rtl/soc/wb_npu.v             a_cache_mem      both     NPU activation cache
+rtl/soc/wb_fir.v             h_mem            both     FIR coefficients
+rtl/soc/wb_fir.v             hist_mem         both     FIR sample history
+rtl/ooo/core_ooo.v           rob_*            ooo      reorder buffer, one array per field: read and written by several ports at once, so registers on purpose
+rtl/ooo/core_ooo.v           fb_*             ooo      fetch buffer, one array per field
+rtl/ooo/core_ooo.v           sq_*             ooo      store queue, one array per field
+rtl/ooo/core_ooo.v           free_list        ooo      rename: the free list of physical registers
+rtl/ooo/core_ooo.v           preg_busy        ooo      rename: which physical registers are not yet written
+rtl/ooo/core_ooo.v           rat              ooo      rename: the register alias table

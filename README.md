@@ -489,8 +489,8 @@ openFPGALoader -b ulx3s fpga/build/ulx3s_top.bit
 ```
 
 Synthesis needs oss-cad-suite on `PATH` (`export
-PATH=~/tools/oss-cad-suite/bin:$PATH`); `make verify` does not. See
-`docs/toolchain.md`.
+PATH=~/tools/oss-cad-suite/bin:$PATH`); `make verify` looks for it itself, at
+`~/tools/oss-cad-suite`, for its synthesis checks. See `docs/toolchain.md`.
 
 **Until the SD card works, boot from a preloaded RAM image instead:**
 

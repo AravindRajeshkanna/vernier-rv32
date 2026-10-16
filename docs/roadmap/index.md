@@ -82,6 +82,17 @@ memories were registers too. The critical path above is the CPU's, not the frame
 to run place-and-route. The 35 other memories yosys still turns into registers (the MMU's TLB, the PLIC, the CLINT, the BTB, the NPU,
 the FIR and the CSR file) are small, except the BTB, which is about 7,200 4-input LUTs on its own and is the one worth a look.
 
+**Update 2026-10-16: the rest of the SoC is guarded too.** `make framebuffer_synth_check` holds one module; `make soc_synth_check`
+(`fpga/synth/soc_synth.sh`, in `make verify` and in a CI job per core) synthesises the whole SoC at 320x240 under a time limit and
+fails if the build does not finish, if a memory turns into registers that `fpga/synth/soc_register_memories.txt` does not list, if a
+listed one stops being registers, or if the LUT4s, flip-flops or block RAMs leave a budget. The 35 warnings are 27 distinct memories
+(a module that is elaborated more than once prints once per elaboration); the wide core adds 60, all in `rtl/ooo/core_ooo.v`, which
+are registers by design. Measured: in-order 130 s and 913 MB, wide 330 s and 1.43 GB; the wide core (58,626 LUT4) had not been
+synthesised at its real size before. It goes red on the pre-fix framebuffer (killed at the limit), on a new array written from a
+reset block, on a BTB at four times its size, and on a stale or a missing line of the list. It does not place and route (the Fmax
+tables are still 8x8, by hand), does not convert the BTB (still about 7,200 LUT4s, still the one worth a look), and synthesises
+`BOARD=ulx3s85` only: the ECPIX-5 wrapper shares the SoC but is not built by it.
+
 **OPEN - `make verify` cannot see a failed run of seven of the simulations it runs (found 2026-10-16).** A testbench that prints `... TEST FAILED`
 and calls `$finish` makes `vvp` exit 0, and these targets run `vvp` and check nothing after it: `sim`, `sim_soc`, `sim_ulx3s`, `sim_ulx3s_video`,
 `sim_ecpix5`, `sim_cmd0` and `sim_sdramprobe`. (`sim_software` is a case of a different kind: its testbench prints no verdict at all.) Found

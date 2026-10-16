@@ -310,6 +310,19 @@ reported twice) and 35 from other modules; 35 remain.
 the underclocked bitstream. Their figures stand as recorded and name the bundle
 they came from.
 
+**Guarded 2026-10-16: the whole SoC at 320x240, both cores.** `fpga/synth/soc_synth.sh --check` (`make soc_synth_check`, in
+`make verify` and in a CI job per core) runs `synth_ecp5.sh` with `SYNTH_ONLY` on `BOARD=ulx3s85`, with no `FB_WIDTH` or
+`FB_HEIGHT`, under a time limit. It fails if the build does not finish; if yosys turns a memory into registers that
+`fpga/synth/soc_register_memories.txt` does not list; if a listed one stops being registers (so the list can only shrink); or if
+the LUT4s, flip-flops or block RAMs leave their budgets. Measured on the laptop, two builds side by side: the in-order SoC 130 s
+and 913 MB, 24,273 LUT4, 11,132 flip-flops, 82 `DP16KD`; the wide core's SoC 330 s and 1.43 GB, 58,626 LUT4 (70% of the 85F's
+83,640), 16,579 flip-flops, 80 `DP16KD`. `CORE=ooo` had not been synthesised at its real size before, and it finishes. The list
+holds 27 memories for the in-order SoC (the 35 warnings above are the same ones, printed once per elaboration of a module) and
+60 more for the wide core: its reorder buffer, fetch buffer, store queue and rename tables, which are registers on purpose. The
+check goes red on each of: the framebuffer as it was before the fix (killed at the time limit, naming its banks), a new array
+written from a reset block (named), a BTB at four times its size (over the flip-flop budget), a list line for something that is
+no longer registers, and a missing one. Place-and-route is not part of it, and nothing was re-placed.
+
 ## Re-measured 2026-10-09: the router fabric in the SoC, and how much a netlist moves Fmax by itself
 
 Phase 8's router fabric (`INTERCONNECT=xbar`, `rtl/soc/wb_noc_xbar.v`) had never been through this flow;

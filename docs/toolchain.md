@@ -211,8 +211,12 @@ targets (`&:`) — none of which 3.81 has.
 
 `make verify` runs `sim`, `sim_software`, `sim_soc`, `isa`, `cosim`,
 `verilator_check` and `formal` — so a full gate needs iverilog, **Verilator**,
-the RISC-V GCC toolchain, Spike, Yosys and z3. It does **not** need the FPGA
-toolchain.
+the RISC-V GCC toolchain, Spike, Yosys and z3. It also runs three synthesis
+checks (`noc_router_area_check`, `framebuffer_synth_check` and
+`soc_synth_check`), which look for oss-cad-suite at `~/tools/oss-cad-suite`
+(`BUNDLE=` says otherwise); `soc_synth_check` drives `synth_ecp5.sh`, so it
+needs that bundle's yosys, nextpnr-ecp5 and ecppack all present. It does not
+place and route.
 
 Verilator became a hard dependency of `verify` when the SoC harness landed,
 for the reason in practices §14: a file nothing in `verify` builds will rot,
@@ -347,7 +351,7 @@ export PATH=~/tools/oss-cad-suite/bin:$PATH   # needed only for the FPGA flow
 Then:
 
 ```bash
-make verify     # full gate: no FPGA toolchain required
+make verify     # full gate; its synthesis checks use oss-cad-suite (~/tools/oss-cad-suite)
 make soc && ./fpga/synth/synth_ecp5.sh   # bitstream; needs oss-cad-suite on PATH
 ```
 
