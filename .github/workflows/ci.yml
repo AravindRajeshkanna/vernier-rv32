@@ -9,9 +9,11 @@
 #   cosim   needs Spike, which has to be built from source (several minutes)
 #           and would dominate the run. It is a local gate - see
 #           CONTRIBUTING.md - not a CI one.
-#   FPGA    synthesis needs YosysHQ's oss-cad-suite for nextpnr-ecp5, and
-#           place-and-route is 4-11 minutes on an ECP5. Timing numbers are
-#           recorded by hand in fpga/README.md from a real run.
+#   FPGA    place-and-route of the SoC: it needs YosysHQ's oss-cad-suite for
+#           nextpnr-ecp5 and takes 4-11 minutes on an ECP5. Timing numbers are
+#           recorded by hand in fpga/README.md from a real run. Synthesis is
+#           here: the whole SoC at its real size in `fullscale-synth`, and
+#           single modules and the DDR3 PHY's place-and-route in `formal`.
 #
 # Every job carries `timeout-minutes`. A run on PR #9 sat in `apt-get` for two
 # hours and fifteen minutes across three jobs before anyone noticed, because
@@ -687,6 +689,46 @@ jobs:
       # which is why it is here and not in `rtl`.
       - name: Framebuffer synthesises into block RAM
         run: make framebuffer_synth_check
+
+  # ---------------------------------------------------------------------
+  # The whole SoC must synthesise at its real size, with no sizeable memory turned into registers. The
+  # framebuffer's pixel memory, written from a block with an asynchronous reset, was turned into 614,400
+  # flip-flops by yosys's front end and the build did not finish in hours; every simulation passed, and the boards
+  # built with the framebuffer shrunk to 8x8, so nothing noticed. `framebuffer_synth_check` in the `formal` job
+  # holds that one module; this holds every other memory in the SoC, for both cores (fpga/synth/soc_synth.sh, and
+  # fpga/synth/soc_register_memories.txt, which lists the small ones that become registers on purpose). Synthesis
+  # only, no place-and-route.
+  #
+  # A job of its own, because it needs the RISC-V toolchain (the boot ROM is a synthesis input) and the
+  # oss-cad-suite bundle (yosys, and the nextpnr-ecp5 and ecppack that synth_ecp5.sh insists on finding), and
+  # those two have not shared a job: the bundle puts its own iverilog first on PATH, which the simulation jobs
+  # cannot have. Yosys takes about 2 minutes for the in-order core and 6 for the wide one, on a laptop.
+  # ---------------------------------------------------------------------
+  fullscale-synth:
+    name: Full-scale synthesis (${{ matrix.core }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [inorder, ooo]
+    env:
+      CORE: ${{ matrix.core }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/riscv-toolchain
+
+      # The boot ROM embeds the device tree, so building it needs dtc.
+      - uses: ./.github/actions/dtc
+
+      - uses: ./.github/actions/oss-cad-suite
+
+      - name: Build the boot ROM, which synthesis reads
+        run: make "sim/bootrom_$CORE.hex"
+
+      - name: The SoC synthesises at 320x240, and no sizeable memory becomes registers
+        run: make soc_synth_check
 
   # ---------------------------------------------------------------------
   # The DDR3 PHY (Phase 9, Stage 1): every simulation test, the same tests again
