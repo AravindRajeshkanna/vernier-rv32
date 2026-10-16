@@ -263,11 +263,11 @@ module fb_equiv_pair #(
         begin pick_size = SMALL ? 1 + rnd(8) : ((rnd(8) == 0) ? pick(limit) : 1 + rnd(limit)); end
     endfunction
 
-    // A line longer than about 2,000 pixels never finishes in the module (and in the reference, which is the same
-    // there): the Bresenham step doubles a 13-bit error term into 13 bits (docs/roadmap/phase-10-gpu.md, Known defects).
-    // Equal is equal, but the engine would sit busy until the next reset and the run would learn nothing, so the end
-    // points of a line stay far under that (LINE_MAX, still many times the size of the buffer). Fill and copy take
-    // any 12-bit value: they clamp.
+    // The reference is the module as it was before the line engine's error term was widened (docs/roadmap/phase-10-gpu.md,
+    // Known defects): in it a line with a run of about 1,400 pixels or more never finishes, and in the module under test it
+    // does, on purpose, so the two differ there. Everywhere else they are the same, which is what this compares, so the
+    // end points of a line stay far under where they part (LINE_MAX, still many times the size of the buffer; the first
+    // difference needs an error term past 2,047). Fill and copy take any 12-bit value: they clamp.
     localparam LINE_MAX = 300;
     function [11:0] line_end(input [11:0] v);
         reg [11:0] near;

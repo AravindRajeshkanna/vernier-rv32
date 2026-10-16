@@ -820,19 +820,27 @@ trapcheck: sim/bootrom_$(CORE).hex sim/sim_trap.out
 # The framebuffer's only proof while no display is attached: draw a known
 # pattern through the bus, capture a frame off the scan-out, and compare.
 # Also drops sim/frame.ppm for a human to look at - but the verdict is the
-# readback, not the image.
+# readback, not the image. The target checks the verdict itself: vvp exits 0
+# after $finish whatever the testbench printed, so without the grep a failing
+# run passed `make verify`.
 sim_video:
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_video.out sim/tb_video.v \
 	    rtl/soc/video_timing.v rtl/soc/wb_framebuffer.v
-	cd sim && $(VVP) sim_video.out
+	cd sim && $(VVP) sim_video.out | tee video.log
+	@grep -q "VIDEO TEST PASSED" sim/video.log || \
+	    { echo "sim_video FAILED"; exit 1; }
 
 # wb_framebuffer.v's fill engine (Phase 10 stage 1): drives the blit-control
 # block directly, no CPU or video_timing.v needed - this is a bus-and-FSM
-# test, not a scan-out test, which sim_video already covers.
+# test, not a scan-out test, which sim_video already covers. It checks its
+# own verdict (see sim_video): until it did, a failing run passed `make verify`,
+# and the fill, copy and line checks gated nothing.
 sim_blit:
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_blit.out sim/tb_blit.v \
 	    rtl/soc/wb_framebuffer.v
-	cd sim && $(VVP) sim_blit.out
+	cd sim && $(VVP) sim_blit.out | tee blit.log
+	@grep -q "BLIT TEST PASSED" sim/blit.log || \
+	    { echo "sim_blit FAILED"; exit 1; }
 
 # wb_framebuffer.v's memory writes were moved out of the FSM's asynchronous-reset block into one clock-only write
 # port, so that yosys maps the pixel buffer to block RAM and not to 614,400 flip-flops (framebuffer_synth_check

@@ -8,6 +8,11 @@
 // framebuffer's behaviour is changed on purpose - from then on it would only be checking against the past. It is the
 // same kind of file as formal/pmp_ref.v and formal/noc_router_ref.v.
 //
+// One deliberate change has been made to the module under test since, and not to this copy: the line engine's error term
+// is wider (docs/roadmap/phase-10-gpu.md, Known defects), so a line with a run of about 1,400 pixels or more never finishes
+// here and does there. sim/tb_fb_equiv.v keeps its lines short enough that this does not show; it still holds the write
+// and read ports equal everywhere else.
+//
 // What follows is the module as it was, including its own header.
 
 // Wishbone B4 classic framebuffer: a block-RAM pixel buffer the CPU writes

@@ -82,6 +82,16 @@ memories were registers too. The critical path above is the CPU's, not the frame
 to run place-and-route. The 35 other memories yosys still turns into registers (the MMU's TLB, the PLIC, the CLINT, the BTB, the NPU,
 the FIR and the CSR file) are small, except the BTB, which is about 7,200 4-input LUTs on its own and is the one worth a look.
 
+**OPEN - `make verify` cannot see a failed run of seven of the simulations it runs (found 2026-10-16).** A testbench that prints `... TEST FAILED`
+and calls `$finish` makes `vvp` exit 0, and these targets run `vvp` and check nothing after it: `sim`, `sim_soc`, `sim_ulx3s`, `sim_ulx3s_video`,
+`sim_ecpix5`, `sim_cmd0` and `sim_sdramprobe`. (`sim_software` is a case of a different kind: its testbench prints no verdict at all.) Found
+while writing long-line tests for the framebuffer, which went into `tb_blit.v`: a run of it that printed `BLIT TEST FAILED (4 errors)` exited 0, so
+`make verify` would have passed with the whole fill, copy and line test failing. `sim_blit` and `sim_video` check their verdict now, and `sim_blit` runs
+in CI, where it did not before. None of the testbenches above uses `$fatal`, a non-zero `$finish` or `$stop`. CI greps the verdicts of some of them in
+the workflow (`sim`, `sim_cmd0`, `sim_sdramprobe`; `sim_video` too), which a local `make verify` does not run. Nothing is known to have slipped
+through: the pass markers of these targets are in the logs of the two gates of #260 and of the two gates of the long-line fix (one per core each),
+which I read for them; earlier gates were not checked that way. The fix is a verdict check in each recipe, like `sim_blit`'s.
+
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
 distinction is the whole reason [practices.md](../practices.md) §7 uses this

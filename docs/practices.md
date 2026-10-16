@@ -134,6 +134,15 @@ machine in the testbench, not a canned string — but it is evidence, not the
 verdict. `tests/run.sh` and `sim/trapcheck.sh` return exit codes; `make
 sim_rerun` greps its own log and fails the build.
 
+**A printed verdict is not a checked one.** `vvp` exits 0 after `$finish`
+whatever the testbench printed, so a `make` target that runs it and does
+nothing more passes when the test fails. `sim_blit` was one: a run that
+printed `BLIT TEST FAILED (4 errors)` exited 0, and `make verify` would have
+passed with the whole fill, copy and line test failing. That was found on
+2026-10-16, while adding tests to it. `sim_blit` and `sim_video` grep their own
+logs now; seven more simulation targets do not yet
+([index](roadmap/index.md#common-known-defects)).
+
 Expected failures are held in `tests/expected-failures.txt` with reasons, and
 `run.sh` fails the run if one of them starts *passing*, so the list cannot
 quietly go stale.

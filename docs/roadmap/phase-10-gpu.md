@@ -166,9 +166,11 @@ axis-aligned rectangle, and this stage doesn't take it on. Instead,
 every step checks whether the pixel it's about to plot actually lands
 inside the buffer and skips the write if not, while still advancing the
 algorithm - so a line is safe to draw with any endpoints, including ones
-entirely off the buffer, and completes in a bounded number of
+entirely off the buffer, and always completes in a bounded number of
 cycles (at most `max(|X1-X0|,|Y1-Y0|)+1`, the same order of magnitude a
-fill or copy already costs for a comparable span) - except for a very long run, which does not complete at all: see Known defects. This was a deliberate
+fill or copy already costs for a comparable span; out to the 12-bit limit of
+the registers, which `tb_blit.v` checks - until 2026-10-16 that was not true
+of a run of about 1,400 pixels or more, see Known defects). This was a deliberate
 scope cut, not an oversight - real line-clipping is its own problem and
 a plausible future stage on its own.
 
@@ -205,14 +207,20 @@ rasterization, so this doesn't need `tb_blit.v`'s structural checks.
 
 ## Known defects
 
-**OPEN - a line with a long run never finishes (`rtl/soc/wb_framebuffer.v`, Bresenham step).** Found 2026-10-15 while writing a differential
-test for the framebuffer, not fixed: it is outside that change. `line_e2` is `line_err_r <<< 1` into a 13-bit signed value, and twice
-an error term that can reach 13 bits needs 14, so the step comparisons go wrong once the error is large and the line never reaches
-its end point; the engine stays busy until reset. Measured on the module as it stands, a shallow line from (0,0) to (N,10): N = 1,000
-finishes in 1,001 cycles and N = 1,200 in 1,201, N = 1,400 and every larger N tried (up to 4,000) never finishes; a line from
-(10,4000) to (3000,20) does not either, while (0,0) to (4095,4095) finishes in 4,096. Nothing a 320x240 buffer needs comes near it, but the
-registers take 12-bit coordinates, so software can ask for it, and the statements above and in `docs/soc.md` that any endpoints are safe
-and the operation always completes are not true for it. The fix is a wider `line_e2` and a test (`tb_blit.v` has none for a long line).
+**RESOLVED - a long line never finished, and a longer one went off course (`rtl/soc/wb_framebuffer.v`, Bresenham step; found 2026-10-15, fixed
+2026-10-16).** Found while writing a differential test for the framebuffer. `line_e2` was `line_err_r <<< 1` into a 13-bit signed value, and
+`line_err_r` itself was 13 bits. The error term does not stay that small: each step adds `dx` or `dy` to a value that is within half of the other
+one, so it reaches one and a half times 4,095 (6,142), which needs 14 bits, and twice that needs 15. Once it passed 2,047 the step comparisons
+wrapped, and the line either never reached its end point (the engine stayed busy until reset) or went off course: a vertical line from (0,0) to
+(0,2049) was still busy after 2,116 cycles, against the 2,050 it should take, and at (1025,1603) instead of (0,2049). Measured on the module as it stood, a shallow line from (0,0) to (N,10): N = 1,000 finished in 1,001 cycles and
+N = 1,200 in 1,201, N = 1,400 and every larger N tried (up to 4,000) never finished; (10,4000) to (3000,20) did not either, while (0,0) to
+(4095,4095) finished in 4,096. Over 807 lines (every pair from 13 edge values in three orientations, and 300 random ones) 432 were wrong or never
+finished. Nothing a 320x240 buffer needs came near it, but the registers take 12-bit coordinates, so software could ask for it. The fix widens
+`line_err_r` to 14 bits and `line_e2` to 15, which a software model of the stepping showed was needed and enough (2,007 lines: 965 wrong at 13 bits,
+199 with only `line_e2` widened, none at 14 and 15; widening only `line_e2` was the first fix tried here and it was not enough). After it: 0 of the
+807 wrong, every line exactly `max(|dx|,|dy|)+1` cycles and stopping on its end point. `tb_blit.v` has fourteen long-line cases now, nine of which
+failed on the old module. The wider registers cost 25 4-input LUTs and 2 flip-flops (3,844 and 403 for the module alone at 320x240, still 80 block
+RAMs). Finding that `tb_blit.v` could not have failed `make verify` is recorded in the index, under Common known defects.
 
 The common, cross-cutting entries are in the [index](index.md#common-known-defects).
 
