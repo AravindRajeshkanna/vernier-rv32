@@ -200,9 +200,9 @@ declaring a winner.
   same tests under a second simulator and in CI, and a bounded formal
   proof of the controller's arbitration and refresh gating,
   place-and-route on the real device with the board's DDR3 pins, a driven,
-  tested data mask for lane 0, the untouched upper lane held safely inert, and a
-  second byte lane's own hardware proven to calibrate independently and now wired
-  into the real design, running at boot -
+  tested data mask for lane 0, and a second byte lane's own hardware proven to
+  calibrate independently, wired into the real design, and now carrying data (the
+  controller moves 16-bit words) -
   a model of the data path that is not yet hardware-faithful,
   measured and recorded as such; real hardware bring-up is what remains
   open, not a board decision. Wishbone integration (Stage 2) has begun:

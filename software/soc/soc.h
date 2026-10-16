@@ -48,9 +48,10 @@
  * immediately rather than aliasing back onto itself. */
 #define SDRAM_BASE  0x90000000u
 #define SDRAM_SIZE  0x02000000u
-/* DDR3 (Phase 9 Stage 2). 256 MB, not the part's real 512 MB: lane 1 does
- * not carry real data yet (rtl/soc/wb_ddr.v's own header), so only lane 0's
- * own address space is real. Mask 0xF0 - 16 x 16 MB windows, 0xA0-0xAF. */
+/* DDR3 (Phase 9 Stage 2). 256 MB, not the part's real 512 MB: the controller
+ * carries lane 1's data (Stage 1 Part 26), but rtl/soc/wb_ddr.v does not use
+ * it yet, so only lane 0's own address space is real. Mask 0xF0 - 16 x 16 MB
+ * windows, 0xA0-0xAF. */
 #define DDR3_BASE   0xA0000000u
 #define DDR3_SIZE   0x10000000u
 /* 64 KB. This is the size the *firmware* is built for, and it is

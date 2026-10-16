@@ -26,6 +26,9 @@ module tb_ddr3_top;
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;   // Part 22
+    wire [7:0]  ddr3_dqu;
+    wire        ddr3_udqs;
+    wire        ddr3_udm;
 
     wire pll_locked, dll_locked, init_ready;
     wire calib_done, calib_error;
@@ -40,6 +43,7 @@ module tb_ddr3_top;
     // interfere with this test's own calibration-only scenario.
     wire        write_busy, read_busy, read_data_valid, refresh_busy;
     wire [7:0]  read_data;
+    wire [7:0]  read_data_hi;   // lane 1's byte (Part 26); this test is about lane 0
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
@@ -49,16 +53,28 @@ module tb_ddr3_top;
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
         .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(1'b0), .write_bank(3'b0), .write_row(16'b0),
-        .write_col(16'b0), .write_data(8'b0), .write_busy(write_busy),
+        .write_col(16'b0), .write_data(16'b0), .write_be(2'b00), .write_busy(write_busy),
         .read_req(1'b0), .read_bank(3'b0), .read_row(16'b0), .read_col(16'b0),
-        .read_busy(read_busy), .read_data(read_data), .read_data_valid(read_data_valid),
+        .read_busy(read_busy), .read_data({read_data_hi, read_data}), .read_data_valid(read_data_valid),
         .refresh_busy(refresh_busy),
         .pll_locked(pll_locked), .dll_locked(dll_locked),
         .init_ready(init_ready),
         .calib_done(calib_done), .calib_readclksel(calib_readclksel),
         .calib_error(calib_error)
     );
+
+    // Lane 1's memory (Part 26): the controller takes no request until both lanes have calibrated, and a
+    // lane calibrates by looping its pattern back through a DRAM. This test is about lane 0.
+    ddr3_lane1_mem LANE1 (
+        .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
+        .read_active(DUT.read_active_final_1), .dq_error()
+    );
+
 
     // ---- Part 1's own real protocol checker, watching the same real
     // command/address pins this integration now drives off sclk ----

@@ -102,6 +102,16 @@ module tb_wb_ddr;
     endgenerate
     assign ddr3_dqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
 
+    // Lane 1's memory (Part 26): the controller takes no request until both lanes have calibrated, and
+    // a lane calibrates by looping its pattern back through a DRAM. This module still uses lane 0 alone.
+    ddr3_lane1_mem LANE1 (
+        .sclk(WB.DDR.sclk), .rst(WB.DDR.rst_all), .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
+        .read_active(WB.DDR.read_active_final_1), .dq_error()
+    );
+
     integer errors = 0;
     task check(input [511:0] what, input [31:0] got, input [31:0] want);
         begin
@@ -132,6 +142,10 @@ module tb_wb_ddr;
     // Latches if the slave ever acknowledges while calib_done is still low.
     reg early_ack = 1'b0;
     always @(posedge clk) if (wb_ack && !calib_done) early_ack <= 1'b1;
+
+    integer ack_count = 0;
+    always @(posedge clk) if (wb_ack) ack_count <= ack_count + 1;
+    integer n_ack0, t_wait;
 
     reg [31:0] got;
 
@@ -187,6 +201,31 @@ module tb_wb_ddr;
         wb_access(1'b1, 32'h0000_0000, 32'hFFFF_0022, 4'b0011, got);
         wb_access(1'b0, 32'h0000_0000, 32'b0, 4'b1111, got);
         check("partial wb_sel store changes only the selected bytes", got, 32'hDEAD_0022);
+
+`ifndef VERILATOR
+        // ---- a lane that has not calibrated holds the slave back (Phase 9 Stage 1, Part 26) ----
+        // The controller takes no request until both lanes have calibrated, and drops one sent earlier, so
+        // a slave that waited for lane 0 alone would send its request into the void and then wait for a
+        // busy that never rises. The two lanes calibrate together here, so lane 1's `calib1_done` is held
+        // low by hand. (Verilator's release of a forced net does not give it back to its driver, so only
+        // Icarus runs this; see sim/tb_ddr3_x16.v.)
+        force WB.calib1_done = 1'b0;
+        repeat (4) @(posedge clk);
+        n_ack0 = ack_count;
+        @(posedge clk);
+        wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= 1'b1;
+        wb_adr <= 32'h0000_0100; wb_dat_w <= 32'hC0DE_0001; wb_sel <= 4'b1111;
+        repeat (300) @(posedge clk);
+        check("nothing is acknowledged while lane 1 is uncalibrated", {31'b0, ack_count != n_ack0}, 32'b0);
+        release WB.calib1_done;
+        t_wait = 0;
+        while (!wb_ack && t_wait < 20000) begin @(posedge clk); t_wait = t_wait + 1; end
+        check("the access completes once lane 1 has calibrated", {31'b0, wb_ack}, 32'b1);
+        wb_cyc <= 1'b0; wb_stb <= 1'b0; wb_we <= 1'b0;   // dropped in the cycle of the ack, as wb_access does
+        @(posedge clk);
+        wb_access(1'b0, 32'h0000_0100, 32'b0, 4'b1111, got);
+        check("... and it stored what it was given", got, 32'hC0DE_0001);
+`endif
 
         check("no DDR3 protocol error the whole run", {31'b0, model_error}, 32'b0);
         check("no DQ/DQS timing error the whole run", {31'b0, dq_error}, 32'b0);

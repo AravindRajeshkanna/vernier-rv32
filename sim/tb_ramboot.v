@@ -169,9 +169,16 @@ module tb_ramboot;
         end
     endgenerate
     assign ddr3_dqs = ddr3_mem_dqs_oe ? ddr3_mem_dqs_o : 1'bz;
-    // Lane 1 carries no real data yet (rtl/soc/wb_ddr.v's own header) -
-    // nothing drives ddr3_dqu/ddr3_udqs here, the same as real silicon with
-    // nothing behind the upper byte lane.
+    // Lane 1's memory (Phase 9 Part 26). The controller takes no request until both lanes have
+    // calibrated, and a lane calibrates by looping a pattern back through a DRAM, so lane 1 needs
+    // one behind its pins too. rtl/soc/wb_ddr.v still uses lane 0 alone, so nothing is stored in it.
+    ddr3_lane1_mem DDR3MEM1 (
+        .sclk(DUT.DDR3.DDR.sclk), .rst(DUT.DDR3.DDR.rst_all), .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
+        .read_active(DUT.DDR3.DDR.read_active_final_1), .dq_error()
+    );
 `endif
 
     soc_top #(

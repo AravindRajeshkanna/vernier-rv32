@@ -178,6 +178,14 @@ module tb_uartload;
         end
     endgenerate
     assign ddr3_dqs = ddr3_mem_dqs_oe ? ddr3_mem_dqs_o : 1'bz;
+    // Lane 1's memory (Phase 9 Part 26): see sim/tb_ramboot.v.
+    ddr3_lane1_mem #(.DEPTH(8192)) DDR3MEM1 (
+        .sclk(DUT.DDR3.DDR.sclk), .rst(DUT.DDR3.DDR.rst_all), .ck(ddr3_ck),
+        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a),
+        .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
+        .read_active(DUT.DDR3.DDR.read_active_final_1), .dq_error()
+    );
 `endif
 
     // ---- the image the host is going to send ----

@@ -22,8 +22,9 @@
 //   0x8000_0000  Main RAM   (the conventional RISC-V DRAM base)
 //   0x9000_0000  External SDRAM (32 MB, mask 0xFE - see s_mask below)
 //   0xA000_0000  DDR3 (Phase 9 Stage 2 - 256 MB, mask 0xF0; lane 0 only
-//                 today, real capacity, not the part's full 512 MB - see
-//                 rtl/soc/wb_ddr.v's own header; present but unused by
+//                 today (the controller carries lane 1's data, wb_ddr.v does
+//                 not use it yet), real capacity, not the part's full 512 MB -
+//                 see rtl/soc/wb_ddr.v's own header; present but unused by
 //                 default, the same as SDRAM's own precedent above)
 //
 // The CLINT/PLIC/UART bases are inherited unchanged from rtl/top.v so the

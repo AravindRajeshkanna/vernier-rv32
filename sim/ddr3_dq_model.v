@@ -418,3 +418,56 @@ module ddr3_dq_model #(
         end
     end
 endmodule
+
+// Lane 1's memory for the testbenches that go through rtl/soc/ddr3_ecp5_top.v and are about something
+// else (Phase 9 Stage 1, Part 26, docs/roadmap/phase-09-ddr.md).
+//
+// The controller does not take a request until BOTH byte lanes have calibrated, and a lane calibrates by
+// looping a test pattern back through a DRAM, so every test that sends requests needs something behind lane
+// 1's pins as well as lane 0's. This is that: the model above on lane 1's DQ, UDQS and UDM pins, watching the
+// same command pins as lane 0's model, with its pins resolved. It also stores whatever lane 1 is asked to
+// store, in its own byte plane, which a test about lane 0 simply never looks at. It lives in this file so
+// that every build that already compiles the model has it.
+//
+// A test that is about the two lanes (sim/tb_ddr3_x16.v) instantiates both models itself and looks inside.
+module ddr3_lane1_mem #(
+    parameter DEPTH = 1024
+)(
+    input  wire        sclk,
+    input  wire        rst,
+    input  wire        ck,
+    input  wire        cs_n,
+    input  wire        ras_n,
+    input  wire        cas_n,
+    input  wire        we_n,
+    input  wire [2:0]  ba,
+    input  wire [15:0] a,
+    inout  wire [7:0]  dqu,
+    inout  wire        udqs,
+    input  wire        udm,
+    input  wire        read_active,   // the controller's lane-1 read window (DUT.read_active_final_1)
+    output wire        dq_error
+);
+    wire [7:0]   mem_dq_o;
+    wire         mem_dq_oe, mem_dqs_oe, mem_dqs_o;
+    wire [511:0] dq_error_msg;
+
+    ddr3_dq_model #(.DEPTH(DEPTH)) MEM (
+        .sclk(sclk), .rst(rst),
+        .ck(ck),
+        .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n), .we_n(we_n),
+        .ba(ba), .a(a),
+        .dq_pin(dqu), .dqs_pin(udqs), .dm_pin(udm),
+        .read_active(read_active),
+        .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
+        .dq_error(dq_error), .dq_error_msg(dq_error_msg)
+    );
+
+    genvar b;
+    generate
+        for (b = 0; b < 8; b = b + 1) begin : DQU_BUS
+            assign dqu[b] = mem_dq_oe ? mem_dq_o[b] : 1'bz;
+        end
+    endgenerate
+    assign udqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
+endmodule

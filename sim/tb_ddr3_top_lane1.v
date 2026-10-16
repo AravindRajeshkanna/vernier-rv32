@@ -34,6 +34,7 @@ module tb_ddr3_top_lane1;
 
     wire        write_busy, read_busy, read_data_valid, refresh_busy;
     wire [7:0]  read_data;
+    wire [7:0]  read_data_hi;   // lane 1's byte (Part 26); this test is about lane 0
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
@@ -45,9 +46,9 @@ module tb_ddr3_top_lane1;
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(1'b0), .write_bank(3'b0), .write_row(16'b0),
-        .write_col(16'b0), .write_data(8'b0), .write_busy(write_busy),
+        .write_col(16'b0), .write_data(16'b0), .write_be(2'b00), .write_busy(write_busy),
         .read_req(1'b0), .read_bank(3'b0), .read_row(16'b0), .read_col(16'b0),
-        .read_busy(read_busy), .read_data(read_data), .read_data_valid(read_data_valid),
+        .read_busy(read_busy), .read_data({read_data_hi, read_data}), .read_data_valid(read_data_valid),
         .refresh_busy(refresh_busy),
         .pll_locked(pll_locked), .dll_locked(dll_locked),
         .init_ready(init_ready),

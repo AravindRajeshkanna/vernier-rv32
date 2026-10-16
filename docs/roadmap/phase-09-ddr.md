@@ -12,9 +12,9 @@ finally checked, CK at the edge-clock rate with two command slots per
 model that answers a read at the DRAM's own read latency, the same tests run under a
 second simulator and in CI, a bounded formal proof of the controller's arbitration, bank
 state and refresh gating, place-and-route on the real device with the board's DDR3 pins, a driven,
-tested data mask for lane 0, the untouched upper lane held safely inert, and a second
-byte lane's own hardware proven to calibrate independently, now wired into the real
-design and running at boot) - but
+tested data mask for lane 0, a second byte lane's own hardware proven to calibrate
+independently, wired into the real design, and now carrying data: the controller moves
+16-bit words with a byte enable per lane) - but
 neither is done. Stage 2's own "Done when" bar is met in simulation (Part 2:
 a CPU reads and writes DDR3 as data through `rtl/soc/wb_ddr.v`, wired into
 `rtl/soc/soc_top.v` behind `DDR3_ENABLE` so every existing build is untouched;
@@ -2186,6 +2186,51 @@ is a measurement, the same "survey, no design change" shape the Part 14/15 surve
 project has closes. No formal proof of any of this (Part 20's properties are the control
 plane). No board.
 
+**Update, Part 26: lane 1 carries data, and the controller is x16.** Through Part 25 lane 1 calibrated and drove its pins around its own
+calibration burst, and nothing a caller could ask for reached it: `write_data` and `read_data` were eight bits wide and `read_active_1` was
+calibration's own signal alone. The part is x16, so a column holds two bytes. A request is now one 16-bit word.
+
+**What changed.** `rtl/soc/ddr3_ecp5_top.v`: `write_data` and `read_data` are 16 bits, `{lane 1, lane 0}`, and a new `write_be[1:0]` says which
+lane a write stores. A lane whose bit is 0 has its data mask held high for the whole burst, so the DRAM keeps what the cell holds; 2'b00 runs the
+transaction and stores nothing. Both lanes' strobes toggle for every write and both read windows open for every read, as on the part. Each lane does
+what lane 0 always did: its byte is captured when the burst is triggered and held until the window opens (`dq_data_hold`, `dq_data_hold_1`), and its
+data mask is low exactly in the burst's first half (Part 22) if the lane is stored (`lane0_store`, `lane1_store`). The request's data and enables are
+captured at request time (`write_data_latch`, `write_be_latch`). The command sequencers wait for both lanes' calibration, and `read_data_valid` needs both
+lanes' `datavalid`. The command path, the sequencers, the refresh and the PHY are untouched.
+
+**Test: `sim/tb_ddr3_x16.v` (new, in `make verify` and CI).** Both lanes' memory models watch the same command pins, each holding its own byte plane. It writes
+a different word to each of 18 cells (the first and last cell, a walking one through bank, row and column, a neighbour pair, alternating bits) and reads them
+back; runs the byte-enable cases (both lanes, lane 0 only, lane 1 only, neither), each checked against the data-mask waveform of both lanes as well as the data;
+runs the neighbour column on both lanes (a word written at column c survives a write to c ^ 4, and a lane-1-only write to c leaves lane 0 and the neighbour alone);
+reads the whole sweep again, backwards; and looks into each lane's memory to see that its byte is in its own plane. The caller scrambles the request's data and
+enables the cycle after handing it over, so a controller that did not latch them fails. Two scenarios per lane hold a net by hand with `force`: a lane's `calib_done`
+low (no command may reach the pins, and the controller reports no busy for a request it did not take) and a lane's `datavalid` low (a read completes with no valid
+pulse). The two lanes calibrate in lockstep in simulation, so without these the two gates were unobservable. Verilator's `release` does not hand a forced net back to
+the module that drives it, so under Verilator the test stops before them; Icarus runs all of it.
+
+**Mutation-tested, 16 ways, all caught.** Lane 1's byte taken from the wrong half; either store flag held high; the two enables swapped; the data, or the enables, read live
+instead of latched; either lane's data mask stuck low; lane 1's data held at zero; lane 1's strobe not driven on a real write; lane 1's read window missing; the two
+lanes swapped on a read; `read_data_valid` ignoring lane 1, or lane 0; the commands not waiting for lane 1's calibration, or lane 0's. The first version of the test caught
+twelve of the first fourteen. The two that survived were the valid and the calibration gates, which cannot be seen while the lanes move in lockstep; the `force` scenarios,
+and the two mirror-image mutants, came from that.
+
+**The old tests.** The eleven testbenches that instantiate the top are adapted: the ports are wider, they write with `write_be = 2'b01` (so lane 0 does exactly what it
+did and lane 1's mask stays high), and each gets lane 1's memory, through `ddr3_lane1_mem`, a wrapper at the end of `sim/ddr3_dq_model.v`. The controller no longer takes a
+request until both lanes have calibrated, and a lane calibrates by looping a pattern back through a DRAM. `sim/tb_wb_ddr.v`, `sim/tb_ramboot.v` and `sim/tb_uartload.v`
+likewise. `rtl/soc/wb_ddr.v` still uses lane 0 alone (`write_be = 2'b01`, the upper byte of every read dropped), so the window is still 256 MB; it waits for both
+lanes' calibration, though, because the controller does and drops a request sent earlier. A slave that waited for lane 0 alone would send its first request into the void
+(the bug the existing comment names: the first byte of a loaded image missing). `sim/tb_wb_ddr.v` holds lane 1's `calib1_done` low by hand, checks that nothing is
+acknowledged, releases it, and checks that the access completes and stored what it was given; the mutant that waits for lane 0 alone fails it, with the word `c0de00xx`.
+
+**Verified:** `make ddr3_check_sim` (every DDR3 test under both simulators, and the lint); the five SoC-level DDR3 tests (`sim_ddrcheck`, `sim_ddrexec`,
+`sim_ddratomics`, `sim_ddrmmutest`, `sim_uartload_ddr3`); `make formal` (14 proved; the controller's proof to depth 250 with all twelve cover statements reached);
+`make synth_check_ddr3`; `make pnr_probe_ddr3` (places and routes against the real pins, `sclk` at 251.57 MHz after routing, seed 1).
+
+**What this does not establish.** Hardware-faithful bursts: the pins still carry one DQ word per `sclk`, so a burst still moves one column and masks its neighbour (Part 22).
+Lane 1 on silicon: the lanes calibrate independently and `read_data_valid` assumes their capture windows open together, which nothing here can show for real silicon; the
+`readclksel` and `dqs_pad_i` cross-wiring gaps of Parts 24 and 25 are unchanged. The Wishbone side: the window is still 256 MB, and `wb_ddr.v` still moves a block as sixteen
+single-byte transactions. No board.
+
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
 `rtl/soc/soc_top.v`'s interconnect as a new address range, not a
@@ -3080,9 +3125,9 @@ wrong CL was invisible to every integrated test (Part 18: the model answers a
 READ at the DRAM's own latency, the design's `CL_CYC` of 3 was confirmed, and 2,
 4 and 5 now each fail three integrated tests). What remains: the pins carry one
 DQ word per `sclk`, so all eight beats of a write burst carry one byte and a read
-returns two halves rather than eight beats; there is no data mask or second lane;
-and the ECP5's real capture latency and the sub-cycle windows are unverified on
-silicon. Not a regression and not a claim that ever failed;
+returns two halves rather than eight beats; and the ECP5's real capture latency and
+the sub-cycle windows are unverified on silicon. (The data mask is Part 22, the second
+lane's data Part 26: the controller is x16, though the Wishbone side still uses lane 0.) Not a regression and not a claim that ever failed;
 a distance the earlier accounts did not state. Full measurement, what a faithful path
 needs, and the one decision that is the maintainer's, in the Phase 9 survey
 ("Survey, no design change").
@@ -3093,8 +3138,7 @@ Part 21).** Two independent descriptions of the board list no CS# and no RESET# 
 the FPGA cannot drive either: the CS# path in the PHY (a deselect in every idle command slot) has no pin
 to happen on, and the initialisation sequence's RESET# pulse cannot be issued. CK# and DQS# are the
 negative halves of differential pairs and are not separate ports. The part is x16 and lane 1, its
-strobe and its own data mask are undriven for real use, though both now sit on a real, safely-held-inert
-pin rather than an unconstrained one (Part 23); lane 0's own data mask is driven for real - Part 22.
+strobe and its data mask are driven like lane 0's (Parts 22, 25 and 26).
 Found by place-and-route with the
 real pins, which refuses to place the CS# path; recorded rather than fixed, because how the board
 handles CS# and RESET# needs a schematic. Two defects place-and-route found in the same run - a
@@ -3110,5 +3154,5 @@ Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorde
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path, write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang; Part 12 added execution out of DDR3 and page faults through DDR3 tables; Part 13 added atomics, a read-only page, a PMP-denied
+The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path on both byte lanes (the controller moves 16-bit words with a byte enable per lane, Part 26), write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang; Part 12 added execution out of DDR3 and page faults through DDR3 tables; Part 13 added atomics, a read-only page, a PMP-denied
 frame, alignment, instruction faults and faults delegated to S-mode, and found a wide-core bug) is in `make verify` as well.

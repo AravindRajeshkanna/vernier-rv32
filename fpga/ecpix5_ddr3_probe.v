@@ -38,7 +38,7 @@ module ecpix5_ddr3_probe (
 
     wire        write_busy, read_busy, read_data_valid, refresh_busy;
     wire        pll_locked, dll_locked, init_ready, calib_done, calib_error;
-    wire [7:0]  read_data;
+    wire [15:0] read_data;
     wire [2:0]  calib_readclksel;
 
     ddr3_ecp5_top TOP (
@@ -50,7 +50,8 @@ module ecpix5_ddr3_probe (
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(sh[0]), .write_bank(sh[3:1]), .write_row(sh[19:4]),
-        .write_col(sh[35:20]), .write_data(sh[43:36]), .write_busy(write_busy),
+        .write_col(sh[35:20]), .write_data({sh[91:84], sh[43:36]}), .write_be(sh[93:92]),
+        .write_busy(write_busy),
         .read_req(sh[44]), .read_bank(sh[47:45]), .read_row(sh[63:48]),
         .read_col(sh[79:64]), .read_busy(read_busy), .read_data(read_data),
         .read_data_valid(read_data_valid),
