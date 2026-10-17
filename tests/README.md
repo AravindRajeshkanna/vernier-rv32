@@ -289,6 +289,9 @@ them.
 push, alongside the RTL regression and both SoC boot paths, and (since Phase 8 Parts 33 and 34) the
 packet network's simulations, the SoC over the router fabric, four harts on the bus and over the fabric, and (Parts 37 and 38) the device trees' hart lists
 (`make dtb_check`) and a `wfi` that waits (`make sim_soc_wfi sim_wfi_dbg`).
+Every other simulation `make verify` runs is there too, and `make ci_coverage_check` (itself part of
+`verify`) fails when one is not: a test added to `verify` has to be reached by a CI job that runs over the bus,
+or be listed in `CI_EXCEPTIONS` in the `Makefile` with the reason.
 
 **Spike co-simulation is deliberately not in CI.** It needs Spike built from
 source, which would dominate the run time, and it is the layer least likely to

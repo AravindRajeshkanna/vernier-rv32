@@ -15,6 +15,10 @@
 #           here: the whole SoC at its real size in `fullscale-synth`, and
 #           single modules and the DDR3 PHY's place-and-route in `formal`.
 #
+# Everything else `make verify` runs IS here, and `make ci_coverage_check` (a step of `rtl`, and part of
+# `verify`) keeps it so: a prerequisite of `verify` that no job running over the bus names fails it, unless
+# the Makefile's CI_EXCEPTIONS lists it with the reason. cosim and the Linux boot are among those.
+#
 # Every job carries `timeout-minutes`. A run on PR #9 sat in `apt-get` for two
 # hours and fifteen minutes across three jobs before anyone noticed, because
 # the default job timeout is six hours and apt's default behaviour against a
@@ -147,6 +151,21 @@ jobs:
       - name: Phase 8 network, unit and fabric simulations
         run: make -k noc_check_sim
 
+      # The simulations `make verify` ran that no step here named, found on 2026-10-17 by tracing
+      # `make -n verify` against every `make` in this file: the core halt and reservation-port units, the
+      # PMP, the CLINT, PLIC and interconnect at several harts, the NPU and FIR, the video encoder and PLL,
+      # the data cache against its bypass, and the nine mixed-core (`_hetero`) two-hart SoC tests. 28 of them,
+      # about 11 seconds between them on a laptop. `make rtl_check_sim` is the one place the list lives, and
+      # `make verify` runs it too. -k so that every failing test is reported, not just the first.
+      - name: Unit simulations and the mixed-core two-hart SoC
+        run: make -k rtl_check_sim
+
+      # What stops the gap reopening. Every prerequisite of `make verify` must be named by a step in this
+      # file, or listed in the Makefile's CI_EXCEPTIONS with the reason it is not (Spike, a kernel off the
+      # network). A test added to `verify` and forgotten here fails this step, on the pull request that adds it.
+      - name: CI runs everything make verify runs
+        run: make ci_coverage_check
+
   # ---------------------------------------------------------------------
   # Everything that needs firmware built.
   #
@@ -191,7 +210,13 @@ jobs:
     # test. 90 follows this file's own "roughly double each job's observed
     # runtime" rule from the ooo leg's measured (partial, still-climbing)
     # time rather than guessing at a number.
-    timeout-minutes: 90
+    #
+    # Raised again, 90 to 120, when the nine two-hart tests over the bus, the DDR3 SoC-level tests, the board
+    # wrappers and the Verilator sweep of the whole SDRAM part were added (the last three steps). They take about
+    # six minutes on a laptop between them; this runner is two to three times slower than a laptop at the
+    # single-threaded Icarus runs above, so say fifteen, on a leg that had been 61 minutes. The pull request
+    # that added them records what a run took.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -414,6 +439,30 @@ jobs:
       - name: Four harts over the bus
         run: make -k sim_soc_4hart sim_soc_4hart_sdram
 
+      # Two harts over the bus, the default every board has. Until 2026-10-17 these nine ran in CI only over the
+      # router fabric (the `noc` job, INTERCONNECT=xbar), so a change that broke two harts over the bus and not
+      # over the fabric was caught by a contributor's own `make verify` and by nothing else. The `noc` job's
+      # record has the same nine at 34 and 43 seconds on a runner, over the fabric.
+      - name: Two harts over the bus
+        run: make -k soc_2hart_check_sim
+
+      # The SoC-level simulations `make verify` ran that no step here named, found on 2026-10-17 by tracing
+      # `make -n verify` against every `make` in this file: instruction fetch, atomics, paged access and the
+      # UART loader against DDR3, the PMP test program, the ULX3S video build and the ECPIX-5 wrapper, and the
+      # boot ROM's mailbox releasing a second hart of the other core type. Nine, about three minutes between
+      # them on a laptop, two of those minutes in one test (sim_uartload_ddr3). `make soc_fw_check_sim` is the one place
+      # the list lives, and `make verify` runs it too; it needs the boot ROM for this job's CORE, so it is
+      # here and not in `rtl`. dtb_ddr3 is the DDR3 variant of the device tree, next to dtb_check above.
+      # -k so that every failing test is reported, not just the first.
+      - name: SoC simulations that need firmware, and the DDR3 device tree
+        run: make -k soc_fw_check_sim dtb_ddr3
+
+      # The program `BOARD=ulx3s85-sdramfull` bakes into its bitstream, run under Verilator against a model of
+      # the whole SDRAM part, every row swept (`make verify` ran it; this job did not). Icarus cannot do this
+      # run, it is hours; Verilator does it in about two minutes on a laptop, the build included.
+      - name: Whole-part SDRAM sweep under Verilator
+        run: make verilator_sdramfull
+
   # ---------------------------------------------------------------------
   # Architectural tests: somebody else's suite, pinned to a commit.
   # ---------------------------------------------------------------------
@@ -612,12 +661,10 @@ jobs:
 
       # Two harts over the fabric: the boot with the second hart released, then LR/SC,
       # AMOs, coherence and ordinary stores, in block RAM and in SDRAM. -k so that every
-      # failing test is reported, not just the first.
+      # failing test is reported, not just the first. `make soc_2hart_check_sim` is the one place
+      # the nine tests are listed; the `firmware` job runs the same nine over the bus.
       - name: Two harts over the fabric
-        run: >-
-          make -k sim_ramboot_2hart sim_soc_2hart sim_soc_2hart_lrsc sim_soc_2hart_amoswap
-          sim_soc_2hart_coherence sim_soc_2hart_ordinary sim_soc_2hart_coherence_sdram
-          sim_soc_2hart_lrsc_sdram sim_soc_2hart_amoswap_sdram
+        run: make -k soc_2hart_check_sim
 
       # Four harts over the fabric, the same test as in the `firmware` job over the bus. It is
       # here for a reason that only four harts show: with three or more, two harts spinning on a

@@ -115,7 +115,21 @@ UART and compares them with the text `software/main.c` prints, and says `SOFTWAR
 `a - b`, the SDRAM probe's compare inverted, an unused SD pin parked low in each of the two ULX3S builds, the ECPIX-5's reset polarity inverted, the GPIO input register read back inverted), every testbench printed its
 failure and `make` still exited 0 before; it exits 2 now. `sim_software` broken four ways (a line of text changed, the last line missing, a firmware that prints nothing, the UART's bits in the wrong order) exited 0
 before and exits 2 now. Of the 121 Makefile targets that run `vvp`, 118 grep for a pass line now; the other three are `coremark` and `coremark_nodcache` (benchmarks, outside `make verify`) and `busmon_check`, whose
-verdict is the exit status of `tests/busmon_compare.py`. CI's own greps stay and are redundant now. `sim_ulx3s_video` and `sim_ecpix5` still run only in `make verify`, not in CI.
+verdict is the exit status of `tests/busmon_compare.py`. CI's own greps stay and are redundant now. `sim_ulx3s_video` and `sim_ecpix5` ran only in `make verify` then, and not in CI (the next entry).
+
+**RESOLVED - 46 simulations in `make verify` that CI did not run the way `verify` runs them (found and fixed 2026-10-17).** `make verify` and the jobs in `.github/workflows/ci.yml` were two lists kept by
+hand, and the gap between them had been closed piecemeal several times (`sim_uartirq`, `sim_probe` and `sim_div64test`; the Phase 8 network; the DDR3 PHY) and reopened each time. A trace of `make -n verify`
+against every `make` in `ci.yml`, dry-run with each job's own environment (the matrix core, `INTERCONNECT`), identifying a simulation by the `iverilog` line that builds it (its output name and its `-D` defines),
+found 46 that CI did not build the way `verify` does, for either core: 37 it did not run at all (the core halt and reservation-port units, the PMP, the CLINT, PLIC and interconnect at several harts, the NPU and FIR, the video
+encoder and PLL, the nine mixed-core `_hetero` two-hart SoC tests, the DDR3 SoC-level tests, the ULX3S video build and the ECPIX-5 wrapper, `sim_pmptest`, and the boot ROM's mailbox under `CORE=hetero`), and the nine
+two-hart tests, which CI ran only over the router fabric (the `noc` job, `INTERCONNECT=xbar`) and never over the bus, the default every board has. Two more targets of `verify` that are not simulations were in the same case
+(`verilator_sdramfull`, the Verilator sweep of the whole SDRAM part, and `dtb_ddr3`). Fixed: the 37 are two aggregates, `rtl_check_sim` (28, needs only Icarus, run once in the `rtl` job) and `soc_fw_check_sim` (9, needs the
+toolchain, run per core in the `firmware` job), the nine are a third, `soc_2hart_check_sim`, run in the `firmware` job over the bus and in the `noc` job over the fabric, and `verilator_sdramfull` and `dtb_ddr3` are steps of
+the `firmware` job. Each list lives in the Makefile once, and `verify` runs the aggregate. `make ci_coverage_check`, a prerequisite of `verify` and a step of the `rtl` job, is what keeps it fixed: it fails when a prerequisite
+of `verify` is named by no step of a bus job in `ci.yml`, unless `CI_EXCEPTIONS` lists it with the reason (`cosim`, `linux-if-built`, `ddr3_check`, whose halves CI runs by name, and `verilator_check`, which CI runs as three
+steps). Run on `main`'s own lists it flags 48 names, the 46 and those two. The cost on a laptop, run several at a time: the 28 take 11 seconds between them, the nine firmware ones 186 seconds (136 of them
+`sim_uartload_ddr3`), the Verilator sweep 134 with its build; the runner's figures are in the pull request that closed this. Not covered, and not a gap this check can see: it reads names, not the core a step runs under;
+`verify_noc` and `verify_xbar` (the whole of `verify` over the fabric) are still local, with CI running the part of them that is cheap and specific to the fabric; and the exceptions above.
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
