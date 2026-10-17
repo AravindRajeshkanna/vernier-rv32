@@ -884,7 +884,16 @@ sim_cmd0:
 # This target checks the wiring the wrapper is responsible for - pin
 # direction, polarity, tie-offs - and is part of `make verify` so the file
 # cannot rot the same way. It does not re-test the SoC; sim_soc does that.
+#
+# The three wrapper simulations (this one, sim_ulx3s_video and sim_ecpix5) each copy the boot ROM image for their
+# CORE to sim/bootrom.hex first: fpga/soc_fpga.v names its image by that fixed name (fpga/synth/synth_ecp5.sh does the
+# same copy into its build directory, for the same reason). Nothing wrote sim/bootrom.hex any more. A tree that had
+# been built before the images were suffixed with the core still had an old one, and these ran on it; a clean tree had
+# none, $readmemh printed "Unable to open bootrom.hex" and the ROM read back as X. sim_ulx3s and sim_ulx3s_video check
+# pins and passed anyway; sim_ecpix5 checks that the boot ROM sends something on the UART, and failed - on the
+# first run of it on a clean checkout, which was the CI job that gained it in the change that wired it in.
 sim_ulx3s: soc
+	cp sim/bootrom_$(CORE).hex sim/bootrom.hex
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v
 	cd sim && $(VVP) sim_ulx3s.out | tee ulx3s.log
@@ -895,6 +904,7 @@ sim_ulx3s: soc
 # entry's own Stage 0 board wrapper - fpga/ecpix5_top.v is real RTL no
 # other target would otherwise build.
 sim_ecpix5: soc
+	cp sim/bootrom_$(CORE).hex sim/bootrom.hex
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ecpix5.out sim/tb_ecpix5.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v
 	cd sim && $(VVP) sim_ecpix5.out | tee ecpix5.log
@@ -908,6 +918,7 @@ sim_ecpix5: soc
 # without it, video_out.v is compiled but never instantiated, so
 # sim_ulx3s above would silently stop testing the integration it added.
 sim_ulx3s_video: soc
+	cp sim/bootrom_$(CORE).hex sim/bootrom.hex
 	$(IVERILOG) $(IVFLAGS) -DWITH_VIDEO -o sim/sim_ulx3s_video.out sim/tb_ulx3s.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v \
 	    fpga/video_out.v fpga/video_pll.v fpga/tmds_serialize.v \

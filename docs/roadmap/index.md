@@ -131,6 +131,15 @@ steps). Run on `main`'s own lists it flags 48 names, the 46 and those two. The c
 `sim_uartload_ddr3`), the Verilator sweep 134 with its build; the runner's figures are in the pull request that closed this. Not covered, and not a gap this check can see: it reads names, not the core a step runs under;
 `verify_noc` and `verify_xbar` (the whole of `verify` over the fabric) are still local, with CI running the part of them that is cheap and specific to the fabric; and the exceptions above.
 
+**RESOLVED - `sim_ecpix5` never passed on a clean tree, and `sim_ulx3s` and `sim_ulx3s_video` ran with no boot ROM (found and fixed 2026-10-17, by the first CI run of them).** `fpga/soc_fpga.v` reads its boot
+ROM from a fixed name, `bootrom.hex`, in `sim/` (`fpga/synth/synth_ecp5.sh` copies the image for its core to that name in its build directory, for the same reason), and nothing had written `sim/bootrom.hex` since the
+images were suffixed with the core (`bootrom_<core>.hex`). A tree built before that still had an old one (16,758 bytes, from 17 September, in the main checkout the gates are seeded from), and the three board-wrapper
+simulations ran on it. On a clean tree `$readmemh` printed `Unable to open bootrom.hex`, the ROM read back as X, `sim_ulx3s` and `sim_ulx3s_video`, which check pins, passed anyway, and `sim_ecpix5`, which checks that the boot
+ROM sends something on the UART, failed. Before the verdict checks of #266 that failure exited 0; since them, `make verify` fails on any clean tree. CI never ran it, so nothing noticed until the change above wired it in
+and the runner failed it, on both cores, in the first run. Fixed: each of the three recipes copies `sim/bootrom_$(CORE).hex` to `sim/bootrom.hex` first. Red first, on a clean tree: `make sim_ecpix5` failed as it did on
+the runner (exit 2, `FAIL uart_tx toggles (boot ROM is sending)`), and passes with the copy, under both cores. Every gate of mine had been seeded from that main checkout's caches, which is why none saw it; a stale ignored
+file in a cache can hide a clean-tree failure, and the one place that does not have one is CI.
+
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
 distinction is the whole reason [practices.md](../practices.md) §7 uses this

@@ -212,10 +212,13 @@ jobs:
     # time rather than guessing at a number.
     #
     # Raised again, 90 to 120, when the nine two-hart tests over the bus, the DDR3 SoC-level tests, the board
-    # wrappers and the Verilator sweep of the whole SDRAM part were added (the last three steps). They take about
-    # six minutes on a laptop between them; this runner is two to three times slower than a laptop at the
-    # single-threaded Icarus runs above, so say fifteen, on a leg that had been 61 minutes. The pull request
-    # that added them records what a run took.
+    # wrappers and the Verilator sweep of the whole SDRAM part were added (the last three steps). Measured on
+    # this runner, in the first run that had them: the two-hart tests 10 and 15 seconds (in-order, wide), and the
+    # nine SoC-level simulations with the DDR3 device tree 3 min 50 s and 4 min 42 s, about 1.1 times a laptop, not
+    # the two to three times of the paragraph above. The sweep is a Verilator build and a run of about two and a
+    # half minutes on a laptop; it had not run on a runner when this was written. The legs of this job took
+    # between 50 and 64 minutes in the two runs on record, with nothing in them changed from one to the other,
+    # so 120 keeps this file's rule of roughly double the observed time.
     timeout-minutes: 120
     strategy:
       fail-fast: false
