@@ -21,11 +21,11 @@
 //   0x0A00_0000  FIR        (streaming filter coprocessor - see wb_fir.v; Phase 11)
 //   0x8000_0000  Main RAM   (the conventional RISC-V DRAM base)
 //   0x9000_0000  External SDRAM (32 MB, mask 0xFE - see s_mask below)
-//   0xA000_0000  DDR3 (Phase 9 Stage 2 - 256 MB, mask 0xF0; lane 0 only
-//                 today (the controller carries lane 1's data, wb_ddr.v does
-//                 not use it yet), real capacity, not the part's full 512 MB -
-//                 see rtl/soc/wb_ddr.v's own header; present but unused by
-//                 default, the same as SDRAM's own precedent above)
+//   0xA000_0000  DDR3 (Phase 9 Stage 2 - 512 MB, the part's full capacity,
+//                 both byte lanes, mask 0xE0 - see rtl/soc/wb_ddr.v's own
+//                 header; present but unused by default, the same as
+//                 SDRAM's own precedent above: without DDR3_ENABLE the
+//                 tied-off stub answers 0xA0-0xAF, as it always did)
 //
 // The CLINT/PLIC/UART bases are inherited unchanged from rtl/top.v so the
 // existing drivers in software/ keep working; RAM sits at 0x8000_0000 the
@@ -214,7 +214,14 @@ module soc_top #(
         8'h00  // S_ROM
     };
     wire [NUM_SLAVES*8-1:0] s_mask = {
-        8'hF0, // S_DDR3  0xA0-0xAF, 256 MB
+`ifdef DDR3_ENABLE
+        8'hE0, // S_DDR3  0xA0-0xBF, 512 MB: both byte lanes (rtl/soc/wb_ddr.v)
+`else
+        // The tied-off stub below keeps the window it always had, so that a build without the DDR3 slave
+        // is exactly what it was: widening this mask for every build moved the wide core's mapping by 1,088
+        // LUT4s and its synthesis from 6 minutes to 28 (measured, fpga/synth/soc_synth.sh).
+        8'hF0, // S_DDR3  0xA0-0xAF
+`endif
         8'hFF, // S_FIR
         8'hFF, // S_NPU
         8'hFF, // S_TIMER

@@ -239,7 +239,7 @@
 // a word that looks complete.
 // Not attempted, and not what this part is: hardware-faithful bursts (the pins still carry one
 // DQ word per sclk, so a burst still moves one column and masks the neighbour, Part 22), the
-// Wishbone side (rtl/soc/wb_ddr.v still uses lane 0 only, and the window is still 256 MB), and
+// Wishbone side (rtl/soc/wb_ddr.v used lane 0 alone until Stage 2, Part 14), and
 // any claim about the ECP5's own capture latency on lane 1 - the two lanes calibrate
 // independently and `read_data_valid` assumes their windows open together, which no simulation
 // here can show for real silicon.

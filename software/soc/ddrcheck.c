@@ -11,7 +11,7 @@
  * explains - DDR3 has no loader of its own yet either.
  *
  * Deliberately not a sweep. Every miss here costs a real 16-byte block
- * fill (16 sequential single-byte controller calls, ~20 cycles each -
+ * fill (8 sequential 16-bit controller calls, ~20 cycles each -
  * rtl/soc/wb_ddr.v's own header), so a handful of directed word accesses
  * mirroring sim/tb_wb_ddr.v's own cases - not sdramcheck.c's own
  * hundreds-of-KB sweep - is what a first data-path check needs: reachable
@@ -77,6 +77,33 @@ int main(void)
     check("single-byte store reaches the low byte", (uint32_t)*b0, 0x42u);
     check("the other three bytes of the word are undisturbed",
           *w0 & 0xFFFFFF00u, 0xDEADBE00u);
+
+    /* The whole part (Stage 2, Part 14): 512 MB, both byte lanes. Until then the window was
+     * 256 MB, lane 0 alone, and an address 256 MB up simply was not DDR3. A word at the start,
+     * one 256 MB up (what the old window would have answered with the start's data, had it
+     * wrapped), and the very last word of the part are three different cells of the DRAM. */
+    volatile uint32_t *lo  = (volatile uint32_t *)(uintptr_t)(DDR3_BASE + 0x00000040u);
+    volatile uint32_t *mid = (volatile uint32_t *)(uintptr_t)(DDR3_BASE + 0x10000040u);
+    volatile uint32_t *top = (volatile uint32_t *)(uintptr_t)(DDR3_BASE + DDR3_SIZE - 4u);
+    *lo  = 0x11223344u;
+    *mid = 0x55667788u;
+    *top = 0x99AABBCCu;
+    check("a word 256 MB up is its own", *mid, 0x55667788u);
+    check("the word it would alias is untouched", *lo, 0x11223344u);
+    check("the last word of the part", *top, 0x99AABBCCu);
+
+    /* The two byte lanes: an even byte is lane 0, an odd byte lane 1. Each stored alone must
+     * change only itself, and the other lane's byte in the same column must survive. */
+    volatile uint8_t *ev = (volatile uint8_t *)(uintptr_t)(DDR3_BASE + 0x00000090u);
+    volatile uint8_t *od = (volatile uint8_t *)(uintptr_t)(DDR3_BASE + 0x00000091u);
+    volatile uint32_t *wd = (volatile uint32_t *)(uintptr_t)(DDR3_BASE + 0x00000090u);
+    *wd = 0xFFFFFFFFu;
+    *ev = 0x5Au;
+    check("an even byte (lane 0) alone", *wd, 0xFFFFFF5Au);
+    *od = 0xA5u;
+    check("an odd byte (lane 1) alone, lane 0 survives", *wd, 0xFFFFA55Au);
+    *wd = 0x01020304u;
+    check("a word whose halves are two columns", *wd, 0x01020304u);
 
     put_str("\n---------------------------------------------\n");
     if (errors == 0) {

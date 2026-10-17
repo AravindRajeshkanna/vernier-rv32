@@ -2229,7 +2229,7 @@ acknowledged, releases it, and checks that the access completes and stored what 
 **What this does not establish.** Hardware-faithful bursts: the pins still carry one DQ word per `sclk`, so a burst still moves one column and masks its neighbour (Part 22).
 Lane 1 on silicon: the lanes calibrate independently and `read_data_valid` assumes their capture windows open together, which nothing here can show for real silicon; the
 `readclksel` and `dqs_pad_i` cross-wiring gaps of Parts 24 and 25 are unchanged. The Wishbone side: the window is still 256 MB, and `wb_ddr.v` still moves a block as sixteen
-single-byte transactions. No board.
+single-byte transactions (Stage 2, Part 14 closes this). No board.
 
 **Stage 2 - Wishbone integration, replacing nothing on the ULX3S path.**
 A new `rtl/soc/wb_ddr.v`, styled like `wb_sdram.v`/`wb_ram.v`, wired into
@@ -2251,7 +2251,8 @@ there through the boot ROM's UART loader (Part 10, `make sim_uartload_ddr3`),
 and `make verify` and `make verify_ooo` are green with the path present but
 off by default (`DDR3_ENABLE`). The Sv32 walker reading page tables out of DDR3, at both levels, is checked too (Part 11, `make sim_ddrmmutest`). This is Stage 2's bar only: the phase's own
 bar (Linux to userspace from DDR on a real ECPIX-5) is not met, and "at this
-scale" means a 256 MB lane-0 window and 4 KB loads, not the full part.
+scale" means 4 KB loads against a behavioural DRAM model, not the real chip. (Until
+Part 14 it also meant a 256 MB lane-0 window; the window is the part's whole 512 MB now.)
 
 **Decided: 16-byte burst, not byte-granular** - the maintainer's own
 choice, made now, closing the question this file has named as open since
@@ -2994,6 +2995,43 @@ already excludes, and `amo_stall` no longer holds while it is true. Nothing is r
   `amo_active`, so no new dependency, but the timing was not measured.
 - `CORE=hetero`. Nothing on a board.
 
+**Update, Part 14: the Wishbone slave is x16, and the window is the part's whole 512 MB.** Through Part 13 `rtl/soc/wb_ddr.v` used lane 0 alone: a 16-byte
+block was sixteen single-byte controller calls, the window was 256 MB (mask `0xF0`, `0xA0` to `0xAF`), and an address 256 MB up was not DDR3 at all. Stage 1's
+Part 26 made the controller x16; this uses it.
+
+**What changed.** `rtl/soc/wb_ddr.v` moves a 16-bit column per controller call. A block is 8 columns, so a fill is 8 reads (it was 16) and a 32-bit store is at most
+2 writes (it was at most 4), each carrying the byte enables of its half of the word. The address maps the way the part addresses: `A[0]` is the lane, `A[10:1]` the
+column, `A[13:11]` the bank and `A[28:14]` the row; a block is `A[28:4]`, 128 to a row, which is the part's 2 KB page. `rtl/soc/soc_top.v` passes `0xA0` to `0xBF` to
+the slave (mask `0xE0`), and `dts/soc.dts` and `software/soc/soc.h` say 512 MB. Nothing else is mapped above `0xA0`, so nothing was displaced. The slave already
+waited for lane 1's calibration (Part 26); the cache of the open block is updated lane by lane, so a store that stores one lane leaves the other's cached byte alone.
+
+**Only in a build that has the slave.** The mask is `0xE0` under `DDR3_ENABLE`; a build without it keeps the tied-off stub on `0xA0` to `0xAF`, mask `0xF0`, exactly as before.
+The first version widened the mask for every build, and the whole-SoC synthesis check (`make soc_synth_check`) failed the wide core's gate: the same SoC, with a window that
+nothing in it uses, mapped to 57,538 LUT4 instead of 58,626 and took 1,685 s to synthesise instead of 368 s (the in-order SoC moved too, 23,615 LUT4 against 24,273). Run alone on an idle
+machine it took the longer time again, so it is the netlist and not the load. Every figure of every build without the slave is unchanged now (58,626 and 24,273 LUT4, 368 s and 121 s),
+which is what "present but unused by default" is for. It also means the check's time limit, 1,500 s for the wide core, is not a margin that survives an unrelated change to the logic: see the index's Common known defects.
+
+**Tests.** `sim/tb_wb_ddr.v`, extended. Thirteen words across the address space, written out again from the part's addressing and not from the slave's: the first and the
+last, a walking one through column, bank and row, the edge of the old window, the first word above it, and a pair 256 MB apart read one straight after the other so the
+open block cannot answer for the wrong one; each of their bytes is found in the cell and the lane that addressing names, in the right plane of the memory, and reads back as
+itself through the bus. A byte stored at each of the 16 offsets of a block, each in turn, changes exactly that byte. Selects that straddle the two columns of a word. And a
+sweep of 56 random stores over the whole part against a byte-wise reference: 123 bytes, every one read back right. At the CPU, `software/soc/ddrcheck.c` stores to a word
+256 MB up, to the last word of the part (`0xBFFFFFFC`), and to an even and an odd byte alone, through the real interconnect.
+
+**Mutation-tested, 12 ways, all caught.** The two halves of a word swapped on a write; the byte enables of a half swapped; the column fields swapped; the bank taken from the
+wrong bits; the row's top bit dropped; the column's top bit dropped; the fill's column counter stuck (a hang, which the testbench's timeout catches); the open block's copy
+updated for both lanes after a one-lane store; the halves of a word swapped on a read; the hit test ignoring the top bit of the block tag; a store that always enables both
+lanes; lane 1's byte dropped on a read. The first run left one alive, the hit test, because the two addresses 256 MB apart were not read one after the other; they are now.
+At the CPU, narrowing the decode back to `0xF0` fails `ddrcheck` at the word 256 MB up and at the last word of the part, both of which read back zero (an unmapped address is
+acknowledged with zeros).
+
+**Verified:** `make ddr3_check_sim`; the five SoC-level DDR3 tests (`sim_ddrcheck`, `sim_ddrexec`, `sim_ddratomics`, `sim_ddrmmutest`, `sim_uartload_ddr3`); `make dtb_check`.
+
+**What this does not establish.** Hardware-faithful bursts: a column is still one controller transaction, a block still eight of them, and a burst still moves one column and masks its
+neighbour (Part 22). The cost of the change in time was not measured beyond the count (8 transactions for a fill, not 16; at most 2 for a store, not 4). Real silicon, a real
+512 MB part, the retention and walking-pattern tests Stage 3 asks for, Linux from DDR3. The behavioural model's table holds a thousand bytes a lane by default, so the sweeps here
+are sparse by design: "the whole part" means the address decode and the geometry reach every cell, not that every cell was written.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
@@ -3154,5 +3192,5 @@ Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorde
 
 *Simulation and formal checking: what has and has not been shown without a board.*
 
-The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path on both byte lanes (the controller moves 16-bit words with a byte enable per lane, Part 26), write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (256 MB of real capacity, lane 0 only) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang; Part 12 added execution out of DDR3 and page faults through DDR3 tables; Part 13 added atomics, a read-only page, a PMP-denied
+The DDR3 PHY and controller are proven here only against a behavioural DDR3 and DQ model: init and calibration, the DQ/DQS data path on both byte lanes (the controller moves 16-bit words with a byte enable per lane, Part 26), write, read and refresh sequencers, a bounded formal proof of the control plane (Part 20), and the same tests under Verilator and in CI (Part 19). Stage 2 adds `rtl/soc/wb_ddr.v`, a Wishbone slave at `0xA0000000` (the part's whole 512 MB, both byte lanes, Part 14) behind `DDR3_ENABLE`, with `sim_ddrcheck`, `sim_ddratomics`, `sim_ddrexec` (instruction fetch from DDR3, Part 9) and `sim_uartload_ddr3` (the boot ROM's UART loader into DDR3, Part 10) in `make verify`. `sim_ddrmmutest` (a paged Sv32 access with the root table and a level-2 table in DDR3, Part 11, which closed the paged-access hang; Part 12 added execution out of DDR3 and page faults through DDR3 tables; Part 13 added atomics, a read-only page, a PMP-denied
 frame, alignment, instruction faults and faults delegated to S-mode, and found a wide-core bug) is in `make verify` as well.

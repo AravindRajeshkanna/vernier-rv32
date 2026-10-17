@@ -11,9 +11,9 @@
  * than RAM's. An AMO is a read-modify-write held together by the
  * interconnect's own amo_wrphase lock (rtl/soc/wb_interconnect.v), not by
  * anything DDR3-specific - if that lock has any implicit assumption about
- * how long a transaction takes, a real DDR3 write-through (up to ~80
- * cycles, four single-byte controller calls) or a real block-fill miss
- * (up to ~320 cycles, sixteen) is exactly the kind of latency that would
+ * how long a transaction takes, a real DDR3 write-through (up to about 40
+ * cycles, two 16-bit controller calls) or a real block-fill miss (up to
+ * about 160 cycles, eight) is exactly the kind of latency that would
  * expose it, where RAM's own single-cycle response never could.
  *
  * No libc - see software/soc/main.c's own header for the incident that
