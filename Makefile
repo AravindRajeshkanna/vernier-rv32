@@ -278,9 +278,13 @@ SD_BLOCKS = 128
 
 all: sim
 
+# vvp exits 0 after $finish whatever the testbench printed, so every simulation here checks its own verdict
+# (sim_video explains it): without the grep, a run that printed `TEST FAILED` passed `make verify`.
 sim:
 	$(IVERILOG) $(IVFLAGS) -o sim/sim.out $(TB) $(RTL)
-	cd sim && $(VVP) sim.out $(VVP_DUMP)
+	cd sim && $(VVP) sim.out $(VVP_DUMP) | tee sim.log
+	@grep -q "^TEST PASSED" sim/sim.log || \
+	    { echo "sim FAILED"; exit 1; }
 
 # Waveform viewer. GTKWave was discontinued upstream and Homebrew disabled
 # its cask on 2025-10-29, so `surfer` is the default here; VIEWER= overrides
@@ -581,9 +585,13 @@ check-program: sim/program.rebuilt.hex
 regen-program: sim/program.rebuilt.hex
 	cp sim/program.rebuilt.hex sim/program.hex
 
+# The testbench compares what the firmware printed, character for character, with what software/main.c prints, and
+# says so: SOFTWARE TEST PASSED. It printed nothing of the kind before, so this target could not fail.
 sim_software: software
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_software.out sim/tb_software.v $(RTL)
-	cd sim && $(VVP) sim_software.out
+	cd sim && $(VVP) sim_software.out | tee software.log
+	@grep -q "SOFTWARE TEST PASSED" sim/software.log || \
+	    { echo "sim_software FAILED"; exit 1; }
 
 # =====================================================================
 # SoC build
@@ -698,7 +706,9 @@ sim/probeimage.hex: software/soc/newlibprobe.elf software/bin2hex.py Makefile
 
 sim_soc: soc
 	$(IVERILOG) $(IVFLAGS) -DROM_IMAGE='"bootrom_$(CORE).hex"' -o sim/sim_soc.out $(SOC_TB) $(SOC_RTL)
-	cd sim && $(VVP) sim_soc.out $(VVP_DUMP)
+	cd sim && $(VVP) sim_soc.out $(VVP_DUMP) | tee soc.log
+	@grep -q "SOC TEST PASSED" sim/soc.log || \
+	    { echo "sim_soc FAILED"; exit 1; }
 
 # ---- the preloaded-RAM boot path, in simulation ----
 # sim_soc boots off the SD card model with 256 KB of RAM. The board that
@@ -863,7 +873,9 @@ sim_fb_equiv: sim/sim_fb_equiv.out
 sim_cmd0:
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_cmd0.out sim/tb_cmd0.v \
 	    sim/sd_card_model.v fpga/ulx3s_cmd0.v
-	cd sim && $(VVP) sim_cmd0.out
+	cd sim && $(VVP) sim_cmd0.out | tee cmd0.log
+	@grep -q "CMD0 PROBE TEST PASSED" sim/cmd0.log || \
+	    { echo "sim_cmd0 FAILED"; exit 1; }
 
 # ---- board wrapper ----
 # fpga/ulx3s_top.v is the one piece of RTL no simulation would otherwise
@@ -875,7 +887,9 @@ sim_cmd0:
 sim_ulx3s: soc
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v
-	cd sim && $(VVP) sim_ulx3s.out
+	cd sim && $(VVP) sim_ulx3s.out | tee ulx3s.log
+	@grep -q "ULX3S WRAPPER TEST PASSED" sim/ulx3s.log || \
+	    { echo "sim_ulx3s FAILED"; exit 1; }
 
 # Same reasoning as sim_ulx3s above, for docs/roadmap/phase-09-ddr.md's Phase 9
 # entry's own Stage 0 board wrapper - fpga/ecpix5_top.v is real RTL no
@@ -883,7 +897,9 @@ sim_ulx3s: soc
 sim_ecpix5: soc
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ecpix5.out sim/tb_ecpix5.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v
-	cd sim && $(VVP) sim_ecpix5.out
+	cd sim && $(VVP) sim_ecpix5.out | tee ecpix5.log
+	@grep -q "ECPIX5 WRAPPER TEST PASSED" sim/ecpix5.log || \
+	    { echo "sim_ecpix5 FAILED"; exit 1; }
 
 # `WITH_VIDEO` is opt-in (fpga/ulx3s_top.v, BOARD=ulx3s85-video in
 # fpga/synth/synth_ecp5.sh) - the primary board target above builds and
@@ -896,7 +912,9 @@ sim_ulx3s_video: soc
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v \
 	    fpga/video_out.v fpga/video_pll.v fpga/tmds_serialize.v \
 	    rtl/soc/tmds_encode.v
-	cd sim && $(VVP) sim_ulx3s_video.out
+	cd sim && $(VVP) sim_ulx3s_video.out | tee ulx3s_video.log
+	@grep -q "ULX3S WRAPPER TEST PASSED" sim/ulx3s_video.log || \
+	    { echo "sim_ulx3s_video FAILED"; exit 1; }
 
 # =====================================================================
 # Device tree
@@ -1548,7 +1566,9 @@ sim/sim_sdramprobe.out: sim/tb_ulx3s_sdram.v sim/sdram_model.v \
 	    fpga/ulx3s_sdram.v fpga/sdram_clk_out.v rtl/soc/wb_sdram.v
 
 sim_sdramprobe: sim/sim_sdramprobe.out
-	cd sim && $(VVP) sim_sdramprobe.out $(VVP_DUMP)
+	cd sim && $(VVP) sim_sdramprobe.out $(VVP_DUMP) | tee sdramprobe.log
+	@grep -q "SDRAM PROBE TEST PASSED" sim/sdramprobe.log || \
+	    { echo "sim_sdramprobe FAILED"; exit 1; }
 
 # Same testbench and the same 64 KB block RAM as sim_ramboot - only the
 # preloaded program differs, which is exactly the difference between the two
@@ -4353,6 +4373,8 @@ clean:
 	rm -rf sim/sim.out sim/wave.vcd sim/wave_verilator.vcd obj_dir \
 	       obj_dir_soc_inorder obj_dir_soc_ooo sim/wave_verilator_soc.vcd \
 	       sim/sdramboot.log sim/verilator_soc.log \
+	       sim/sim.log sim/software.log sim/soc.log sim/cmd0.log sim/ulx3s.log sim/ulx3s_video.log sim/ecpix5.log \
+	       sim/sdramprobe.log sim/video.log sim/blit.log sim/fb_equiv.log \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \
 	       software/firmware.elf software/firmware_text.bin software/firmware_data.bin \
 	       sim/sim_soc.out sim/wave_soc.vcd sim/card.hex \

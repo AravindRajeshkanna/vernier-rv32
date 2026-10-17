@@ -104,15 +104,18 @@ for the framebuffer as it was before #260, 3 s for a new array in the UART, agai
 of some other kind. It is 1,800 s for the in-order core and 3,600 s for the wide one now (the worst time seen is 1,685 s), and the CI job's budget is 90 minutes. A good change
 can still make the wide core's synthesis four times slower; it no longer fails the check for that.
 
-**OPEN - `make verify` cannot see a failed run of seven of the simulations it runs (found 2026-10-16).** A testbench that prints `... TEST FAILED`
-and calls `$finish` makes `vvp` exit 0, and these targets run `vvp` and check nothing after it: `sim`, `sim_soc`, `sim_ulx3s`, `sim_ulx3s_video`,
-`sim_ecpix5`, `sim_cmd0` and `sim_sdramprobe`. (`sim_software` is a case of a different kind: its testbench prints no verdict at all.) Found
-while writing long-line tests for the framebuffer, which went into `tb_blit.v`: a run of it that printed `BLIT TEST FAILED (4 errors)` exited 0, so
-`make verify` would have passed with the whole fill, copy and line test failing. `sim_blit` and `sim_video` check their verdict now, and `sim_blit` runs
-in CI, where it did not before. None of the testbenches above uses `$fatal`, a non-zero `$finish` or `$stop`. CI greps the verdicts of some of them in
-the workflow (`sim`, `sim_cmd0`, `sim_sdramprobe`; `sim_video` too), which a local `make verify` does not run. Nothing is known to have slipped
-through: the pass markers of these targets are in the logs of the two gates of #260 and of the two gates of the long-line fix (one per core each),
-which I read for them; earlier gates were not checked that way. The fix is a verdict check in each recipe, like `sim_blit`'s.
+**RESOLVED - `make verify` could not see a failed run of seven of the simulations it runs, nor of an eighth that printed no verdict (found 2026-10-16, fixed 2026-10-17).** A testbench that prints `... TEST FAILED`
+and calls `$finish` makes `vvp` exit 0, and `sim`, `sim_soc`, `sim_ulx3s`, `sim_ulx3s_video`, `sim_ecpix5`, `sim_cmd0` and `sim_sdramprobe` ran `vvp` and checked nothing after it; `sim_software`'s testbench printed
+the firmware's text and no verdict at all. Found while writing long-line tests for the framebuffer, which went into `tb_blit.v`: a run of it that printed `BLIT TEST FAILED (4 errors)` exited 0, so `make verify`
+would have passed with the whole fill, copy and line test failing (`sim_blit` and `sim_video` were fixed then, and `sim_blit` went into CI). None of these testbenches uses `$fatal`, a non-zero `$finish` or `$stop`. CI greps
+the verdicts of some of them (`sim`, `sim_soc`, `sim_ulx3s`, `sim_cmd0`, `sim_sdramprobe`), which a local `make verify` does not run, and runs neither `sim_ulx3s_video` nor `sim_ecpix5` at all. Fixed: each of the seven recipes
+keeps the output in `sim/<name>.log` and greps it for the testbench's pass line, and fails with `<target> FAILED` without it, as `sim_blit`'s does; `sim_software`'s testbench keeps the 192 characters it decodes off the
+UART and compares them with the text `software/main.c` prints, and says `SOFTWARE TEST PASSED` or `SOFTWARE TEST FAILED`. Each was shown red first. With `vvp` replaced by a stand-in that runs the real one, prints
+`TEST FAILED` where it printed `TEST PASSED` and exits 0 as `vvp` does, all seven targets exited 0 before and exit 2 now. With a real defect put into the design each simulates (an inverted SD command line, ADD computing
+`a - b`, the SDRAM probe's compare inverted, an unused SD pin parked low in each of the two ULX3S builds, the ECPIX-5's reset polarity inverted, the GPIO input register read back inverted), every testbench printed its
+failure and `make` still exited 0 before; it exits 2 now. `sim_software` broken four ways (a line of text changed, the last line missing, a firmware that prints nothing, the UART's bits in the wrong order) exited 0
+before and exits 2 now. Of the 121 Makefile targets that run `vvp`, 118 grep for a pass line now; the other three are `coremark` and `coremark_nodcache` (benchmarks, outside `make verify`) and `busmon_check`, whose
+verdict is the exit status of `tests/busmon_compare.py`. CI's own greps stay and are redundant now. `sim_ulx3s_video` and `sim_ecpix5` still run only in `make verify`, not in CI.
 
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
