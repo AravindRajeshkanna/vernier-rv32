@@ -7,6 +7,13 @@
 // arrives, which is the actual point: proving real compiled C code runs
 // on this core and its printf output genuinely reaches a UART, not just
 // "it compiled."
+//
+// It also keeps what it decoded and, when the time is up, compares it with
+// the text software/main.c prints, character for character (EXPECT below:
+// keep the two together). It says SOFTWARE TEST PASSED or SOFTWARE TEST
+// FAILED, and `make sim_software` looks for the first. Until it did, this
+// printed the text and nothing else, so no breakage of the core, the UART or
+// the firmware could fail the target.
 module tb_software;
     // Must match the CLKS_PER_BIT this testbench's `top` instance below
     // is given - both derive from the same local constant so they can't
@@ -31,6 +38,28 @@ module tb_software;
     );
 
     always #5 clk = ~clk; // 100 MHz virtual clock
+
+    // What software/main.c prints, as it arrives: every "\n" is "\r\n", which
+    // _write in software/syscalls.c adds for a real terminal. Ten lines, 172
+    // characters and ten CR LF pairs = 192. Change main.c's text and this
+    // changes with it, EXPECT_LEN too; the first run says SOFTWARE TEST FAILED
+    // if they disagree.
+    localparam [15:0] CRLF = 16'h0D0A;
+    localparam EXPECT_LEN = 192;
+    localparam [8*EXPECT_LEN-1:0] EXPECT = {
+        "Hello from RV32IMA!", CRLF,
+        "This is real C, compiled with riscv64-unknown-elf-gcc,", CRLF,
+        "running on a from-scratch RISC-V core, printing over a", CRLF,
+        "simulated UART.", CRLF,
+        "i = 0", CRLF,
+        "i = 1", CRLF,
+        "i = 2", CRLF,
+        "i = 3", CRLF,
+        "i = 4", CRLF,
+        "done.", CRLF
+    };
+    reg [8*EXPECT_LEN-1:0] got = 0;   // the last EXPECT_LEN characters decoded, newest in the low byte
+    integer                nchars = 0; // and how many in all
 
     // ---- UART receiver, implemented right here in the testbench, to
     // decode the DUT's own TX output back into characters (independent
@@ -71,6 +100,8 @@ module tb_software;
                 RX_STOP: begin
                     if (rxsim_count == CLKS_PER_BIT - 1) begin
                         $write("%c", rxsim_shift);
+                        got    <= {got[8*(EXPECT_LEN-1)-1:0], rxsim_shift};
+                        nchars <= nchars + 1;
                         rxsim_state <= RX_IDLE;
                     end else rxsim_count <= rxsim_count + 32'd1;
                 end
@@ -93,6 +124,8 @@ module tb_software;
         $display("---------------------------------------------");
         $display("(end of simulation - the C program spins forever after this)");
         $display("---------------------------------------------");
+        if (nchars == EXPECT_LEN && got === EXPECT) $display("SOFTWARE TEST PASSED");
+        else $display("SOFTWARE TEST FAILED (%0d characters received, %0d expected)", nchars, EXPECT_LEN);
         $finish;
     end
 

@@ -140,7 +140,11 @@ nothing more passes when the test fails. `sim_blit` was one: a run that
 printed `BLIT TEST FAILED (4 errors)` exited 0, and `make verify` would have
 passed with the whole fill, copy and line test failing. That was found on
 2026-10-16, while adding tests to it. `sim_blit` and `sim_video` grep their own
-logs now; seven more simulation targets do not yet
+logs now, and so do the seven more that had the same hole (`sim`, `sim_soc`,
+`sim_ulx3s`, `sim_ulx3s_video`, `sim_ecpix5`, `sim_cmd0`, `sim_sdramprobe`).
+An eighth, `sim_software`, was a case of another kind: its testbench printed
+no verdict at all, and now compares what the firmware printed with what it
+should have, character for character
 ([index](roadmap/index.md#common-known-defects)).
 
 Expected failures are held in `tests/expected-failures.txt` with reasons, and

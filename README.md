@@ -346,6 +346,11 @@ i = 4
 done.
 ```
 
+The testbench also keeps the text and compares it, character for character,
+with what `software/main.c` prints, then says `SOFTWARE TEST PASSED` (or
+`SOFTWARE TEST FAILED`); `make sim_software` fails unless it saw the first.
+Change the text in `main.c` and `EXPECT` in `sim/tb_software.v` with it.
+
 That's real `printf`, through newlib, through this project's own
 `_write` syscall stub, through `rtl/uart.v`'s bit-banged TX shift
 register, decoded back into characters by a matching receiver state

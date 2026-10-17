@@ -1,5 +1,7 @@
 #include <stdio.h>
 
+/* What this prints is checked, character for character, by sim/tb_software.v
+ * (`make sim_software`): change the text and change EXPECT there with it. */
 int main(void) {
     printf("Hello from RV32IMA!\n");
     printf("This is real C, compiled with riscv64-unknown-elf-gcc,\n");
