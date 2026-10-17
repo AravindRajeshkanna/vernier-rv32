@@ -93,15 +93,16 @@ reset block, on a BTB at four times its size, and on a stale or a missing line o
 tables are still 8x8, by hand), does not convert the BTB (still about 7,200 LUT4s, still the one worth a look), and synthesises
 `BOARD=ulx3s85` only: the ECPIX-5 wrapper shares the SoC but is not built by it.
 
-**OPEN - the whole-SoC synthesis check's time limit is not a margin an unrelated change cannot cross (found 2026-10-17).** `fpga/synth/soc_synth.sh` kills the build at
+**RESOLVED - the whole-SoC synthesis check's time limit was not a margin an unrelated change cannot cross (found and fixed 2026-10-17).** `fpga/synth/soc_synth.sh` killed the build at
 600 s (in-order core) and 1,500 s (wide core), set at about four times what a laptop took (129 s and 330 s) and, for the wide core, 3.2 times what a CI runner took (472 s).
 Widening a decode mask that no board uses (the DDR3 stub's, from `0xF0` to `0xE0`, in `rtl/soc/soc_top.v`) changed the wide core's technology mapping by 1,088 LUT4s (57,538
 against 58,626) and made yosys's `ABC9` stage run for 1,685 s instead of 368 s, on an idle machine and again when run alone; the gate killed it at 1,500 s. The in-order SoC moved
-by 658 LUT4s and took about as long as before. So a good change to unrelated logic can fail the check on its time, and the number is not stable under edits that have nothing to do
-with the failure the check exists for (a memory written from a reset block, which it reports in seconds, as a name the list does not have). Not fixed here: the DDR3 change avoids it
-by leaving the netlist of every build without the DDR3 slave exactly as it was. The fix would be to raise the wide core's limit well above the worst time seen (an hour is the
-scale of the original symptom) with the CI job's budget, and to stop the run as soon as the front end has printed a memory the list does not have, so that the real failure is
-reported at once and the time limit only has to catch a hang for some other reason.
+by 658 LUT4s and took about as long as before. So a good change to unrelated logic could fail the check on its time, and the number was not stable under edits that had nothing to do
+with the failure the check exists for (a memory written from a reset block, which it reports in seconds, as a name the list does not have). The DDR3 change avoided it by leaving the
+netlist of every build without the DDR3 slave exactly as it was. Fixed: the script now stops the build the moment yosys prints a memory the list does not have, and says which (3 s
+for the framebuffer as it was before #260, 3 s for a new array in the UART, against 240 s with the limit lowered for the test before), so the time limit only has to catch a hang
+of some other kind. It is 1,800 s for the in-order core and 3,600 s for the wide one now (the worst time seen is 1,685 s), and the CI job's budget is 90 minutes. A good change
+can still make the wide core's synthesis four times slower; it no longer fails the check for that.
 
 **OPEN - `make verify` cannot see a failed run of seven of the simulations it runs (found 2026-10-16).** A testbench that prints `... TEST FAILED`
 and calls `$finish` makes `vvp` exit 0, and these targets run `vvp` and check nothing after it: `sim`, `sim_soc`, `sim_ulx3s`, `sim_ulx3s_video`,

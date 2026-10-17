@@ -3009,7 +3009,7 @@ waited for lane 1's calibration (Part 26); the cache of the open block is update
 The first version widened the mask for every build, and the whole-SoC synthesis check (`make soc_synth_check`) failed the wide core's gate: the same SoC, with a window that
 nothing in it uses, mapped to 57,538 LUT4 instead of 58,626 and took 1,685 s to synthesise instead of 368 s (the in-order SoC moved too, 23,615 LUT4 against 24,273). Run alone on an idle
 machine it took the longer time again, so it is the netlist and not the load. Every figure of every build without the slave is unchanged now (58,626 and 24,273 LUT4, 368 s and 121 s),
-which is what "present but unused by default" is for. It also means the check's time limit, 1,500 s for the wide core, is not a margin that survives an unrelated change to the logic: see the index's Common known defects.
+which is what "present but unused by default" is for. It also showed that the check's time limit, then 1,500 s for the wide core, was not a margin that survives an unrelated change to the logic; that is fixed (the index's Common known defects).
 
 **Tests.** `sim/tb_wb_ddr.v`, extended. Thirteen words across the address space, written out again from the part's addressing and not from the slave's: the first and the
 last, a walking one through column, bank and row, the edge of the old window, the first word above it, and a pair 256 MB apart read one straight after the other so the
