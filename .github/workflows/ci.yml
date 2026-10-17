@@ -702,12 +702,16 @@ jobs:
   # A job of its own, because it needs the RISC-V toolchain (the boot ROM is a synthesis input) and the
   # oss-cad-suite bundle (yosys, and the nextpnr-ecp5 and ecppack that synth_ecp5.sh insists on finding), and
   # those two have not shared a job: the bundle puts its own iverilog first on PATH, which the simulation jobs
-  # cannot have. Yosys takes about 2 minutes for the in-order core and 6 for the wide one, on a laptop.
+  # cannot have. Yosys takes about 2 minutes for the in-order core and 6 for the wide one, on a laptop, and 2 and 8
+  # on a runner; but its ABC9 stage is not stable under edits that have nothing to do with it (the wide core went
+  # from 6 minutes to 28 when an unused address mask was widened), so the script's limits are an hour's worth (30 and
+  # 60 minutes) and this job's budget is longer than the longer of them plus the set-up. A memory that becomes
+  # registers is reported in seconds, whatever the limit.
   # ---------------------------------------------------------------------
   fullscale-synth:
     name: Full-scale synthesis (${{ matrix.core }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
