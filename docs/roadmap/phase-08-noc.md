@@ -2162,7 +2162,8 @@ went from about one minute to one and a half, and the `formal` job stayed at nin
 gates; the SD boot path (`sim_soc`), the one-node network's SoC build (`INTERCONNECT=noc`) and the heterogeneous pair over the
 fabric. The proof of Part 30 that the router equals its predecessor stays opt-in: it holds the router to a snapshot, so it
 would fail any deliberate change. The two-hart tests over the bus are not in CI either, which is the same gap in the bus's
-own coverage and not closed here. And four mutants are evidence about those four bugs, not about every bug.
+own coverage and not closed here. (Closed on 2026-10-17: `soc_2hart_check_sim` runs the nine
+over the bus in the `firmware` job, and the index has the entry.) And four mutants are evidence about those four bugs, not about every bug.
 
 **Update, Part 34: four harts, and a starvation the fabric had.** Stage 3 asks for growth "to four or more nodes" and for "a
 real check that the reservation monitor and any future coherence traffic still work correctly" with routing between the harts

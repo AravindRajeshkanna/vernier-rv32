@@ -298,6 +298,22 @@ cannot rot the same way, and it is part of `make verify`.
 **The rule.** If a file is not built by something in `make verify`, either
 wire it in or delete it. There is no third state that stays honest.
 
+**The same rule for CI.** A test that is in `make verify` and not in CI is
+built by something, but nothing a pull request runs. That gap was closed several
+times, one group of tests at a time (`sim_uartirq`, `sim_probe` and
+`sim_div64test`; the network; the DDR3 PHY), and reopened each time a test was
+added to one list and not the other. On 2026-10-17 a trace of `make -n verify`
+against every `make` in `ci.yml`, dry-run with each job's own environment,
+found 46 simulations CI did not run the way `verify` does: 37 it did not run at
+all, and the nine two-hart tests, which it ran over the router fabric and not
+over the bus every board has. The lists are aggregates now (`rtl_check_sim`,
+`soc_fw_check_sim`, `soc_2hart_check_sim`), each the one place its tests are
+named, and `make ci_coverage_check`, part of `verify` and a CI step, fails when
+a prerequisite of `verify` is named by no bus job in `ci.yml` and is not listed
+in `CI_EXCEPTIONS` with its reason. It reads names, not the core a step runs
+under, and a test run only over the fabric is found because it looks at the
+bus jobs.
+
 ## 15. Layers, each answering what the one before cannot
 
 Four verification layers, described in full in `tests/README.md`:

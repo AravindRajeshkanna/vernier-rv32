@@ -884,7 +884,16 @@ sim_cmd0:
 # This target checks the wiring the wrapper is responsible for - pin
 # direction, polarity, tie-offs - and is part of `make verify` so the file
 # cannot rot the same way. It does not re-test the SoC; sim_soc does that.
+#
+# The three wrapper simulations (this one, sim_ulx3s_video and sim_ecpix5) each copy the boot ROM image for their
+# CORE to sim/bootrom.hex first: fpga/soc_fpga.v names its image by that fixed name (fpga/synth/synth_ecp5.sh does the
+# same copy into its build directory, for the same reason). Nothing wrote sim/bootrom.hex any more. A tree that had
+# been built before the images were suffixed with the core still had an old one, and these ran on it; a clean tree had
+# none, $readmemh printed "Unable to open bootrom.hex" and the ROM read back as X. sim_ulx3s and sim_ulx3s_video check
+# pins and passed anyway; sim_ecpix5 checks that the boot ROM sends something on the UART, and failed - on the
+# first run of it on a clean checkout, which was the CI job that gained it in the change that wired it in.
 sim_ulx3s: soc
+	cp sim/bootrom_$(CORE).hex sim/bootrom.hex
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ulx3s.out sim/tb_ulx3s.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v
 	cd sim && $(VVP) sim_ulx3s.out | tee ulx3s.log
@@ -895,6 +904,7 @@ sim_ulx3s: soc
 # entry's own Stage 0 board wrapper - fpga/ecpix5_top.v is real RTL no
 # other target would otherwise build.
 sim_ecpix5: soc
+	cp sim/bootrom_$(CORE).hex sim/bootrom.hex
 	$(IVERILOG) $(IVFLAGS) -o sim/sim_ecpix5.out sim/tb_ecpix5.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v
 	cd sim && $(VVP) sim_ecpix5.out | tee ecpix5.log
@@ -908,6 +918,7 @@ sim_ecpix5: soc
 # without it, video_out.v is compiled but never instantiated, so
 # sim_ulx3s above would silently stop testing the integration it added.
 sim_ulx3s_video: soc
+	cp sim/bootrom_$(CORE).hex sim/bootrom.hex
 	$(IVERILOG) $(IVFLAGS) -DWITH_VIDEO -o sim/sim_ulx3s_video.out sim/tb_ulx3s.v \
 	    $(SOC_RTL) fpga/soc_fpga.v fpga/ulx3s_top.v fpga/sdram_clk_out.v \
 	    fpga/video_out.v fpga/video_pll.v fpga/tmds_serialize.v \
@@ -4291,57 +4302,84 @@ verify_xbar:
 	rm -f sim/*.out software/soc/div64test.elf sim/div64testimage.hex
 	rm -rf obj_dir_soc_*
 
-verify: sim sim_software sim_soc sim_ramboot sim_ramboot_2hart sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_ulx3s_video sim_ecpix5 sim_cmd0 \
-        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 dtb_ddr3 dtb_check ddr3_check \
+# ---- Everything `make verify` runs, and CI reaching all of it ----
+#
+# `make verify` and the jobs in .github/workflows/ci.yml were two lists kept by hand, and the gap between
+# them reopened whenever a test was added to one: sim_uartirq, sim_probe and sim_div64test, then the network
+# (`noc_check_sim`), then the DDR3 PHY (`ddr3_check_sim`), each closed by itself and after the fact. A trace of
+# `make -n verify` against every `make` in ci.yml, on 2026-10-17, dry-running each CI step with its job's own
+# environment, found 46 simulations that CI never built the way `verify` does: 37 it did not run at all, and
+# the nine two-hart tests, which it ran only over the router fabric. They are the three aggregates here, the
+# one place each list lives, run by `verify` and by CI: `rtl_check_sim` in the `rtl` job, and the other two
+# in the `firmware` job (matrixed over both cores, as everything there that needs a boot ROM is). Each target
+# in them checks its own verdict. Seconds in all, bar sim_uartload_ddr3 (two minutes).
+.PHONY: rtl_check_sim soc_fw_check_sim
+# Needs nothing but Icarus. The `_hetero` SoC tests build their own mixed-core SoC and are the same under
+# either CORE, so CI runs them once.
+rtl_check_sim: sim_cpu_halt sim_cpu_resv_ports sim_cpu_wb_ifill sim_cpu_wb_dcache_bypass sim_reservation_monitor \
+               sim_ooo_halt sim_ooo_resv_ports sim_ooo_csr_hazard sim_pmp sim_pmp_csr sim_mhartid sim_clint_multihart \
+               sim_plic_4ctx sim_interconnect_multihart sim_wb_npu sim_wb_fir sim_tmds_encode sim_tmds_serialize \
+               sim_video_pll sim_soc_2hart_hetero sim_soc_2hart_coherence_hetero sim_soc_2hart_coherence_sdram_hetero \
+               sim_soc_2hart_amoswap_hetero sim_soc_2hart_amoswap_sdram_hetero sim_soc_2hart_lrsc_hetero \
+               sim_soc_2hart_lrsc_sdram_hetero sim_soc_2hart_lrsc_swap_hetero sim_soc_2hart_ordinary_hetero
+# Needs the RISC-V toolchain, for the boot ROM or a test program, and so runs under the CORE it is given.
+soc_fw_check_sim: sim_pmptest sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 sim_ulx3s_video \
+                  sim_ecpix5 sim_ramboot_2hart_hetero
+
+# The two-hart tests: the boot with the second hart released, then LR/SC, AMOs, coherence and ordinary stores, in
+# block RAM and in SDRAM. `verify` runs them over the bus, the default, and so does the `firmware` job; the `noc`
+# job runs the same nine over the router fabric (INTERCONNECT=xbar), which until 2026-10-17 was the only place CI
+# ran them: the bus, which every board has, was a local gate. Seconds each.
+.PHONY: soc_2hart_check_sim
+soc_2hart_check_sim: sim_ramboot_2hart sim_soc_2hart sim_soc_2hart_lrsc sim_soc_2hart_amoswap sim_soc_2hart_coherence \
+                     sim_soc_2hart_ordinary sim_soc_2hart_coherence_sdram sim_soc_2hart_lrsc_sdram sim_soc_2hart_amoswap_sdram
+
+# The other half: nothing is added to `verify` without CI reaching it. Every prerequisite of `verify` must be
+# named, on a line that runs `make` in a job of ci.yml (not in a comment), or be listed here with the reason it
+# is not. An aggregate counts, which is why the lists above are aggregates. Only the jobs that run over the bus,
+# the default every board has, are looked at (the `noc` job sets INTERCONNECT), so that a test CI runs only over
+# the router fabric is found, as the two-hart tests were. It reads names: it does not know which CORE a step runs under.
+#   cosim            needs Spike, built from source in several minutes: a local gate by design (ci.yml's header)
+#   linux-if-built   needs a kernel tarball off the network: runs only where build-linux.sh has been run
+#   ddr3_check       CI runs its two halves, ddr3_check_sim and synth_check_ddr3, in different jobs (see above)
+#   verilator_check  CI runs it as three steps (verilator_sdramboot, sim/verilator_compare.py, the probes' grep): a
+#                    step cannot say it depends on the Icarus log an earlier one wrote, and the target would run
+#                    that three-minute simulation again
+CI_EXCEPTIONS = cosim linux-if-built ddr3_check verilator_check
+.PHONY: ci_coverage_check
+ci_coverage_check:
+	@[ -f .github/workflows/ci.yml ] || { echo "ci_coverage_check: no .github/workflows/ci.yml in this tree, skipped"; exit 0; }; \
+	ci=$$(awk '/^  [A-Za-z0-9_-]+:[[:space:]]*$$/ { if (job !~ /INTERCONNECT:/) printf "%s", job; job = "" } \
+	            { job = job $$0 "\n" } END { if (job !~ /INTERCONNECT:/) printf "%s", job }' .github/workflows/ci.yml \
+	       | grep -v '^[[:space:]]*#' | grep -w make); \
+	missing=; \
+	for t in $(VERIFY_TARGETS); do \
+	    case " $(CI_EXCEPTIONS) " in *" $$t "*) continue ;; esac; \
+	    printf '%s\n' "$$ci" | grep -q -w -- "$$t" || missing="$$missing $$t"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	    echo "FAILED: make verify runs these and no step in a bus job of .github/workflows/ci.yml does:$$missing"; \
+	    echo "  give them a step, or put them in an aggregate CI runs, or list them in CI_EXCEPTIONS with the reason"; \
+	    exit 1; \
+	fi; \
+	echo "CI COVERAGE OK: every prerequisite of verify is run by a bus job of ci.yml or listed in CI_EXCEPTIONS"
+
+# The list is a variable so that ci_coverage_check can read it.
+VERIFY_TARGETS = ci_coverage_check sim sim_software sim_soc sim_ramboot sim_rerun trapcheck sim_video sim_blit sim_ulx3s sim_cmd0 \
+        sim_sdram sim_sdramboot verilator_check sim_sdramprobe sim_sdramcheck dtb_ddr3 dtb_check ddr3_check \
         verilator_sdramfull \
-        sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq sim_uartload sim_jtag \
-        sim_cpu_halt \
-        sim_cpu_resv_ports \
-        sim_ooo_resv_ports \
-        sim_ooo_halt \
+        sim_mmusdram sim_plic sim_uart16550 sim_uartirq sim_uartload sim_jtag \
         sim_wfi_dbg \
         sim_soc_wfi \
-        sim_soc_2hart \
-        sim_soc_2hart_hetero \
-        sim_soc_2hart_coherence \
-        sim_soc_2hart_coherence_hetero \
-        sim_soc_2hart_coherence_sdram \
-        noc_check_sim \
+        noc_check_sim rtl_check_sim soc_fw_check_sim soc_2hart_check_sim \
         noc_router_area_check \
         framebuffer_synth_check soc_synth_check sim_fb_equiv \
-        sim_cpu_wb_ifill \
-        sim_soc_2hart_coherence_sdram_hetero \
-        sim_soc_2hart_amoswap_sdram \
-        sim_soc_2hart_amoswap_sdram_hetero \
-        sim_soc_2hart_lrsc_sdram \
-        sim_soc_2hart_lrsc_sdram_hetero \
-        sim_soc_2hart_lrsc \
-        sim_soc_2hart_lrsc_hetero \
-        sim_soc_2hart_lrsc_swap_hetero \
-        sim_soc_2hart_ordinary \
-        sim_soc_2hart_ordinary_hetero \
-        sim_ramboot_2hart_hetero \
-        sim_soc_2hart_amoswap \
-        sim_soc_2hart_amoswap_hetero \
         sim_soc_4hart \
         sim_soc_4hart_sdram \
-        sim_ooo_csr_hazard \
-        sim_pmp \
-        sim_pmp_csr \
-        sim_mhartid \
-        sim_clint_multihart \
-        sim_interconnect_multihart \
-        sim_plic_4ctx \
-        sim_cpu_wb_dcache_bypass \
-        sim_reservation_monitor \
-        sim_wb_npu \
-        sim_wb_fir \
-        sim_tmds_encode \
-        sim_video_pll \
-        sim_tmds_serialize \
         sim_div64test \
         uartload-host check-program isa cosim linux-if-built formal
 
+verify: $(VERIFY_TARGETS)
 # ---- the Linux boot, when there is a kernel to boot ----
 #
 # `sim_linux` cannot be a plain prerequisite of `verify`: it needs a kernel

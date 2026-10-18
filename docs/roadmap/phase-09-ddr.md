@@ -2812,7 +2812,7 @@ DDR3 table ended at a megapage leaf. Two read-back checks for the new entries jo
 
 **Result.** `DDR3 PAGED-ACCESS TEST PASSED` and the result word `PASS`, on the in-order core (the run ends at 2,179,500 ns of
 simulated time, in `make verify`) and on the wide core (2,271,900 ns, in `make verify_ooo`). The store through a translated DDR3 page and the load that reads it back
-both work. `sim_ddrmmutest` is in `verify` beside `sim_ddrexec`; it is not in CI, like the other DDR3 tests that run the whole SoC.
+both work. `sim_ddrmmutest` is in `verify` beside `sim_ddrexec`; it is not in CI, like the other DDR3 tests that run the whole SoC. (It is now, with them: `soc_fw_check_sim`, 2026-10-17.)
 
 **What this changes in the account.** Parts 3 to 6 chased the walker (Part 3, wrongly), the D-cache and the UART's timing, and
 ended on two explanations that were "open and undistinguished". Neither is supported. The simulator is not expensive per cycle in

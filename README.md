@@ -729,7 +729,9 @@ three rules in `docs/practices.md` exist because of them.
 
 **CI.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the RTL
 regression, the SoC on both boot paths, the reset-and-rerun test, the trap
-handler calibration, the architectural suite and formal on every pull request (not again after the merge), plus the Phase 8 network's simulations, the routers' area budget, the SoC over the router fabric and four harts on the bus and over the fabric, plus
+handler calibration, the architectural suite and formal on every pull request (not again after the merge), plus the Phase 8 network's simulations, the routers' area budget, the SoC over the router fabric and four harts on the bus and over the fabric, every other simulation `make verify`
+runs (a test added to `verify` and not to CI fails `make ci_coverage_check`; Spike co-simulation and the
+Linux boot are the listed exceptions), plus
 static analysis of the RTL, C and Python trees and RTL line/toggle coverage
 from the SDRAM boot path (report-only, not a gate). Spike co-simulation and
 FPGA place-and-route are local gates — they are too slow for CI, and
