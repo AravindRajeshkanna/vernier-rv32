@@ -211,15 +211,16 @@ jobs:
     # runtime" rule from the ooo leg's measured (partial, still-climbing)
     # time rather than guessing at a number.
     #
-    # Raised again, 90 to 120, when the nine two-hart tests over the bus, the DDR3 SoC-level tests, the board
+    # Raised again, 90 to 150, when the nine two-hart tests over the bus, the DDR3 SoC-level tests, the board
     # wrappers and the Verilator sweep of the whole SDRAM part were added (the last three steps). Measured on
-    # this runner, in the first run that had them: the two-hart tests 10 and 15 seconds (in-order, wide), and the
-    # nine SoC-level simulations with the DDR3 device tree 3 min 50 s and 4 min 42 s, about 1.1 times a laptop, not
-    # the two to three times of the paragraph above. The sweep is a Verilator build and a run of about two and a
-    # half minutes on a laptop; it had not run on a runner when this was written. The legs of this job took
-    # between 50 and 64 minutes in the two runs on record, with nothing in them changed from one to the other,
-    # so 120 keeps this file's rule of roughly double the observed time.
-    timeout-minutes: 120
+    # this runner, in the two runs that have them, in-order and wide: the two-hart tests 7 to 21 seconds, the
+    # nine SoC-level simulations with the DDR3 device tree 3 to 6 minutes, the sweep 3.5 and 7.5 minutes (one
+    # run): 6.5 and 14 minutes added to a leg. The same step took from 0.9 to 1.5 times what it takes on a laptop
+    # in different runs, so this runner is not the steady two to three times of the paragraph above. The legs
+    # ran for 43 to 92 minutes across the runs on record, the 92 being the wide leg with the new steps in it.
+    # 150 is about 1.6 times that: this file's rule says double, and a hang is cheaper to find late than a good
+    # run is to fail.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
