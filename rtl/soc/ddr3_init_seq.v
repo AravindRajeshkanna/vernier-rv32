@@ -36,8 +36,9 @@
 // rst_n; the DRAM's 200 us of RESET# low is the board's. What is left to this module is
 // JEDEC's power-up step 2: "After RESET# is de-asserted, wait for another 500 us until
 // CKE becomes active". It cannot see RESET#, so it counts the 500 us from its own reset
-// (and from the PLL's lock, which holds it in reset a little longer), which is never
-// earlier than the DRAM's release. Through Part 26 the wait between RESET# going high and
+// (and from the PLL's lock, which holds it in reset a little longer), which should not be
+// earlier than the DRAM's release, since both follow the board's reset (reasoned from the
+// schematic, not measured). Through Part 26 the wait between RESET# going high and
 // CKE going high here was 500 ns, not 500 us: nothing looked at it. sim/ddr3_model.v now does.
 //
 // A reset of this controller that is not a reset of the board - a bitstream loaded with the
