@@ -835,19 +835,20 @@ module soc_top #(
     // `--lpf-allow-unconstrained` specifically so an unplaced real pin is a
     // build error, not a silently invented placement
     // (fpga/synth/synth_ecp5.sh's own header) - and no existing board's own
-    // `.lpf` has ever named a `ddr3_*` pin, since ECPIX-5's own real pins
-    // (fpga/constraints/ecpix5_ddr3.lpf) exist only for
-    // fpga/ecpix5_ddr3_probe.v, a dedicated, DDR3-only top, not for
-    // fpga/ulx3s_top.v or fpga/soc_fpga.v. Instantiating rtl/soc/wb_ddr.v
+    // `.lpf` has ever named a `ddr3_*` pin, bar one: ECPIX-5's own real pins
+    // (fpga/constraints/ecpix5_ddr3.lpf) are used by
+    // fpga/ecpix5_ddr3_probe.v, a dedicated, DDR3-only top, and by
+    // BOARD=ecpix5-ddr3 (Part 15), the one SoC build that has the ports for
+    // them; fpga/ulx3s_top.v and the shared fpga/soc_fpga.v without
+    // DDR3_ENABLE have none. Instantiating rtl/soc/wb_ddr.v
     // unconditionally here would make every existing board build fail to
     // place a real primitive with nowhere to go - caught before it ever
     // reached a synthesis run, by re-reading fpga/synth/synth_ecp5.sh's own
     // header rather than assuming an unconnected `inout` is free.
     //
     // `DDR3_ENABLE` opts a build in - passed by `make sim_ddrcheck`
-    // (Phase 9 Stage 2, Part 2) and, later, whichever real ECPIX-5 SoC
-    // board target eventually needs it, matching `CORE_OOO`'s own opt-in
-    // shape. Undefined (every existing board and every existing test),
+    // (Phase 9 Stage 2, Part 2) and by BOARD=ecpix5-ddr3 (Part 15), matching
+    // `CORE_OOO`'s own opt-in shape. Undefined (every existing board and every existing test),
     // this slave answers its own address range immediately with zero data
     // rather than leaving the bus hanging - the same "unmapped space acks
     // with zeros" behaviour `rtl/soc/wb_ram.v`'s own header already

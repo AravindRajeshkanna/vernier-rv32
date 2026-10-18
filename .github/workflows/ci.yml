@@ -452,12 +452,12 @@ jobs:
 
       # The SoC-level simulations `make verify` ran that no step here named, found on 2026-10-17 by tracing
       # `make -n verify` against every `make` in this file: instruction fetch, atomics, paged access and the
-      # UART loader against DDR3, the PMP test program, the ULX3S video build and the ECPIX-5 wrapper, and the
-      # boot ROM's mailbox releasing a second hart of the other core type. Nine, about three minutes between
-      # them on a laptop, two of those minutes in one test (sim_uartload_ddr3). `make soc_fw_check_sim` is the one place
-      # the list lives, and `make verify` runs it too; it needs the boot ROM for this job's CORE, so it is
-      # here and not in `rtl`. dtb_ddr3 is the DDR3 variant of the device tree, next to dtb_check above.
-      # -k so that every failing test is reported, not just the first.
+      # UART loader against DDR3, the PMP test program, the ULX3S video build, the ECPIX-5 wrapper, the boot ROM's
+      # mailbox releasing a second hart of the other core type, and (since Part 15) the ECPIX-5 board top with its
+      # DDR3 pins. Ten, about three minutes between them on a laptop, two of those minutes in one test
+      # (sim_uartload_ddr3). `make soc_fw_check_sim` is the one place the list lives, and `make verify` runs it too;
+      # it needs the boot ROM for this job's CORE, so it is here and not in `rtl`. dtb_ddr3 is the DDR3 variant of
+      # the device tree, next to dtb_check above. -k so that every failing test is reported, not just the first.
       - name: SoC simulations that need firmware, and the DDR3 device tree
         run: make -k soc_fw_check_sim dtb_ddr3
 
