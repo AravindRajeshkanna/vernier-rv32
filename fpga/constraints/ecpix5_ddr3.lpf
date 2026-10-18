@@ -23,22 +23,23 @@
 ## direction. UDM is real-output-only, like DM; it is low only in the first half of a burst
 ## that stores lane 1's byte, and high otherwise, so a write that stores lane 0 alone can
 ## never touch the upper byte.
-## Pins the design has and the board DOES NOT: CS# and RESET#. The schematic says what the
-## board does instead (sheets 7 and 3): the DRAM's CS# (ball L2) is tied to ground through
-## R33, 4.7 kOhm - always selected, never the FPGA's to drive - and its RESET# (ball T2) is
-## driven by the board's reset circuit: an open-drain buffer (U8, 74LVC07) fed by the
-## MAX6420 supervisor (U9), pulled up to 1.5 V, with no connection to the FPGA. So the
-## FPGA can drive neither, and the controller's CS# deselect and RESET# pulse have nothing
-## to act on. Docs/roadmap/phase-09-ddr.md's Part 21 account and its open known defect have
-## what that means for the controller.
+## Pins the board DOES NOT have: CS# and RESET#. The schematic says what the board does
+## instead (sheets 7 and 3): the DRAM's CS# (ball L2) is tied to ground through R33, 4.7 kOhm -
+## always selected, never the FPGA's to drive - and its RESET# (ball T2) is driven by the
+## board's reset circuit: an open-drain buffer (U8, 74LVC07) fed by the MAX6420 supervisor
+## (U9), pulled up to 1.5 V, with no connection to the FPGA. Through Stage 2, Part 15 the
+## controller still had a CS# deselect and a RESET# pulse and four ports with no pin; since
+## Phase 9 Stage 1, Part 27 it has neither (an idle slot is a NOP, and the initialisation
+## pulses nothing), so every port of the controller is below.
 ## CK# and DQS# are the negative halves of differential pairs (J3, and U5); a differential
-## I/O standard locates only the positive pad, so neither appears below.
+## I/O standard locates only the positive pad, so neither appears below. That is also how the
+## controller drives CK#: it has a CK port only, and the pad pair makes the other half.
 ##
 ## Every SSTL15 pin needs its IO_TYPE stated: a pin left at the default (LVCMOS33)
 ## puts 3.3 V and 1.5 V in one bank, which nextpnr rejects. Bank 6's VREF is pin N2.
 ##
-## Used by:  ./fpga/synth/ddr3_pnr_probe.sh  (with ecpix5_ddr3_probe.lpf and ecpix5_ddr3_throwaway.lpf)
-##           BOARD=ecpix5-ddr3 ./fpga/synth/synth_ecp5.sh  (with ecpix5.lpf and ecpix5_ddr3_throwaway.lpf)
+## Used by:  ./fpga/synth/ddr3_pnr_probe.sh  (with ecpix5_ddr3_probe.lpf)
+##           BOARD=ecpix5-ddr3 ./fpga/synth/synth_ecp5.sh  (with ecpix5.lpf)
 
 ## ---- address (A0..A14; the part has no A15) ----
 LOCATE COMP "ddr3_a[0]"  SITE "T5";

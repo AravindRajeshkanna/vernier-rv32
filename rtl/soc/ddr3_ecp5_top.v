@@ -249,21 +249,32 @@
 // exploiting open rows), and real hardware bring-up - see
 // docs/roadmap/phase-09-ddr.md's own Part 9/10/11/12/13/14/25/26 accounts for
 // the full list of what this does not establish.
+//
+// ---- Part 27: the ports are the ECPIX-5's ----
+// The board's schematic (R02) gives the DRAM no CS# from the FPGA (it is tied to ground), no
+// RESET# (the board's reset circuit drives it), and no separate CK# or A15 (CK# is the
+// negative pad of CK's pair, and the 4 Gb x16 part has A0-A14). Through Part 26 the
+// controller had ports for all four and a deselect and a RESET# pulse behind them, and could not
+// be placed on the board's pins. Now the command bus is sampled by the DRAM on every CK
+// edge, so an idle slot is a NOP (rtl/soc/ddr3_phy_ecp5.v), the initialisation pulses
+// nothing and waits out the DRAM's 500 us from its own reset (rtl/soc/ddr3_init_seq.v), and
+// the ports are the ones the board has. The DRAM is reset by the board, not by this module:
+// a reset of this module alone leaves the DRAM as it was, and rtl/soc/ddr3_init_seq.v says
+// what that does and does not recover from.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
     input  wire        rst,
 
     // ---- real DDR3 pins - command/address/CK, from Part 1 ----
+    // Part 27: the pins the ECPIX-5 has. No CS# (the board ties it low), no RESET# (the board's
+    // reset circuit drives it), no CK# (the pad pair makes it from CK) and no A15 (4 Gb x16: A0-A14).
     output wire        ddr3_ck,
-    output wire        ddr3_ck_n,
-    output wire        ddr3_cs_n,
     output wire        ddr3_ras_n,
     output wire        ddr3_cas_n,
     output wire        ddr3_we_n,
     output wire [2:0]  ddr3_ba,
-    output wire [15:0] ddr3_a,
+    output wire [14:0] ddr3_a,
     output wire        ddr3_cke,
-    output wire        ddr3_reset_n,
     output wire        ddr3_odt,
 
     // ---- real DDR3 pins - one byte lane's own DQ/DQS, from Parts 2/4 ----
@@ -318,23 +329,23 @@ module ddr3_ecp5_top (
 
     // Held until the PLL's own outputs are real and stable - see header.
     // Every register here resets it asynchronously; the one synchronous read is the
-    // simulation PHY's falling-edge deselect (rtl/soc/ddr3_phy_ecp5.v, sim branch), which
+    // simulation PHY's falling-edge NOP (rtl/soc/ddr3_phy_ecp5.v, sim branch), which
     // is what SYNCASYNCNET reports.
     /* verilator lint_off SYNCASYNCNET */
     wire rst_all = rst || !pll_locked;
     /* verilator lint_on SYNCASYNCNET */
 
     wire        seq_cmd_valid;
-    wire [2:0]  seq_cmd_cs_ras_cas_we;
+    wire [2:0]  seq_cmd_ras_cas_we;
     wire [2:0]  seq_cmd_ba;
     wire [15:0] seq_cmd_addr;
-    wire        seq_cmd_cke, seq_cmd_reset_n, seq_cmd_odt;
+    wire        seq_cmd_cke, seq_cmd_odt;
 
     ddr3_init_seq SEQ (
         .clk(sclk), .rst(rst_all),
-        .cmd_valid(seq_cmd_valid), .cmd_cs_ras_cas_we(seq_cmd_cs_ras_cas_we),
+        .cmd_valid(seq_cmd_valid), .cmd_ras_cas_we(seq_cmd_ras_cas_we),
         .cmd_ba(seq_cmd_ba), .cmd_addr(seq_cmd_addr),
-        .cmd_cke(seq_cmd_cke), .cmd_reset_n(seq_cmd_reset_n), .cmd_odt(seq_cmd_odt),
+        .cmd_cke(seq_cmd_cke), .cmd_odt(seq_cmd_odt),
         .ready(init_ready)
     );
 
@@ -389,7 +400,7 @@ module ddr3_ecp5_top (
     assign read_busy  = wseq_busy | rseq_busy | refresh_hold;
 
     wire        wseq_cmd_valid;
-    wire [2:0]  wseq_cmd_cs_ras_cas_we;
+    wire [2:0]  wseq_cmd_ras_cas_we;
     wire [2:0]  wseq_cmd_ba;
     wire [15:0] wseq_cmd_addr;
     wire        wseq_write_start;
@@ -398,13 +409,13 @@ module ddr3_ecp5_top (
         .clk(sclk), .rst(rst_cmd),
         .write_req(wseq_write_req), .bank(write_bank), .row(write_row), .col(write_col),
         .busy(wseq_busy),
-        .cmd_valid(wseq_cmd_valid), .cmd_cs_ras_cas_we(wseq_cmd_cs_ras_cas_we),
+        .cmd_valid(wseq_cmd_valid), .cmd_ras_cas_we(wseq_cmd_ras_cas_we),
         .cmd_ba(wseq_cmd_ba), .cmd_addr(wseq_cmd_addr),
         .write_start(wseq_write_start)
     );
 
     wire        rseq_cmd_valid;
-    wire [2:0]  rseq_cmd_cs_ras_cas_we;
+    wire [2:0]  rseq_cmd_ras_cas_we;
     wire [2:0]  rseq_cmd_ba;
     wire [15:0] rseq_cmd_addr;
     wire        rseq_read_start;
@@ -413,7 +424,7 @@ module ddr3_ecp5_top (
         .clk(sclk), .rst(rst_cmd),
         .read_req(rseq_read_req), .bank(read_bank), .row(read_row), .col(read_col),
         .busy(rseq_busy),
-        .cmd_valid(rseq_cmd_valid), .cmd_cs_ras_cas_we(rseq_cmd_cs_ras_cas_we),
+        .cmd_valid(rseq_cmd_valid), .cmd_ras_cas_we(rseq_cmd_ras_cas_we),
         .cmd_ba(rseq_cmd_ba), .cmd_addr(rseq_cmd_addr),
         .read_start(rseq_read_start)
     );
@@ -431,7 +442,7 @@ module ddr3_ecp5_top (
     // gate to already be closed.
     wire        refresh_grant = !wseq_busy && !rseq_busy && refresh_hold_d;
     wire        refresh_cmd_valid;
-    wire [2:0]  refresh_cmd_cs_ras_cas_we;
+    wire [2:0]  refresh_cmd_ras_cas_we;
     wire [2:0]  refresh_cmd_ba;
     wire [15:0] refresh_cmd_addr;
 
@@ -439,7 +450,7 @@ module ddr3_ecp5_top (
         .clk(sclk), .rst(rst_cmd),
         .refresh_grant(refresh_grant),
         .refresh_req(refresh_req), .busy(refresh_busy),
-        .cmd_valid(refresh_cmd_valid), .cmd_cs_ras_cas_we(refresh_cmd_cs_ras_cas_we),
+        .cmd_valid(refresh_cmd_valid), .cmd_ras_cas_we(refresh_cmd_ras_cas_we),
         .cmd_ba(refresh_cmd_ba), .cmd_addr(refresh_cmd_addr)
     );
 
@@ -460,16 +471,16 @@ module ddr3_ecp5_top (
     // still pulsed and `read_data` came back `z`, with the protocol
     // checker silent because the pins looked legal.
     //
-    // cmd_cke/cmd_reset_n/cmd_odt need
+    // cmd_cke/cmd_odt need
     // no muxing - none of WSEQ/RSEQ/REFRESH drive them at all, and
     // SEQ's own registers already hold their correct real post-init
     // steady-state values forever (ddr3_init_seq.v's own S_READY state
     // never reassigns them).
     wire        phy_cmd_valid = seq_cmd_valid | wseq_cmd_valid | rseq_cmd_valid | refresh_cmd_valid;
-    wire [2:0]  phy_cmd_cs_ras_cas_we = seq_cmd_valid     ? seq_cmd_cs_ras_cas_we :
-                                         wseq_cmd_valid    ? wseq_cmd_cs_ras_cas_we :
-                                         rseq_cmd_valid    ? rseq_cmd_cs_ras_cas_we :
-                                                              refresh_cmd_cs_ras_cas_we;
+    wire [2:0]  phy_cmd_ras_cas_we = seq_cmd_valid     ? seq_cmd_ras_cas_we :
+                                         wseq_cmd_valid    ? wseq_cmd_ras_cas_we :
+                                         rseq_cmd_valid    ? rseq_cmd_ras_cas_we :
+                                                              refresh_cmd_ras_cas_we;
     wire [2:0]  phy_cmd_ba   = seq_cmd_valid  ? seq_cmd_ba   :
                                 wseq_cmd_valid ? wseq_cmd_ba  :
                                 rseq_cmd_valid ? rseq_cmd_ba  : refresh_cmd_ba;
@@ -479,14 +490,14 @@ module ddr3_ecp5_top (
 
     ddr3_phy_ecp5 PHY (
         .clk(sclk), .eclk(eclk), .rst(rst_all),
-        .cmd_valid(phy_cmd_valid), .cmd_cs_ras_cas_we(phy_cmd_cs_ras_cas_we),
-        .cmd_ba(phy_cmd_ba), .cmd_addr(phy_cmd_addr),
-        .cmd_cke(seq_cmd_cke), .cmd_reset_n(seq_cmd_reset_n), .cmd_odt(seq_cmd_odt),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .cmd_valid(phy_cmd_valid), .cmd_ras_cas_we(phy_cmd_ras_cas_we),
+        .cmd_ba(phy_cmd_ba), .cmd_addr(phy_cmd_addr[14:0]),   // the part has no A15
+        .cmd_cke(seq_cmd_cke), .cmd_odt(seq_cmd_odt),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt)
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt)
     );
 
     // Real write-data capture, at real request time - matching how
@@ -853,13 +864,13 @@ module ddr3_ecp5_top (
     reg f_open = 1'b0;
     always @(posedge clk) begin
         if (rst) f_open <= 1'b0;
-        else if (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_ACT) f_open <= 1'b1;
-        else if (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_PRE) f_open <= 1'b0;
+        else if (phy_cmd_valid && phy_cmd_ras_cas_we == F_ACT) f_open <= 1'b1;
+        else if (phy_cmd_valid && phy_cmd_ras_cas_we == F_PRE) f_open <= 1'b0;
     end
     always @(*) if (!rst && f_initialized && phy_cmd_valid) begin
-        if (phy_cmd_cs_ras_cas_we == F_ACT) assert (!f_open);
-        if (phy_cmd_cs_ras_cas_we == F_WR || phy_cmd_cs_ras_cas_we == F_RD) assert (f_open);
-        if (phy_cmd_cs_ras_cas_we == F_REF) assert (!f_open);
+        if (phy_cmd_ras_cas_we == F_ACT) assert (!f_open);
+        if (phy_cmd_ras_cas_we == F_WR || phy_cmd_ras_cas_we == F_RD) assert (f_open);
+        if (phy_cmd_ras_cas_we == F_REF) assert (!f_open);
     end
 
     // ---- command spacing, in sclk (two CK each) ----
@@ -877,15 +888,15 @@ module ddr3_ecp5_top (
             if (f_act_age != 4'd15) f_act_age <= f_act_age + 4'd1;
             if (f_ref_age != 4'd15) f_ref_age <= f_ref_age + 4'd1;
             if (phy_cmd_valid) begin
-                if (phy_cmd_cs_ras_cas_we == F_WR)  f_wr_age  <= 4'd0;
-                if (phy_cmd_cs_ras_cas_we == F_RD)  f_rd_age  <= 4'd0;
-                if (phy_cmd_cs_ras_cas_we == F_ACT) f_act_age <= 4'd0;
-                if (phy_cmd_cs_ras_cas_we == F_REF) f_ref_age <= 4'd0;
+                if (phy_cmd_ras_cas_we == F_WR)  f_wr_age  <= 4'd0;
+                if (phy_cmd_ras_cas_we == F_RD)  f_rd_age  <= 4'd0;
+                if (phy_cmd_ras_cas_we == F_ACT) f_act_age <= 4'd0;
+                if (phy_cmd_ras_cas_we == F_REF) f_ref_age <= 4'd0;
             end
         end
     end
     always @(*) if (!rst && f_initialized && phy_cmd_valid) begin
-        if (phy_cmd_cs_ras_cas_we == F_PRE) begin
+        if (phy_cmd_ras_cas_we == F_PRE) begin
             assert (f_wr_age  >= 4'd7);
             assert (f_rd_age  >= 4'd2);
             assert (f_act_age >= 4'd1);
@@ -895,10 +906,10 @@ module ddr3_ecp5_top (
 
     // ---- reachability: none of the above may be true only because it cannot happen ----
     always @(*) if (!rst && f_initialized) begin
-        cover (wseq_cmd_valid && phy_cmd_cs_ras_cas_we == F_ACT);
-        cover (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_WR);
-        cover (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_RD);
-        cover (phy_cmd_valid && phy_cmd_cs_ras_cas_we == F_PRE);
+        cover (wseq_cmd_valid && phy_cmd_ras_cas_we == F_ACT);
+        cover (phy_cmd_valid && phy_cmd_ras_cas_we == F_WR);
+        cover (phy_cmd_valid && phy_cmd_ras_cas_we == F_RD);
+        cover (phy_cmd_valid && phy_cmd_ras_cas_we == F_PRE);
         cover (refresh_cmd_valid);
         cover (write_req && read_req && wseq_write_req);
         cover (write_req && !f_busy_q && !f_req_q && wseq_write_req);

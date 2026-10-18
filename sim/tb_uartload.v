@@ -79,11 +79,12 @@ module tb_uartload;
 
     // DDR3 pins. Wired to nothing in the SDRAM variant, exactly as before this
     // test knew about DDR3 (the slave is tied off without DDR3_ENABLE).
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;
@@ -120,11 +121,11 @@ module tb_uartload;
         .sdram_ras_n(sd_ras_n), .sdram_cas_n(sd_cas_n), .sdram_we_n(sd_we_n),
         .sdram_a(sd_a), .sdram_ba(sd_ba), .sdram_dqm(sd_dqm),
         .sdram_dq_o(sd_dq_o), .sdram_dq_oe(sd_dq_oe), .sdram_dq_i(dq),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .trap(trap)
@@ -146,7 +147,7 @@ module tb_uartload;
     wire [511:0] ddr3_model_error_msg;
     ddr3_model #(.CLK_HZ(25_000_000)) DDR3PROTO (
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
         .error(ddr3_model_error), .error_msg(ddr3_model_error_msg), .seq_done()
@@ -163,7 +164,7 @@ module tb_uartload;
     ddr3_dq_model #(.DEPTH(8192)) DDR3MEM (
         .sclk(DUT.DDR3.DDR.sclk), .rst(DUT.DDR3.DDR.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.DDR3.DDR.read_active),
@@ -181,11 +182,16 @@ module tb_uartload;
     // Lane 1's memory (Phase 9 Part 26): see sim/tb_ramboot.v.
     ddr3_lane1_mem #(.DEPTH(8192)) DDR3MEM1 (
         .sclk(DUT.DDR3.DDR.sclk), .rst(DUT.DDR3.DDR.rst_all), .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.DDR3.DDR.read_active_final_1), .dq_error()
     );
+
+    // The checkers' verdicts, which this testbench dropped through Part 26 (see sim/tb_ramboot.v).
+    wire ddr3_clean = !ddr3_model_error && !ddr3_dq_error;
+`else
+    wire ddr3_clean = 1'b1;
 `endif
 
     // ---- the image the host is going to send ----
@@ -412,8 +418,15 @@ module tb_uartload;
         $display("\n---------------------------------------------");
         $display("cycles: %0d", cycles);
         $display("result word (expect \"PASS\"): 0x%08x", result_word);
-        if (errors == 0 && result_word === RESULT_PASS)
+        if (errors == 0 && ddr3_clean && result_word === RESULT_PASS)
             $display("UARTLOAD TEST PASSED");
+        else if (!ddr3_clean) begin
+            $display("UARTLOAD TEST FAILED (the DDR3 checkers saw a violation)");
+`ifdef DDR3_ENABLE
+            if (ddr3_model_error) $display("  the DDR3 protocol checker says: %0s", ddr3_model_error_msg);
+            if (ddr3_dq_error)    $display("  the DDR3 DQ model says: %0s", ddr3_dq_error_msg);
+`endif
+        end
         else if (result_word === RESULT_FAIL)
             $display("UARTLOAD TEST FAILED (the loaded program reported failure)");
         else

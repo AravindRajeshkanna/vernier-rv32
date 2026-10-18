@@ -714,7 +714,9 @@ jobs:
       # The DDR3 PHY's synthesis branch: elaborates every ECP5 primitive it
       # instantiates against yosys's own cell library, so a port that does not exist
       # or a width that does not match fails here. Verilator cannot do this (it has
-      # no models of those cells), and no other job has yosys.
+      # no models of those cells), and no other job has yosys. It also reads what the
+      # command pins elaborate to (Part 27): the board ties CS# low, so the second slot of
+      # every sclk has to be a NOP, which nothing simulates in this branch.
       - name: DDR3 PHY, synthesis branch elaborates
         run: make synth_check_ddr3
 

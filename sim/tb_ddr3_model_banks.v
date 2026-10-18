@@ -43,22 +43,23 @@ module tb_ddr3_model_banks;
 
     // ---- the one real init sequence every instance sees ----
     wire        cmd_valid;
-    wire [2:0]  cmd_cs_ras_cas_we, cmd_ba;
+    wire [2:0]  cmd_ras_cas_we, cmd_ba;
     wire [15:0] cmd_addr;
-    wire        cmd_cke, cmd_reset_n, cmd_odt, ready;
+    wire        cmd_cke, cmd_odt, ready;
 
     ddr3_init_seq #(.CLK_HZ(CLK_HZ)) SEQ (
         .clk(clk), .rst(rst),
-        .cmd_valid(cmd_valid), .cmd_cs_ras_cas_we(cmd_cs_ras_cas_we),
+        .cmd_valid(cmd_valid), .cmd_ras_cas_we(cmd_ras_cas_we),
         .cmd_ba(cmd_ba), .cmd_addr(cmd_addr),
-        .cmd_cke(cmd_cke), .cmd_reset_n(cmd_reset_n), .cmd_odt(cmd_odt),
+        .cmd_cke(cmd_cke), .cmd_odt(cmd_odt),
         .ready(ready)
     );
 
-    wire ddr3_ck, ddr3_ck_n, ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire ddr3_ck, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
 
     // The PHY's CK runs on the edge clock (Part 16), twice clk.
     wire eclk, pll_sclk, pll_locked;
@@ -66,24 +67,23 @@ module tb_ddr3_model_banks;
 
     ddr3_phy_ecp5 PHY (
         .clk(clk), .eclk(eclk), .rst(rst),
-        .cmd_valid(cmd_valid), .cmd_cs_ras_cas_we(cmd_cs_ras_cas_we),
-        .cmd_ba(cmd_ba), .cmd_addr(cmd_addr),
-        .cmd_cke(cmd_cke), .cmd_reset_n(cmd_reset_n), .cmd_odt(cmd_odt),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .cmd_valid(cmd_valid), .cmd_ras_cas_we(cmd_ras_cas_we),
+        .cmd_ba(cmd_ba), .cmd_addr(cmd_addr[14:0]),
+        .cmd_cke(cmd_cke), .cmd_odt(cmd_odt),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt)
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt)
     );
 
     // ---- per-instance command pins, taking over once init is done ----
     reg               tb_live = 1'b0;
-    reg [N-1:0]       tb_cs_n  = {N{1'b1}};
     reg [N-1:0]       tb_ras_n = {N{1'b1}};
     reg [N-1:0]       tb_cas_n = {N{1'b1}};
     reg [N-1:0]       tb_we_n  = {N{1'b1}};
     reg [3*N-1:0]     tb_ba    = {3*N{1'b0}};
-    reg [16*N-1:0]    tb_a     = {16*N{1'b0}};
+    reg [15*N-1:0]    tb_a     = {15*N{1'b0}};
 
     wire [N-1:0]      errs;
     wire [512*N-1:0]  msgs;
@@ -95,12 +95,11 @@ module tb_ddr3_model_banks;
             wire [511:0] m;
             ddr3_model #(.CLK_HZ(CLK_HZ)) MODEL (
                 .ck(ddr3_ck),
-                .cs_n (tb_live ? tb_cs_n[g]  : ddr3_cs_n),
                 .ras_n(tb_live ? tb_ras_n[g] : ddr3_ras_n),
                 .cas_n(tb_live ? tb_cas_n[g] : ddr3_cas_n),
                 .we_n (tb_live ? tb_we_n[g]  : ddr3_we_n),
                 .ba   (tb_live ? tb_ba[3*g +: 3]   : ddr3_ba),
-                .a    (tb_live ? tb_a[16*g +: 16]  : ddr3_a),
+                .a    (tb_live ? tb_a[15*g +: 15]  : ddr3_a),
                 .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
                 .error(e), .error_msg(m), .seq_done()
             );
@@ -115,7 +114,6 @@ module tb_ddr3_model_banks;
     // spacing-1 idle edges first.
     task issue(input integer i, input integer kind, input [2:0] bank, input [15:0] addr);
         begin
-            tb_cs_n[i] <= 1'b0;
             case (kind)
                 K_ACT: begin tb_ras_n[i] <= 1'b0; tb_cas_n[i] <= 1'b1; tb_we_n[i] <= 1'b1; end
                 K_WR:  begin tb_ras_n[i] <= 1'b1; tb_cas_n[i] <= 1'b0; tb_we_n[i] <= 1'b0; end
@@ -124,9 +122,8 @@ module tb_ddr3_model_banks;
                 K_REF: begin tb_ras_n[i] <= 1'b0; tb_cas_n[i] <= 1'b0; tb_we_n[i] <= 1'b1; end
             endcase
             tb_ba[3*i +: 3]   <= bank;
-            tb_a[16*i +: 16]  <= addr;
+            tb_a[15*i +: 15]  <= addr[14:0];
             @(negedge ddr3_ck);
-            tb_cs_n[i]  <= 1'b1;
             tb_ras_n[i] <= 1'b1; tb_cas_n[i] <= 1'b1; tb_we_n[i] <= 1'b1;
         end
     endtask

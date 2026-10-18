@@ -23,11 +23,12 @@ module tb_ddr3_cmd_seq;
 
     reg rst = 1'b1;
 
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;   // Part 22
@@ -58,11 +59,11 @@ module tb_ddr3_cmd_seq;
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
@@ -80,7 +81,7 @@ module tb_ddr3_cmd_seq;
     // lane calibrates by looping its pattern back through a DRAM. This test is about lane 0.
     ddr3_lane1_mem LANE1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.read_active_final_1), .dq_error()
@@ -97,7 +98,7 @@ module tb_ddr3_cmd_seq;
 
     ddr3_model #(.CLK_HZ(CLK_HZ)) PROTO (
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
         .error(model_error), .error_msg(model_error_msg), .seq_done(model_seq_done)
@@ -120,7 +121,7 @@ module tb_ddr3_cmd_seq;
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(tap_read_active),
@@ -194,11 +195,11 @@ module tb_ddr3_cmd_seq;
         check("PLL locked", pll_locked, 1'b1);
         check("DLL locked", dll_locked, 1'b1);
 
-        while (!init_ready && !model_error && $time < 400_000) @(posedge clk);
+        while (!init_ready && !model_error && $time < 700_000) @(posedge clk);
         check("real protocol checker saw no error after init", model_error, 1'b0);
         check("init sequence reports ready", init_ready, 1'b1);
 
-        while (!calib_done && !calib_error && $time < 600_000) @(posedge clk);
+        while (!calib_done && !calib_error && $time < 900_000) @(posedge clk);
         check("calibration completed (not errored)", calib_error, 1'b0);
         check("calibration found a working tap", calib_done, 1'b1);
         if (calib_done) $display("  calibrated READCLKSEL = %0d", calib_readclksel);
@@ -210,8 +211,8 @@ module tb_ddr3_cmd_seq;
         @(posedge clk);
         write_req <= 1'b0;
 
-        while (!write_busy && $time < 700_000) @(posedge clk);   // real ACT->WR->CWL takes a few cycles to even assert busy's own first real cycle
-        while (write_busy && $time < 900_000) @(posedge clk);
+        while (!write_busy && $time < 1_000_000) @(posedge clk);   // real ACT->WR->CWL takes a few cycles to even assert busy's own first real cycle
+        while (write_busy && $time < 1_200_000) @(posedge clk);
         check("write_busy deasserted again after the real write", write_busy, 1'b0);
         check("no real protocol error during the write", model_error, 1'b0);
 
@@ -228,7 +229,7 @@ module tb_ddr3_cmd_seq;
                 read_req <= 1'b0;
             end
             begin : CAPTURE
-                while (!captured_read_valid && $time < 1_100_000) begin
+                while (!captured_read_valid && $time < 1_400_000) begin
                     @(posedge clk);
                     if (read_data_valid) begin
                         captured_read_valid = 1'b1;
@@ -238,7 +239,7 @@ module tb_ddr3_cmd_seq;
             end
         join
 
-        while (read_busy && $time < 1_300_000) @(posedge clk);
+        while (read_busy && $time < 1_600_000) @(posedge clk);
         check("read_busy deasserted again after the real read", read_busy, 1'b0);
         check("no real protocol error during the read", model_error, 1'b0);
         check("no DQ/DQS write-burst timing error at any point (the DRAM's own write latency, from the pins)", dq_error, 1'b0);
@@ -259,7 +260,7 @@ module tb_ddr3_cmd_seq;
     end
 
     initial begin
-        #2_000_000;
+        #2_300_000;
         $display("TIMEOUT");
         $finish;
     end

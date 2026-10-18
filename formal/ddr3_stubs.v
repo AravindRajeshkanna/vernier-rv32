@@ -8,10 +8,10 @@
 // sits outside that (the PHY, the DQ/DQS data path) or is the long, one-off
 // power-up behaviour that has already finished by the time a request can be made
 // (initialisation, and calibration): a bounded proof that started from reset would
-// spend its whole depth inside the 200 us reset wait and never see a request.
+// spend its whole depth inside the 500 us wait before CKE and never see a request.
 //
 // So the two power-up modules are replaced by what they hold for the rest of time:
-//   - ddr3_init_seq: `ready` high, no command, CKE and RESET# high - exactly its
+//   - ddr3_init_seq: `ready` high, no command, CKE high - exactly its
 //     S_READY state, which never reassigns them;
 //   - ddr3_read_calib: `calib_done` high, no error, nothing driven - its idle state.
 // The claim this makes is therefore "after initialisation and calibration", which is
@@ -39,20 +39,18 @@ module ddr3_init_seq #(
     input  wire        clk,
     input  wire        rst,
     output wire        cmd_valid,
-    output wire [2:0]  cmd_cs_ras_cas_we,
+    output wire [2:0]  cmd_ras_cas_we,
     output wire [2:0]  cmd_ba,
     output wire [15:0] cmd_addr,
     output wire        cmd_cke,
-    output wire        cmd_reset_n,
     output wire        cmd_odt,
     output wire        ready
 );
     assign cmd_valid         = 1'b0;
-    assign cmd_cs_ras_cas_we = 3'b111;
+    assign cmd_ras_cas_we = 3'b111;
     assign cmd_ba            = 3'b0;
     assign cmd_addr          = 16'b0;
     assign cmd_cke           = 1'b1;
-    assign cmd_reset_n       = 1'b1;
     assign cmd_odt           = 1'b0;
     assign ready             = 1'b1;
     wire _unused_ok = &{1'b0, clk, rst, 1'b0};
@@ -88,37 +86,30 @@ module ddr3_phy_ecp5 (
     input  wire        eclk,
     input  wire        rst,
     input  wire        cmd_valid,
-    input  wire [2:0]  cmd_cs_ras_cas_we,
+    input  wire [2:0]  cmd_ras_cas_we,
     input  wire [2:0]  cmd_ba,
-    input  wire [15:0] cmd_addr,
+    input  wire [14:0] cmd_addr,
     input  wire        cmd_cke,
-    input  wire        cmd_reset_n,
     input  wire        cmd_odt,
     output wire        ddr3_ck,
-    output wire        ddr3_ck_n,
-    output wire        ddr3_cs_n,
     output wire        ddr3_ras_n,
     output wire        ddr3_cas_n,
     output wire        ddr3_we_n,
     output wire [2:0]  ddr3_ba,
-    output wire [15:0] ddr3_a,
+    output wire [14:0] ddr3_a,
     output wire        ddr3_cke,
-    output wire        ddr3_reset_n,
     output wire        ddr3_odt
 );
     assign ddr3_ck      = 1'b0;
-    assign ddr3_ck_n    = 1'b1;
-    assign ddr3_cs_n    = 1'b1;
     assign ddr3_ras_n   = 1'b1;
     assign ddr3_cas_n   = 1'b1;
     assign ddr3_we_n    = 1'b1;
     assign ddr3_ba      = 3'b0;
-    assign ddr3_a       = 16'b0;
+    assign ddr3_a       = 15'b0;
     assign ddr3_cke     = 1'b0;
-    assign ddr3_reset_n = 1'b0;
     assign ddr3_odt     = 1'b0;
-    wire _unused_ok = &{1'b0, clk, eclk, rst, cmd_valid, cmd_cs_ras_cas_we, cmd_ba,
-                        cmd_addr, cmd_cke, cmd_reset_n, cmd_odt, 1'b0};
+    wire _unused_ok = &{1'b0, clk, eclk, rst, cmd_valid, cmd_ras_cas_we, cmd_ba,
+                        cmd_addr, cmd_cke, cmd_odt, 1'b0};
 endmodule
 
 module ddr3_dqs_ecp5 (

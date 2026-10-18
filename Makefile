@@ -4168,9 +4168,10 @@ pnr_probe_ddr3:
 # ---- the ECPIX-5 SoC with DDR3, placed and routed (Phase 9 Stage 2, Part 15) ----
 #
 # The whole SoC (CORE=$(CORE)) with the controller and the Wishbone slave in it, on the ECPIX-5's device with the board's
-# real DDR3 pins: BOARD=ecpix5-ddr3 in fpga/synth/synth_ecp5.sh. It stops after place-and-route and writes no bitstream,
-# because the four ports the board has no pin for (CS#, RESET#, CK#, A15) are on throwaway pins; it reports the Fmax of each
-# clock and the area, which is what it is for. NOT in `make verify`, for the reason the probe above is not (it needs
+# real DDR3 pins: BOARD=ecpix5-ddr3 in fpga/synth/synth_ecp5.sh. It reports the Fmax of each clock and the area and, since
+# Phase 9 Stage 1, Part 27, writes the bitstream (fpga/build/ecpix5_ddr3/ecpix5_top.bit): every port of the controller has
+# a pin now, where through Stage 2, Part 15 four were on throwaway pins and it stopped before one. That bitstream has never
+# been on a board. NOT in `make verify`, for the reason the probe above is not (it needs
 # nextpnr-ecp5, which is in YosysHQ's bundle), and not in CI either: place-and-route of the whole SoC is a local gate
 # (.github/workflows/ci.yml's header). Its simulation counterpart is sim_ecpix5_ddr3, which is in both.
 pnr_soc_ecpix5_ddr3: sim/bootrom_$(CORE)_ddr3.hex
@@ -4185,6 +4186,12 @@ pnr_soc_ecpix5_ddr3: sim/bootrom_$(CORE)_ddr3.hex
 # primitive port, a wrong width or a missing primitive fails here. It catches
 # wrong WIRING, not wrong BEHAVIOUR: nothing here says the primitives put a
 # value where the design assumes, which needs a board.
+#
+# Since Phase 9 Stage 1, Part 27 it also reads what the PHY's command pins elaborate to
+# (fpga/synth/ddr3_phy_nop_check.sh): the board ties the DRAM's CS# low, so the second slot of
+# every sclk has to be a NOP, which in this branch is a constant 1 on the second input of the
+# RAS#, CAS# and WE# output primitives. Nothing simulates this branch, so nothing else would
+# notice that input being the command.
 DDR3_SYNTH_SRCS = rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v \
     rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
     rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v rtl/soc/ddr3_write_seq.v \
@@ -4198,7 +4205,8 @@ synth_check_ddr3: $(DDR3_SYNTH_SRCS)
 	yosys -q -p "read_verilog -lib $$YSHARE; read_verilog -lib $$YIO; read_verilog -DSYNTHESIS -sv $(DDR3_SYNTH_SRCS); hierarchy -check -top ddr3_ecp5_top" \
 	    > sim/synth_check_ddr3.log 2>&1 || { grep -v "limited support for tri-state" sim/synth_check_ddr3.log; \
 	    echo "synth_check_ddr3 FAILED"; exit 1; }; \
-	echo "synth_check_ddr3: DDR3 synthesis branch elaborates (every primitive port resolves)"
+	echo "synth_check_ddr3: DDR3 synthesis branch elaborates (every primitive port resolves)"; \
+	sh fpga/synth/ddr3_phy_nop_check.sh
 
 # ---- DDR3 DQS write-drive (Phase 9 Stage 1, Part 4, docs/roadmap/phase-09-ddr.md) ----
 #

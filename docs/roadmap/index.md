@@ -140,6 +140,12 @@ and the runner failed it, on both cores, in the first run. Fixed: each of the th
 the runner (exit 2, `FAIL uart_tx toggles (boot ROM is sending)`), and passes with the copy, under both cores. Every gate of mine had been seeded from that main checkout's caches, which is why none saw it; a stale ignored
 file in a cache can hide a clean-tree failure, and the one place that does not have one is CI.
 
+**RESOLVED - the testbenches that run CPU programs through DDR3 instantiated the DDR3 protocol checker and the DQ model and never read their verdicts (found and fixed 2026-10-18, by a mutation).** `sim/tb_ramboot.v` (behind
+`sim_ddrcheck`, `sim_ddrexec`, `sim_ddratomics` and `sim_ddrmmutest`) and `sim/tb_uartload.v` (`sim_uartload_ddr3`) wired `ddr3_model` and `ddr3_dq_model` to the controller's pins and dropped their `error` outputs, so a protocol or
+timing violation anywhere in a CPU-driven DDR3 run passed, and only the program's own result word decided the test. Found while mutation-testing Phase 9 Stage 1, Part 27: the wait before CKE put back to the 500 ns it had before
+that part failed the unit tests and passed `sim_ddrcheck`. Fixed: both testbenches read the two verdicts, print what they say and fail; the same mutation fails `sim_ddrcheck` now, and all five tests still pass, so nothing had been
+hiding behind the missing check. The same kind of hole as the seven targets above (a check nobody asked for), in the checkers and not in the `vvp` exit status. `sim/tb_ecpix5.v`, which has the DDR3 variant of the board top, did read both.
+
 **The intermittent `ISA-TIMEOUT` under `make verify`.** Still undiagnosed -
 this update adds evidence, not a cause, and is not claiming otherwise; that
 distinction is the whole reason [practices.md](../practices.md) §7 uses this

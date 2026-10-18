@@ -25,11 +25,12 @@ module tb_ddr3_dm_window;
     always #(CLK_PERIOD / 2) clk = ~clk;
     reg rst = 1'b1;
 
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;
@@ -52,11 +53,11 @@ module tb_ddr3_dm_window;
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
@@ -74,7 +75,7 @@ module tb_ddr3_dm_window;
     // lane calibrates by looping its pattern back through a DRAM. This test is about lane 0.
     ddr3_lane1_mem LANE1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.read_active_final_1), .dq_error()
@@ -88,7 +89,7 @@ module tb_ddr3_dm_window;
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.read_active_final),
@@ -119,7 +120,7 @@ module tb_ddr3_dm_window;
     integer wr_n = 0;
     integer wr_cyc [0:NWRITES-1];
     always @(posedge ddr3_ck) begin
-        if (!rst && calib_done && !ddr3_cs_n && ddr3_ras_n && !ddr3_cas_n && !ddr3_we_n && wr_n < NWRITES) begin
+        if (!rst && calib_done && ddr3_ras_n && !ddr3_cas_n && !ddr3_we_n && wr_n < NWRITES) begin
             wr_cyc[wr_n] = cyc;
             wr_n = wr_n + 1;
         end
@@ -152,7 +153,7 @@ module tb_ddr3_dm_window;
         $display("=== DDR3 data mask (DM) window and neighbour-column protection (Phase 9 Stage 1, Part 22) ===");
         repeat (4) @(posedge clk);
         rst = 1'b0;
-        while (!calib_done && !calib_error && $time < 600_000) @(posedge clk);
+        while (!calib_done && !calib_error && $time < 900_000) @(posedge clk);
         check_true("calibration completed before this test begins", calib_done && !calib_error);
 
         // eight writes, different banks, bytes and gaps - the DM waveform must hold for

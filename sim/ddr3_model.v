@@ -11,16 +11,30 @@
 // standard - not a passive logger: `error` latches and stays set the
 // first time any real violation is seen, and the testbench reads it
 // rather than eyeballing a transcript.
+//
+// ---- The pins are the ECPIX-5's (Phase 9 Stage 1, Part 27) ----
+// The board ties the DRAM's CS# to ground (schematic R02, sheet 7, R33) and gives its
+// RESET# to the board's own reset circuit (sheet 3), so this model has no CS# and its
+// reset_n is not the controller's. With CS# always low there is no deselect: every rising
+// edge of CK while RESET# is high is a command slot, and an idle one has to carry a NOP
+// (RAS#, CAS# and WE# all high). A controller that leaves a command on the bus for the
+// second slot of an sclk, as the old one did behind its CS# deselect, presents it twice,
+// and the per-bank and inter-command rules below see the second copy. RESET# is the
+// testbench's to drive, the way the board's reset circuit drives it: low while the
+// system is in reset and released with it. That also means the 200 us the DRAM wants it
+// held low is the board's to provide and is no longer checked here (it was a check of the
+// controller's own RESET# pulse). What the controller still owns, and this file checks, is
+// the other half of JEDEC's power-up step 2: CKE may not rise until 500 us after RESET#
+// went high.
 module ddr3_model #(
     parameter CLK_HZ = 25_000_000
 )(
     input  wire        ck,        // ddr3_ck: every command is sampled on its rising edge, and every count below is in CK cycles
-    input  wire        cs_n,
     input  wire        ras_n,
     input  wire        cas_n,
     input  wire        we_n,
     input  wire [2:0]  ba,
-    input  wire [15:0] a,
+    input  wire [14:0] a,         // A0-A14: the part is 4 Gb x16 and has no A15
     input  wire        cke,
     input  wire        reset_n,
     input  wire        odt,
@@ -33,14 +47,18 @@ module ddr3_model #(
     // (rtl/soc/ddr3_phy_ecp5.v, Part 16), and this file samples and counts on
     // CK, so a nanosecond figure becomes cycles at the CK rate.
     localparam CK_HZ = 2 * CLK_HZ;
-    `define NS2CYC(ns) (((ns) * (CK_HZ / 1000) + 999_999) / 1_000_000)
-    localparam RESET_MIN_CYC = `NS2CYC(200_000);  // tRESET minimum - real JEDEC requirement
+    // 64-bit, as rtl/soc/ddr3_init_seq.v's macro is since Part 27: 500 us at the CK rate is 2.5e10 before the
+    // division, which wraps in a 32-bit constant (see there for what that did before).
+    `define NS2CYC(ns) 32'((((64'd1) * (ns) * (CK_HZ / 1000) + 999_999) / 1_000_000))
+    // JEDEC power-up step 2: "After RESET# is de-asserted, wait for another 500 us until CKE
+    // becomes active." (Step 1, 200 us of RESET# low, is the board's: see the header.)
+    localparam [31:0] RESET_TO_CKE_MIN_CYC = `NS2CYC(500_000);
     localparam MRD_MIN_CYC   = 4;                  // tMRD minimum, cycle count not ns
     localparam ZQINIT_MIN_CYC = 512;               // tZQinit/tDLLK minimum, cycle count not ns
     // Part 12: Micron MT41K256M16 (4Gb) datasheet Figure 40, note 5 -
     // "Only NOP and DES commands are allowed after a REFRESH command and
     // until tRFC (MIN) is satisfied." tRFC(MIN) = 260ns for 4Gb.
-    localparam RFC_MIN_CYC   = `NS2CYC(260);
+    localparam [31:0] RFC_MIN_CYC = `NS2CYC(260);
 
     // Part 14: per-bank state. Values are from the same datasheet (4Gb
     // DDR3L, speed-bin tables and the timing-parameter table). Since Part 16
@@ -54,7 +72,7 @@ module ddr3_model #(
     // two commands can be is already legal and a rule for them cannot fire;
     // tRC (47.9-52.5 ns, three CK) is tRAS plus tRP, implied by the two.
     // A rule that cannot fire cannot be tested, so those three are not here.
-    localparam RAS_MIN_CYC = `NS2CYC(38);   // tRAS, worst bin 37.5 ns
+    localparam [31:0] RAS_MIN_CYC = `NS2CYC(38);   // tRAS, worst bin 37.5 ns
     localparam RTP_MIN_CYC = 4;             // tRTP = greater of 4CK or 7.5 ns
     localparam WR_REC_CYC  = 4;             // tWR = greater of 4CK or 15 ns in DLL-off mode (note 33)
     localparam CWL_CYC     = 6;             // MR2, DLL-off
@@ -73,8 +91,9 @@ module ddr3_model #(
     // only come up at its first sclk edge, after CK's first - and a checker that
     // read them would judge whatever a simulator happens to leave there. Icarus
     // leaves x, which no rule matches; a two-state simulator leaves 0, which is
-    // an MRS.
-    wire cmd_present = reset_n && !cs_n;
+    // an MRS. (With CS# tied low a slot is always selected, so out of reset every slot is
+    // decoded, NOP included.)
+    wire cmd_present = reset_n;
     wire is_mrs      = cmd_present && !ras_n && !cas_n && !we_n;
     wire is_zqcl      = cmd_present &&  ras_n &&  cas_n && !we_n && a[10];
     wire is_nop       = cmd_present &&  ras_n &&  cas_n &&  we_n;
@@ -103,9 +122,8 @@ module ddr3_model #(
         SEQ_DONE       = 3'd7;
 
     reg [2:0]  seq_state;
-    reg [31:0] reset_low_cnt;
-    reg        reset_was_low;
-    reg        cke_seen_high;
+    reg [31:0] since_reset_high;  // CK cycles since RESET# last went high, saturating
+    reg        cke_seen_high;     // CKE has been high since RESET# last went high
     reg [31:0] since_last_cmd;    // cycles since the last real (non-NOP) command
     reg [31:0] wait_min_needed;   // the minimum this project's own init sequence itself claims for the current gap
     reg [31:0] since_ref;         // cycles since the last REFRESH command (Part 12)
@@ -120,28 +138,27 @@ module ddr3_model #(
         end
     endtask
 
-    // Real reset-low duration tracking - independent of ddr3_init_seq.v's
-    // own internal counter, so a bug in that counter cannot also hide
-    // itself from this check.
+    // RESET# high to CKE high, counted here from the pins - independent of
+    // ddr3_init_seq.v's own counter, so a bug in that counter cannot also hide itself from
+    // this check. Re-arms every time RESET# goes low, as the DRAM itself starts over.
     always @(posedge ck) begin
         if (!reset_n) begin
-            reset_low_cnt <= reset_low_cnt + 1;
-            reset_was_low <= 1'b1;
+            since_reset_high <= 0;
+            cke_seen_high    <= 1'b0;
         end else begin
-            if (reset_was_low && reset_low_cnt < RESET_MIN_CYC) begin
-                fail("RESET_n released before tRESET (>=200us) elapsed");
+            if (since_reset_high != 32'hFFFF_FFFF) since_reset_high <= since_reset_high + 1;
+            if (cke && !cke_seen_high) begin
+                cke_seen_high <= 1'b1;
+                if (since_reset_high < RESET_TO_CKE_MIN_CYC) begin
+                    fail("CKE raised before 500us after RESET_n went high");
+                end
             end
-            reset_was_low <= 1'b0;
         end
     end
 
     always @(posedge ck) begin
         since_last_cmd <= since_last_cmd + 1;
         since_ref      <= since_ref + 1;
-
-        if (reset_n && cke && !cke_seen_high) begin
-            cke_seen_high <= 1'b1;
-        end
 
         if (cmd_present && !is_nop) begin
             // A real command is being issued right now - check the
@@ -315,8 +332,7 @@ module ddr3_model #(
         error_msg       = "";
         seq_done        = 1'b0;
         seq_state       = SEQ_WANT_MR2;
-        reset_low_cnt   = 0;
-        reset_was_low   = 1'b0;
+        since_reset_high = 0;
         cke_seen_high   = 1'b0;
         since_last_cmd  = 0;
         wait_min_needed = 0;

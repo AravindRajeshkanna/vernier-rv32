@@ -92,7 +92,7 @@ module tb_ddr3_data;
     ddr3_dq_model MEM (
         .sclk(sclk), .rst(rst),
         .ck(1'b0),   // calibration issues no DRAM commands
-        .cs_n(1'b1), .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(16'b0),   // calibration issues no DRAM commands
+        .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(15'b0),   // calibration issues no DRAM commands
         .dq_pin(dq_bus), .dqs_pin(dqs_bus),
         .read_active(read_active),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),

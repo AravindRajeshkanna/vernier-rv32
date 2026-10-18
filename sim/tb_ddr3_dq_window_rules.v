@@ -49,12 +49,11 @@ module tb_ddr3_dq_window_rules;
     ddr3_eclk_pll PLL (.clk(clk), .eclk(eclk), .sclk(pll_sclk), .locked(pll_locked));
     wire ck = eclk;
 
-    reg [N-1:0]      cs_n  = {N{1'b1}};
     reg [N-1:0]      ras_n = {N{1'b1}};
     reg [N-1:0]      cas_n = {N{1'b1}};
     reg [N-1:0]      we_n  = {N{1'b1}};
     reg [3*N-1:0]    ba    = {3*N{1'b0}};
-    reg [16*N-1:0]   a     = {16*N{1'b0}};
+    reg [15*N-1:0]   a     = {15*N{1'b0}};
     // DQ and DQS reach each model instance through explicit output enables. The model's
     // pin ports are `inout` (so Verilator accepts a tri-state net into them - see
     // verilator_ddr3 in the Makefile), and an inout port must connect to a net, not a reg.
@@ -89,8 +88,8 @@ module tb_ddr3_dq_window_rules;
             wire        mq_oe, mqs_oe, mqs_o;
             ddr3_dq_model MODEL (
                 .sclk(clk), .rst(rst), .ck(ck),
-                .cs_n(cs_n[g]), .ras_n(ras_n[g]), .cas_n(cas_n[g]), .we_n(we_n[g]),
-                .ba(ba[3*g +: 3]), .a(a[16*g +: 16]),
+                .ras_n(ras_n[g]), .cas_n(cas_n[g]), .we_n(we_n[g]),
+                .ba(ba[3*g +: 3]), .a(a[15*g +: 15]),
                 .dq_pin(dq_pin), .dqs_pin(dqs_pin), .dm_pin(dm_v[g]),
                 .read_active(1'b0),
                 .mem_dq_o(mq_o), .mem_dq_oe(mq_oe), .mem_dqs_oe(mqs_oe), .mem_dqs_o(mqs_o),
@@ -184,12 +183,12 @@ module tb_ddr3_dq_window_rules;
             @(posedge clk);
             // ---- command slot 0 of this cycle ----
             if (t == 0) begin
-                cs_n <= {N{1'b0}}; ras_n <= {N{1'b0}}; cas_n <= {N{1'b1}}; we_n <= {N{1'b1}};
-                for (i = 0; i < N; i = i + 1) begin ba[3*i +: 3] <= 3'd1; a[16*i +: 16] <= ROW; end
+                ras_n <= {N{1'b0}}; cas_n <= {N{1'b1}}; we_n <= {N{1'b1}};
+                for (i = 0; i < N; i = i + 1) begin ba[3*i +: 3] <= 3'd1; a[15*i +: 15] <= ROW[14:0]; end
             end else if (t == w) begin
-                cs_n <= {N{1'b0}}; ras_n <= {N{1'b1}}; cas_n <= {N{1'b0}};
+                ras_n <= {N{1'b1}}; cas_n <= {N{1'b0}};
                 for (i = 0; i < N; i = i + 1) begin
-                    ba[3*i +: 3] <= 3'd1; a[16*i +: 16] <= (i >= 11) ? COL2 : COL;
+                    ba[3*i +: 3] <= 3'd1; a[15*i +: 15] <= (i >= 11) ? COL2[14:0] : COL[14:0];
                     // instance 10: a READ instead of a WRITE - the burst that follows has no WRITE behind it
                     we_n[i] <= (i == 10) ? 1'b1 : 1'b0;
                 end
@@ -208,9 +207,9 @@ module tb_ddr3_dq_window_rules;
                     if (i == 12) dm_v[i] <= (t - w == 3 || t - w == 4) ? 1'b0 : 1'b1;
                 end
             end
-            // ---- command slot 1: always a deselect, as the PHY drives it ----
+            // ---- command slot 1: always a NOP (111), as the PHY drives it - the board ties CS# low (Part 27) ----
             @(negedge clk);
-            cs_n <= {N{1'b1}}; ras_n <= {N{1'b1}}; cas_n <= {N{1'b1}}; we_n <= {N{1'b1}};
+            ras_n <= {N{1'b1}}; cas_n <= {N{1'b1}}; we_n <= {N{1'b1}};
         end
         repeat (10) @(posedge clk);
 

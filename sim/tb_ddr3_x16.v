@@ -29,11 +29,12 @@ module tb_ddr3_x16;
     always #(CLK_PERIOD / 2) clk = ~clk;
     reg rst = 1'b1;
 
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;
@@ -64,11 +65,11 @@ module tb_ddr3_x16;
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
@@ -86,7 +87,7 @@ module tb_ddr3_x16;
     wire [511:0] model_error_msg;
     ddr3_model #(.CLK_HZ(CLK_HZ)) PROTO (
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
         .error(model_error), .error_msg(model_error_msg), .seq_done()
@@ -100,7 +101,7 @@ module tb_ddr3_x16;
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.read_active_final),
@@ -123,7 +124,7 @@ module tb_ddr3_x16;
     ddr3_dq_model MEM1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dqu), .dqs_pin(ddr3_udqs), .dm_pin(ddr3_udm),
         .read_active(DUT.read_active_final_1),
@@ -161,9 +162,11 @@ module tb_ddr3_x16;
         if (counting && ddr3_udm === 1'b0) udm_low <= udm_low + 1;
     end
 
-    // Commands on the pins: how many times the DRAM has been selected.
+    // Commands on the pins: how many CK edges the DRAM samples a command on (CS# is tied low on the
+    // board, so a command is any sample with RAS#, CAS# or WE# low; the NOP between commands is 111).
     integer cmds = 0;
-    always @(negedge ddr3_cs_n) if (!rst) cmds = cmds + 1;
+    always @(posedge ddr3_ck)
+        if (!rst && (ddr3_ras_n === 1'b0 || ddr3_cas_n === 1'b0 || ddr3_we_n === 1'b0)) cmds = cmds + 1;
 
     integer errors = 0;
     task check(input [511:0] what, input got, input want);
@@ -313,9 +316,9 @@ module tb_ddr3_x16;
         check("PLL locked", pll_locked, 1'b1);
         check("DLL locked", dll_locked, 1'b1);
 
-        while (!init_ready && !model_error && $time < 400_000) @(posedge clk);
+        while (!init_ready && !model_error && $time < 700_000) @(posedge clk);
         check("init sequence reports ready", init_ready, 1'b1);
-        while (!((calib_done || calib_error) && (calib1_done || calib1_error)) && $time < 800_000) @(posedge clk);
+        while (!((calib_done || calib_error) && (calib1_done || calib1_error)) && $time < 1_100_000) @(posedge clk);
         check("lane 0 calibrated", calib_done, 1'b1);
         check("lane 1 calibrated", calib1_done, 1'b1);
         check("lane 0 calibration did not error", calib_error, 1'b0);

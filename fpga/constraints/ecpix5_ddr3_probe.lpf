@@ -1,10 +1,9 @@
 ## Harness pins for the place-and-route probe - NOT a pinout.
 ##
 ## fpga/constraints/ecpix5_ddr3.lpf has every pin this board really has for the DDR3
-## controller. This file gives the probe harness's four pins (clock, reset, data in, data out) somewhere to sit
-## (fpga/ecpix5_ddr3_probe.v wraps the controller so that only the DDR pins are pads). The four
-## ports the board has no pin for - CS#, RESET#, CK# and A15 - are in
-## fpga/constraints/ecpix5_ddr3_throwaway.lpf, which the probe script adds.
+## controller, and since Phase 9 Stage 1, Part 27 that is every port the controller has. This file gives the probe
+## harness's four pins (clock, reset, data in, data out) somewhere to sit
+## (fpga/ecpix5_ddr3_probe.v wraps the controller so that only the DDR pins are pads).
 ##
 ## Used by:  ./fpga/synth/ddr3_pnr_probe.sh
 
