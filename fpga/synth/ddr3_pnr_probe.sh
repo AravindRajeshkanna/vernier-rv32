@@ -101,8 +101,9 @@ checks = [
     ("TSHX2DQA",   1, ">="),
     ("ODDRX2DQSB", 1, ">="),
     ("TSHX2DQSA",  1, ">="),
-    ("ODDRX2F",    1, ">="),
-    ("OSHX2A",     1, ">="),
+    ("ODDRX2F",    1, "=="),   # CK only: CK# is the pad pair's own (Part 27)
+    ("OSHX2A",     0, "=="),   # carried CS#, which the board ties low (Part 27)
+    ("ODDRX1F",   23, "=="),   # RAS#, CAS#, WE#, CKE, ODT, 3 bank bits, 15 address bits (Part 27)
     ("EHXPLLL",    1, ">="),
 ]
 failed = False
