@@ -20,7 +20,7 @@ module tb_ddr3_read_seq;
 
     wire        busy;
     wire        cmd_valid;
-    wire [2:0]  cmd_cs_ras_cas_we;
+    wire [2:0]  cmd_ras_cas_we;
     wire [2:0]  cmd_ba;
     wire [15:0] cmd_addr;
     wire        read_start;
@@ -29,7 +29,7 @@ module tb_ddr3_read_seq;
         .clk(clk), .rst(rst),
         .read_req(read_req), .bank(bank), .row(row), .col(col),
         .busy(busy),
-        .cmd_valid(cmd_valid), .cmd_cs_ras_cas_we(cmd_cs_ras_cas_we),
+        .cmd_valid(cmd_valid), .cmd_ras_cas_we(cmd_ras_cas_we),
         .cmd_ba(cmd_ba), .cmd_addr(cmd_addr),
         .read_start(read_start)
     );
@@ -67,13 +67,13 @@ module tb_ddr3_read_seq;
     reg     pre_a10_all = 1'b1;      // every PRECHARGE seen had A10 high
     always @(posedge clk) begin
         gcyc <= gcyc + 1;
-        if (!rst && cmd_valid && cmd_cs_ras_cas_we == CMD_PRE) begin
+        if (!rst && cmd_valid && cmd_ras_cas_we == CMD_PRE) begin
             pre_abs[pre_n] = gcyc;
             pre_n = pre_n + 1;
             if (busy) pre_busy_seen = 1'b1;
             if (!cmd_addr[10]) pre_a10_all = 1'b0;
         end
-        if (!rst && cmd_valid && cmd_cs_ras_cas_we == CMD_ACT) begin
+        if (!rst && cmd_valid && cmd_ras_cas_we == CMD_ACT) begin
             act_abs[act_n] = gcyc;
             act_n = act_n + 1;
         end
@@ -130,12 +130,12 @@ module tb_ddr3_read_seq;
         while ((act_cyc < 0 || rd_cyc < 0 || read_start_cyc < 0) && cyc < 40) begin
             @(posedge clk);
             cyc = cyc + 1;
-            if (cmd_valid && cmd_cs_ras_cas_we == CMD_ACT && act_cyc < 0) begin
+            if (cmd_valid && cmd_ras_cas_we == CMD_ACT && act_cyc < 0) begin
                 act_cyc = cyc;
                 act_ba_seen   = cmd_ba;
                 act_addr_seen = cmd_addr;
             end
-            if (cmd_valid && cmd_cs_ras_cas_we == CMD_RD && rd_cyc < 0) begin
+            if (cmd_valid && cmd_ras_cas_we == CMD_RD && rd_cyc < 0) begin
                 rd_cyc = cyc;
                 rd_ba_seen   = cmd_ba;
                 rd_addr_seen = cmd_addr;
@@ -228,9 +228,9 @@ module tb_ddr3_read_seq;
             act_pending    <= 1'b0;
             stray_cmd_seen <= 1'b0;
         end else begin
-            if (cmd_valid && cmd_cs_ras_cas_we == CMD_ACT) begin
+            if (cmd_valid && cmd_ras_cas_we == CMD_ACT) begin
                 act_pending <= 1'b1;
-            end else if (cmd_valid && cmd_cs_ras_cas_we == CMD_RD) begin
+            end else if (cmd_valid && cmd_ras_cas_we == CMD_RD) begin
                 act_pending <= 1'b0;
             end else if (act_pending && cmd_valid) begin
                 stray_cmd_seen <= 1'b1;

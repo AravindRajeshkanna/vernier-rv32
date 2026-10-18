@@ -32,11 +32,17 @@ module tb_ecpix5;
     // ---- the DDR3 side: the board's pins, and the behavioural models behind them ----
     // The hierarchical paths below are DUT (the board top) / SOC (soc_fpga) / SOC (soc_top) / DDR3 (wb_ddr) /
     // DDR (ddr3_ecp5_top): the same instances sim/tb_ramboot.v reaches from soc_top, three levels further down.
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    // The DRAM's RESET# is not the FPGA's (Part 27): the board's reset circuit drives it (schematic R02, sheet 3), from
+    // the same event that drives rst_n, and its CS# is tied low. So the testbench plays that circuit.
+    wire        ddr3_reset_n = rst_n;
+    time        ddr3_t_reset_high = 0, ddr3_t_cke_high = 0;
+    always @(posedge ddr3_reset_n) ddr3_t_reset_high = $time;
+    always @(posedge ddr3_cke) if (ddr3_t_cke_high == 0) ddr3_t_cke_high = $time;
     wire [7:0]  ddr3_dq, ddr3_dqu;
     wire        ddr3_dqs, ddr3_udqs, ddr3_dm, ddr3_udm;
 `endif
@@ -47,11 +53,11 @@ module tb_ecpix5;
         .led2_g(led2_g)
 `ifdef DDR3_ENABLE
         ,
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm)
 `endif
@@ -62,7 +68,7 @@ module tb_ecpix5;
     wire [511:0] ddr3_model_error_msg;
     ddr3_model #(.CLK_HZ(25_000_000)) DDR3PROTO (
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
         .error(ddr3_model_error), .error_msg(ddr3_model_error_msg), .seq_done()
@@ -75,7 +81,7 @@ module tb_ecpix5;
     ddr3_dq_model DDR3MEM (
         .sclk(DUT.SOC.SOC.DDR3.DDR.sclk), .rst(DUT.SOC.SOC.DDR3.DDR.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.SOC.SOC.DDR3.DDR.read_active),
@@ -122,7 +128,7 @@ module tb_ecpix5;
     endtask
     ddr3_lane1_mem DDR3MEM1 (
         .sclk(DUT.SOC.SOC.DDR3.DDR.sclk), .rst(DUT.SOC.SOC.DDR3.DDR.rst_all), .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.SOC.SOC.DDR3.DDR.read_active_final_1), .dq_error()
@@ -220,7 +226,9 @@ module tb_ecpix5;
             check("no calibration error, lane 1", DUT.SOC.SOC.DDR3.calib1_error, 1'b0);
             check("CK reaches its pin and moves", ck_seen, 1'b1);
             check("CKE is high at its pin", ddr3_cke, 1'b1);
-            check("RESET# was released at its pin", ddr3_reset_n, 1'b1);
+            $display("  (CKE rose %0d ns after the board's reset was released)", ddr3_t_cke_high - ddr3_t_reset_high);
+            check("CKE rose no sooner than 500 us after the board's reset was released",
+                  (ddr3_t_cke_high - ddr3_t_reset_high) >= 500_000, 1'b1);
             check("the DDR3 protocol checker saw nothing wrong", ddr3_model_error, 1'b0);
             check("the DQ model saw nothing wrong", ddr3_dq_error, 1'b0);
         end

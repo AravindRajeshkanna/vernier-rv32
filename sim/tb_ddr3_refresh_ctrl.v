@@ -20,7 +20,7 @@ module tb_ddr3_refresh_ctrl;
 
     wire        refresh_req, busy;
     wire        cmd_valid;
-    wire [2:0]  cmd_cs_ras_cas_we;
+    wire [2:0]  cmd_ras_cas_we;
     wire [2:0]  cmd_ba;
     wire [15:0] cmd_addr;
 
@@ -28,7 +28,7 @@ module tb_ddr3_refresh_ctrl;
         .clk(clk), .rst(rst),
         .refresh_grant(refresh_grant),
         .refresh_req(refresh_req), .busy(busy),
-        .cmd_valid(cmd_valid), .cmd_cs_ras_cas_we(cmd_cs_ras_cas_we),
+        .cmd_valid(cmd_valid), .cmd_ras_cas_we(cmd_ras_cas_we),
         .cmd_ba(cmd_ba), .cmd_addr(cmd_addr)
     );
 
@@ -113,7 +113,7 @@ module tb_ddr3_refresh_ctrl;
         // package) lets it reach the DUT at the same edge, which made this
         // read 1. Applied 1 ns later, it cannot.
         check_int("a real command was issued the expected number of cycles after grant", cmd_cyc, 2);
-        check("the real command is a genuine REFRESH (RAS_n=0,CAS_n=0,WE_n=1)", (cmd_cs_ras_cas_we == CMD_REF), 1'b1);
+        check("the real command is a genuine REFRESH (RAS_n=0,CAS_n=0,WE_n=1)", (cmd_ras_cas_we == CMD_REF), 1'b1);
         check("refresh_req deasserted the same cycle the command was issued", refresh_req, 1'b0);
 
         @(posedge clk);

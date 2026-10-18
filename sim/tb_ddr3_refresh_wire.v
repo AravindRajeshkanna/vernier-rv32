@@ -25,11 +25,12 @@ module tb_ddr3_refresh_wire;
 
     reg rst = 1'b1;
 
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;   // Part 22
@@ -56,11 +57,11 @@ module tb_ddr3_refresh_wire;
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
@@ -78,7 +79,7 @@ module tb_ddr3_refresh_wire;
     // lane calibrates by looping its pattern back through a DRAM. This test is about lane 0.
     ddr3_lane1_mem LANE1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.read_active_final_1), .dq_error()
@@ -91,7 +92,7 @@ module tb_ddr3_refresh_wire;
 
     ddr3_model #(.CLK_HZ(CLK_HZ)) PROTO (
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
         .error(model_error), .error_msg(model_error_msg), .seq_done(model_seq_done)
@@ -107,7 +108,7 @@ module tb_ddr3_refresh_wire;
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.read_active_final),
@@ -138,7 +139,7 @@ module tb_ddr3_refresh_wire;
     reg contention_seen = 1'b0;
     reg real_refresh_cmd_seen = 1'b0;
     always @(posedge DUT.sclk) begin
-        if (!rst && DUT.phy_cmd_valid && (DUT.phy_cmd_cs_ras_cas_we == CMD_REF))
+        if (!rst && DUT.phy_cmd_valid && (DUT.phy_cmd_ras_cas_we == CMD_REF))
             real_refresh_cmd_seen <= 1'b1;
     end
 
@@ -186,7 +187,7 @@ module tb_ddr3_refresh_wire;
         repeat (4) @(posedge clk);
         rst = 1'b0;
 
-        while (!calib_done && !calib_error && $time < 600_000) @(posedge clk);
+        while (!calib_done && !calib_error && $time < 900_000) @(posedge clk);
         check("calibration completed before this test begins", calib_error, 1'b0);
         check("calibration found a working tap", calib_done, 1'b1);
 
@@ -263,7 +264,7 @@ module tb_ddr3_refresh_wire;
         repeat (30) @(posedge clk);
         check("a real REFRESH command appeared on the shared cmd bus at some point", real_refresh_cmd_seen, 1'b1);
 
-        while (refresh_busy && $time < 950_000) @(posedge clk);
+        while (refresh_busy && $time < 1_250_000) @(posedge clk);
         check("refresh_busy deasserted again after the real tRFC wait", refresh_busy, 1'b0);
         check("no real protocol error by the end of the test", model_error, 1'b0);
         check("no DQ/DQS write-burst timing error, including the write a refresh collided with", dq_error, 1'b0);
@@ -277,7 +278,7 @@ module tb_ddr3_refresh_wire;
     end
 
     initial begin
-        #1_000_000;
+        #1_300_000;
         $display("TIMEOUT");
         $finish;
     end

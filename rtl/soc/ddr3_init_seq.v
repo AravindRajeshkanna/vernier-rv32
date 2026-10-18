@@ -26,6 +26,28 @@
 // tuning) is left at its safest, JEDEC-default "disabled/standard"
 // setting - correctness first; tuning is real, separate, later work
 // once this is confirmed against a real behavioral model.
+//
+// ---- Part 27: RESET# is not this module's ----
+// Through Part 26 this sequence drove the DRAM's RESET#: low for 200 us, then high. The
+// ECPIX-5's schematic (R02, sheet 3) gives that pin to the board's reset circuit - a
+// supervisor and a reset button, through an open-drain buffer - and does not route it to
+// the FPGA, so there is nothing here to pulse. The board resets the DRAM at power-up and
+// when its reset button is pressed, the same event that resets the FPGA's logic through
+// rst_n; the DRAM's 200 us of RESET# low is the board's. What is left to this module is
+// JEDEC's power-up step 2: "After RESET# is de-asserted, wait for another 500 us until
+// CKE becomes active". It cannot see RESET#, so it counts the 500 us from its own reset
+// (and from the PLL's lock, which holds it in reset a little longer), which is never
+// earlier than the DRAM's release. Through Part 26 the wait between RESET# going high and
+// CKE going high here was 500 ns, not 500 us: nothing looked at it. sim/ddr3_model.v now does.
+//
+// A reset of this controller that is not a reset of the board - a bitstream loaded with the
+// board powered, or the debugger's ndmreset (rtl/soc/soc_top.v) - starts the sequence
+// against a DRAM that was not reset. That works when the DRAM was idle: CKE falls with the
+// controller's reset, which puts an idle DRAM into precharge power-down, and the mode
+// registers can be written again once CKE is back. It is not guaranteed when the DRAM was
+// in the middle of a burst or had a row open, and the DRAM is not refreshed for the 500 us
+// and the rest of the sequence. The board's reset is the recovery, as it is for any
+// controller on this board.
 module ddr3_init_seq #(
     // Real, ns-based JEDEC timing, converted to cycles at elaboration
     // time - the same NS2CYC-style approach rtl/soc/wb_sdram.v already
@@ -36,11 +58,10 @@ module ddr3_init_seq #(
     input  wire rst,
 
     output reg         cmd_valid,
-    output reg  [2:0]  cmd_cs_ras_cas_we,
+    output reg  [2:0]  cmd_ras_cas_we,
     output reg  [2:0]  cmd_ba,
     output reg  [15:0] cmd_addr,
     output reg         cmd_cke,
-    output reg         cmd_reset_n,
     output reg         cmd_odt,
 
     output reg         ready   // 1 once MR0-3 + ZQCL are done and their own waits have elapsed
@@ -53,16 +74,21 @@ module ddr3_init_seq #(
     // name completes before the other's), but exactly the kind of
     // reordering-fragile latent bug this project's own -Wall gate exists
     // to catch before it becomes a real one. ----
-    `define DDR3_NS2CYC(ns) (((ns) * (CLK_HZ / 1000) + 999_999) / 1_000_000)
+    // Part 27: evaluated in 64 bits. A figure of 500 us at 25 MHz is 12.5e9 before the
+    // division, which wraps in 32 bits. Through Part 26 it did, under Verilator and not under
+    // Icarus: the old 200 us was an untyped constant that Icarus evaluated wide (5000 cycles)
+    // and Verilator did not (706), and 500 us came out negative there. A 32-bit parameter wraps
+    // in both. The result is a handful of thousand, which one holds.
+    `define DDR3_NS2CYC(ns) 32'((((64'd1) * (ns) * (CLK_HZ / 1000) + 999_999) / 1_000_000))
 
     // Real JEDEC power-up timing this sequence must respect:
-    localparam RESET_CYC   = `DDR3_NS2CYC(200_000);  // tRESET, RESET_n low, >=200 us
-    localparam XPR_CYC     = `DDR3_NS2CYC(500);      // wait after CKE high before the first command (conservative - tXPR is one of the values not cross-checked against the primary datasheet, see header)
+    localparam [31:0] RESET_EXIT_CYC = `DDR3_NS2CYC(500_000);  // RESET# high to CKE high, >= 500 us (the RESET# itself is the board's)
+    localparam [31:0] XPR_CYC = `DDR3_NS2CYC(500);      // wait after CKE high before the first command (conservative - tXPR is one of the values not cross-checked against the primary datasheet, see header)
     localparam MRD_CYC     = 4;                 // tMRD is 4 nCK; counted here in sclk cycles = 8 CK (Part 16: CK is twice sclk) - twice the minimum, conservative, deliberately not recounted
     localparam ZQINIT_CYC  = 512;               // tZQinit/tDLLK is 512 nCK; counted here in sclk cycles = 1024 CK (Part 16) - twice the minimum, conservative, deliberately not recounted. Applies even under DLL-off since ZQCL calibrates independently
 
     // ---- command encodings, matching rtl/soc/ddr3_phy_ecp5.v's own
-    // {ras_n,cas_n,we_n} convention (cs_n handled by cmd_valid there) ----
+    // {ras_n,cas_n,we_n} convention (no cs_n: cmd_valid=0 is the NOP there) ----
     localparam [2:0] CMD_MRS  = 3'b000;  // RAS_n=0, CAS_n=0, WE_n=0
     localparam [2:0] CMD_ZQCL = 3'b110;  // RAS_n=1, CAS_n=1, WE_n=0, A10=1 selects "long" (vs. ZQCS)
 
@@ -137,52 +163,38 @@ module ddr3_init_seq #(
 
     // ---- state machine ----
     localparam [3:0]
-        S_RESET      = 4'd0,   // RESET_n low, CKE low
-        S_CKE_WAIT   = 4'd1,   // RESET_n high, CKE still low - real hold before CKE
-        S_XPR_WAIT   = 4'd2,   // CKE high - wait before the first command
-        S_MR2        = 4'd3,
-        S_MR2_WAIT   = 4'd4,
-        S_MR3        = 4'd5,
-        S_MR3_WAIT   = 4'd6,
-        S_MR1        = 4'd7,
-        S_MR1_WAIT   = 4'd8,
-        S_MR0        = 4'd9,
-        S_MR0_WAIT   = 4'd10,
-        S_ZQCL       = 4'd11,
-        S_ZQCL_WAIT  = 4'd12,
-        S_READY      = 4'd13;
+        S_CKE_WAIT   = 4'd0,   // CKE low - waiting out the DRAM's 500 us from the end of the board's reset
+        S_XPR_WAIT   = 4'd1,   // CKE high - wait before the first command
+        S_MR2        = 4'd2,
+        S_MR2_WAIT   = 4'd3,
+        S_MR3        = 4'd4,
+        S_MR3_WAIT   = 4'd5,
+        S_MR1        = 4'd6,
+        S_MR1_WAIT   = 4'd7,
+        S_MR0        = 4'd8,
+        S_MR0_WAIT   = 4'd9,
+        S_ZQCL       = 4'd10,
+        S_ZQCL_WAIT  = 4'd11,
+        S_READY      = 4'd12;
 
     reg [3:0]  state;
     reg [31:0] wait_cnt;
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            state         <= S_RESET;
-            wait_cnt      <= RESET_CYC;
+            state         <= S_CKE_WAIT;
+            wait_cnt      <= RESET_EXIT_CYC;
             cmd_valid     <= 1'b0;
-            cmd_cs_ras_cas_we <= 3'b111;
+            cmd_ras_cas_we <= 3'b111;
             cmd_ba        <= 3'b0;
             cmd_addr      <= 16'b0;
             cmd_cke       <= 1'b0;
-            cmd_reset_n   <= 1'b0;
             cmd_odt       <= 1'b0;
             ready         <= 1'b0;
         end else begin
             cmd_valid <= 1'b0;   // default: NOP, each state below overrides when it issues a real command
 
             case (state)
-                S_RESET: begin
-                    cmd_reset_n <= 1'b0;
-                    cmd_cke     <= 1'b0;
-                    if (wait_cnt == 0) begin
-                        cmd_reset_n <= 1'b1;
-                        wait_cnt    <= XPR_CYC;  // real hold before CKE per real board's own reset-release-to-CKE timing
-                        state       <= S_CKE_WAIT;
-                    end else begin
-                        wait_cnt <= wait_cnt - 1;
-                    end
-                end
-
                 S_CKE_WAIT: begin
                     if (wait_cnt == 0) begin
                         cmd_cke  <= 1'b1;
@@ -200,7 +212,7 @@ module ddr3_init_seq #(
 
                 S_MR2: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_MRS;
+                    cmd_ras_cas_we <= CMD_MRS;
                     cmd_ba            <= 3'b010;
                     cmd_addr          <= MR2_VAL;
                     wait_cnt          <= MRD_CYC - 1;
@@ -213,7 +225,7 @@ module ddr3_init_seq #(
 
                 S_MR3: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_MRS;
+                    cmd_ras_cas_we <= CMD_MRS;
                     cmd_ba            <= 3'b011;
                     cmd_addr          <= MR3_VAL;
                     wait_cnt          <= MRD_CYC - 1;
@@ -226,7 +238,7 @@ module ddr3_init_seq #(
 
                 S_MR1: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_MRS;
+                    cmd_ras_cas_we <= CMD_MRS;
                     cmd_ba            <= 3'b001;
                     cmd_addr          <= MR1_VAL;
                     wait_cnt          <= MRD_CYC - 1;
@@ -239,7 +251,7 @@ module ddr3_init_seq #(
 
                 S_MR0: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_MRS;
+                    cmd_ras_cas_we <= CMD_MRS;
                     cmd_ba            <= 3'b000;
                     cmd_addr          <= MR0_VAL;
                     wait_cnt          <= MRD_CYC - 1;
@@ -252,7 +264,7 @@ module ddr3_init_seq #(
 
                 S_ZQCL: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_ZQCL;
+                    cmd_ras_cas_we <= CMD_ZQCL;
                     cmd_ba            <= 3'b0;
                     cmd_addr          <= 16'h0400;  // A10=1 selects ZQCL (long), all other bits don't-care
                     wait_cnt          <= ZQINIT_CYC - 1;
@@ -269,7 +281,7 @@ module ddr3_init_seq #(
                     // read/write path are later, separate slices.
                 end
 
-                default: state <= S_RESET;
+                default: state <= S_CKE_WAIT;
             endcase
         end
     end

@@ -14,11 +14,12 @@ module tb_ddr3_top_lane1;
     always #(CLK_PERIOD / 2) clk = ~clk;
     reg rst = 1'b1;
 
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;
@@ -38,11 +39,11 @@ module tb_ddr3_top_lane1;
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(1'b0), .write_bank(3'b0), .write_row(16'b0),
@@ -67,7 +68,7 @@ module tb_ddr3_top_lane1;
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.read_active),
@@ -95,7 +96,7 @@ module tb_ddr3_top_lane1;
     ddr3_dq_model MEM1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(1'b0),
-        .cs_n(1'b1), .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(16'b0),
+        .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(15'b0),
         .dq_pin(ddr3_dqu), .dqs_pin(ddr3_udqs), .dm_pin(ddr3_udm),
         .read_active(DUT.read_active_1),
         .mem_dq_o(mem_dqu_o), .mem_dq_oe(mem_dqu_oe), .mem_dqs_oe(mem_udqs_oe), .mem_dqs_o(mem_udqs_o),
@@ -172,7 +173,7 @@ module tb_ddr3_top_lane1;
         check("the one, shared DLL locked", dll_locked, 1'b1);
 
         while (!((calib_done || calib_error) && (calib1_done || calib1_error))
-               && $time < 600_000) @(posedge clk);
+               && $time < 900_000) @(posedge clk);
 
         check("lane 0 calibration completed (not errored)", calib_error, 1'b0);
         check("lane 0 calibration found a working tap", calib_done, 1'b1);
@@ -200,7 +201,7 @@ module tb_ddr3_top_lane1;
     end
 
     initial begin
-        #2_000_000;
+        #2_300_000;
         $display("TIMEOUT");
         $finish;
     end

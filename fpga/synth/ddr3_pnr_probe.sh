@@ -25,9 +25,10 @@
 # READCLKSEL places and routes without complaint - simulation cannot show this either
 # (docs/roadmap/phase-09-ddr.md, Part 24), so a READCLKSEL cross-wire between lanes is a real,
 # currently open gap neither layer of proof this project has closes. It also says nothing
-# about behaviour, or about timing at the DDR clock, or about the four ports that have no
-# pin on this board (fpga/constraints/ecpix5_ddr3_throwaway.lpf parks them on throwaway pins).
-# The pin list is only as good as the two sources it was taken from.
+# about behaviour, or about timing at the DDR clock. (Through Stage 2, Part 15 it also left out
+# four ports that have no pin on this board and sat on throwaway pins; Stage 1, Part 27 removed
+# those ports, so every port of the controller is on a real pin now.)
+# The pin list is only as good as the two sources it was taken from, and the board's schematic.
 #
 # Needs yosys and nextpnr-ecp5, so YosysHQ's bundle first on PATH (see synth_ecp5.sh).
 # Not in `make verify`, for the reason the rest of the FPGA flow is not: it needs the bundle.
@@ -62,8 +63,7 @@ yosys -q -l "$BUILD/yosys.log" -p "read_verilog -sv -DSYNTHESIS $RTL; synth_ecp5
     || { grep -E "ERROR|Error" "$BUILD/yosys.log" | head; echo "ddr3_pnr_probe: synthesis FAILED"; exit 1; }
 echo "  ok - $BUILD/probe.json"
 
-cat fpga/constraints/ecpix5_ddr3.lpf fpga/constraints/ecpix5_ddr3_probe.lpf fpga/constraints/ecpix5_ddr3_throwaway.lpf \
-    > "$BUILD/probe.lpf"
+cat fpga/constraints/ecpix5_ddr3.lpf fpga/constraints/ecpix5_ddr3_probe.lpf > "$BUILD/probe.lpf"
 
 echo "=== nextpnr-ecp5 (LFE5UM5G-85F, CABGA554, seed $SEED) ==="
 if ! nextpnr-ecp5 --um5g-85k --package CABGA554 --speed 8 --json "$BUILD/probe.json" \

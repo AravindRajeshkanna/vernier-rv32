@@ -15,7 +15,10 @@
 //   2. CK's rising edges are evenly spaced (a square wave, not a glitchy one).
 //   3. No two consecutive CK samples both carry a command: with two CK per
 //      sclk and one command issued per sclk, each command must occupy exactly
-//      ONE CK sample, or the DRAM would see it twice.
+//      ONE CK sample, or the DRAM would see it twice. Since Part 27 there is no
+//      CS# to make the second slot a deselect (the board ties it low), so a
+//      "command" here is any sample with RAS#, CAS# or WE# low, and the second
+//      slot of every sclk has to be a NOP - all three high - by itself.
 //   4. Every command is sampled in phase 0 - the first CK of its sclk cycle.
 //   5. Every command pin is stable across the CK rising edge (a setup/hold
 //      surrogate at this simulation's resolution), so the DRAM samples a
@@ -29,11 +32,12 @@ module tb_ddr3_phy_phases;
     always #(CLK_PERIOD / 2) clk = ~clk;
     reg rst = 1'b1;
 
-    wire        ddr3_ck, ddr3_ck_n;
-    wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire        ddr3_ck;
+    wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
     wire [2:0]  ddr3_ba;
-    wire [15:0] ddr3_a;
-    wire        ddr3_cke, ddr3_reset_n, ddr3_odt;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;   // the board: the DRAM's RESET# is the system reset's complement (Part 27)
     wire [7:0]  ddr3_dq;
     wire        ddr3_dqs;
     wire        ddr3_dm;   // Part 22
@@ -53,11 +57,11 @@ module tb_ddr3_phy_phases;
 
     ddr3_ecp5_top DUT (
         .clk(clk), .rst(rst),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(3'd2), .write_row(16'h0123),
@@ -75,7 +79,7 @@ module tb_ddr3_phy_phases;
     // lane calibrates by looping its pattern back through a DRAM. This test is about lane 0.
     ddr3_lane1_mem LANE1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.read_active_final_1), .dq_error()
@@ -90,7 +94,7 @@ module tb_ddr3_phy_phases;
     ddr3_dq_model MEM (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
         .ck(ddr3_ck),
-        .cs_n(ddr3_cs_n), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
         .read_active(DUT.read_active_final),
@@ -121,14 +125,14 @@ module tb_ddr3_phy_phases;
     // 3, 4 and 5: every CK sample.
     integer commands = 0, consecutive_cmds = 0, phase1_cmds = 0, unstable_pins = 0;
     reg prev_cmd = 1'b0;
-    wire [22:0] pins_now = {ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n, ddr3_ba, ddr3_a};
+    wire [20:0] pins_now = {ddr3_ras_n, ddr3_cas_n, ddr3_we_n, ddr3_ba, ddr3_a};
     // the value the pins had a quarter-CK ago, for a coarse setup/hold check
-    wire [22:0] pins_before;
+    wire [20:0] pins_before;
     assign #(CK_PERIOD / 4) pins_before = pins_now;
-    reg  [22:0] pins_at_edge;
+    reg  [20:0] pins_at_edge;
     always @(posedge ddr3_ck) if (!rst && calib_done) begin
         pins_at_edge = pins_before;
-        if (ddr3_cs_n === 1'b0) begin
+        if (ddr3_ras_n === 1'b0 || ddr3_cas_n === 1'b0 || ddr3_we_n === 1'b0) begin   // anything but the NOP, 111
             commands = commands + 1;
             if (prev_cmd) consecutive_cmds = consecutive_cmds + 1;
             if (clk !== 1'b1) phase1_cmds = phase1_cmds + 1;   // phase 0 = sclk high at this CK edge
@@ -158,7 +162,7 @@ module tb_ddr3_phy_phases;
         $display("=== DDR3 PHY clock and command phases (Phase 9 Stage 1, Part 16) ===");
         repeat (4) @(posedge clk);
         rst = 1'b0;
-        while (!calib_done && !calib_error && $time < 600_000) @(posedge clk);
+        while (!calib_done && !calib_error && $time < 900_000) @(posedge clk);
         check_true("calibration completed before this test begins", calib_done && !calib_error);
 
         // a real transaction, so ACT, WR, RD and PRECHARGE all cross the pins

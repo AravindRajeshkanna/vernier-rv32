@@ -111,7 +111,7 @@ module tb_ddr3_data_lane1;
     ddr3_dq_model MEM0 (
         .sclk(sclk), .rst(rst),
         .ck(1'b0),
-        .cs_n(1'b1), .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(16'b0),
+        .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(15'b0),
         .dq_pin(dq_bus_0), .dqs_pin(dqs_bus_0),
         .read_active(read_active_0),
         .mem_dq_o(mem_dq_o_0), .mem_dq_oe(mem_dq_oe_0), .mem_dqs_oe(mem_dqs_oe_0), .mem_dqs_o(mem_dqs_o_0),
@@ -190,7 +190,7 @@ module tb_ddr3_data_lane1;
     ddr3_dq_model MEM1 (
         .sclk(sclk), .rst(rst1),
         .ck(1'b0),
-        .cs_n(1'b1), .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(16'b0),
+        .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(15'b0),
         .dq_pin(dq_bus_1), .dqs_pin(dqs_bus_1),
         .read_active(read_active_1),
         .mem_dq_o(mem_dq_o_1), .mem_dq_oe(mem_dq_oe_1), .mem_dqs_oe(mem_dqs_oe_1), .mem_dqs_o(mem_dqs_o_1),

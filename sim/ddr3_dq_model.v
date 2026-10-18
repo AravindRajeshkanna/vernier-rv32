@@ -133,12 +133,11 @@ module ddr3_dq_model #(
     // Commands are sampled on CK's rising edge, as the DRAM does; the data
     // phase below stays on sclk.
     input  wire       ck,
-    input  wire       cs_n,
     input  wire       ras_n,
     input  wire       cas_n,
     input  wire       we_n,
     input  wire [2:0] ba,
-    input  wire [15:0] a,
+    input  wire [14:0] a,
 
     // the resolved DQ and DQS pins - what the DRAM sees when the controller drives.
     // `inout`, though this module never drives them (its own drive is the mem_* outputs
@@ -161,9 +160,11 @@ module ddr3_dq_model #(
     output reg          dq_error,      // sticky: a write burst broke the DRAM's own timing
     output reg  [511:0] dq_error_msg
 );
-    wire is_act = !cs_n && !ras_n &&  cas_n &&  we_n;
-    wire is_wr  = !cs_n &&  ras_n && !cas_n && !we_n;
-    wire is_rd  = !cs_n &&  ras_n && !cas_n &&  we_n;
+    // No CS#: the board ties it low (see sim/ddr3_model.v), so these three codes are decoded in
+    // every slot, and an idle slot is the NOP (all three high) that none of them matches.
+    wire is_act = !ras_n &&  cas_n &&  we_n;
+    wire is_wr  =  ras_n && !cas_n && !we_n;
+    wire is_rd  =  ras_n && !cas_n &&  we_n;
 
     // per-bank open row, from ACTIVATE
     reg [14:0] open_row  [0:7];
@@ -436,12 +437,11 @@ module ddr3_lane1_mem #(
     input  wire        sclk,
     input  wire        rst,
     input  wire        ck,
-    input  wire        cs_n,
     input  wire        ras_n,
     input  wire        cas_n,
     input  wire        we_n,
     input  wire [2:0]  ba,
-    input  wire [15:0] a,
+    input  wire [14:0] a,
     inout  wire [7:0]  dqu,
     inout  wire        udqs,
     input  wire        udm,
@@ -455,7 +455,7 @@ module ddr3_lane1_mem #(
     ddr3_dq_model #(.DEPTH(DEPTH)) MEM (
         .sclk(sclk), .rst(rst),
         .ck(ck),
-        .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n), .we_n(we_n),
+        .ras_n(ras_n), .cas_n(cas_n), .we_n(we_n),
         .ba(ba), .a(a),
         .dq_pin(dqu), .dqs_pin(udqs), .dm_pin(udm),
         .read_active(read_active),

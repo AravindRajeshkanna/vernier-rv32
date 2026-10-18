@@ -112,11 +112,11 @@ FB_HEIGHT=${FB_HEIGHT:-}
 #
 #   BOARD=ecpix5       ./fpga/synth/synth_ecp5.sh   the SoC on its Stage 0 pins: clock, reset, UART, one LED
 #   BOARD=ecpix5-ddr3  ./fpga/synth/synth_ecp5.sh   the same with the DDR3 controller and its Wishbone slave
-#     (-DDDR3_ENABLE, the DDR3 variant of the boot ROM), the board's real DDR3 pins from
-#     fpga/constraints/ecpix5_ddr3.lpf, and the four ports the board has no pin for (CS#, RESET#, CK#, A15) on
-#     throwaway pins. **It stops after place-and-route and writes no bitstream**: with those four on made-up pins it
-#     is a check that the SoC and the controller fit, place and route and what the clock does, and not a thing to
-#     load. docs/roadmap/phase-09-ddr.md, Stage 2, Part 15, has what it found.
+#     (-DDDR3_ENABLE, the DDR3 variant of the boot ROM) and the board's DDR3 pins from
+#     fpga/constraints/ecpix5_ddr3.lpf. Every port of the controller has a pin since Phase 9 Stage 1, Part 27
+#     (CS# is tied low on the board, RESET# is the board's, CK# is CK's pad pair and the part has no A15), so this
+#     writes a bitstream; it has never been on a board. docs/roadmap/phase-09-ddr.md, Stage 2, Part 15, has what
+#     the build found and Stage 1, Part 27 what changed.
 #
 # The default constrains the clock and nothing else, which produces an Fmax
 # without inventing a board - useful for tracking the design's own timing, but
@@ -136,11 +136,10 @@ FB_HEIGHT=${FB_HEIGHT:-}
 BOARD=${BOARD:-}
 DIAG_ONLY=0
 PRELOAD_RAM=0
-# The boot ROM image that is $readmemh'd into the bitstream, and the reason (if any) this build writes no
-# bitstream. A board case may override either; LPF_PARTS, if a case sets it, is a list of constraint files that are
-# concatenated into one before place-and-route, since nextpnr is given one.
+# The boot ROM image that is $readmemh'd into the bitstream. A board case may override it; LPF_PARTS, if a case
+# sets it, is a list of constraint files that are concatenated into one before place-and-route, since nextpnr is
+# given one.
 ROM_HEX=${ROM_HEX:-sim/bootrom_${CORE}.hex}
-NO_BITSTREAM=""
 LPF_PARTS=
 # Which program a preloading board bakes in, and the ELF it was built from.
 # The ELF is not decoration: it is what the staleness check below compares
@@ -368,18 +367,18 @@ case "$BOARD" in
         #
         # What differs: -DDDR3_ENABLE (fpga/ecpix5_top.v and fpga/soc_fpga.v gain the DDR3 ports,
         # rtl/soc/soc_top.v instantiates rtl/soc/wb_ddr.v), the DDR3 files, the DDR3 variant of the boot ROM (its
-        # loader accepts DDR3_BASE as a load address; sim_uartload_ddr3 is its test), and three constraint files in
-        # one: the base board's, the DDR3 pins the two independent sources agree on, and the four ports the board
-        # has no pin for, parked on throwaway pins - see fpga/constraints/ecpix5_ddr3_throwaway.lpf.
+        # loader accepts DDR3_BASE as a load address; sim_uartload_ddr3 is its test), and two constraint files in
+        # one: the base board's and the DDR3 pins, which the two independent sources and the board's schematic
+        # (R02) agree on.
         #
-        # Those four are why this stops before the bitstream (NO_BITSTREAM): a file that puts CS#, RESET#, CK# and
-        # A15 on made-up pins is a check on the design and not a thing to load, and a board build that is not
-        # allowed to exist yet should not leave one behind. When the board's schematic says how CS# and RESET# are
-        # handled and the controller is changed to match, the four lines and this variable go.
+        # Through Stage 2, Part 15 the controller had four ports the board has no pin for (CS#, RESET#, CK#, A15),
+        # they sat on throwaway pins, and this build stopped before the bitstream. Phase 9 Stage 1, Part 27 removed
+        # the four (CS# is tied low and RESET# is the board's; CK# is CK's pad pair; the part has no A15), so every
+        # port has a pin, this drops --lpf-allow-unconstrained like every board target, and it writes a bitstream.
         DEVICE=${DEVICE:-um5g-85k}
         PACKAGE=CABGA554
         TOP=${TOP:-ecpix5_top}
-        LPF_PARTS="fpga/constraints/ecpix5.lpf fpga/constraints/ecpix5_ddr3.lpf fpga/constraints/ecpix5_ddr3_throwaway.lpf"
+        LPF_PARTS="fpga/constraints/ecpix5.lpf fpga/constraints/ecpix5_ddr3.lpf"
         LPF=${LPF:-$BUILD/ecpix5-ddr3.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
         BOARD_RTL="fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v"
@@ -391,7 +390,6 @@ case "$BOARD" in
                    rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v"
         BOARD_DEFINES="-DDDR3_ENABLE"
         ROM_HEX=sim/bootrom_${CORE}_ddr3.hex
-        NO_BITSTREAM="CS#, RESET#, CK# and A15 have no pin on this board and are on throwaway pins (fpga/constraints/ecpix5_ddr3_throwaway.lpf)"
         ;;
     ulx3s85-video)
         # Same board and pins as plain ulx3s85, GPDI wired in - opt-in
@@ -599,9 +597,14 @@ CHPARAM_TOP=""
 
 # Stated up front and again at the end: a bitstream is device-specific, and
 # loading one built for the wrong ECP5 fails in ways that look like a broken
-# design rather than a broken command line.
+# design rather than a broken command line. The ECPIX-5's part is a 5G one, LFE5UM5G-85F, which these
+# messages used to print as "LFE5U-um5g-85F".
+case "$DEVICE" in
+    um5g-*) PART_NAME="LFE5UM5G-${DEVICE#um5g-}"; PART_NAME="${PART_NAME%k}F" ;;
+    *)      PART_NAME="LFE5U-${DEVICE%k}F" ;;
+esac
 EXTRA_ABS=$(echo "${EXTRA_RTL:-}" | sed "s|[^ ][^ ]*|$ROOT/&|g")
-echo "=== target: ${BOARD:-generic}, LFE5U-${DEVICE%k}F, $PACKAGE ==="
+echo "=== target: ${BOARD:-generic}, $PART_NAME, $PACKAGE ==="
 echo "=== yosys ==="
 ( cd "$BUILD" && yosys -p "read_verilog $YOSYS_DEFINES $(echo "$RTL" | sed "s|[^ ][^ ]*|$ROOT/&|g"); \
     ${EXTRA_RTL:+read_verilog -sv $YOSYS_DEFINES $EXTRA_ABS;} \
@@ -684,15 +687,6 @@ if [ "$pnr_seeds" != "1" ]; then
     echo "--- timing closed on seed $pnr_seed ---"
 fi
 
-# A build that is a check and not a thing to load stops here, with the placement and the timing reported above and
-# no bitstream - $BUILD/$TOP.bit was removed at the start, so nothing from an earlier target is left looking like one.
-if [ -n "$NO_BITSTREAM" ]; then
-    echo
-    echo "NO BITSTREAM, by design: $NO_BITSTREAM."
-    echo "place-and-route finished (seed ${pnr_seed:-1}); the netlist is $BUILD/$TOP.json and the placement $BUILD/$TOP.config"
-    exit 0
-fi
-
 echo "=== ecppack ==="
 ecppack "$BUILD/$TOP.config" "$BUILD/$TOP.bit"
 
@@ -705,7 +699,7 @@ if [ ! -s "$BUILD/$TOP.bit" ]; then
 fi
 
 echo
-echo "bitstream: $BUILD/$TOP.bit  (LFE5U-${DEVICE%k}F - will not load on any other ECP5)"
+echo "bitstream: $BUILD/$TOP.bit  ($PART_NAME - will not load on any other ECP5)"
 # ---- what this bitstream is, written down next to it ----
 #
 # "Which program is in this bitstream?" is the one question you have to answer
@@ -721,7 +715,7 @@ echo "bitstream: $BUILD/$TOP.bit  (LFE5U-${DEVICE%k}F - will not load on any oth
 {
     echo "board:     ${BOARD:-generic}"
     echo "top:       $TOP"
-    echo "device:    LFE5U-${DEVICE%k}F $PACKAGE"
+    echo "device:    $PART_NAME $PACKAGE"
     echo "lpf:       $LPF"
     echo "built:     $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     if [ "$PRELOAD_RAM" = "1" ]; then

@@ -72,7 +72,7 @@ module ddr3_refresh_ctrl #(
     output reg         busy,
 
     output reg         cmd_valid,
-    output reg  [2:0]  cmd_cs_ras_cas_we,
+    output reg  [2:0]  cmd_ras_cas_we,
     output reg  [2:0]  cmd_ba,
     output reg  [15:0] cmd_addr
 );
@@ -100,7 +100,7 @@ module ddr3_refresh_ctrl #(
             refresh_req       <= 1'b0;
             busy              <= 1'b0;
             cmd_valid         <= 1'b0;
-            cmd_cs_ras_cas_we <= CMD_NOP;
+            cmd_ras_cas_we <= CMD_NOP;
             cmd_ba            <= 3'b0;
             cmd_addr          <= 16'b0;
         end else begin
@@ -121,7 +121,7 @@ module ddr3_refresh_ctrl #(
                     if (refresh_grant) begin
                         refresh_req       <= 1'b0;
                         cmd_valid         <= 1'b1;
-                        cmd_cs_ras_cas_we <= CMD_REF;
+                        cmd_ras_cas_we <= CMD_REF;
                         cmd_ba            <= 3'b0;
                         cmd_addr          <= 16'b0;
                         rfc_cnt           <= T_RFC - 1;

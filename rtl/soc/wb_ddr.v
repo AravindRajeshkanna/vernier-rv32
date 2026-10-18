@@ -74,12 +74,12 @@ module wb_ddr (
     output wire        wb_ack,
 
     // ---- real DDR3 pins - straight through to the ddr3_ecp5_top.v
-    // instance this module wraps ----
-    output wire        ddr3_ck, ddr3_ck_n,
-    output wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
+    // instance this module wraps (the ECPIX-5's: no CS#, RESET#, CK# or A15, Part 27) ----
+    output wire        ddr3_ck,
+    output wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
     output wire [2:0]  ddr3_ba,
-    output wire [15:0] ddr3_a,
-    output wire        ddr3_cke, ddr3_reset_n, ddr3_odt,
+    output wire [14:0] ddr3_a,
+    output wire        ddr3_cke, ddr3_odt,
     inout  wire [7:0]  ddr3_dq,
     inout  wire        ddr3_dqs,
     output wire        ddr3_dm,
@@ -133,11 +133,11 @@ module wb_ddr (
 
     ddr3_ecp5_top DDR (
         .clk(clk), .rst(rst),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),

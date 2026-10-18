@@ -90,7 +90,7 @@ module ddr3_write_seq (
 
     // ---- rtl/soc/ddr3_phy_ecp5.v's own cmd_* interface ----
     output reg         cmd_valid,
-    output reg  [2:0]  cmd_cs_ras_cas_we,
+    output reg  [2:0]  cmd_ras_cas_we,
     output reg  [2:0]  cmd_ba,
     output reg  [15:0] cmd_addr,
 
@@ -145,7 +145,7 @@ module ddr3_write_seq (
             state             <= S_IDLE;
             busy              <= 1'b0;
             cmd_valid         <= 1'b0;
-            cmd_cs_ras_cas_we <= CMD_NOP;
+            cmd_ras_cas_we <= CMD_NOP;
             cmd_ba            <= 3'b0;
             cmd_addr          <= 16'b0;
             write_start       <= 1'b0;
@@ -170,7 +170,7 @@ module ddr3_write_seq (
                 end
                 S_ACT: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_ACT;
+                    cmd_ras_cas_we <= CMD_ACT;
                     cmd_ba            <= bank_r;
                     cmd_addr          <= row_r;
                     wait_cnt          <= TRCD_CYC - 1;
@@ -182,7 +182,7 @@ module ddr3_write_seq (
                 end
                 S_WR: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_WR;
+                    cmd_ras_cas_we <= CMD_WR;
                     cmd_ba            <= bank_r;
                     cmd_addr          <= {col_r[15:11], 1'b0, col_r[9:0]};
                     wait_cnt          <= WSTART_CYC - 1;
@@ -203,7 +203,7 @@ module ddr3_write_seq (
                 end
                 S_PRE: begin
                     cmd_valid         <= 1'b1;
-                    cmd_cs_ras_cas_we <= CMD_PRE;
+                    cmd_ras_cas_we <= CMD_PRE;
                     cmd_ba            <= bank_r;
                     cmd_addr          <= 16'h0400;   // A10 high: all banks
                     state             <= S_IDLE;

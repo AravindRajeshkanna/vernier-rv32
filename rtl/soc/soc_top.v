@@ -161,11 +161,15 @@ module soc_top #(
     // exposes them this way already. A simulation that does not model DDR3
     // leaves every output unconnected and every inout floating, which is
     // safe: nothing else in this file reads them.
-    output wire        ddr3_ck, ddr3_ck_n,
-    output wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
+    // Part 27: the ports are the ECPIX-5's pins. There is no CS# (the board ties it to
+    // ground), no RESET# (the board's reset circuit drives it, so the DRAM is reset by the
+    // board and not by anything here, `ndmreset` included - see rtl/soc/ddr3_init_seq.v), no
+    // CK# (the negative pad of CK's differential pair) and no A15 (the part's rows are A0-A14).
+    output wire        ddr3_ck,
+    output wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
     output wire [2:0]  ddr3_ba,
-    output wire [15:0] ddr3_a,
-    output wire        ddr3_cke, ddr3_reset_n, ddr3_odt,
+    output wire [14:0] ddr3_a,
+    output wire        ddr3_cke, ddr3_odt,
     inout  wire [7:0]  ddr3_dq,
     inout  wire        ddr3_dqs,
     output wire        ddr3_dm,
@@ -865,11 +869,11 @@ module soc_top #(
         .wb_cyc(sl_cyc[S_DDR3]), .wb_stb(s_stb[S_DDR3]), .wb_we(sl_we[S_DDR3]), .wb_adr(sl_adr[32*S_DDR3 +: 32]),
         .wb_dat_w(sl_dat_w[32*S_DDR3 +: 32]), .wb_sel(sl_sel[4*S_DDR3 +: 4]),
         .wb_dat_r(s_dat_r[32*S_DDR3 +: 32]), .wb_ack(s_ack[S_DDR3]),
-        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
-        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_ck(ddr3_ck),
+        .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
-        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .pll_locked(), .dll_locked(), .init_ready(),
@@ -881,11 +885,10 @@ module soc_top #(
 `else
     assign s_dat_r[32*S_DDR3 +: 32] = 32'b0;
     assign s_ack[S_DDR3]            = sl_cyc[S_DDR3] & s_stb[S_DDR3];
-    assign ddr3_ck = 1'b0; assign ddr3_ck_n = 1'b1;
-    assign ddr3_cs_n = 1'b1; assign ddr3_ras_n = 1'b1;
+    assign ddr3_ck = 1'b0; assign ddr3_ras_n = 1'b1;
     assign ddr3_cas_n = 1'b1; assign ddr3_we_n = 1'b1;
-    assign ddr3_ba = 3'b0; assign ddr3_a = 16'b0;
-    assign ddr3_cke = 1'b0; assign ddr3_reset_n = 1'b0; assign ddr3_odt = 1'b0;
+    assign ddr3_ba = 3'b0; assign ddr3_a = 15'b0;
+    assign ddr3_cke = 1'b0; assign ddr3_odt = 1'b0;
     assign ddr3_dq = 8'bz; assign ddr3_dqs = 1'bz; assign ddr3_dm = 1'b1;
     assign ddr3_dqu = 8'bz; assign ddr3_udqs = 1'bz; assign ddr3_udm = 1'b1;
 `endif
