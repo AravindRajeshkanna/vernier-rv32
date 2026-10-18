@@ -15,6 +15,20 @@
 // tied off safely here rather than wired to a guessed pin, exactly the
 // same "do not invent a pin" discipline this whole investigation has
 // held synthesis claims to.
+//
+// With -DDDR3_ENABLE (BOARD=ecpix5-ddr3 in fpga/synth/synth_ecp5.sh) this also
+// carries the DDR3 interface of rtl/soc/wb_ddr.v: the controller and the
+// Wishbone slave at 0xA0000000 are in the build, and the board's DDR3 pins are
+// ports. Fifteen address bits, three bank bits, the command strobes, CKE, ODT,
+// CK, both byte lanes' DQ, DQS and mask: every one has a pin in
+// fpga/constraints/ecpix5_ddr3.lpf. Four ports of the controller have none on
+// this board - CS#, RESET#, CK# and A15, because neither source for the pinout
+// lists them (docs/roadmap/phase-09-ddr.md, Part 21, and its open known
+// defect) - and they are ports here all the same: the controller's CS# and CK#
+// are DDR-style outputs, which place-and-route will not place without a pad.
+// They sit on throwaway pins in fpga/constraints/ecpix5_ddr3_throwaway.lpf, which
+// is why that build stops before the bitstream. Not on a board, not simulated
+// against a real chip: the behavioural DDR3 model is all there is.
 module ecpix5_top #(
     // 25 MHz reaches soc_fpga.v, not the board's own 100 MHz oscillator -
     // see fpga/ecpix5_clk_pll.v's own header for why. Same default as
@@ -30,6 +44,22 @@ module ecpix5_top #(
     input  wire uart_rx,
 
     output wire led2_g     // soc_fpga.v's led[2] (heartbeat[24]) only
+`ifdef DDR3_ENABLE
+    ,
+    // Names and widths are rtl/soc/soc_top.v's; the pins are fpga/constraints/ecpix5_ddr3.lpf's.
+    // ddr3_ck_n, ddr3_cs_n, ddr3_reset_n and ddr3_a[15] have no pin on this board (see the header).
+    output wire        ddr3_ck, ddr3_ck_n,
+    output wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
+    output wire [2:0]  ddr3_ba,
+    output wire [15:0] ddr3_a,
+    output wire        ddr3_cke, ddr3_reset_n, ddr3_odt,
+    inout  wire [7:0]  ddr3_dq,
+    inout  wire        ddr3_dqs,
+    output wire        ddr3_dm,
+    inout  wire [7:0]  ddr3_dqu,
+    inout  wire        ddr3_udqs,
+    output wire        ddr3_udm
+`endif
 );
     // ---- the SoC's own clock ----
     // Derived from the board's real 100 MHz oscillator - see
@@ -86,6 +116,16 @@ module ecpix5_top #(
         .sdram_dq_o(), .sdram_dq_oe(), .sdram_dq_i(sdram_dq_i),
 
         .led(led)
+`ifdef DDR3_ENABLE
+        ,
+        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
+        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
+        .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
+        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm)
+`endif
     );
 
     // led[2] is heartbeat[24] - see fpga/soc_fpga.v's own

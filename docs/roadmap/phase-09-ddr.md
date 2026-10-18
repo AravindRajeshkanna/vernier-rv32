@@ -1867,7 +1867,9 @@ signal groups this design uses (address, bank, RAS#, CAS#, WE#, CKE, ODT, DQ, DQ
 data masks). The Amaranth file additionally gives the negative halves of the differential
 pairs. LambdaConcept's own documentation has no DDR3 page, so there is no vendor cross-check
 and neither source is a schematic: `fpga/constraints/ecpix5_ddr3.lpf` says so in its header.
-**Neither source lists CS# or RESET#.**
+**Neither source lists CS# or RESET#.** (Update, 2026-10-18, Stage 2 Part 15: that was wrong about the schematic, which the documentation's
+resources list and which this part did not look for. Its FPGA sheet agrees with all 44 pins, and says what the board does with CS# and RESET#;
+see the open known defect.)
 
 **Test first, and the failures came one at a time,** because each is a packing error that stops
 the run. On `main`'s RTL, with the real pins:
@@ -2772,7 +2774,8 @@ clear. With the fix `make sim_uartload_ddr3` passes on both cores
 **What this does not establish.** Only the ROM variant built for simulation
 exists; no board build uses `-DDDR3_ENABLE` or the ROM's embedded device tree
 with a DDR3 node, so wiring the loader into a real `BOARD=ecpix5` build is
-still ahead. The image is 4 KB: this is the protocol and the write path, not a
+still ahead. (Update, Part 15: `BOARD=ecpix5-ddr3` builds with `-DDDR3_ENABLE` and this ROM, to place-and-route and no further; the
+device tree in the ROM is still the ordinary one.) The image is 4 KB: this is the protocol and the write path, not a
 large transfer, and the 8192-deep model would not hold one. Nothing here is
 on hardware.
 
@@ -3032,6 +3035,34 @@ neighbour (Part 22). The cost of the change in time was not measured beyond the 
 512 MB part, the retention and walking-pattern tests Stage 3 asks for, Linux from DDR3. The behavioural model's table holds a thousand bytes a lane by default, so the sweeps here
 are sparse by design: "the whole part" means the address decode and the geometry reach every cell, not that every cell was written.
 
+**Update, Part 15: the ECPIX-5 SoC build has the DDR3 controller in it, and places and routes with the board's real DDR3 pins; it writes no bitstream, and the board's schematic, which turned out to exist, says why the four pins the controller assumed are not there.** Through
+Part 14 no board build contained the controller. The board's real DDR3 pins (`fpga/constraints/ecpix5_ddr3.lpf`) were used only by a diagnostic probe of the PHY alone (Part 21), and `rtl/soc/soc_top.v`'s own comment named "whichever real ECPIX-5 SoC board target
+eventually needs it".
+
+**What changed.** `fpga/soc_fpga.v` and `fpga/ecpix5_top.v` gain the DDR3 ports behind `DDR3_ENABLE`; a build without it has none of them, so the ULX3S builds and the Stage 0 ECPIX-5 build are as they were (`make soc_synth_check` gives the figures it gave, 24,273 and 58,626 LUT4).
+`BOARD=ecpix5-ddr3` in `fpga/synth/synth_ecp5.sh` builds that top with `-DDDR3_ENABLE`, the DDR3 files, the DDR3 variant of the boot ROM (Part 10) and three constraint files in one: the base board's, the DDR3 pins, and `fpga/constraints/ecpix5_ddr3_throwaway.lpf`, which holds the four
+lines the probe's file used to hold, now shared (the probe's effective constraints are the same 105 lines). It stops after place-and-route and writes no bitstream (`NO_BITSTREAM`), and removes the previous one so that none is left looking like this build's. `make pnr_soc_ecpix5_ddr3` runs it.
+
+**Test first.** The nearest thing `main` allowed, `BOARD=ecpix5` with `-DDDR3_ENABLE` and the DDR3 files added by hand, synthesises and then fails in nextpnr's packing: `DQSBUFM can only be used with a pin-constrained PIO connected to its DQSI input (while processing
+'SOC.SOC.DDR3.DDR.DQS1.DQSBUF')`, because the controller's pads have nowhere to go: the board top had no DDR3 ports. (The script then said "no placement seed closed timing in 1 attempts", its message for any nextpnr failure; it retries a packing error on every seed, six by default.)
+
+**What it shows.** In-order core, first placement seed: place-and-route finishes and **timing closes, `soc_clk` at 27.51 MHz (25 MHz asked) and the controller's `sclk` at 188.96 MHz**, in 13 minutes 48 seconds with the synthesis. Against the same tree's Stage 0 build without the controller: `TRELLIS_COMB`
+32,975 against 32,232 (+743), flip-flops 11,045 against 10,436 (+609), the same 82 `DP16KD`, and 48 more pads, 47 I/O logic cells, one more PLL (2 of 4, the controller's fed by the SoC's own, which nextpnr accepted), one DLL and two `DQSBUFM` (one per byte lane), so the whole controller and slave cost under
+one percent of the device's logic and no block RAM. One seed each way is not a distribution: the baseline's first seed estimated 16.28 MHz after placement and was still routing after 54 minutes when I stopped it, where this one routed in about nine. No Fmax is claimed for what the controller costs; the area is the comparison.
+The wide core with the controller has no figure: its synthesis was still in yosys's `ABC9` step after more than an hour when this was written, where the same core without the controller takes about six minutes there (the whole-SoC synthesis check; `ABC9`'s time is not stable under changes to unrelated logic, the index's record of the time limit). The build supports `CORE=ooo`, and the simulation below passes under both cores.
+
+**The board-level simulation.** `make sim_ecpix5_ddr3` (`sim/tb_ecpix5.v` under `DDR3_ENABLE`, in `soc_fw_check_sim` and so in `make verify` and CI, under both cores): the board top, a behavioural DDR3 behind each byte lane, both lanes calibrating through it (about 224 microseconds after reset is released, with the controller's PLL running off the SoC's), the pins carrying CK, CKE and RESET# as they should; and then words and byte-lane stores through the Wishbone slave, read back from the memory. Each load follows a load from another block, because the slave answers from the copy of the block it last
+touched, and a load straight after a store says nothing about the DRAM: the calibration checks alone left three of the wiring errors below alive, the first version of the bus checks, which loaded straight after storing, caught one and left the mask swap alive, and that is how the cache was found. **Eight wiring errors put into the board top, one at a time:** the two data lanes swapped, RAS# with CAS#, CKE left open, RESET# left open, address bits 0 and 1 swapped, bank bits 0 and 1 swapped,
+the two data masks swapped (all seven caught), and the two byte lanes' strobes swapped (not caught: both strobes carry the same waveform on every write and every read, so no simulation can tell them apart; that one is the pin list's job, and the schematic's, below).
+
+**The schematic.** The roadmap said (Part 21) that LambdaConcept's documentation has no DDR3 page and that there was no schematic; the documentation's resources list one (`SCH_ECPIX-5_R02.PDF`, revision R02, 3 June 2020), and it was there to be read. Two things came out of it. **All 44 DDR3 signals in `ecpix5_ddr3.lpf` agree with its FPGA sheet, ball for ball**
+(checked by pairing every DDR net label on the sheet with its ball, and comparing with the file; the three negative pads, J3, U5 and U2, agree with the file's comments), where before the list rested on two platform descriptions of the board. And it settles the open known defect: the DRAM's CS# is tied to ground through a 4.7 kΩ resistor, and its RESET# is driven by the board's reset circuit (a
+74LVC07 open-drain buffer fed by the MAX6420 supervisor, pulled up to 1.5 V), neither from the FPGA. That is what Part 21 guessed ("presumably tied low and handled on the board"), now read. It does not change the controller, which still deselects with CS# and pulses RESET#; the open known defect says what it has to become (an idle slot is a NOP; the initialisation waits out its timings and pulses nothing) and the four throwaway pins
+and the missing bitstream are what stand in the meantime. It is one revision of the board.
+
+**What this does not establish.** Anything on hardware: no ECPIX-5 is attached to this session, and the bitstream this build would write is deliberately not written. That the board's DDR3 works with this controller, which cannot be said until CS# and RESET# are right. Fmax at the DDR clock (the controller's `sclk` is 25 MHz here and its edge clock 50). The wide core's timing with the controller. The device tree in the boot
+ROM, which is still the ordinary one (no DDR3 node), so Linux from DDR3 is as far off as it was. And that two lanes' strobes are not swapped on the board: only the schematic says that, and it agrees.
+
 **Stage 3 - real silicon.** Bitstreams built and loaded on real ECPIX-5
 hardware; DDR initialization/calibration, a full-memory (or large
 representative subset) walking test, a retention/stress pattern, and
@@ -3172,21 +3203,29 @@ needs, and the one decision that is the maintainer's, in the Phase 9 survey
 
 
 **OPEN - the DDR3 controller assumes pins the ECPIX-5 does not have (Phase 9, Stage 1,
-Part 21).** Two independent descriptions of the board list no CS# and no RESET# for its DDR3, so
-the FPGA cannot drive either: the CS# path in the PHY (a deselect in every idle command slot) has no pin
-to happen on, and the initialisation sequence's RESET# pulse cannot be issued. CK# and DQS# are the
-negative halves of differential pairs and are not separate ports. The part is x16 and lane 1, its
-strobe and its data mask are driven like lane 0's (Parts 22, 25 and 26).
-Found by place-and-route with the
-real pins, which refuses to place the CS# path; recorded rather than fixed, because how the board
-handles CS# and RESET# needs a schematic. Two defects place-and-route found in the same run - a
-tri-state control with the wrong polarity, and read-FIFO pointers never wired - are RESOLVED (Part 21).
+Part 21; what the board does instead is settled, the controller is not yet changed).** Two independent descriptions of the
+board list no CS# and no RESET# for its DDR3, so the FPGA cannot drive either: the CS# path in the PHY (a deselect in every
+idle command slot) has no pin to happen on, and the initialisation sequence's RESET# pulse cannot be issued. CK# and DQS# are
+the negative halves of differential pairs and are not separate ports. The part is x16 and lane 1, its strobe and its data
+mask are driven like lane 0's (Parts 22, 25 and 26).
+Found by place-and-route with the real pins, which refuses to place the CS# path. Part 21 recorded it as needing a schematic, and said there
+was none. **There is one** (found 2026-10-18, Stage 2 Part 15): LambdaConcept's documentation links the board's schematic,
+`docs.lambdaconcept.com/ecpix-5/_static/resources/SCH_ECPIX-5_R02.PDF`, revision R02, 3 June 2020. Its DDR3 sheet (7) ties the DRAM's
+CS# (ball L2) to ground through R33, 4.7 kΩ: always selected, not the FPGA's. Its RESET# (ball T2) is driven by the board's reset
+circuit (sheet 3): an open-drain buffer, U8 (74LVC07), fed by the MAX6420 supervisor, U9, and pulled up to 1.5 V by R22; it does not
+reach the FPGA. The FPGA sheet (5) has a ball for every other DDR net and none for these two. So the controller has two things to
+change, and neither has been done: with CS# always low, an idle command slot must be a NOP (RAS#, CAS# and WE# high) on the command
+pins, where the design now deselects, which changes the PHY and what the protocol checker treats as idle; and the initialisation
+sequence can only wait out its timings, not pulse RESET# (the board resets the DRAM with its own reset button and power-up
+supervisor, the same event that resets the FPGA's logic through `rst_n`). Until then `BOARD=ecpix5-ddr3` places CS#, RESET#, CK#
+and A15 on throwaway pins and writes no bitstream. Two defects place-and-route found in the same run - a tri-state control with
+the wrong polarity, and read-FIFO pointers never wired - are RESOLVED (Part 21).
 
 ## Hardware
 
 *Physical board testing: what has and has not run on a real board.*
 
-Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorded here, Stage 0's "Done when" (real hardware, a measured Fmax on silicon) is wholly unmet, and Stage 3, real silicon, is still a plan. What exists is a diagnostic-scale bitstream, place-and-route on the real device with the board's DDR3 pins, and the open question about CS# and RESET# pins the ECPIX-5 is described as lacking (see Known defects).
+Nothing has touched a real DDR3 chip: no ECPIX-5 is attached to the work recorded here, Stage 0's "Done when" (real hardware, a measured Fmax on silicon) is wholly unmet, and Stage 3, real silicon, is still a plan. What exists is a diagnostic-scale bitstream, place-and-route on the real device with the board's DDR3 pins - of the PHY alone (Part 21) and of the whole SoC with the controller in it (Stage 2, Part 15, which writes no bitstream) - and the open defect about the CS# and RESET# pins the ECPIX-5 does not have, whose answer is now in the board's schematic but not yet in the controller (see Known defects).
 
 ## Software
 

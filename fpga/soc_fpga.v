@@ -123,6 +123,24 @@ module soc_fpga #(
     input  wire [15:0] sdram_dq_i,
 
     output wire [3:0] led
+`ifdef DDR3_ENABLE
+    ,
+    // ---- external DDR3 (Phase 9 Stage 2), only in a build with -DDDR3_ENABLE ----
+    // rtl/soc/ddr3_ecp5_top.v puts real BB pads on these, so a build that has them needs a board top that gives
+    // every one a pin (fpga/ecpix5_top.v does, behind the same define). Without DDR3_ENABLE this module has no such
+    // ports and soc_top's tied-off ones are left open, as they always were: no existing board build is touched.
+    output wire        ddr3_ck, ddr3_ck_n,
+    output wire        ddr3_cs_n, ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
+    output wire [2:0]  ddr3_ba,
+    output wire [15:0] ddr3_a,
+    output wire        ddr3_cke, ddr3_reset_n, ddr3_odt,
+    inout  wire [7:0]  ddr3_dq,
+    inout  wire        ddr3_dqs,
+    output wire        ddr3_dm,
+    inout  wire [7:0]  ddr3_dqu,
+    inout  wire        ddr3_udqs,
+    output wire        ddr3_udm
+`endif
 );
     localparam UART_CLKS_PER_BIT = CLK_HZ / BAUD_RATE;
 
@@ -199,6 +217,16 @@ module soc_fpga #(
         .sdram_dq_o(sdram_dq_o), .sdram_dq_oe(sdram_dq_oe),
         .sdram_dq_i(sdram_dq_i),
         .trap(trap)
+`ifdef DDR3_ENABLE
+        ,
+        .ddr3_ck(ddr3_ck), .ddr3_ck_n(ddr3_ck_n),
+        .ddr3_cs_n(ddr3_cs_n), .ddr3_ras_n(ddr3_ras_n),
+        .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
+        .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
+        .ddr3_cke(ddr3_cke), .ddr3_reset_n(ddr3_reset_n), .ddr3_odt(ddr3_odt),
+        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm)
+`endif
     );
 
     // ---- board-level status LEDs ----
