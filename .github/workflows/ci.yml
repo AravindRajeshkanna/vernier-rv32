@@ -756,11 +756,13 @@ jobs:
   # A job of its own, because it needs the RISC-V toolchain (the boot ROM is a synthesis input) and the
   # oss-cad-suite bundle (yosys, and the nextpnr-ecp5 and ecppack that synth_ecp5.sh insists on finding), and
   # those two have not shared a job: the bundle puts its own iverilog first on PATH, which the simulation jobs
-  # cannot have. Yosys takes about 2 minutes for the in-order core and 6 for the wide one, on a laptop, and 2 and 8
-  # on a runner; but its ABC9 stage is not stable under edits that have nothing to do with it (the wide core went
-  # from 6 minutes to 28 when an unused address mask was widened), so the script's limits are an hour's worth (30 and
-  # 60 minutes) and this job's budget is longer than the longer of them plus the set-up. A memory that becomes
-  # registers is reported in seconds, whatever the limit.
+  # cannot have. Yosys takes about 2 minutes for the in-order core and 4.5 for the wide one, on a laptop (2 and 8 on a
+  # runner, measured before synth_ecp5.sh left out the equivalence check yosys appends to ABC's script, which has no
+  # bound on its time and on some networks of the wide core's size does not end in an hour); and its ABC9 stage is not
+  # stable under edits that have nothing to do with it (the wide core went from 6 minutes to 28 when an unused address
+  # mask was widened), so the script's limits are an hour's worth (30 and 60 minutes) and this job's budget is longer
+  # than the longer of them plus the set-up. A memory that becomes registers is reported in seconds, whatever the
+  # limit. The ECPIX-5's DDR3 build is checked after it, the same way.
   # ---------------------------------------------------------------------
   fullscale-synth:
     name: Full-scale synthesis (${{ matrix.core }})
@@ -787,6 +789,14 @@ jobs:
 
       - name: The SoC synthesises at 320x240, and no sizeable memory becomes registers
         run: make soc_synth_check
+
+      # The same check for the ECPIX-5's DDR3 build, which has the controller and its Wishbone slave in it. The wide core
+      # with them is the build whose ABC9 step did not finish for hours (docs/roadmap/index.md, Common known defects).
+      - name: Build the boot ROM of the DDR3 build
+        run: make "sim/bootrom_${CORE}_ddr3.hex"
+
+      - name: The SoC with the DDR3 controller synthesises, in time
+        run: make soc_synth_check_ddr3
 
   # ---------------------------------------------------------------------
   # The DDR3 PHY (Phase 9, Stage 1): every simulation test, the same tests again

@@ -323,6 +323,18 @@ check goes red on each of: the framebuffer as it was before the fix (killed at t
 written from a reset block (named), a BTB at four times its size (over the flip-flop budget), a list line for something that is
 no longer registers, and a missing one. Place-and-route is not part of it, and nothing was re-placed.
 
+**Guarded 2026-10-19 as well: the ECPIX-5's DDR3 build, and the wide core without `&verify`.** `make soc_synth_check_ddr3` is the same
+check on `BOARD=ecpix5-ddr3` (`soc_synth.sh` takes `BOARD=`; its list of memories that become registers can name a board, and lists the
+slave's 128-bit `block_buf` for the boards that have the controller). The wide core with the controller had not finished its
+synthesis in 2 h 35 min and in 2 h. The step with no bound on its time is the `&verify` that yosys appends to ABC's script, an
+equivalence check of ABC's answer against its input; `synth_ecp5.sh` leaves it out for `CORE=ooo` (`ABC9_VERIFY=1` puts it back,
+`ABC9_SCRIPT` sets another ABC script), and the netlist is the same. Measured on the laptop, four builds side by side, bundle
+`20261002`: the ECPIX-5 SoC with the controller 23,193 LUT4 and 11,041 flip-flops in 128 s in-order, and 55,305 LUT4 and 16,488
+flip-flops in 262 s wide (Homebrew's yosys, run directly: 55,178 LUT4, 291 s); the ULX3S wide core is unchanged at 58,626 LUT4 and
+16,579 flip-flops, now in 268 s. `docs/roadmap/index.md` (Common known defects) has the measurements and what else was tried. The wide
+core's place-and-route with the controller is not part of the check: nextpnr estimates 10.55 MHz for `soc_clk` after placement (about 6 MHz pessimistic, so
+still short), against the 25 asked.
+
 ## Re-measured 2026-10-09: the router fabric in the SoC, and how much a netlist moves Fmax by itself
 
 Phase 8's router fabric (`INTERCONNECT=xbar`, `rtl/soc/wb_noc_xbar.v`) had never been through this flow;
@@ -2125,7 +2137,8 @@ openFPGALoader -b ecpix5 fpga/build/ecpix5_ddr3_check/ecpix5_top.bit
 ```
 
 (`ecpix5` is the board name LiteX gives that loader for this board; it was not tried here.) The in-order core only:
-the wide core with the controller does not finish its synthesis (Part 15, Part 27).
+the wide core with the controller synthesises since Phase 9 Stage 2 Part 16 (`make soc_synth_check_ddr3`), and place-and-route does not
+give it a bitstream at the board's 25 MHz (nextpnr's estimate for `soc_clk` after placement is 10.55 MHz).
 
 The bitstream is `BOARD=ecpix5-ddr3` with `software/soc/ddrcheck.c` preloaded into block RAM, as
 `ulx3s85-sdramcheck` does for the SDRAM: the boot ROM finds a program in RAM and jumps to it, with no SD card, and

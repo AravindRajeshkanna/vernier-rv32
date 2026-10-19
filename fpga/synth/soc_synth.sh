@@ -8,8 +8,11 @@
 #   sh fpga/synth/soc_synth.sh            print the figures
 #   sh fpga/synth/soc_synth.sh --check    ...and fail if the build does not finish, if yosys turned a memory into
 #                                         registers that fpga/synth/soc_register_memories.txt does not list, if a
-#                                         listed one no longer is one, or if a figure is over (or under) its budget
+#                                         listed one no longer is one, if a figure is over (or under) its budget, or if
+#                                         ABC did not run what synth_ecp5.sh asked it to (no &verify, for the wide core)
 #   CORE=ooo sh fpga/synth/soc_synth.sh --check       the wide core (default inorder; needs sim/bootrom_$CORE.hex)
+#   BOARD=ecpix5-ddr3 sh fpga/synth/soc_synth.sh --check    the ECPIX-5's build, with the DDR3 controller and its slave
+#                                         (needs sim/bootrom_${CORE}_ddr3.hex; `make soc_synth_check_ddr3`)
 #
 # Why this exists. A memory written from an `always @(posedge clk or posedge rst)` block is replaced by yosys's front
 # end with a list of registers ("Replacing memory \mem0 with list of registers"), and the passes after it then crawl:
@@ -33,15 +36,20 @@
 # kind, and it has to be well over any time a good build can take: yosys's ABC9 stage, which is most of the wide core's
 # time, is not stable under edits that have nothing to do with it. Widening a decode mask that no board uses moved the
 # wide core from 368 s to 1,685 s on an idle machine (docs/roadmap/index.md, Common known defects), and a limit of 1,500 s
-# had killed a good gate. So the limit is of the order of an hour, the scale of the original symptom.
+# had killed a good gate. So the limit is of the order of an hour, the scale of the original symptom. The step that has
+# no bound is the `&verify` yosys appends to ABC's script; synth_ecp5.sh leaves it out for the wide core, and this checks
+# in ABC's own log that it did.
 #
 #                      TIME_LIMIT (s)    LIMIT_LUT (LUT4)     LIMIT_FF            MIN_BRAM (DP16KD)
 #   CORE=inorder       1800 (130 now)    40000 (24,273 now)   20000 (11,132 now)  60 (82 now)
-#   CORE=ooo           3600 (330 now)    75000 (58,626 now)   26000 (16,579 now)  60 (80 now)
+#   CORE=ooo           3600 (268 now)    75000 (58,626 now)   26000 (16,579 now)  60 (80 now)
 #
-# The figures are from a laptop with two builds running side by side, 913 MB and 1.43 GB of memory at the peak. The
-# wide core is most of the device (the 85F has 83,640 LUT4s), so its budget is not far above what it uses; the
-# 320x240 pixel buffer alone is 80 DP16KD, which is why the block-RAM floor is 60.
+# The figures are from a laptop with two builds running side by side, 913 MB and 1.43 GB of memory at the peak (the wide
+# core's time is from 2026-10-19, four builds side by side, without the `&verify` that took 134 s of the 330 and
+# sometimes did not end; the netlist is the same). BOARD=ecpix5-ddr3, the same day: 128 s, 23,193 LUT4 and 11,041
+# flip-flops in-order; 262 s, 55,305 LUT4 and 16,488 flip-flops wide. The wide core is most of the device (the 85F has
+# 83,640 LUT4s), so its budget is not far above what it uses; the 320x240 pixel buffer alone is 80 DP16KD, which is why the
+# block-RAM floor is 60.
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 ROOT=$PWD
@@ -49,7 +57,10 @@ BUNDLE=${BUNDLE:-$HOME/tools/oss-cad-suite}
 export PATH="$BUNDLE/bin:$PATH"
 CORE=${CORE:-inorder}
 BOARD=${BOARD:-ulx3s85}
-LOG_DIR=${SOC_SYNTH_LOG:-/tmp/soc_synth_$CORE}
+case "$BOARD" in
+    ulx3s85) LOG_DIR=${SOC_SYNTH_LOG:-/tmp/soc_synth_$CORE} ;;
+    *)       LOG_DIR=${SOC_SYNTH_LOG:-/tmp/soc_synth_${BOARD}_$CORE} ;;
+esac
 ALLOW=${SOC_ALLOW:-fpga/synth/soc_register_memories.txt}
 check=0; [ "${1:-}" = "--check" ] && check=1
 case "$CORE" in
@@ -62,8 +73,13 @@ LIMIT_LUT=${LIMIT_LUT:-$d_lut}
 LIMIT_FF=${LIMIT_FF:-$d_ff}
 MIN_BRAM=${MIN_BRAM:-60}
 
-if [ ! -f "sim/bootrom_$CORE.hex" ]; then
-    echo "error: sim/bootrom_$CORE.hex missing - run 'make soc CORE=$CORE' first (it is a synthesis input)" >&2
+# The boot ROM is a synthesis input; the DDR3 boards carry the variant whose loader accepts DDR3 as a load address.
+case "$BOARD" in
+    ecpix5-ddr3*) ROM=sim/bootrom_${CORE}_ddr3.hex ;;
+    *)            ROM=sim/bootrom_$CORE.hex ;;
+esac
+if [ ! -f "$ROM" ]; then
+    echo "error: $ROM missing - run 'make $ROM' first (it is a synthesis input)" >&2
     exit 1
 fi
 mkdir -p "$LOG_DIR/build"
@@ -75,17 +91,21 @@ rm -f "$log" "$turned"
 # twice: while the build runs, to stop it the moment it prints a memory the list does not have, and once it has ended.
 #   turned.txt   "<file> <memory>", one line each, however many times a module was elaborated. The warning's own file name
 #                is absolute and the line number moves with every edit, so neither is kept.
-#   new, gone    NEW if no line of this core's part of the list names a memory, GONE for a line that names nothing that
-#                was turned. A * in a line's memory stands for any run of characters.
+#   new, gone    NEW if no line of this core's (and this board's) part of the list names a memory, GONE for a line that
+#                names nothing that was turned. A * in a line's memory stands for any run of characters. A line whose
+#                core column reads both@ecpix5-ddr3 (or ooo@..., inorder@...) is for the boards whose name starts with
+#                what follows the @, and is not looked at, stale or not, for any other.
 scan() {
     grep -a "Replacing memory .* with list of registers" "$log" 2>/dev/null |
         sed -n "s|^Warning: Replacing memory \\\\\\([^ ]*\\) with list of registers. See $ROOT/\\([^:,]*\\):.*|\\2 \\1|p" |
         sort -u >"$turned"
     nturned=$(wc -l <"$turned" | tr -d ' ')
-    verdict=$(awk -v core="$CORE" '
+    verdict=$(awk -v core="$CORE" -v board="$BOARD" '
         function glob(g) { gsub(/\*/, ".*", g); return "^" g "$" }
         FILENAME == ARGV[1] {
-            if ($0 ~ /^[[:space:]]*(#|$)/ || ($3 != "both" && $3 != core)) next
+            if ($0 ~ /^[[:space:]]*(#|$)/) next
+            nc = split($3, cb, "@")
+            if ((cb[1] != "both" && cb[1] != core) || (nc > 1 && index(board, cb[2]) != 1)) next
             na++; af[na] = $1; am[na] = glob($2); label[na] = $1 " " $2
             next
         }
@@ -98,6 +118,17 @@ scan() {
     ' "$ALLOW" "$turned")
     new=$(echo "$verdict" | sed -n 's/^NEW //p')
     gone=$(echo "$verdict" | sed -n 's/^GONE //p')
+}
+
+# The commands of the ABC script synth_ecp5.sh asked for (its `=== abc9 script:` line, when it is not yosys's own) that ABC's
+# own echo in the log does not show. A yosys that does not know the scratchpad variables synth_ecp5.sh sets would run its own
+# script and say nothing, and the wide core would be back on the step that does not finish (`&verify`: the check below);
+# the time limit would be all that was left.
+abc9_missing() {
+    cmds=$(printf '%s\n' "$1" | tr ';' '\n' | sed 's/{W}/-W 300/; s/{D}//; s/{R}//; s/^ *//; s/ *$//; s/  */ /g' | grep -v '^$')
+    CMDS="$cmds" awk 'BEGIN { n = split(ENVIRON["CMDS"], c, "\n") }
+        /^ABC: \+ / { l = substr($0, 8); sub(/ +$/, "", l); seen[l] = 1 }
+        END { for (i = 1; i <= n; i++) if (!(c[i] in seen)) print c[i] }' "$log"
 }
 
 # perl as the timer, because macOS has no timeout(1): run the build in its own process group, kill the whole group at
@@ -185,6 +216,23 @@ if [ "$check" = 1 ]; then
     fi
     if [ -z "$bram" ] || [ "$bram" -lt "$MIN_BRAM" ]; then
         echo "  FAIL: ${bram:-0} block RAMs (DP16KD), under the $MIN_BRAM the pixel buffer needs"; fail=1
+    fi
+    abc9_line=$(grep -a -m 1 '^=== abc9 script: ' "$log")
+    asked=$(printf '%s\n' "$abc9_line" | sed 's/^=== abc9 script: //; s/ (verify: .*) ===$//')
+    if [ -z "$abc9_line" ]; then
+        echo "  FAIL: the log does not say which ABC script was asked for (no '=== abc9 script:' line)"; fail=1
+    else
+        if [ "$asked" != stock ]; then
+            miss=$(abc9_missing "$asked")
+            if [ -n "$miss" ]; then
+                echo "  FAIL: synth_ecp5.sh asked ABC for '$asked', and ABC's log does not show these commands:"
+                echo "$miss" | sed 's/^/    /'
+                fail=1
+            fi
+        fi
+        if printf '%s\n' "$abc9_line" | grep -q '(verify: 0)' && grep -a -q '^ABC: + &verify' "$log"; then
+            echo "  FAIL: synth_ecp5.sh asked for no &verify, and ABC ran one"; fail=1
+        fi
     fi
     [ "$fail" = 0 ] && echo "SOC SYNTHESIS OK" || echo "SOC SYNTHESIS FAILED"
 fi

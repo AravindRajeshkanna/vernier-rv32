@@ -211,12 +211,16 @@ targets (`&:`) — none of which 3.81 has.
 
 `make verify` runs `sim`, `sim_software`, `sim_soc`, `isa`, `cosim`,
 `verilator_check` and `formal` — so a full gate needs iverilog, **Verilator**,
-the RISC-V GCC toolchain, Spike, Yosys and z3. It also runs three synthesis
-checks (`noc_router_area_check`, `framebuffer_synth_check` and
-`soc_synth_check`), which look for oss-cad-suite at `~/tools/oss-cad-suite`
-(`BUNDLE=` says otherwise); `soc_synth_check` drives `synth_ecp5.sh`, so it
-needs that bundle's yosys, nextpnr-ecp5 and ecppack all present. It does not
-place and route.
+the RISC-V GCC toolchain, Spike, Yosys and z3. It also runs four synthesis
+checks (`noc_router_area_check`, `framebuffer_synth_check`,
+`soc_synth_check` and `soc_synth_check_ddr3`), which look for oss-cad-suite at
+`~/tools/oss-cad-suite` (`BUNDLE=` says otherwise); the last two drive
+`synth_ecp5.sh`, so they need that bundle's yosys, nextpnr-ecp5 and ecppack all
+present, and they put its `bin` first on `PATH`, so they run the bundle's yosys
+whatever the shell has first. They do not place and route. `make pnr_*` and
+`synth_ecp5.sh` run with the shell's `PATH`: a Homebrew yosys ahead of the
+bundle's is a different build with different ABC timings, and the script prints a
+note when the yosys it found is not beside the nextpnr-ecp5 it found.
 
 Verilator became a hard dependency of `verify` when the SoC harness landed,
 for the reason in practices §14: a file nothing in `verify` builds will rot,
