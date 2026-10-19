@@ -552,6 +552,14 @@ if [ -n "$missing" ]; then
     echo "       See 'Getting the toolchain' in fpga/README.md." >&2
     exit 1
 fi
+# Which yosys, said when it is not the bundle's: CI, fpga/synth/soc_synth.sh and fpga/README.md use the bundle's, and a build
+# of the wide core that was timed under Homebrew's yosys was compared with one timed under the bundle's before this said so.
+yosys_dir=$(dirname "$(command -v yosys)")
+pnr_dir=$(dirname "$(command -v nextpnr-ecp5)")
+if [ "$yosys_dir" != "$pnr_dir" ]; then
+    echo "note: yosys comes from $yosys_dir, nextpnr-ecp5 from $pnr_dir. CI, soc_synth.sh and fpga/README.md use the" >&2
+    echo "      bundle's yosys (put its bin first on PATH to match them); times and LUT counts differ between yosys builds." >&2
+fi
 
 mkdir -p "$BUILD"
 
@@ -621,12 +629,42 @@ case "$DEVICE" in
     *)      PART_NAME="LFE5U-${DEVICE%k}F" ;;
 esac
 EXTRA_ABS=$(echo "${EXTRA_RTL:-}" | sed "s|[^ ][^ ]*|$ROOT/&|g")
+
+# ABC9 maps the whole design to LUTs (synth_ecp5 runs `abc9 -W 300`): yosys hands ABC every AND gate, ABC maps them, and yosys
+# then appends `&verify`, an equivalence check of ABC's answer against its input. That check has no bound on its time. The
+# wide core gives ABC 220,000 AND gates, and on them it took between 1.4 and 3.8 minutes in four runs and had not finished
+# after 50, 50 and 60 minutes (31, 35 and 41 of CPU) in three more, under Homebrew's yosys and under the bundle's. That is where
+# every run that was looked into stopped, not in anything the DDR3 controller or a decode constant changes (docs/roadmap/index.md,
+# Common known defects). It does not change the netlist, so CORE=ooo runs without it and gets the netlist yosys's own script
+# makes (the same JSON, for the wide core without the controller); the in-order core keeps it, where it takes a minute and a half.
+#   ABC9_VERIFY=0|1      whether `&verify` follows: 0 for CORE=ooo, yosys's own (on) otherwise
+#   ABC9_SCRIPT='cmds'   ABC commands separated by `;`, with no double quote in them, in place of yosys's script (`stock`, the
+#                        default; {W} {D} {R} are filled in by yosys, as in its own). Not needed for the above; it is how the
+#                        steps of the script were timed one at a time (`&dch -f -r -t` was quicker in all twelve pairs tried).
+# Both go through yosys's `abc9.script` and `abc9.verify` scratchpad variables, and the line this prints is what
+# fpga/synth/soc_synth.sh compares ABC's own log with.
+ABC9_SCRIPT=${ABC9_SCRIPT:-stock}
+ABC9_VERIFY=${ABC9_VERIFY:-}
+if [ -z "$ABC9_VERIFY" ] && [ "$CORE" = ooo ]; then
+    ABC9_VERIFY=0
+fi
+ABC9_PRE=""
+if [ "$ABC9_SCRIPT" != stock ]; then
+    ABC9_PRE="scratchpad -set abc9.script \"+$ABC9_SCRIPT\";"
+fi
+if [ "${ABC9_VERIFY:-1}" = 0 ]; then
+    ABC9_PRE="$ABC9_PRE scratchpad -set abc9.verify 0;"
+fi
+
 echo "=== target: ${BOARD:-generic}, $PART_NAME, $PACKAGE ==="
+echo "=== yosys: $(command -v yosys), $(yosys -V 2>&1 | head -n 1) ==="
+echo "=== abc9 script: $ABC9_SCRIPT (verify: ${ABC9_VERIFY:-default}) ==="
 echo "=== yosys ==="
 ( cd "$BUILD" && yosys -p "read_verilog $YOSYS_DEFINES $(echo "$RTL" | sed "s|[^ ][^ ]*|$ROOT/&|g"); \
     ${EXTRA_RTL:+read_verilog -sv $YOSYS_DEFINES $EXTRA_ABS;} \
     ${CHPARAM_SOC_TOP:+chparam $CHPARAM_SOC_TOP soc_top;} \
     ${CHPARAM_TOP:+chparam $CHPARAM_TOP $TOP;} \
+    $ABC9_PRE \
     synth_ecp5 -top $TOP ${SYNTH_EXTRA:-} -json $TOP.json" )
 
 # SYNTH_ONLY stops here, with the netlist written: for a build whose place-and-route is the

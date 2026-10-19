@@ -9,6 +9,8 @@
 #
 # One line per memory, or per family: the file, the memory's name (a * stands for any run of characters, so
 # rob_* is every reorder-buffer field), the core it is in (inorder, ooo, or both), and why it is allowed.
+# A memory that only some boards have says so after the core, with an @ and the start of the board's name:
+# both@ecpix5-ddr3 is for BOARD=ecpix5-ddr3 and ecpix5-ddr3-check, and for no other board.
 # A line is "stale" if nothing it names is turned into registers any more. Do not list a memory to make the check
 # pass until you know how many bits it holds: soc_synth.sh's flip-flop budget is what catches one that is big.
 #
@@ -37,3 +39,4 @@ rtl/ooo/core_ooo.v           sq_*             ooo      store queue, one array pe
 rtl/ooo/core_ooo.v           free_list        ooo      rename: the free list of physical registers
 rtl/ooo/core_ooo.v           preg_busy        ooo      rename: which physical registers are not yet written
 rtl/ooo/core_ooo.v           rat              ooo      rename: the register alias table
+rtl/soc/wb_ddr.v               block_buf        both@ecpix5-ddr3  the DDR3 slave's copy of the 16-byte block it last touched, 8 x 16 bits (only the boards with the controller have it)
