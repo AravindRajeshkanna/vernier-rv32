@@ -109,5 +109,8 @@ sim/trap_*.txt
 bom/sbom.json
 bom/hbom.json
 sim/vl_ddr3/
+# sim_ecpix5_ddr3_check runs in a directory of its own, with its own copies of the two images
+# fpga/soc_fpga.v reads by fixed name.
+sim/ecpix5_check/
 software/bench/wfi.elf
 software/bench/wfi.bin

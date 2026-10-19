@@ -1,13 +1,13 @@
 ## ECPIX-5 (LambdaConcept), LFE5UM5G-45F or -85F, package 8BG554I.
 ##
 ## Stage 0 only (docs/roadmap/phase-09-ddr.md's Phase 9 entry) - board bring-up, no DDR
-## controller yet. (The DDR3 pins are in fpga/constraints/ecpix5_ddr3.lpf, used by
+## controller. (The DDR3 pins are in fpga/constraints/ecpix5_ddr3.lpf, used by
 ## the place-and-route probe fpga/synth/ddr3_pnr_probe.sh and, with this file, by
-## BOARD=ecpix5-ddr3, which places and routes the whole SoC with them and writes no
-## bitstream.) This file has NOT been run on a board: no ECPIX-5 is
+## BOARD=ecpix5-ddr3 and BOARD=ecpix5-ddr3-check, which place and route the whole SoC with
+## them and write a bitstream.) This file has NOT been run on a board: no ECPIX-5 is
 ## attached to this project's own development session. Every pin below is
-## a documented spec, not something confirmed on silicon - unlike
-## fpga/constraints/ulx3s.lpf's own header, which can say that.
+## a documented spec and a reading of the board's schematic, not something confirmed on
+## silicon - unlike fpga/constraints/ulx3s.lpf's own header, which can say that.
 ##
 ## Clock and reset: two independent sources agree exactly -
 ## litex-boards' own lambdaconcept_ecpix5.py platform file and
@@ -15,12 +15,16 @@
 ## features/clock-reset.html) both give the system clock as K23/100 MHz
 ## and system reset as N5.
 ##
-## UART and LEDs: litex-boards' platform file only - not yet
-## cross-checked against a second independent source the way the clock/
-## reset pins above were. Treat these as a documented spec pending a
-## second source or real hardware, the same "the SD pins are the
-## exception" honesty fpga/ulx3s_top.v's own header already models for
-## a less-certain pin group on a different board.
+## UART and LED: litex-boards' platform file, and, since 2026-10-18, the board's
+## schematic (LambdaConcept's SCH_ECPIX-5_R02.PDF, revision R02, see
+## fpga/constraints/ecpix5_ddr3.lpf's header) for all four lines below, read the way the DDR3
+## pins were (each ball's net label on the FPGA sheet, paired by position): K23 is
+## FPGA_SYSCLK (sheet 4 gives it as a 100 MHz oscillator), N5 is RST_FPGA (sheet 3's reset
+## circuit), R24 is UART_RXD and R26 is UART_TXD, and R23 is LED_G2. The UART nets are named
+## from the USB-serial chip's side: the FT2232H's BDBUS0 (its TXD, pin 38) is UART_TXD and
+## its BDBUS1 (its RXD, pin 39) is UART_RXD, so the FPGA transmits on R24 and receives on
+## R26, which is what uart_tx and uart_rx are. The chip's channel B is the UART and channel A
+## the JTAG. That is one revision of the board.
 ##
 ## Used by:  LPF=fpga/constraints/ecpix5.lpf TOP=ecpix5_top ./fpga/synth/synth_ecp5.sh
 
@@ -50,18 +54,17 @@ LOCATE COMP "uart_rx" SITE "R26";
 IOBUF  PORT "uart_tx" PULLMODE=NONE IO_TYPE=LVCMOS33;
 IOBUF  PORT "uart_rx" PULLMODE=UP   IO_TYPE=LVCMOS33;
 
-## ---- LED0 only (Stage 0's own minimal cut) ----
-## ECPIX-5 has four RGB LEDs (12 pins total); only LED0's green channel
-## is wired here, carrying soc_fpga.v's own real heartbeat bit
+## ---- one LED (Stage 0's own minimal cut) ----
+## ECPIX-5 has four RGB LEDs (12 pins total); only one channel is wired
+## here, LED2's green (the schematic's LED_G2 on R23; this comment said LED0 until
+## 2026-10-18, which the schematic does not support), carrying soc_fpga.v's own real heartbeat bit
 ## (`led[2]`, `heartbeat[24]` - confirmed by reading fpga/soc_fpga.v's
 ## own `assign led = {trap_seen, heartbeat[24], gpio_out[1:0]}`, not
 ## assumed) - enough for Stage 0's own "blinks an LED" bar without
-## claiming pins this file has not actually needed to place yet. LED0's
-## red/blue and LEDs 1-3 entirely are real, documented pins
-## (litex-boards' own platform file) left unclaimed here on purpose, not
-## because they are unknown.
-## Port name is `led2_g` (matching soc_fpga.v's own logical led[2] bit,
-## not the physical LED0 index it happens to be wired to - the two are
-## different numbers on purpose, see fpga/ecpix5_top.v's own comment).
+## claiming pins this file has not actually needed to place yet. The other
+## eleven channels are real, documented pins (litex-boards' own platform file,
+## and the schematic) left unclaimed here on purpose, not because they are unknown.
+## Port name is `led2_g`: soc_fpga.v's logical led[2] bit, which is also, as it happens,
+## the physical LED2 it is wired to.
 LOCATE COMP "led2_g" SITE "R23";
 IOBUF  PORT "led2_g" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;

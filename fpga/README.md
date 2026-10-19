@@ -2106,6 +2106,75 @@ runs the whole path against the real RTL. Both are gated in CI.
 
 ---
 
+## Bringing up the DDR3 on the ECPIX-5
+
+**Nothing in this repository has run on an ECPIX-5.** The controller and the Wishbone slave are verified in
+simulation against a behavioural DDR3 (`make ddr3_check`), the board's pins are checked against its schematic
+(R02), and the bitstream builds and meets the clock it was asked for. A DDR3 PHY that has never met a chip has
+more ways to be quietly wrong than anything else here: the ECP5's read-capture latency, where CK sits against the
+command pins, the two byte lanes' skew, all taken from Lattice's documents and unverified on silicon
+(`docs/roadmap/phase-09-ddr.md`, Stage 1 Parts 21 and 27). So the first bitstream has one job, to find out.
+
+### The bitstream: `BOARD=ecpix5-ddr3-check`
+
+```sh
+make sim_ecpix5_ddr3_check                       # prove the instrument first
+export PATH=~/tools/oss-cad-suite/bin:$PATH
+make pnr_soc_ecpix5_ddr3_check                   # fpga/build/ecpix5_ddr3_check/ecpix5_top.bit
+openFPGALoader -b ecpix5 fpga/build/ecpix5_ddr3_check/ecpix5_top.bit
+```
+
+(`ecpix5` is the board name LiteX gives that loader for this board; it was not tried here.) The in-order core only:
+the wide core with the controller does not finish its synthesis (Part 15, Part 27).
+
+The bitstream is `BOARD=ecpix5-ddr3` with `software/soc/ddrcheck.c` preloaded into block RAM, as
+`ulx3s85-sdramcheck` does for the SDRAM: the boot ROM finds a program in RAM and jumps to it, with no SD card, and
+the program, which runs from block RAM (a bitstream can preload block RAM and not DDR3), stores to and loads from
+the DDR3 through the CPU, the interconnect, the Wishbone slave, the controller and the board's pins, and prints
+what it finds. `make sim_ecpix5_ddr3_check` runs exactly this image through the board top, with a behavioural
+DDR3 behind the pins, and decodes the UART pin; the only difference from the board is a UART about 54 times faster (4 clocks a bit, not 217), so that
+it takes milliseconds and not seventy. The script refuses to build with an image older than the program.
+
+**Then press the board's reset button** (SW1 in the schematic)**.** It resets the FPGA's logic and the DRAM together (the DRAM's RESET# is the
+board's reset circuit's, schematic R02 sheet 3), which is the power-up the controller is written for. A DRAM left
+running by an earlier bitstream, with the bitstream loaded over it and no reset, makes the controller start its
+initialisation against a DRAM that was not reset, which may work and is not guaranteed
+(`rtl/soc/ddr3_init_seq.v`). If the first run fails, press the button and read it again before believing it.
+
+Open the board's second USB serial port (the FT2232H's channel B is the UART; channel A is the JTAG) at 115200 8N1.
+A run that works prints, within a second or so of the reset:
+
+```
+=== RV32IMA SoC boot ROM ===
+RAM already holds a program (first word 0x00050413)
+  skipping SD, starting it
+
+=== DDR3 real command path, through the CPU (Phase 9 Stage 2) ===
+
+  ok   store-then-load, word 0 of block 0
+  ...                                              (fourteen ok lines)
+  ok   a word whose halves are two columns
+
+---------------------------------------------
+DDR3 CPU-PATH TEST PASSED
+---------------------------------------------
+```
+
+What each outcome means, and what the reasoning behind it is (none of this has been seen on a board):
+
+| What you see | Read it as |
+|---|---|
+| LED2's green channel (the board has four RGB LEDs) is not blinking | the FPGA is not running this design: not loaded, or the clock (K23) or reset (N5) pin. The blink is `heartbeat[24]`, about 0.75 Hz |
+| it blinks, nothing on the serial port | the UART: the wrong one of the board's two ports, the baud rate, or the TX pin (R24). The ROM prints before anything touches the DDR3 |
+| the ROM talks about the SD card and never says `RAM already holds a program` | the preload did not reach the bitstream: the wrong build |
+| the program's banner, then nothing, for good | **the first DDR3 access never completed.** The slave does not take a request until both byte lanes have calibrated, and the CPU waits on the bus, so this is the controller not calibrating (initialisation, or a lane's read capture) or not starting. Where a wrong pin, a wrong clock or a read-capture window that does not exist shows up |
+| `FAIL <what>: got 0x..., expected 0x...` lines | the controller calibrated, and data comes back wrong. The `got` says how: a byte of the word in the wrong place (a lane), a bit stuck, a neighbouring location's data (an address or bank line), the old value after a store (a data mask) |
+| every `ok`, then `PASSED` | for these accesses it works: a word and a byte in each lane, several blocks, an eviction and a re-fill, the first and the last word of the 512 MB. **That is fourteen checks and not a memory test** (no sweep, nothing about timing margin, nothing about refresh over time): Stage 3 of the DDR3 plan in `docs/roadmap/phase-09-ddr.md` asks for those |
+
+Heartbeat first, then the serial port, then the program: each line of the table assumes the ones above it.
+
+---
+
 ## Building for a ULX3S
 
 **The 45F and the 85F both work; the 12F and 25F do not.** The ULX3S ships

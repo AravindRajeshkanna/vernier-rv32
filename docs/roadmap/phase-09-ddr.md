@@ -3107,6 +3107,14 @@ recorded - the same bar Phase 0 set for the pipeline itself and Phase 7
 sets for the SD card: simulated first, then proven on silicon, not asserted
 from simulation alone.
 
+**Update, 2026-10-18: the first bitstream to put on the board exists, and nothing has run on it.** `BOARD=ecpix5-ddr3-check`
+(`make pnr_soc_ecpix5_ddr3_check`) is `BOARD=ecpix5-ddr3` with `software/soc/ddrcheck.c` preloaded into block RAM, the DDR3 counterpart of
+`ulx3s85-sdramcheck`: the boot ROM finds the program in RAM and jumps to it, with no SD card, and the program stores to and loads from
+the DDR3 through the CPU and prints fourteen checks and `DDR3 CPU-PATH TEST PASSED` or `FAILED` on the board's UART. It is the smallest thing that
+can say whether the controller starts, calibrates and moves data on a chip, and it is not a memory test: Stage 3's walking and retention tests and
+the sweep are still ahead. `make sim_ecpix5_ddr3_check` runs this exact image through the board top with a behavioural DDR3 behind the pins and
+decodes the UART pin. `fpga/README.md` ("Bringing up the DDR3 on the ECPIX-5") says how to load it and how to read each outcome, silence included.
+
 **Stage 4 - making the larger memory actually useful.** Linux's own
 memory configuration and device tree updated for the real 512 MB;
 microSD boot on ECPIX-5 as a natural next step once the current SD-card

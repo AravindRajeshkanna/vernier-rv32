@@ -117,6 +117,9 @@ FB_HEIGHT=${FB_HEIGHT:-}
 #     (CS# is tied low on the board, RESET# is the board's, CK# is CK's pad pair and the part has no A15), so this
 #     writes a bitstream; it has never been on a board. docs/roadmap/phase-09-ddr.md, Stage 2, Part 15, has what
 #     the build found and Stage 1, Part 27 what changed.
+#   BOARD=ecpix5-ddr3-check  ./fpga/synth/synth_ecp5.sh   that build with software/soc/ddrcheck.c preloaded into block RAM,
+#     the DDR3 counterpart of ulx3s85-sdramcheck: load it, open the board's UART (115200 8N1), and it says whether the
+#     DDR3 works. `make pnr_soc_ecpix5_ddr3_check` builds it, `make sim_ecpix5_ddr3_check` runs it in simulation.
 #
 # The default constrains the clock and nothing else, which produces an Fmax
 # without inventing a board - useful for tracking the design's own timing, but
@@ -361,7 +364,7 @@ case "$BOARD" in
         PNR_EXTRA=${PNR_EXTRA:-}
         BOARD_RTL="fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v"
         ;;
-    ecpix5-ddr3)
+    ecpix5-ddr3|ecpix5-ddr3-check)
         # docs/roadmap/phase-09-ddr.md, Stage 2, Part 15: the ECPIX-5 SoC with the DDR3 controller and the Wishbone
         # slave at 0xA0000000 in it. Same device, package and clock as `ecpix5` above.
         #
@@ -390,6 +393,19 @@ case "$BOARD" in
                    rtl/soc/ddr3_read_burst_ext.v rtl/soc/ddr3_refresh_ctrl.v"
         BOARD_DEFINES="-DDDR3_ENABLE"
         ROM_HEX=sim/bootrom_${CORE}_ddr3.hex
+        #
+        # `-check` is the first thing to put on the board: software/soc/ddrcheck.c, the program sim_ddrcheck runs, is
+        # preloaded into block RAM, so the boot ROM finds a program in RAM and jumps to it without the SD card, and the
+        # program (which runs from block RAM, because a bitstream can preload block RAM and not DDR3) stores to and
+        # loads from the DDR3 through the CPU and prints each check, then DDR3 CPU-PATH TEST PASSED or FAILED, on the
+        # board's UART (115200 8N1). What each outcome means is in fpga/README.md. It cannot make the DDR3 work; it
+        # reports what the board does.
+        case "$BOARD" in
+            ecpix5-ddr3-check)
+                PRELOAD_RAM=1
+                RAM_IMAGE=sim/ddrcheckimage.hex
+                RAM_ELF=software/soc/ddrcheck.elf ;;
+        esac
         ;;
     ulx3s85-video)
         # Same board and pins as plain ulx3s85, GPDI wired in - opt-in
@@ -449,6 +465,7 @@ case "$BOARD" in
         echo "error: unknown BOARD='$BOARD' (known: ulx3s, ulx3s85, ulx3s85-video," >&2
         echo "       ulx3s85-underclock, ulx3s85-ram, ulx3s85-probe, ulx3s85-trapcheck," >&2
         echo "       ulx3s85-sdramcheck, ulx3s-diag, ulx3s-cmd0, ulx3s-sdram, ecpix5, ecpix5-ddr3," >&2
+        echo "       ecpix5-ddr3-check," >&2
         echo "       or unset)" >&2
         exit 1
         ;;
@@ -751,6 +768,7 @@ fi
 # stamp above, and found the same way.
 case "${BOARD:-}" in
     ulx3s*) echo "flash with: openFPGALoader -b ulx3s $BUILD/$TOP.bit" ;;
+    ecpix5*) echo "flash with: openFPGALoader -b ecpix5 $BUILD/$TOP.bit   (the board name is LiteX's, for this board; not tried here)" ;;
     *)      echo "flash with: openFPGALoader -b <your-board> $BUILD/$TOP.bit" ;;
 esac
 echo

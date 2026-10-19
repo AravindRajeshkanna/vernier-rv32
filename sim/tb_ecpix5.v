@@ -3,6 +3,15 @@
 // of the board's DDR3 variant: the same wrapper with the controller and its pins in, a behavioural
 // DDR3 behind each byte lane, and the question whether both lanes calibrate through the board top.
 //
+// Compiled with -DDDR3_ENABLE -DPRELOAD_RAM -DDDR3_CHECK (`make sim_ecpix5_ddr3_check`) it is the
+// test of BOARD=ecpix5-ddr3-check, the self-checking bitstream: software/soc/ddrcheck.c is preloaded
+// into block RAM, the boot ROM jumps to it, and the CPU itself stores to and loads from the DDR3
+// through the board's pins. Nothing is forced; the testbench decodes the board's UART pin and waits
+// for the program's own verdict, as a person with a serial terminal would. One difference from the
+// board: the UART runs at 6.25 Mbaud (4 clocks a bit) here, not 115200, because the program prints
+// about 800 characters and at 115200 that is 70 ms of simulated time. The divider is fpga/soc_fpga.v's
+// CLK_HZ / BAUD_RATE and is not what this test is about.
+//
 // Same reason sim/tb_ulx3s.v exists: fpga/top_fpga.v sat in the tree for
 // months with unconnected ports because nothing built it. `make verify`
 // now builds and runs this one too, so the same thing cannot happen to
@@ -16,7 +25,12 @@ module tb_ecpix5;
     localparam CLK_PERIOD = 10;     // 100 MHz, the ECPIX-5's own K23 oscillator
 `ifdef DDR3_ENABLE
     localparam DDR3_WAIT_CLKS = 2_000_000;   // board clocks (100 MHz) the calibration may take: 20 ms
+`ifdef DDR3_CHECK
+    localparam WATCHDOG_NS    = 30_000_000;   // the program needs about 1.5 ms; a hang is not left to run
+    localparam PROGRAM_CLKS   = 1_500_000;    // board clocks the program may take: 15 ms, ten times that
+`else
     localparam WATCHDOG_NS    = 40_000_000;
+`endif
 `else
     localparam WATCHDOG_NS    = 2_000_000;
 `endif
@@ -133,6 +147,45 @@ module tb_ecpix5;
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.SOC.SOC.DDR3.DDR.read_active_final_1), .dq_error()
     );
+
+`ifdef DDR3_CHECK
+    // ---- the board's UART, decoded at the pin, as a serial terminal would ----
+    // 4 clocks a bit instead of fpga/soc_fpga.v's 217 (see the header). The decoder keeps the last 32
+    // characters and looks for the lines the boot ROM and software/soc/ddrcheck.c print.
+    defparam DUT.SOC.BAUD_RATE = 6_250_000;
+    localparam UART_BIT_NS = 160;                 // 4 SoC clocks of 40 ns
+    reg [7:0]   rx_byte;
+    reg [255:0] console_tail = 256'b0;
+    integer     console_chars = 0, console_fail_lines = 0;
+    reg         console_found_prog = 1'b0, console_passed = 1'b0, console_failed = 1'b0;
+    integer     rx_i, line_n = 0, line_i;
+    time        console_last = 0;                 // when the last character arrived
+    reg [7:0]   line [0:255];
+    always begin
+        @(negedge uart_tx);                       // a start bit
+        #(UART_BIT_NS * 3 / 2);                   // the middle of bit 0
+        for (rx_i = 0; rx_i < 8; rx_i = rx_i + 1) begin
+            rx_byte[rx_i] = uart_tx;
+            #(UART_BIT_NS);
+        end                                       // now in the middle of the stop bit
+        console_tail  = {console_tail[247:0], rx_byte};
+        console_chars = console_chars + 1;
+        console_last  = $time;
+        // a line at a time, in one step, so that the testbench's own lines never split one of the program's
+        if (rx_byte == 8'h0A || line_n == 255) begin
+            for (line_i = 0; line_i < line_n; line_i = line_i + 1) $write("%c", line[line_i]);
+            $write("\n");
+            line_n = 0;
+        end else if (rx_byte != 8'h0D) begin
+            line[line_n] = rx_byte;
+            line_n = line_n + 1;
+        end
+        if (console_tail[215:0]  === "RAM already holds a program")  console_found_prog = 1'b1;
+        if (console_tail[199:0]  === "DDR3 CPU-PATH TEST PASSED")    console_passed     = 1'b1;
+        if (console_tail[199:0]  === "DDR3 CPU-PATH TEST FAILED")    console_failed     = 1'b1;
+        if (console_tail[39:0]   === "FAIL ")                        console_fail_lines = console_fail_lines + 1;
+    end
+`endif
 `endif
 
     integer errors = 0;
@@ -227,7 +280,7 @@ module tb_ecpix5;
             check("CK reaches its pin and moves", ck_seen, 1'b1);
             check("CKE is high at its pin", ddr3_cke, 1'b1);
             $display("  (CKE rose %0d ns after the board's reset was released)", ddr3_t_cke_high - ddr3_t_reset_high);
-            check("CKE rose no sooner than 500 us after the board's reset was released",
+            check("CKE rises 500 us or more after the board's reset is released",
                   (ddr3_t_cke_high - ddr3_t_reset_high) >= 500_000, 1'b1);
             check("the DDR3 protocol checker saw nothing wrong", ddr3_model_error, 1'b0);
             check("the DQ model saw nothing wrong", ddr3_dq_error, 1'b0);
@@ -244,6 +297,29 @@ module tb_ecpix5;
         // a store writes through and updates that copy), so a load straight after a store is answered from the copy
         // and says nothing about the DRAM; the access to the other block throws the copy away, and the load that
         // follows fetches the block from the memory behind the pins.
+`ifdef DDR3_CHECK
+        // ---- the program does it, through the CPU ----
+        // Nothing is forced. The boot ROM finds software/soc/ddrcheck.c in block RAM (preloaded, as the bitstream
+        // has it), jumps to it, and the program stores to and loads from the DDR3 through the real interconnect,
+        // the slave, the controller and the board's pins, and prints each check and then its verdict. A lane
+        // that did not calibrate would hang its first access (the slave waits for both), and the watchdog says so.
+        begin : ddr3_program
+            integer waited;
+            waited = 0;
+            while (!console_passed && !console_failed && waited < PROGRAM_CLKS) begin
+                @(posedge clk_sys);
+                waited = waited + 1;
+            end
+            // the verdict line is not finished when its last letter arrives: let the program's last lines out
+            while (($time - console_last) < 40_000) @(posedge clk_sys);
+            $display("\n  (the program's verdict after %0d board clocks, %0d characters)", waited, console_chars);
+            check("the boot ROM found the program in RAM and ran it", console_found_prog, 1'b1);
+            check("the program says DDR3 CPU-PATH TEST PASSED", console_passed, 1'b1);
+            check("no check of the program failed", console_fail_lines == 0 && !console_failed, 1'b1);
+            check("the DDR3 protocol checker saw nothing wrong", ddr3_model_error, 1'b0);
+            check("the DQ model saw nothing wrong", ddr3_dq_error, 1'b0);
+        end
+`else
         begin : ddr3_data
             reg [31:0] r;
             ddr3_access(1'b1, 32'hA000_0000, 32'h1122_3344, 4'b1111, r);
@@ -271,6 +347,7 @@ module tb_ecpix5;
             check("the DDR3 protocol checker still saw nothing wrong", ddr3_model_error, 1'b0);
             check("the DQ model still saw nothing wrong", ddr3_dq_error, 1'b0);
         end
+`endif
 `endif
 
         $display("");
