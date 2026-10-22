@@ -60,7 +60,8 @@
 // uses for timing constants it has not benchmarked.
 module wb_ddr (
     input  wire        clk,
-    input  wire        rst,
+    input  wire        rst,        // the board's reset (the DRAM is reset with it)
+    input  wire        rst_warm,   // the controller and this slave reset, the DRAM not (the debugger's ndmreset); see ddr3_ecp5_top.v
 
     // ---- Wishbone B4 classic slave, matching rtl/soc/wb_ram.v's own port
     // names exactly ----
@@ -132,7 +133,7 @@ module wb_ddr (
     wire        read_data_valid;
 
     ddr3_ecp5_top DDR (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .rst_warm(rst_warm),
         .ddr3_ck(ddr3_ck),
         .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
@@ -182,8 +183,9 @@ module wb_ddr (
 
     integer i;
 
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
+    wire rst_bus = rst || rst_warm;   // this slave's own state resets on either
+    always @(posedge clk or posedge rst_bus) begin
+        if (rst_bus) begin
             state       <= S_IDLE;
             block_valid <= 1'b0;
             block_tag   <= 25'b0;

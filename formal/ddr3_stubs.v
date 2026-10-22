@@ -38,6 +38,7 @@ module ddr3_init_seq #(
 )(
     input  wire        clk,
     input  wire        rst,
+    input  wire        por,
     output wire        cmd_valid,
     output wire [2:0]  cmd_ras_cas_we,
     output wire [2:0]  cmd_ba,
@@ -53,7 +54,7 @@ module ddr3_init_seq #(
     assign cmd_cke           = 1'b1;
     assign cmd_odt           = 1'b0;
     assign ready             = 1'b1;
-    wire _unused_ok = &{1'b0, clk, rst, 1'b0};
+    wire _unused_ok = &{1'b0, clk, rst, por, 1'b0};
 endmodule
 
 module ddr3_read_calib #(
@@ -85,6 +86,7 @@ module ddr3_phy_ecp5 (
     input  wire        clk,
     input  wire        eclk,
     input  wire        rst,
+    input  wire        por,
     input  wire        cmd_valid,
     input  wire [2:0]  cmd_ras_cas_we,
     input  wire [2:0]  cmd_ba,
@@ -108,7 +110,7 @@ module ddr3_phy_ecp5 (
     assign ddr3_a       = 15'b0;
     assign ddr3_cke     = 1'b0;
     assign ddr3_odt     = 1'b0;
-    wire _unused_ok = &{1'b0, clk, eclk, rst, cmd_valid, cmd_ras_cas_we, cmd_ba,
+    wire _unused_ok = &{1'b0, clk, eclk, rst, por, cmd_valid, cmd_ras_cas_we, cmd_ba,
                         cmd_addr, cmd_cke, cmd_odt, 1'b0};
 endmodule
 

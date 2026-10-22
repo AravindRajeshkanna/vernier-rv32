@@ -40,6 +40,13 @@
 //     violation, and the initialisation has no PRECHARGE of its own;
 //   - the MR2, MR3, MR1, MR0, ZQCL order and the waits between them are checked again, as at power-up.
 // A fall of CKE with RESET# low is the board's reset and nothing here: the DRAM is starting over too.
+//
+// And the restart that keeps CKE up (the controller's ndmreset, rtl/soc/ddr3_init_seq.v): the DRAM sees no reset at all, only a
+// mode-register write at idle, which JESD79-3 allows at any time. An MRS after the initialisation is accepted if it is MR2
+// (the start of the order again) and every bank is precharged (the bank rule below; a burst on the DRAM means a bank is open,
+// so it is covered by that, and the PRECHARGE before it is held to tRAS, tRTP and write recovery by the per-bank rules);
+// it re-arms the order check and the rest is held to the same rules as at power-up. tRP is not checked: at this design's
+// clock no controller could miss it.
 module ddr3_model #(
     parameter CLK_HZ = 25_000_000
 )(
@@ -307,7 +314,18 @@ module ddr3_model #(
                     // rtl/soc/ddr3_refresh_ctrl.v's own standalone tests
                     // (Parts 6/7/10/14) already measure and
                     // mutation-test that directly.
-                    if (!(is_act || is_wr || is_rd || is_ref || is_pre)) begin
+                    if (is_mrs) begin
+                        // A mode-register write at idle with CKE up: the controller starting its initialisation again
+                        // after a reset of its own (header). The bank rule above has already been applied.
+                        if (ba == 3'b010) begin
+                            seq_state       <= SEQ_WANT_MR3;
+                            seq_done        <= 1'b0;
+                            wait_min_needed <= MRD_MIN_CYC;
+                            since_last_cmd  <= 0;
+                        end else begin
+                            fail("MRS after the initialisation that does not start the order again with MR2");
+                        end
+                    end else if (!(is_act || is_wr || is_rd || is_ref || is_pre)) begin
                         fail("unexpected command after init sequence completed");
                     end
                     if (is_ref) begin

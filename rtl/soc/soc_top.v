@@ -868,8 +868,10 @@ module soc_top #(
     // this instance, the same way fpga/ulx3s_sdram.v's own bring-up probe
     // already reaches SDRAM's equivalent signals.
     /* verilator lint_off PINCONNECTEMPTY */
+    // Two resets, not `rst_soc`: the board's reset restarts the DRAM too (its RESET# is the board's), `ndmreset` does not, and
+    // the controller has to know which (rtl/soc/ddr3_ecp5_top.v). Both reset the slave's own state, as `rst_soc` did.
     wb_ddr DDR3 (
-        .clk(clk), .rst(rst_soc),
+        .clk(clk), .rst(rst), .rst_warm(dbg_ndmreset),
         .wb_cyc(sl_cyc[S_DDR3]), .wb_stb(s_stb[S_DDR3]), .wb_we(sl_we[S_DDR3]), .wb_adr(sl_adr[32*S_DDR3 +: 32]),
         .wb_dat_w(sl_dat_w[32*S_DDR3 +: 32]), .wb_sel(sl_sel[4*S_DDR3 +: 4]),
         .wb_dat_r(s_dat_r[32*S_DDR3 +: 32]), .wb_ack(s_ack[S_DDR3]),

@@ -1,22 +1,31 @@
-// What the DDR3 controller does when it is reset and the DRAM is not (Phase 9 Stage 3). A characterization test: it pins what
-// the controller does today, which includes a known defect (below), and says which of its restarts the DRAM would accept.
+// What the DDR3 controller does when it is reset and the DRAM is not (Phase 9 Stage 3). It pins what the controller does, which
+// includes a known defect (below), and says which of its restarts the DRAM would accept.
 //
 // The board's reset button resets the FPGA and the DRAM together (the DRAM's RESET# is the board's reset circuit's, schematic
-// R02 sheet 3). Two things reset the controller alone: the debugger's `ndmreset` (rtl/soc/soc_top.v's rst_soc), and a bitstream
-// loaded over a board that is powered. The DRAM then keeps its contents, its mode registers, its open rows and whatever burst it
-// was in, and the controller starts its initialisation against that (rtl/soc/ddr3_init_seq.v's header). Here the controller's
-// `rst` and the board's reset are separate nets: the protocol checker's RESET# and both memory models' reset follow `brd_rst`
-// (the models' contents survive, as the DRAM's do), the controller follows `rst`. One scenario per run, each from a power-up:
+// R02 sheet 3). Two things reset the controller alone: the debugger's `ndmreset` (rtl/soc/soc_top.v), and a bitstream loaded
+// over a board that is powered. The DRAM then keeps its contents, its mode registers, its open rows and whatever burst it was
+// in, and the controller starts its initialisation against that (rtl/soc/ddr3_init_seq.v's header). The protocol checker's
+// RESET# and both memory models' reset follow `brd_rst` (the models' contents survive, as the DRAM's do). Two kinds of reset
+// of the controller alone, by the parameter WARM:
+//   WARM=1  `rst_warm`, the debugger's ndmreset: the controller knows the DRAM is running, keeps CKE up, lets what the DRAM
+//           was doing finish, closes every bank and writes the mode registers again;
+//   WARM=0  `rst`, the controller's cold start against a DRAM that was not reset (a bitstream loaded over a powered board,
+//           which also wipes CKE): CKE falls, and the power-up sequence runs from the start.
+// One scenario per run, each from a power-up:
 //   0  the controller is idle                    1  a bank is open (reset at its ACTIVATE)
 //   2  in the middle of a write burst            3  in the middle of a read burst
-//   4  just after a REFRESH
+//   4  just after a REFRESH                      5  at a WRITE command, before its burst starts
+//   6  at a REFRESH command
+// (5 and 6 put the restart as close behind a command as a reset can: they are what shows that the controller waits for the
+// DRAM to finish before its PRECHARGE ALL, since the other four leave it time enough by themselves.)
 //
 // What is asserted, every scenario:
-//   - CKE falls with the reset and rises again 500 us or more later, init_ready falls and rises again, and the initialisation
-//     runs in full again (four MRS and a ZQCL more on the pins);
-//   - what the protocol checker (sim/ddr3_model.v, which now holds a restart to the DRAM's own rules) says of it:
-//     idle and just after a REFRESH are clean; with a bank open the first MRS is issued to a DRAM with that bank open;
-//     in the middle of a write or a read burst CKE falls in the middle of the burst;
+//   - WARM=1: CKE never falls, init_ready falls and rises again well inside the 500 us a cold start waits, a PRECHARGE ALL is on
+//     the pins, the initialisation runs in full again (four MRS and a ZQCL more), and the protocol checker has no objection in
+//     any of the five (it holds a restart to the DRAM's own rules, sim/ddr3_model.v);
+//   - WARM=0: CKE falls with the reset and rises again 500 us or more later, init_ready falls and rises again, and the
+//     initialisation runs in full again; the checker says: idle and just after a REFRESH are clean; with a bank open the first
+//     MRS is issued to a DRAM with that bank open; in the middle of a write or a read burst CKE falls in the middle of the burst;
 //   - KNOWN DEFECT, docs/roadmap/index.md: after every one of them both lanes' calibration ends in an error, so the controller
 //     takes no request again until the board is reset. The sweep drives a DQ/DQS burst and a read window and issues no command
 //     (rtl/soc/ddr3_read_calib.v), and sim/ddr3_dq_model.v answers that only until it has seen the first command, as a DRAM
@@ -25,13 +34,15 @@
 // (the DRAM is not refreshed for the 500 us and the rest of the sequence: ten times what JEDEC lets a refresh be postponed).
 `timescale 1ns/1ps
 module tb_ddr3_restart;
-    parameter SCEN = 0;     // when the controller is reset: 0 idle, 1 bank open (after an ACTIVATE), 2 mid write burst, 3 mid read burst, 4 just after a REFRESH
+    parameter SCEN = 0;     // when the controller is reset: 0 idle, 1 bank open (after an ACTIVATE), 2 mid write burst, 3 mid read burst, 4 just after a REFRESH, 5 at a WRITE, 6 at a REFRESH
+    parameter WARM = 1;     // 1: the debugger's ndmreset (rst_warm), 0: the cold start against a DRAM that was not reset (rst)
     localparam CLK_HZ     = 25_000_000;
     localparam CLK_PERIOD = 40;
 
     reg clk = 0;
     always #(CLK_PERIOD / 2) clk = ~clk;
-    reg rst     = 1'b1;     // the controller's
+    reg rst     = 1'b1;     // the controller's cold reset
+    reg rst_warm = 1'b0;    // the controller's warm reset (ndmreset)
     reg brd_rst = 1'b1;     // the board's: the DRAM's RESET# is its complement
     wire ddr3_reset_n = ~brd_rst;
 
@@ -60,7 +71,7 @@ module tb_ddr3_restart;
     wire        refresh_busy;
 
     ddr3_ecp5_top DUT (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .rst_warm(rst_warm),
         .ddr3_ck(ddr3_ck), .ddr3_ras_n(ddr3_ras_n), .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a), .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
@@ -133,10 +144,13 @@ module tb_ddr3_restart;
 
     // ---- a log of what happens, with times ----
     reg  armed = 1'b0;     // the controller is about to be reset: the events below are the restart's
-    time t_cke_fall = 0, t_cke_rise = 0, t_init_fall = 0;
+    time t_cke_fall = 0, t_cke_rise = 0, t_init_fall = 0, t_init_rise = 0;
+    integer np0;
+    reg     dq_early;      // a DQ model had flagged something 10 us after the reset: a burst the reset cut
     always @(negedge ddr3_cke)  if (armed && t_cke_fall == 0) t_cke_fall = $time;
     always @(posedge ddr3_cke)  if (armed && t_cke_fall != 0 && t_cke_rise == 0) t_cke_rise = $time;
     always @(negedge init_ready) if (armed && t_init_fall == 0) t_init_fall = $time;
+    always @(posedge init_ready) if (armed && t_init_fall != 0 && t_init_rise == 0) t_init_rise = $time;
     always @(negedge ddr3_cke) if (!brd_rst && ddr3_reset_n) $display("  [%0d us] CKE falls (the DRAM was not reset)", $time / 1000);
     always @(posedge ddr3_cke) $display("  [%0d us] CKE rises", $time / 1000);
     always @(posedge model_error) $display("  [%0d us] PROTOCOL CHECKER: %0s", $time / 1000, model_error_msg);
@@ -231,11 +245,21 @@ module tb_ddr3_restart;
                    repeat (4) @(posedge DUT.sclk);
                end
             4: begin ef = ev_ref; while (ev_ref === ef) @(posedge ddr3_ck); repeat (2) @(posedge DUT.sclk); end
+            5: begin
+                   fork
+                       begin write_bank <= 3'd2; write_row <= 16'h0030; write_col <= 16'h0060; write_data <= 16'hFFFF; write_be <= 2'b11; write_req <= 1'b1; @(posedge clk); write_req <= 1'b0; end
+                       begin ew = ev_wr; while (ev_wr === ew) @(posedge ddr3_ck); end
+                   join
+               end
+            6: begin ef = ev_ref; while (ev_ref === ef) @(posedge ddr3_ck); end
         endcase
         armed = 1'b1;
-        rst = 1'b1;
-        repeat (10) @(posedge clk);
-        rst = 1'b0;
+        np0 = n_pre;
+        if (WARM) rst_warm = 1'b1; else rst = 1'b1;
+        repeat (2) @(posedge clk);          // as short as a debugger's ndmreset can be: the reset itself gives the DRAM no time to finish
+        rst_warm = 1'b0; rst = 1'b0;
+        repeat (250) @(posedge clk);        // 10 us in: before the initialisation is done and calibration starts
+        dq_early = dq_error || dqu_error;
         // what happens next
         waited = 0;
         while (!((calib_done || calib_error) && (calib1_done || calib1_error) && init_ready) && waited < 40000) begin @(posedge clk); waited = waited + 1; end
@@ -251,16 +275,27 @@ module tb_ddr3_restart;
         $display("  verdicts: protocol checker %b, lane 0 DQ model %b, lane 1 DQ model %b", model_error, dq_error, dqu_error);
         $display("");
         // ---- what every restart does ----
-        check("CKE fell with the controller's reset", t_cke_fall != 0, 1'b1);
-        check("CKE rose again 500 us or more after it fell", (t_cke_rise - t_cke_fall) >= 500_000, 1'b1);
-        check("init_ready fell and rose again", init_ready && t_init_fall != 0, 1'b1);
+        if (WARM) begin
+            check("CKE stayed up through the reset", t_cke_fall == 0 && ddr3_cke === 1'b1, 1'b1);
+            check("init_ready fell and rose again", init_ready && t_init_fall != 0 && t_init_rise != 0, 1'b1);
+            check("and well inside the 500 us a cold start waits", (t_init_rise - t_init_fall) < 100_000, 1'b1);
+            check("a PRECHARGE ALL went out before the mode registers", n_pre > np0, 1'b1);
+        end else begin
+            check("CKE fell with the controller's reset", t_cke_fall != 0, 1'b1);
+            check("CKE rose again 500 us or more after it fell", (t_cke_rise - t_cke_fall) >= 500_000, 1'b1);
+            check("init_ready fell and rose again", init_ready && t_init_fall != 0, 1'b1);
+        end
         check("the initialisation ran in full again: eight MRS in all", n_mrs == 8, 1'b1);
         check("and a second ZQCL", n_zq == 2, 1'b1);
+        // ---- what the data path loses: a write burst in flight is cut at the pins by the reset itself ----
+        check((SCEN == 2 || SCEN == 5) ? "the write burst in flight was cut (the DQ model saw it): its data is lost"
+                                       : "nothing else was cut: the DQ models saw no burst broken by the reset", dq_early, SCEN == 2 || SCEN == 5);
         // ---- what the DRAM would say of it ----
-        case (SCEN)
-            0, 4: check("the protocol checker has no objection (the DRAM was idle)", model_error, 1'b0);
+        if (WARM) check("the protocol checker has no objection", model_error, 1'b0);
+        else case (SCEN)
+            0, 4, 6: check("the protocol checker has no objection (the DRAM was idle)", model_error, 1'b0);
             1:    check("the checker says: an MRS with a bank open", model_error && model_error_msg === "MRS with a bank open (all banks must be precharged first)", 1'b1);
-            2:    check("the checker says: CKE fell in the middle of a write burst", model_error && model_error_msg === "CKE fell in the middle of a write burst (before tWRPDEN)", 1'b1);
+            2, 5: check("the checker says: CKE fell in the middle of a write burst", model_error && model_error_msg === "CKE fell in the middle of a write burst (before tWRPDEN)", 1'b1);
             3:    check("the checker says: CKE fell in the middle of a read burst", model_error && model_error_msg === "CKE fell in the middle of a read burst (before tRDPDEN)", 1'b1);
         endcase
         // ---- the known defect ----

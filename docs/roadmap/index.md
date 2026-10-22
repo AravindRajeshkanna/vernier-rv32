@@ -102,18 +102,24 @@ LED1 or LED3 is not evidence about the DRAM (the LED update of 2026-10-22 in `ph
 On the chip the capture is expected to need a strobe at the pad, which a DRAM gives only after a READ; what a sweep ends in on
 silicon is unknown, and a sweep that ends in `calib_error` stops every access, because the Wishbone slave waits for both lanes.
 **(2) It cannot run a second time**, even in simulation. `sim/tb_ddr3_restart.v` (`make sim_ddr3_restart`) resets only the controller
-at five points (idle, a bank open, mid write burst, mid read burst, just after a REFRESH): the initialisation re-runs in full each
-time (500 us, eight MRS and two ZQCL by the end), and then both lanes end in `calib_error` and the controller takes no request
-until the board's reset. In the simulation the cause is that the DQ model answers the injected pattern only before the first
-command it has seen. **(3) Three of the five restarts are not legal for the DRAM**, by rules reasoned from JESD79-3 and not from
-the datasheet: the initialisation has no PRECHARGE ALL, so a restart with a bank open issues its first MRS into an open bank, and
-a restart in a burst drops CKE inside it. This part is not about calibration and is cheap to close (a PRECHARGE ALL before the
-first MRS, and a wait for the burst).
+at seven points (idle, a bank open, mid write burst, mid read burst, just after a REFRESH, at a WRITE, at a REFRESH), for two kinds
+of reset (the debug module's `ndmreset`, and a cold start against a DRAM that was not reset). The initialisation re-runs in full each time,
+and then both lanes end in `calib_error` and the controller takes no request until the board's reset. In the simulation the cause is
+that the DQ model answers the injected pattern only before the first command it has seen.
+**(3) The restarts were not legal for the DRAM (found by the same test, 2026-10-22; closed for the debug module's `ndmreset` 2026-10-22).**
+By rules reasoned from JESD79-3 and not from the datasheet: the initialisation had no PRECHARGE ALL, so a restart with a bank open
+issued its first MRS into an open bank, and CKE fell with the reset, in the middle of whatever burst the DRAM was in. The `ndmreset` is
+now a warm reset (`rst_warm`, `phase-09-ddr.md` has the change): CKE stays up, the controller waits for the DRAM to finish,
+issues PRECHARGE ALL and writes the mode registers again, in about 23 us, and the checker has no objection at any of the seven
+points. It stays open for a bitstream loaded over a powered board, where the flip-flops start at zero, CKE is low, and the DRAM may be
+mid-burst: nothing in the controller can fix that. And a write burst cut by the reset loses its data in both kinds.
 The fix for (1) and (2) is large: make the calibration command-driven (ACTIVATE, WRITE, READ per `READCLKSEL` tap), which touches
 the controller, the formal proofs and the DQ model, and can only be validated in simulation until a board runs it (the DQSBUFM
 stand-in does not look at the DQS pin). Until then `tb_ddr3_restart.v` asserts the defect (`KNOWN DEFECT`), and flipping it
 (`-DEXPECT_RECAL`) is the first thing to do when the fix lands. Not established: what the sweep ends in on silicon, whether the
-rules in (3) are JEDEC's exact ones, and anything about a DRAM's state after a restart (retention, refresh debt).
+rules in (3) are JEDEC's exact ones, and anything about a DRAM's state after a restart (retention, refresh debt: the DRAM is not
+refreshed for the roughly 23 us of a warm restart: with the interval already run and the first refresh after it, under nine
+refresh intervals, JEDEC's limit with refreshes postponed; reasoned, not measured).
 
 **RESOLVED - the whole-SoC synthesis check's time limit was not a margin an unrelated change cannot cross (found and fixed 2026-10-17).** `fpga/synth/soc_synth.sh` killed the build at
 600 s (in-order core) and 1,500 s (wide core), set at about four times what a laptop took (129 s and 330 s) and, for the wide core, 3.2 times what a CI runner took (472 s).

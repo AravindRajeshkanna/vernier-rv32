@@ -261,9 +261,18 @@
 // the ports are the ones the board has. The DRAM is reset by the board, not by this module:
 // a reset of this module alone leaves the DRAM as it was, and rtl/soc/ddr3_init_seq.v says
 // what that does and does not recover from.
+//
+// ---- Two resets, because the DRAM is reset by one of them (Phase 9 Stage 3) ----
+// `rst` is the board's reset button: the DRAM's RESET# goes low with it, so the DRAM starts over and this module does too
+// from the beginning of JEDEC's power-up, CKE low (the PLL not being locked is the same kind of reset). `rst_warm` is a
+// reset of this module and the slave in front of it with the DRAM running (the debug module's ndmreset): CKE stays up, the
+// DRAM is let finish what it was doing, every bank is closed, and the mode registers are written again, in about 20 us
+// instead of the 500 us a power-up waits. They cannot be told apart from the controller's side, which is why they are two
+// ports. Everything else is reset by either.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
-    input  wire        rst,
+    input  wire        rst,        // the board's reset: the DRAM is reset with the FPGA (its RESET# is the board's), so this is a cold start
+    input  wire        rst_warm,   // a reset of this controller alone, the DRAM left running (the debugger's ndmreset): CKE stays up
 
     // ---- real DDR3 pins - command/address/CK, from Part 1 ----
     // Part 27: the pins the ECPIX-5 has. No CS# (the board ties it low), no RESET# (the board's
@@ -332,7 +341,8 @@ module ddr3_ecp5_top (
     // simulation PHY's falling-edge NOP (rtl/soc/ddr3_phy_ecp5.v, sim branch), which
     // is what SYNCASYNCNET reports.
     /* verilator lint_off SYNCASYNCNET */
-    wire rst_all = rst || !pll_locked;
+    wire rst_cold = rst || !pll_locked;
+    wire rst_all  = rst_cold || rst_warm;
     /* verilator lint_on SYNCASYNCNET */
 
     wire        seq_cmd_valid;
@@ -342,7 +352,7 @@ module ddr3_ecp5_top (
     wire        seq_cmd_cke, seq_cmd_odt;
 
     ddr3_init_seq SEQ (
-        .clk(sclk), .rst(rst_all),
+        .clk(sclk), .rst(rst_all), .por(rst_cold),
         .cmd_valid(seq_cmd_valid), .cmd_ras_cas_we(seq_cmd_ras_cas_we),
         .cmd_ba(seq_cmd_ba), .cmd_addr(seq_cmd_addr),
         .cmd_cke(seq_cmd_cke), .cmd_odt(seq_cmd_odt),
@@ -489,7 +499,7 @@ module ddr3_ecp5_top (
                                 rseq_cmd_valid ? rseq_cmd_addr : refresh_cmd_addr;
 
     ddr3_phy_ecp5 PHY (
-        .clk(sclk), .eclk(eclk), .rst(rst_all),
+        .clk(sclk), .eclk(eclk), .rst(rst_all), .por(rst_cold),
         .cmd_valid(phy_cmd_valid), .cmd_ras_cas_we(phy_cmd_ras_cas_we),
         .cmd_ba(phy_cmd_ba), .cmd_addr(phy_cmd_addr[14:0]),   // the part has no A15
         .cmd_cke(seq_cmd_cke), .cmd_odt(seq_cmd_odt),
@@ -809,6 +819,9 @@ module ddr3_ecp5_top (
     reg f_initialized = 1'b0;
     always @(posedge clk) f_initialized <= 1'b1;
     always @(*) if (!f_initialized) assume (rst);
+    // The warm reset (the debugger's ndmreset, rst_warm) is not what these prove: they hold the request side after a power-up
+    // reset, and the restart is checked in simulation (sim/tb_ddr3_restart.v), against the DRAM's rules.
+    always @(*) assume (!rst_warm);
 
     // ---- one command source, one transaction ----
     // The mux carries no arbitration of its own; it is exclusive only because of the

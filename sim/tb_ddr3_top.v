@@ -47,6 +47,7 @@ module tb_ddr3_top;
     wire [7:0]  read_data_hi;   // lane 1's byte (Part 26); this test is about lane 0
 
     ddr3_ecp5_top DUT (
+        .rst_warm(1'b0),
         .clk(clk), .rst(rst),
         .ddr3_ck(ddr3_ck),
         .ddr3_ras_n(ddr3_ras_n),

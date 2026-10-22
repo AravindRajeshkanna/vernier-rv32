@@ -4048,18 +4048,19 @@ sim_ddr3_x16: sim/sim_ddr3_x16.out
 	@grep -q "DDR3 X16 TEST PASSED" sim/ddr3_x16.log || \
 	    { echo "sim_ddr3_x16 FAILED"; exit 1; }
 
-# What the controller does when it is reset and the DRAM is not (sim/tb_ddr3_restart.v, Phase 9 Stage 3): five restart points,
-# each its own run from a power-up, since the protocol checker judges one DRAM. It pins today's behaviour, a known defect
-# (calibration cannot run again) included: docs/roadmap/index.md has the record, and the test says what to flip.
+# What the controller does when it is reset and the DRAM is not (sim/tb_ddr3_restart.v, Phase 9 Stage 3): seven restart points
+# for each of two kinds of reset (WARM=1 the debugger's ndmreset, WARM=0 the cold start against a live DRAM), each its own run
+# from a power-up, since the protocol checker judges one DRAM. It pins a known defect too (calibration cannot run again):
+# docs/roadmap/index.md has the record, and the test says what to flip.
 sim_ddr3_restart:
-	@for n in 0 1 2 3 4; do \
-	    $(IVERILOG) $(IVFLAGS) -P tb_ddr3_restart.SCEN=$$n -o sim/sim_ddr3_restart_$$n.out sim/tb_ddr3_restart.v \
+	@for w in 1 0; do for n in 0 1 2 3 4 5 6; do \
+	    $(IVERILOG) $(IVFLAGS) -P tb_ddr3_restart.SCEN=$$n -P tb_ddr3_restart.WARM=$$w -o sim/sim_ddr3_restart_$$w$$n.out sim/tb_ddr3_restart.v \
 	        $(DDR3_SYNTH_SRCS) sim/ddr3_model.v sim/ddr3_dq_model.v || exit 1; \
-	    (cd sim && $(VVP) sim_ddr3_restart_$$n.out > ddr3_restart_$$n.log 2>&1); \
-	    grep -q "DDR3 RESTART SCENARIO $$n PASSED" sim/ddr3_restart_$$n.log || \
-	        { echo "sim_ddr3_restart FAILED (scenario $$n)"; grep -a "FAIL" sim/ddr3_restart_$$n.log | head; exit 1; }; \
-	    grep -a "DDR3 RESTART SCENARIO" sim/ddr3_restart_$$n.log; \
-	done
+	    (cd sim && $(VVP) sim_ddr3_restart_$$w$$n.out > ddr3_restart_$$w$$n.log 2>&1); \
+	    grep -q "DDR3 RESTART SCENARIO $$n PASSED" sim/ddr3_restart_$$w$$n.log || \
+	        { echo "sim_ddr3_restart FAILED (warm $$w, scenario $$n)"; grep -a "FAIL" sim/ddr3_restart_$$w$$n.log | head; exit 1; }; \
+	    echo "warm $$w: $$(grep -a 'DDR3 RESTART SCENARIO' sim/ddr3_restart_$$w$$n.log)"; \
+	done; done
 
 # ---- rtl/soc/wb_ddr.v, a Wishbone slave over the DDR3 PHY (Phase 9 Stage
 # 2, Part 1) ----
@@ -4521,8 +4522,8 @@ clean:
 	       sim/bootrom.hex sim/sim_ecpix5_ddr3.out sim/sim_ecpix5_ddr3_check.out sim/ecpix5_ddr3_check.log \
 	       sim/sim_ecpix5_ddr3_lane1.out sim/ecpix5_ddr3_lane1.log sim/sim_ecpix5_leds.out sim/ecpix5_leds.log \
 	       sim/ecpix5_check \
-	       sim/sim_ddr3_restart_0.out sim/sim_ddr3_restart_1.out sim/sim_ddr3_restart_2.out sim/sim_ddr3_restart_3.out sim/sim_ddr3_restart_4.out \
-	       sim/ddr3_restart_0.log sim/ddr3_restart_1.log sim/ddr3_restart_2.log sim/ddr3_restart_3.log sim/ddr3_restart_4.log \
+	       sim/sim_ddr3_restart_[01][0-6].out \
+	       sim/ddr3_restart_[01][0-6].log \
 	       sim/sdramprobe.log sim/video.log sim/blit.log sim/fb_equiv.log \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \
 	       software/firmware.elf software/firmware_text.bin software/firmware_data.bin \
