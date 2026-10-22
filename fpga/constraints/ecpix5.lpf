@@ -63,7 +63,8 @@ IOBUF  PORT "uart_rx" PULLMODE=UP   IO_TYPE=LVCMOS33;
 ## assumed) - enough for Stage 0's own "blinks an LED" bar without
 ## claiming pins this file has not actually needed to place yet. The other
 ## eleven channels are real, documented pins (litex-boards' own platform file,
-## and the schematic) left unclaimed here on purpose, not because they are unknown.
+## and the schematic) left unclaimed here on purpose, not because they are unknown; the DDR3 builds
+## claim them, in ecpix5_leds.lpf, for the controller's status.
 ## Port name is `led2_g`: soc_fpga.v's logical led[2] bit, which is also, as it happens,
 ## the physical LED2 it is wired to.
 LOCATE COMP "led2_g" SITE "R23";

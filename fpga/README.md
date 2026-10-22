@@ -2180,11 +2180,46 @@ What each outcome means, and what the reasoning behind it is (none of this has b
 | LED2's green channel (the board has four RGB LEDs) is not blinking | the FPGA is not running this design: not loaded, or the clock (K23) or reset (N5) pin. The blink is `heartbeat[24]`, about 0.75 Hz |
 | it blinks, nothing on the serial port | the UART: the wrong one of the board's two ports, the baud rate, or the TX pin (R24). The ROM prints before anything touches the DDR3 |
 | the ROM talks about the SD card and never says `RAM already holds a program` | the preload did not reach the bitstream: the wrong build |
-| the program's banner, then nothing, for good | **the first DDR3 access never completed.** The slave does not take a request until both byte lanes have calibrated, and the CPU waits on the bus, so this is the controller not calibrating (initialisation, or a lane's read capture) or not starting. Where a wrong pin, a wrong clock or a read-capture window that does not exist shows up |
+| the program's banner, then nothing, for good | **the first DDR3 access never completed.** The slave does not take a request until both byte lanes have calibrated, and the CPU waits on the bus, so this is the controller not calibrating (initialisation, or a lane's read capture) or not starting. Where a wrong pin, a wrong clock or a read-capture window that does not exist shows up. **The LEDs say which stage and which lane** (below) |
 | `FAIL <what>: got 0x..., expected 0x...` lines | the controller calibrated, and data comes back wrong. The `got` says how: a byte of the word in the wrong place (a lane), a bit stuck, a neighbouring location's data (an address or bank line), the old value after a store (a data mask) |
 | every `ok`, then `PASSED` | for these accesses it works: a word and a byte in each lane, several blocks, an eviction and a re-fill, the first and the last word of the 512 MB. **That is fourteen checks and not a memory test** (no sweep, nothing about timing margin, nothing about refresh over time): Stage 3 of the DDR3 plan in `docs/roadmap/phase-09-ddr.md` asks for those |
 
 Heartbeat first, then the serial port, then the program: each line of the table assumes the ones above it.
+
+### The LEDs: what the controller says without the CPU
+
+`BOARD=ecpix5-ddr3` and `-check` put the controller's own status on the board's RGB LEDs (`fpga/ecpix5_ddr3_leds.v`; the pins
+`fpga/constraints/ecpix5_leds.lpf`). The controller starts itself after reset, so the LEDs say how far it got when the serial port
+says nothing, which is the case the table above could only guess at. The names are the schematic's (R02); which number is printed
+on the board by which LED was not checked, but LED2 is the one whose green channel blinks.
+
+| LED | shows | dark | blue | green | red |
+|---|---|---|---|---|---|
+| LED0 | the controller's clocks, and the DRAM's initialisation | its PLL has not locked | locked, initialising | initialisation done | PLL locked, DLL not |
+| LED1 | byte lane 0's read calibration | waiting for initialisation | sweeping the eight taps | calibrated | every tap failed |
+| LED3 | byte lane 1's read calibration | waiting for initialisation | sweeping | calibrated | every tap failed |
+| LED2 | the CPU: green blinks (`heartbeat[24]`); red and blue are always dark | | | | |
+
+A good board is LED0, LED1 and LED3 green about half a millisecond after the reset (in simulation: initialisation done 522 us
+after it, each lane 1 us later), so the blue and dark states are not seen going by: a LED that stays blue or dark is the finding.
+Read them with the heartbeat first, as above, and then, reasoning from the design and not from a board:
+
+| What you see | Read it as |
+|---|---|
+| LED2 blinks, LED0 dark | the controller's PLL did not lock. It is fed by the SoC's 25 MHz clock, which is running (the heartbeat), so the PLL's own configuration or its lock |
+| LED0 red | the PLL locked and the DLL did not: the edge clock that feeds the DLL, or the DLL itself |
+| LED0 blue, for good | the PLL and DLL locked and the DRAM's initialisation never finished: the controller's `sclk` is not running, or it is held in reset |
+| LED0 green, LED1 and LED3 dark or blue, for good | initialisation finished and a lane's sweep never ended, which the design cannot do except with its clock stopped: treat it as a clock fault |
+| LED1 or LED3 red | **that lane's calibration failed**: no read tap saw the pattern the lane wrote. Nothing came back through that lane: no DRAM behind it, a DRAM that was not initialised (press the reset button after loading, see above), or that lane's DQ or DQS pins (a wrong or open pin, or a strobe that never reaches the capture) |
+| both red | everything shared: CK, CKE, the command and address pins, the DRAM's power or reset, or the clock plan |
+| all three green, nothing on the serial port | the controller is fine as far as calibration can say, and the problem is the UART or the program (the table above) |
+| all three green, `FAIL` lines | calibration passed and data comes back wrong: an address, bank or mask line, or a lane's byte placement |
+
+What green means and does not: a tap was found that reads back a pattern the lane wrote itself, so the pins, the strobe and the DRAM
+answered. It is not a memory test, and says nothing about refresh over time. `make sim_ecpix5_ddr3` checks the LEDs at the board's
+pins for the good board (the early states too), and `make sim_ecpix5_ddr3_lane1` for a board with nothing behind lane 1, whose LED3
+must go red while LED0 and LED1 stay green. The LEDs are active low behind a 74HC244 (schematic R02, sheet 17): a pin driven low lights
+its channel, and the design drives every channel, the unused ones high.
 
 ---
 

@@ -262,7 +262,7 @@ SD_BLOCKS = 128
 
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
-        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_fb_equiv framebuffer_synth_check soc_synth_check soc_synth_check_ddr3 sim_ulx3s sim_ecpix5 sim_ecpix5_ddr3 sim_ecpix5_ddr3_check sim_cmd0 dtb dtb_ddr3 dtb_4hart dtb_check \
+        sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_fb_equiv framebuffer_synth_check soc_synth_check soc_synth_check_ddr3 sim_ulx3s sim_ecpix5 sim_ecpix5_ddr3 sim_ecpix5_ddr3_check sim_ecpix5_ddr3_lane1 sim_ecpix5_leds sim_cmd0 dtb dtb_ddr3 dtb_4hart dtb_check \
         sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_ddr3_x16 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 pnr_soc_ecpix5_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
@@ -920,10 +920,31 @@ sim_ecpix5_ddr3: sim/bootrom_$(CORE)_ddr3.hex
 	cp sim/bootrom_$(CORE)_ddr3.hex sim/bootrom.hex
 	$(IVERILOG) $(IVFLAGS) -DDDR3_ENABLE -o sim/sim_ecpix5_ddr3.out sim/tb_ecpix5.v \
 	    sim/ddr3_model.v sim/ddr3_dq_model.v \
-	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v
+	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_ddr3_leds.v fpga/ecpix5_clk_pll.v
 	cd sim && $(VVP) sim_ecpix5_ddr3.out | tee ecpix5_ddr3.log
 	@grep -q "ECPIX5 WRAPPER TEST PASSED" sim/ecpix5_ddr3.log || \
 	    { echo "sim_ecpix5_ddr3 FAILED"; exit 1; }
+
+# The board's status LEDs (fpga/ecpix5_ddr3_leds.v, Phase 9 Stage 3): what each of the 128 values of the controller's status bus
+# looks like on the three LEDs it drives, against properties and a list of named situations (sim/tb_ecpix5_leds.v).
+# The decoder is a pure function, so there is no SoC in it and no firmware. Under `sim_ecpix5_ddr3` the same LEDs are checked
+# at the board's pins for the good board, and under the target below for a board whose lane 1 has nothing behind it.
+sim_ecpix5_leds: sim/tb_ecpix5_leds.v fpga/ecpix5_ddr3_leds.v
+	$(IVERILOG) $(IVFLAGS) -o sim/sim_ecpix5_leds.out sim/tb_ecpix5_leds.v fpga/ecpix5_ddr3_leds.v
+	cd sim && $(VVP) sim_ecpix5_leds.out | tee ecpix5_leds.log
+	@grep -q "ECPIX5 LEDS TEST PASSED" sim/ecpix5_leds.log || \
+	    { echo "sim_ecpix5_leds FAILED"; exit 1; }
+
+# The board top with no memory behind byte lane 1 (-DLEDS_LANE1_DEAD in sim/tb_ecpix5.v): lane 1's calibration fails, and the
+# controller's LED and lane 0's must stay green while lane 1's goes red. The good board's LEDs are checked by sim_ecpix5_ddr3.
+sim_ecpix5_ddr3_lane1: sim/bootrom_$(CORE)_ddr3.hex
+	cp sim/bootrom_$(CORE)_ddr3.hex sim/bootrom.hex
+	$(IVERILOG) $(IVFLAGS) -DDDR3_ENABLE -DLEDS_LANE1_DEAD -o sim/sim_ecpix5_ddr3_lane1.out sim/tb_ecpix5.v \
+	    sim/ddr3_model.v sim/ddr3_dq_model.v \
+	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_ddr3_leds.v fpga/ecpix5_clk_pll.v
+	cd sim && $(VVP) sim_ecpix5_ddr3_lane1.out | tee ecpix5_ddr3_lane1.log
+	@grep -q "ECPIX5 WRAPPER TEST PASSED" sim/ecpix5_ddr3_lane1.log || \
+	    { echo "sim_ecpix5_ddr3_lane1 FAILED"; exit 1; }
 
 # The self-checking bitstream, BOARD=ecpix5-ddr3-check in fpga/synth/synth_ecp5.sh: the DDR3 build above with
 # software/soc/ddrcheck.c preloaded into block RAM (-DPRELOAD_RAM), which is what the first thing on the board will be.
@@ -940,7 +961,7 @@ sim_ecpix5_ddr3_check: sim/bootrom_$(CORE)_ddr3.hex sim/ddrcheckimage.hex
 	cp sim/ddrcheckimage.hex sim/ecpix5_check/ramimage.hex
 	$(IVERILOG) $(IVFLAGS) -DDDR3_ENABLE -DPRELOAD_RAM -DDDR3_CHECK -o sim/sim_ecpix5_ddr3_check.out sim/tb_ecpix5.v \
 	    sim/ddr3_model.v sim/ddr3_dq_model.v \
-	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v
+	    $(SOC_RTL) fpga/soc_fpga.v fpga/ecpix5_top.v fpga/ecpix5_ddr3_leds.v fpga/ecpix5_clk_pll.v
 	cd sim/ecpix5_check && $(VVP) ../sim_ecpix5_ddr3_check.out | tee ../ecpix5_ddr3_check.log
 	@grep -q "ECPIX5 WRAPPER TEST PASSED" sim/ecpix5_ddr3_check.log && grep -q "^DDR3 CPU-PATH TEST PASSED" sim/ecpix5_ddr3_check.log || \
 	    { echo "sim_ecpix5_ddr3_check FAILED"; exit 1; }
@@ -1163,6 +1184,8 @@ lint-rtl-soc:
 	    -DDDR3_ENABLE $(CORE_DEFINES) $(VERILATOR_LINT_FLAGS) \
 	    --top-module soc_top $(VERILATOR_PARAMS) \
 	    $(SOC_RTL) sim/verilator_soc.vlt
+	# The ECPIX-5's status-LED decoder (fpga/ecpix5_ddr3_leds.v, Phase 9 Stage 3), which neither lint above reads.
+	$(VERILATOR) --lint-only -Wall -Wno-UNUSEDSIGNAL --top-module ecpix5_ddr3_leds fpga/ecpix5_ddr3_leds.v
 
 # ---- Verilator lint of the DDR3 PHY, simulation branch (Phase 9 Stage 1, Part 19) ----
 #
@@ -4391,10 +4414,10 @@ rtl_check_sim: sim_cpu_halt sim_cpu_resv_ports sim_cpu_wb_ifill sim_cpu_wb_dcach
                sim_plic_4ctx sim_interconnect_multihart sim_wb_npu sim_wb_fir sim_tmds_encode sim_tmds_serialize \
                sim_video_pll sim_soc_2hart_hetero sim_soc_2hart_coherence_hetero sim_soc_2hart_coherence_sdram_hetero \
                sim_soc_2hart_amoswap_hetero sim_soc_2hart_amoswap_sdram_hetero sim_soc_2hart_lrsc_hetero \
-               sim_soc_2hart_lrsc_sdram_hetero sim_soc_2hart_lrsc_swap_hetero sim_soc_2hart_ordinary_hetero
+               sim_soc_2hart_lrsc_sdram_hetero sim_soc_2hart_lrsc_swap_hetero sim_soc_2hart_ordinary_hetero sim_ecpix5_leds
 # Needs the RISC-V toolchain, for the boot ROM or a test program, and so runs under the CORE it is given.
 soc_fw_check_sim: sim_pmptest sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 sim_ulx3s_video \
-                  sim_ecpix5 sim_ecpix5_ddr3 sim_ecpix5_ddr3_check sim_ramboot_2hart_hetero
+                  sim_ecpix5 sim_ecpix5_ddr3 sim_ecpix5_ddr3_lane1 sim_ecpix5_ddr3_check sim_ramboot_2hart_hetero
 
 # The two-hart tests: the boot with the second hart released, then LR/SC, AMOs, coherence and ordinary stores, in
 # block RAM and in SDRAM. `verify` runs them over the bus, the default, and so does the `firmware` job; the `noc`
@@ -4483,6 +4506,7 @@ clean:
 	       sim/sdramboot.log sim/verilator_soc.log \
 	       sim/sim.log sim/software.log sim/soc.log sim/cmd0.log sim/ulx3s.log sim/ulx3s_video.log sim/ecpix5.log sim/ecpix5_ddr3.log \
 	       sim/bootrom.hex sim/sim_ecpix5_ddr3.out sim/sim_ecpix5_ddr3_check.out sim/ecpix5_ddr3_check.log \
+	       sim/sim_ecpix5_ddr3_lane1.out sim/ecpix5_ddr3_lane1.log sim/sim_ecpix5_leds.out sim/ecpix5_leds.log \
 	       sim/ecpix5_check \
 	       sim/sdramprobe.log sim/video.log sim/blit.log sim/fb_equiv.log \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \

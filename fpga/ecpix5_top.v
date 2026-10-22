@@ -27,6 +27,13 @@
 // so the controller has none of the four any more (Phase 9 Stage 1, Part 27), where it had
 // them as ports on throwaway pins through Stage 2, Part 15. Not on a board, not
 // simulated against a real chip: the behavioural DDR3 model is all there is.
+//
+// Also with -DDDR3_ENABLE, the board's status LEDs (fpga/ecpix5_ddr3_leds.v has what the colours say): the controller's
+// clocks and initialisation on LED0, byte lane 0's calibration on LED1 and lane 1's on LED3; LED2's green stays the CPU's
+// heartbeat. The LEDs are RGB, common anode through a resistor each to 3V3, and a 74HC244 sinks them (schematic R02,
+// sheet 17): a pin LOW lights a channel, which is what the _n in their names says. Every channel that has no meaning is
+// driven HIGH, dark, and not left floating into the buffer's input: that is LED2's red and blue. The pins are in
+// fpga/constraints/ecpix5_ddr3.lpf.
 module ecpix5_top #(
     // 25 MHz reaches soc_fpga.v, not the board's own 100 MHz oscillator -
     // see fpga/ecpix5_clk_pll.v's own header for why. Same default as
@@ -44,6 +51,11 @@ module ecpix5_top #(
     output wire led2_g     // soc_fpga.v's led[2] (heartbeat[24]) only
 `ifdef DDR3_ENABLE
     ,
+    // The other eleven channels of the four RGB LEDs, active low (see the header). LED2's green is led2_g, above.
+    output wire        led0_r_n, led0_g_n, led0_b_n,
+    output wire        led1_r_n, led1_g_n, led1_b_n,
+    output wire        led2_r_n, led2_b_n,
+    output wire        led3_r_n, led3_g_n, led3_b_n,
     // Names and widths are rtl/soc/soc_top.v's; the pins are fpga/constraints/ecpix5_ddr3.lpf's.
     output wire        ddr3_ck,
     output wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n,
@@ -79,6 +91,9 @@ module ecpix5_top #(
 
     wire [GPIO_WIDTH-1:0] gpio;    // left floating - no GPIO header pin claimed yet
     wire [3:0] led;
+`ifdef DDR3_ENABLE
+    wire [6:0] ddr3_status;        // the controller's, for the LEDs below
+`endif
 
     soc_fpga #(
         .CLK_HZ(CLK_HZ),
@@ -121,7 +136,8 @@ module ecpix5_top #(
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
         .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
-        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm)
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .ddr3_status(ddr3_status)
 `endif
     );
 
@@ -130,6 +146,22 @@ module ecpix5_top #(
     // directly rather than assumed. led[3]/led[1:0] have no real pin
     // yet (led[1:0] carries GPIO state, which Stage 0 has none of).
     assign led2_g = led[2];
+
+`ifdef DDR3_ENABLE
+    // ---- the controller's status on the board's RGB LEDs ----
+    // {blue, green, red}, 1 = lit, from the decoder; the board's LEDs are active low, so the pin is the complement.
+    wire [2:0] led_ctl_rgb, led_l0_rgb, led_l1_rgb;
+    ecpix5_ddr3_leds LEDS (
+        .ddr3_status(ddr3_status),
+        .led_ctl_rgb(led_ctl_rgb), .led_l0_rgb(led_l0_rgb), .led_l1_rgb(led_l1_rgb)
+    );
+    assign {led0_b_n, led0_g_n, led0_r_n} = ~led_ctl_rgb;
+    assign {led1_b_n, led1_g_n, led1_r_n} = ~led_l0_rgb;
+    assign {led3_b_n, led3_g_n, led3_r_n} = ~led_l1_rgb;
+    // LED2's red and blue have no meaning here: driven dark, not left floating.
+    assign led2_r_n = 1'b1;
+    assign led2_b_n = 1'b1;
+`endif
 
     wire _unused_ok = &{1'b0, led[3], led[1:0], 1'b0};
 endmodule

@@ -176,6 +176,10 @@ module soc_top #(
     inout  wire [7:0]  ddr3_dqu,
     inout  wire        ddr3_udqs,
     output wire        ddr3_udm,
+    // The controller's own status, for a board to show (fpga/ecpix5_ddr3_leds.v does): [0] pll_locked, [1] dll_locked,
+    // [2] init_ready, [3] calib_done (lane 0), [4] calib_error (lane 0), [5] calib1_done, [6] calib1_error. All zero
+    // in a build without DDR3_ENABLE, and left open by every testbench that does not look.
+    output wire [6:0]  ddr3_status,
 
     output wire trap
 );
@@ -876,9 +880,9 @@ module soc_top #(
         .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
-        .pll_locked(), .dll_locked(), .init_ready(),
-        .calib_done(), .calib_readclksel(), .calib_error(),
-        .calib1_done(), .calib1_readclksel(), .calib1_error(),
+        .pll_locked(ddr3_status[0]), .dll_locked(ddr3_status[1]), .init_ready(ddr3_status[2]),
+        .calib_done(ddr3_status[3]), .calib_readclksel(), .calib_error(ddr3_status[4]),
+        .calib1_done(ddr3_status[5]), .calib1_readclksel(), .calib1_error(ddr3_status[6]),
         .refresh_busy()
     );
     /* verilator lint_on PINCONNECTEMPTY */
@@ -891,6 +895,7 @@ module soc_top #(
     assign ddr3_cke = 1'b0; assign ddr3_odt = 1'b0;
     assign ddr3_dq = 8'bz; assign ddr3_dqs = 1'bz; assign ddr3_dm = 1'b1;
     assign ddr3_dqu = 8'bz; assign ddr3_udqs = 1'bz; assign ddr3_udm = 1'b1;
+    assign ddr3_status = 7'b0;
 `endif
 
     // ---- CLINT behind a bridge ----
