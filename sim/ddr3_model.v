@@ -26,6 +26,20 @@
 // controller's own RESET# pulse). What the controller still owns, and this file checks, is
 // the other half of JEDEC's power-up step 2: CKE may not rise until 500 us after RESET#
 // went high.
+// ---- A reset of the controller that is not a reset of the DRAM (Phase 9 Stage 3) ----
+// The debugger's `ndmreset` and a bitstream loaded over a powered board reset the controller and not the DRAM
+// (rtl/soc/ddr3_init_seq.v's header says so): CKE falls while RESET# stays high, and the initialisation runs again
+// against a DRAM that has kept its mode registers, its open rows and whatever burst it was in. Until now this file
+// was single-shot: it judged one power-up and called every MRS after it "unexpected". It now treats a fall of CKE
+// with RESET# high, after the initialisation, as the start of a warm restart, and holds it to what the DRAM requires
+// of that, reasoned from the DDR3 standard (JESD79-3) and not from the primary datasheet, which nothing here has read:
+//   - CKE may not fall while a write or its recovery is in progress (tWRPDEN = WL + 4 + tWR + 1) or while a read's
+//     burst is (tRDPDEN = RL + 4 + 1): the DRAM would lose the clock enable in the middle of a burst;
+//   - the first command after CKE rises waits tXP (3 CK) - the rule already here for the first MRS of a power-up;
+//   - an MRS needs every bank precharged, so one issued with a bank open (an ACTIVATE not yet precharged) is a
+//     violation, and the initialisation has no PRECHARGE of its own;
+//   - the MR2, MR3, MR1, MR0, ZQCL order and the waits between them are checked again, as at power-up.
+// A fall of CKE with RESET# low is the board's reset and nothing here: the DRAM is starting over too.
 module ddr3_model #(
     parameter CLK_HZ = 25_000_000
 )(
@@ -80,6 +94,12 @@ module ddr3_model #(
     // Note 34: write recovery starts four clocks after WL for BL8, so the
     // earliest legal PRECHARGE after a WRITE is WR + CWL + 4 + tWR.
     localparam WR_TO_PRE_MIN_CYC = CWL_CYC + BL_HALF_CYC + WR_REC_CYC;
+    // A reset of the controller alone: CKE may fall once a write (and its recovery) or a read has finished, and the
+    // first command after it rises waits tXP.
+    localparam TXP_MIN_CYC     = 3;                                  // tXP = max(3 CK, 7.5 ns)
+    localparam WR_PDEN_CYC     = CWL_CYC + BL_HALF_CYC + WR_REC_CYC + 1;   // tWRPDEN = WL + 4 + tWR + 1
+    localparam RL_CYC          = 5;                                  // DLL-off read latency, AL + CL - 1 (see sim/ddr3_dq_model.v, Part 18)
+    localparam RD_PDEN_CYC     = RL_CYC + BL_HALF_CYC + 1;           // tRDPDEN = RL + 4 + 1
 
     // Command decode - same {ras_n,cas_n,we_n} convention
     // rtl/soc/ddr3_phy_ecp5.v itself uses, checked independently here
@@ -128,6 +148,14 @@ module ddr3_model #(
     reg [31:0] wait_min_needed;   // the minimum this project's own init sequence itself claims for the current gap
     reg [31:0] since_ref;         // cycles since the last REFRESH command (Part 12)
     reg        ref_seen;
+    // A reset of the controller alone: see the header.
+    reg        cke_q, reset_n_q;
+    reg        warm_pending;      // CKE fell with RESET# high after the initialisation, and has not risen again
+    reg [31:0] since_wr_cmd, since_rd_cmd;   // cycles since the last WRITE, READ command, saturating
+    reg        wr_cmd_seen, rd_cmd_seen;
+    integer    mi;
+    reg        any_open;
+    reg        bank_open    [0:7];   // per-bank state, tracked below (Part 14)
 
     task fail(input [511:0] msg);
         begin
@@ -156,9 +184,38 @@ module ddr3_model #(
         end
     end
 
+    // ---- a reset of the controller alone, from the pins ----
+    always @(posedge ck) begin
+        cke_q     <= cke;
+        reset_n_q <= reset_n;
+        if (since_wr_cmd != 32'hFFFF_FFFF) since_wr_cmd <= since_wr_cmd + 1;
+        if (since_rd_cmd != 32'hFFFF_FFFF) since_rd_cmd <= since_rd_cmd + 1;
+        if (reset_n && cmd_present && is_wr) begin since_wr_cmd <= 0; wr_cmd_seen <= 1'b1; end
+        if (reset_n && cmd_present && is_rd) begin since_rd_cmd <= 0; rd_cmd_seen <= 1'b1; end
+        if (reset_n && reset_n_q && seq_state == SEQ_DONE && cke_q && !cke) begin
+            // CKE falls, the DRAM was not reset
+            warm_pending <= 1'b1;
+            if (wr_cmd_seen && since_wr_cmd + 1 < WR_PDEN_CYC)
+                fail("CKE fell in the middle of a write burst (before tWRPDEN)");
+            if (rd_cmd_seen && since_rd_cmd + 1 < RD_PDEN_CYC)
+                fail("CKE fell in the middle of a read burst (before tRDPDEN)");
+        end
+        if (warm_pending && reset_n && !cke_q && cke) warm_pending <= 1'b0;   // the re-arm itself is in the block below
+        if (!reset_n) warm_pending <= 1'b0;
+    end
+
     always @(posedge ck) begin
         since_last_cmd <= since_last_cmd + 1;
         since_ref      <= since_ref + 1;
+
+        // CKE rises after a fall with the DRAM not reset: the controller initialises it again, in the same order, and the
+        // first command waits tXP from the rise
+        if (warm_pending && reset_n && !cke_q && cke) begin
+            seq_state       <= SEQ_WANT_MR2;
+            seq_done        <= 1'b0;
+            wait_min_needed <= TXP_MIN_CYC;
+            since_last_cmd  <= 0;
+        end
 
         if (cmd_present && !is_nop) begin
             // A real command is being issued right now - check the
@@ -174,6 +231,13 @@ module ddr3_model #(
             // independent of which module issued the offending command.
             if (ref_seen && (since_ref + 1 < RFC_MIN_CYC)) begin
                 fail("command issued during tRFC after REFRESH (only NOP/DES allowed)");
+            end
+
+            // An MRS needs every bank precharged (JESD79-3): after a reset of the controller alone, one can be open.
+            if (is_mrs) begin
+                any_open = 1'b0;
+                for (mi = 0; mi < 8; mi = mi + 1) if (bank_open[mi]) any_open = 1'b1;
+                if (any_open) fail("MRS with a bank open (all banks must be precharged first)");
             end
 
             case (seq_state)
@@ -218,6 +282,7 @@ module ddr3_model #(
                 end
                 SEQ_WANT_ZQCL: begin
                     if (is_zqcl) begin
+                        for (mi = 0; mi < 8; mi = mi + 1) bank_open[mi] <= 1'b0;   // the DRAM took the MRS, so every bank was idle
                         seq_state       <= SEQ_DONE;
                         wait_min_needed <= ZQINIT_MIN_CYC;
                         since_last_cmd  <= 0;
@@ -266,7 +331,6 @@ module ddr3_model #(
     // must be issued before opening a different row in the same bank."
     // REFRESH needs every bank precharged (Figure 40 shows PRECHARGE-all
     // then tRP ahead of it). A PRECHARGE to a bank with no open row is a NOP.
-    reg        bank_open    [0:7];
     integer    since_act    [0:7];
     integer    since_rd     [0:7];
     integer    since_wr     [0:7];
@@ -338,6 +402,9 @@ module ddr3_model #(
         wait_min_needed = 0;
         since_ref       = 0;
         ref_seen        = 1'b0;
+        cke_q = 1'b0; reset_n_q = 1'b0; warm_pending = 1'b0;
+        since_wr_cmd = 32'hFFFF_FFFF; since_rd_cmd = 32'hFFFF_FFFF; wr_cmd_seen = 1'b0; rd_cmd_seen = 1'b0;
+        any_open = 1'b0;
     end
 
     `undef NS2CYC
