@@ -2152,7 +2152,9 @@ it takes milliseconds and not seventy. The script refuses to build with an image
 board's reset circuit's, schematic R02 sheet 3), which is the power-up the controller is written for. A DRAM left
 running by an earlier bitstream, with the bitstream loaded over it and no reset, makes the controller start its
 initialisation against a DRAM that was not reset, which may work and is not guaranteed
-(`rtl/soc/ddr3_init_seq.v`). If the first run fails, press the button and read it again before believing it.
+(`rtl/soc/ddr3_init_seq.v`). In simulation (`make sim_ddr3_restart`) the initialisation re-runs in full after such a restart and then
+**both lanes' calibration ends in an error**, so the controller takes no request until the board's reset: the open defect on the read
+calibration in `docs/roadmap/index.md`. If the first run fails, press the button and read it again before believing it.
 
 Open the board's second USB serial port (the FT2232H's channel B is the UART; channel A is the JTAG) at 115200 8N1.
 A run that works prints, within a second or so of the reset:
@@ -2196,13 +2198,15 @@ on the board by which LED was not checked, but LED2 is the one whose green chann
 | LED | shows | dark | blue | green | red |
 |---|---|---|---|---|---|
 | LED0 | the controller's clocks, and the DRAM's initialisation | its PLL has not locked | locked, initialising | initialisation done | PLL locked, DLL not |
-| LED1 | byte lane 0's read calibration | waiting for initialisation | sweeping the eight taps | calibrated | every tap failed |
-| LED3 | byte lane 1's read calibration | waiting for initialisation | sweeping | calibrated | every tap failed |
+| LED1 | byte lane 0's read calibration | waiting for initialisation | sweeping the eight taps | a tap captured the lane's own pattern | every tap failed |
+| LED3 | byte lane 1's read calibration | waiting for initialisation | sweeping | a tap captured the lane's own pattern | every tap failed |
 | LED2 | the CPU: green blinks (`heartbeat[24]`); red and blue are always dark | | | | |
 
-A good board is LED0, LED1 and LED3 green about half a millisecond after the reset (in simulation: initialisation done 522 us
-after it, each lane 1 us later), so the blue and dark states are not seen going by: a LED that stays blue or dark is the finding.
-Read them with the heartbeat first, as above, and then, reasoning from the design and not from a board:
+In simulation the three go green about half a millisecond after the reset (initialisation done 522 us after it, each lane 1 us
+later), so the blue and dark states are not seen going by: a LED that stays blue or dark is the finding. **On a board, LED0 is the
+one that speaks for the DRAM, and the lanes do not yet**: the calibration sweep injects its own pattern and sends the DRAM no command,
+so what it ends in on a board is not known, and neither colour is evidence about the DRAM (the open defect in `docs/roadmap/index.md`).
+Read the LEDs with the heartbeat first, as above, and then, again from the design and not from a board:
 
 | What you see | Read it as |
 |---|---|
@@ -2210,14 +2214,16 @@ Read them with the heartbeat first, as above, and then, reasoning from the desig
 | LED0 red | the PLL locked and the DLL did not: the edge clock that feeds the DLL, or the DLL itself |
 | LED0 blue, for good | the PLL and DLL locked and the DRAM's initialisation never finished: the controller's `sclk` is not running, or it is held in reset |
 | LED0 green, LED1 and LED3 dark or blue, for good | initialisation finished and a lane's sweep never ended, which the design cannot do except with its clock stopped: treat it as a clock fault |
-| LED1 or LED3 red | **that lane's calibration failed**: no read tap saw the pattern the lane wrote. Nothing came back through that lane: no DRAM behind it, a DRAM that was not initialised (press the reset button after loading, see above), or that lane's DQ or DQS pins (a wrong or open pin, or a strobe that never reaches the capture) |
-| both red | everything shared: CK, CKE, the command and address pins, the DRAM's power or reset, or the clock plan |
-| all three green, nothing on the serial port | the controller is fine as far as calibration can say, and the problem is the UART or the program (the table above) |
-| all three green, `FAIL` lines | calibration passed and data comes back wrong: an address, bank or mask line, or a lane's byte placement |
+| LED1 or LED3 red | **that lane's calibration sweep ended without a tap.** The sweep sends the DRAM no command (the open defect), so this is not yet a finding about the lane's DQ and DQS pins or the DRAM behind them. It does stop every access, because the slave waits for both lanes, so the program's banner will be the last thing on the serial port |
+| both red | the same, for both lanes; it is not evidence about CK, CKE, the command pins or the DRAM's power |
+| all three green, nothing on the serial port | initialisation finished and each sweep found a tap against its own pattern, which is all it says about the DRAM. The problem may be the UART or the program (the table above) |
+| all three green, `FAIL` lines | calibration ended in a tap and data comes back wrong: an address, bank or mask line, a lane's byte placement, or a tap the sweep chose without the DRAM's data |
 
-What green means and does not: a tap was found that reads back a pattern the lane wrote itself, so the pins, the strobe and the DRAM
-answered. It is not a memory test, and says nothing about refresh over time. `make sim_ecpix5_ddr3` checks the LEDs at the board's
-pins for the good board (the early states too), and `make sim_ecpix5_ddr3_lane1` for a board with nothing behind lane 1, whose LED3
+What green means and does not: on a lane it means a tap was found that captures a pattern the lane drove itself onto its DQ and DQS pins.
+The sweep sends the DRAM no ACTIVATE, WRITE or READ (measured in simulation: only NOP in its 58 slots), so no DRAM took part and green
+does not say the pins, the strobe or the DRAM answered. It is not a memory test, and says nothing about refresh over time. Green on LED0
+is different: the DRAM's power-up sequence ran to its end, with its 500 us wait, on the controller's own clock. `make sim_ecpix5_ddr3`
+checks the LEDs at the board's pins for the simulated good board (the early states too), and `make sim_ecpix5_ddr3_lane1` for a board with nothing behind lane 1, whose LED3
 must go red while LED0 and LED1 stay green. The LEDs are active low behind a 74HC244 (schematic R02, sheet 17): a pin driven low lights
 its channel, and the design drives every channel, the unused ones high.
 

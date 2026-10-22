@@ -263,7 +263,7 @@ SD_BLOCKS = 128
 .PHONY: all sim wave wave_soc verilator software sim_software soc card ramimage probeimage \
         verilator_soc verilator_sdramboot verilator_check \
         sim_soc sim_ramboot sim_probe sim_rerun trapcheck sim_video sim_blit sim_fb_equiv framebuffer_synth_check soc_synth_check soc_synth_check_ddr3 sim_ulx3s sim_ecpix5 sim_ecpix5_ddr3 sim_ecpix5_ddr3_check sim_ecpix5_ddr3_lane1 sim_ecpix5_leds sim_cmd0 dtb dtb_ddr3 dtb_4hart dtb_check \
-        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_ddr3_x16 sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 pnr_soc_ecpix5_ddr3 \
+        sim_sdram sim_sdramboot sdramimage sim_sdramprobe sim_sdramcheck sim_ddrcheck sim_ddratomics sim_ddrexec sim_ddrmmutest sim_uartload_ddr3 sim_ddr3_init sim_ddr3_data sim_ddr3_top sim_ddr3_dqs_write sim_ddr3_write_seq sim_ddr3_read_seq sim_ddr3_read_burst_ext sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_ddr3_x16 sim_ddr3_restart sim_wb_ddr verilator_ddr3 verilator_wb_ddr synth_check_ddr3 pnr_probe_ddr3 pnr_soc_ecpix5_ddr3 \
         sim_jtag \
         sim_mmusdram sim_plic sim_pmptest sim_uart16550 sim_uartirq \
         sim_uartload uartload-host sbiimage sim_opensbi sim_opensbi_2hart sim_opensbi_4hart \
@@ -4048,6 +4048,19 @@ sim_ddr3_x16: sim/sim_ddr3_x16.out
 	@grep -q "DDR3 X16 TEST PASSED" sim/ddr3_x16.log || \
 	    { echo "sim_ddr3_x16 FAILED"; exit 1; }
 
+# What the controller does when it is reset and the DRAM is not (sim/tb_ddr3_restart.v, Phase 9 Stage 3): five restart points,
+# each its own run from a power-up, since the protocol checker judges one DRAM. It pins today's behaviour, a known defect
+# (calibration cannot run again) included: docs/roadmap/index.md has the record, and the test says what to flip.
+sim_ddr3_restart:
+	@for n in 0 1 2 3 4; do \
+	    $(IVERILOG) $(IVFLAGS) -P tb_ddr3_restart.SCEN=$$n -o sim/sim_ddr3_restart_$$n.out sim/tb_ddr3_restart.v \
+	        $(DDR3_SYNTH_SRCS) sim/ddr3_model.v sim/ddr3_dq_model.v || exit 1; \
+	    (cd sim && $(VVP) sim_ddr3_restart_$$n.out > ddr3_restart_$$n.log 2>&1); \
+	    grep -q "DDR3 RESTART SCENARIO $$n PASSED" sim/ddr3_restart_$$n.log || \
+	        { echo "sim_ddr3_restart FAILED (scenario $$n)"; grep -a "FAIL" sim/ddr3_restart_$$n.log | head; exit 1; }; \
+	    grep -a "DDR3 RESTART SCENARIO" sim/ddr3_restart_$$n.log; \
+	done
+
 # ---- rtl/soc/wb_ddr.v, a Wishbone slave over the DDR3 PHY (Phase 9 Stage
 # 2, Part 1) ----
 #
@@ -4202,7 +4215,7 @@ DDR3_SIM_TESTS = sim_ddr3_init sim_ddr3_data sim_ddr3_top \
                  sim_ddr3_cmd_seq sim_ddr3_refresh_ctrl sim_ddr3_refresh_wire \
                  sim_ddr3_reverse_arb sim_ddr3_wr_excl sim_ddr3_model_banks sim_ddr3_addr \
                  sim_ddr3_phy_phases sim_ddr3_wr_window sim_ddr3_rd_window sim_ddr3_dq_window_rules \
-                 sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_ddr3_x16 sim_wb_ddr
+                 sim_ddr3_dm_window sim_ddr3_data_lane1 sim_ddr3_top_lane1 sim_ddr3_x16 sim_ddr3_restart sim_wb_ddr
 .PHONY: ddr3_check ddr3_check_sim
 ddr3_check_sim: $(DDR3_SIM_TESTS) verilator_ddr3 verilator_wb_ddr lint-rtl-ddr3
 ddr3_check: ddr3_check_sim synth_check_ddr3
@@ -4508,6 +4521,8 @@ clean:
 	       sim/bootrom.hex sim/sim_ecpix5_ddr3.out sim/sim_ecpix5_ddr3_check.out sim/ecpix5_ddr3_check.log \
 	       sim/sim_ecpix5_ddr3_lane1.out sim/ecpix5_ddr3_lane1.log sim/sim_ecpix5_leds.out sim/ecpix5_leds.log \
 	       sim/ecpix5_check \
+	       sim/sim_ddr3_restart_0.out sim/sim_ddr3_restart_1.out sim/sim_ddr3_restart_2.out sim/sim_ddr3_restart_3.out sim/sim_ddr3_restart_4.out \
+	       sim/ddr3_restart_0.log sim/ddr3_restart_1.log sim/ddr3_restart_2.log sim/ddr3_restart_3.log sim/ddr3_restart_4.log \
 	       sim/sdramprobe.log sim/video.log sim/blit.log sim/fb_equiv.log \
 	       sim/sim_software.out sim/firmware_imem.hex sim/firmware_dmem.hex \
 	       software/firmware.elf software/firmware_text.bin software/firmware_data.bin \

@@ -48,7 +48,12 @@
 // registers can be written again once CKE is back. It is not guaranteed when the DRAM was
 // in the middle of a burst or had a row open, and the DRAM is not refreshed for the 500 us
 // and the rest of the sequence. The board's reset is the recovery, as it is for any
-// controller on this board.
+// controller on this board. sim/tb_ddr3_restart.v runs this (make sim_ddr3_restart): against
+// a checker whose rules are reasoned from JESD79-3 and not from the datasheet, a restart from
+// an idle DRAM, or just after a refresh, is legal; one with a bank open issues its first MRS
+// into it (there is no PRECHARGE ALL here), and one in a burst drops CKE inside it. And after
+// every restart both lanes' calibration ends in an error (docs/roadmap/index.md, the open
+// defect on the read calibration), so the controller then takes no request.
 module ddr3_init_seq #(
     // Real, ns-based JEDEC timing, converted to cycles at elaboration
     // time - the same NS2CYC-style approach rtl/soc/wb_sdram.v already
