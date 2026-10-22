@@ -370,9 +370,9 @@ case "$BOARD" in
         #
         # What differs: -DDDR3_ENABLE (fpga/ecpix5_top.v and fpga/soc_fpga.v gain the DDR3 ports,
         # rtl/soc/soc_top.v instantiates rtl/soc/wb_ddr.v), the DDR3 files, the DDR3 variant of the boot ROM (its
-        # loader accepts DDR3_BASE as a load address; sim_uartload_ddr3 is its test), and two constraint files in
-        # one: the base board's and the DDR3 pins, which the two independent sources and the board's schematic
-        # (R02) agree on.
+        # loader accepts DDR3_BASE as a load address; sim_uartload_ddr3 is its test), and three constraint files in
+        # one: the base board's, the DDR3 pins, which the two independent sources and the board's schematic (R02) agree
+        # on, and the RGB LEDs' (Phase 9 Stage 3: the controller's status on the board's LEDs, fpga/ecpix5_ddr3_leds.v).
         #
         # Through Stage 2, Part 15 the controller had four ports the board has no pin for (CS#, RESET#, CK#, A15),
         # they sat on throwaway pins, and this build stopped before the bitstream. Phase 9 Stage 1, Part 27 removed
@@ -381,10 +381,10 @@ case "$BOARD" in
         DEVICE=${DEVICE:-um5g-85k}
         PACKAGE=CABGA554
         TOP=${TOP:-ecpix5_top}
-        LPF_PARTS="fpga/constraints/ecpix5.lpf fpga/constraints/ecpix5_ddr3.lpf"
+        LPF_PARTS="fpga/constraints/ecpix5.lpf fpga/constraints/ecpix5_ddr3.lpf fpga/constraints/ecpix5_leds.lpf"
         LPF=${LPF:-$BUILD/ecpix5-ddr3.lpf}
         PNR_EXTRA=${PNR_EXTRA:-}
-        BOARD_RTL="fpga/ecpix5_top.v fpga/ecpix5_clk_pll.v"
+        BOARD_RTL="fpga/ecpix5_top.v fpga/ecpix5_ddr3_leds.v fpga/ecpix5_clk_pll.v"
         # The same files as fpga/synth/ddr3_pnr_probe.sh builds, plus the slave. Read in SystemVerilog mode, as it does.
         EXTRA_RTL="rtl/soc/wb_ddr.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
                    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \

@@ -1,0 +1,54 @@
+## ECPIX-5 (LambdaConcept), LFE5UM5G-85F, package CABGA554: the RGB LEDs the DDR3 builds use, apart from LED2's green.
+##
+## Four RGB LEDs, twelve channels. LED2's green is `led2_g` in ecpix5.lpf (Stage 0's heartbeat). The other eleven are here, for
+## BOARD=ecpix5-ddr3 and BOARD=ecpix5-ddr3-check, which put the controller's status on them (fpga/ecpix5_ddr3_leds.v says what
+## each colour means, fpga/ecpix5_top.v what drives it). A separate file, and not part of ecpix5_ddr3.lpf, because the PHY probe
+## (fpga/synth/ddr3_pnr_probe.sh) reads that one and has no LED ports.
+##
+## Source, twice, and the two agree on every ball:
+##   - the vendor's schematic, revision R02 (docs.lambdaconcept.com/ecpix-5/_static/resources/SCH_ECPIX-5_R02.PDF; read
+##     2026-10-22 from the Internet Archive's copy of that URL, the site itself answering 503): sheet 5 (FPGA banks) labels
+##     each ball with its net, LED_R0 .. LED_B3, and sheet 17 (RGB LED) is the circuit below. Checked by pairing each net
+##     label with the ball name on its row, for all twelve.
+##   - litex-boards, litex_boards/platforms/lambdaconcept_ecpix5.py, resource "rgb_led" (BSD-2-Clause). It numbers the
+##     four LEDs differently (its 0 is the schematic's LED2, its 1 is LED3, its 2 is LED0 and its 3 is LED1); the balls
+##     agree. The names here are the schematic's. Which number is printed on the board next to which LED was not checked.
+##
+## The circuit (sheet 17): four common-anode RGB LEDs (LD5 to LD8, SMLP36RGB2W3R), each channel's anode to 3V3 through its
+## own resistor (100 ohm for blue and green, 1,000 ohm for red, so red is the dim one), each channel's cathode to an output of a
+## 74HC244 (U19 for LED0 and LED1, U20 for LED2 and LED3), its enables tied low, its inputs the FPGA's LED_xn nets. The buffer
+## is not inverting and sinks the LED's current, so a pin driven LOW lights its channel and HIGH puts it out: every port
+## below is active low, and nothing the FPGA drives carries LED current. A pin left floating is an undriven buffer input,
+## which is why the design drives every channel, the unused ones high.
+##
+## Banks: all twelve are in bank 2 or bank 3 (trellis' iodb for LFE5UM5G-85F/CABGA554: K21 and M21 in bank 2, the rest in bank
+## 3), and the schematic's power sheet (6) puts banks 0 to 4, 7 and 8 on 3V3 and only bank 6 (the DDR3's) on 1V5, so LVCMOS33
+## is right and the DDR3's SSTL15 bank is not shared. The clock, the UART and LED2's green are on the same two banks.
+
+## LED0: the controller's clocks and initialisation
+LOCATE COMP "led0_r_n" SITE "U21";
+LOCATE COMP "led0_g_n" SITE "W21";
+LOCATE COMP "led0_b_n" SITE "T24";
+## LED1: byte lane 0's calibration
+LOCATE COMP "led1_r_n" SITE "T23";
+LOCATE COMP "led1_g_n" SITE "R21";
+LOCATE COMP "led1_b_n" SITE "T22";
+## LED2: the CPU's heartbeat is its green (led2_g, ecpix5.lpf); red and blue are held dark
+LOCATE COMP "led2_r_n" SITE "P21";
+LOCATE COMP "led2_b_n" SITE "P22";
+## LED3: byte lane 1's calibration
+LOCATE COMP "led3_r_n" SITE "K21";
+LOCATE COMP "led3_g_n" SITE "K24";
+LOCATE COMP "led3_b_n" SITE "M21";
+
+IOBUF PORT "led0_r_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led0_g_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led0_b_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led1_r_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led1_g_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led1_b_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led2_r_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led2_b_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led3_r_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led3_g_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;
+IOBUF PORT "led3_b_n" PULLMODE=NONE IO_TYPE=LVCMOS33 DRIVE=4;

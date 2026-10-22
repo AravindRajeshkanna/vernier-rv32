@@ -139,7 +139,9 @@ module soc_fpga #(
     output wire        ddr3_dm,
     inout  wire [7:0]  ddr3_dqu,
     inout  wire        ddr3_udqs,
-    output wire        ddr3_udm
+    output wire        ddr3_udm,
+    // The controller's status (rtl/soc/soc_top.v has the bit order), for a board top that has somewhere to show it.
+    output wire [6:0]  ddr3_status
 `endif
 );
     localparam UART_CLKS_PER_BIT = CLK_HZ / BAUD_RATE;
@@ -225,7 +227,8 @@ module soc_fpga #(
         .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a),
         .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
-        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm)
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .ddr3_status(ddr3_status)
 `endif
     );
 

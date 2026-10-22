@@ -12,6 +12,11 @@
 // about 800 characters and at 115200 that is 70 ms of simulated time. The divider is fpga/soc_fpga.v's
 // CLK_HZ / BAUD_RATE and is not what this test is about.
 //
+// Compiled with -DDDR3_ENABLE -DLEDS_LANE1_DEAD (`make sim_ecpix5_ddr3_lane1`) it is the test of the board's
+// status LEDs (fpga/ecpix5_ddr3_leds.v) in the case the normal run cannot show: no memory behind byte lane 1,
+// so lane 1's calibration fails and its LED must say so while lane 0's and the controller's do not. The same
+// run without the define checks the LEDs of the good board.
+//
 // Same reason sim/tb_ulx3s.v exists: fpga/top_fpga.v sat in the tree for
 // months with unconnected ports because nothing built it. `make verify`
 // now builds and runs this one too, so the same thing cannot happen to
@@ -41,6 +46,14 @@ module tb_ecpix5;
     wire uart_tx;
     reg  uart_rx = 1'b1;            // idle high, matching a real UART line
     wire led2_g;
+`ifdef DDR3_ENABLE
+    // The board's RGB LEDs are active low (a 74HC244 sinks them, schematic R02, sheet 17): 0 is lit.
+    wire led0_r_n, led0_g_n, led0_b_n, led1_r_n, led1_g_n, led1_b_n;
+    wire led2_r_n, led2_b_n, led3_r_n, led3_g_n, led3_b_n;
+    wire [2:0] led0_rgb = ~{led0_b_n, led0_g_n, led0_r_n};   // {blue, green, red}, 1 = lit
+    wire [2:0] led1_rgb = ~{led1_b_n, led1_g_n, led1_r_n};
+    wire [2:0] led3_rgb = ~{led3_b_n, led3_g_n, led3_r_n};
+`endif
 
 `ifdef DDR3_ENABLE
     // ---- the DDR3 side: the board's pins, and the behavioural models behind them ----
@@ -57,6 +70,11 @@ module tb_ecpix5;
     time        ddr3_t_reset_high = 0, ddr3_t_cke_high = 0;
     always @(posedge ddr3_reset_n) ddr3_t_reset_high = $time;
     always @(posedge ddr3_cke) if (ddr3_t_cke_high == 0) ddr3_t_cke_high = $time;
+    // when each LED stage is reached, from the board's reset: how long the blue and the dark states last
+    time ddr3_t_init = 0, ddr3_t_lane0 = 0, ddr3_t_lane1 = 0;
+    always @(posedge DUT.SOC.SOC.DDR3.init_ready)  if (ddr3_t_init  == 0) ddr3_t_init  = $time;
+    always @(posedge DUT.SOC.SOC.DDR3.calib_done)  if (ddr3_t_lane0 == 0) ddr3_t_lane0 = $time;
+    always @(posedge DUT.SOC.SOC.DDR3.calib1_done) if (ddr3_t_lane1 == 0) ddr3_t_lane1 = $time;
     wire [7:0]  ddr3_dq, ddr3_dqu;
     wire        ddr3_dqs, ddr3_udqs, ddr3_dm, ddr3_udm;
 `endif
@@ -67,6 +85,10 @@ module tb_ecpix5;
         .led2_g(led2_g)
 `ifdef DDR3_ENABLE
         ,
+        .led0_r_n(led0_r_n), .led0_g_n(led0_g_n), .led0_b_n(led0_b_n),
+        .led1_r_n(led1_r_n), .led1_g_n(led1_g_n), .led1_b_n(led1_b_n),
+        .led2_r_n(led2_r_n), .led2_b_n(led2_b_n),
+        .led3_r_n(led3_r_n), .led3_g_n(led3_g_n), .led3_b_n(led3_b_n),
         .ddr3_ck(ddr3_ck),
         .ddr3_ras_n(ddr3_ras_n),
         .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
@@ -140,6 +162,7 @@ module tb_ecpix5;
             @(posedge dclk);
         end
     endtask
+`ifndef LEDS_LANE1_DEAD
     ddr3_lane1_mem DDR3MEM1 (
         .sclk(DUT.SOC.SOC.DDR3.DDR.sclk), .rst(DUT.SOC.SOC.DDR3.DDR.rst_all), .ck(ddr3_ck),
         .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
@@ -147,6 +170,7 @@ module tb_ecpix5;
         .dqu(ddr3_dqu), .udqs(ddr3_udqs), .udm(ddr3_udm),
         .read_active(DUT.SOC.SOC.DDR3.DDR.read_active_final_1), .dq_error()
     );
+`endif
 
 `ifdef DDR3_CHECK
     // ---- the board's UART, decoded at the pin, as a serial terminal would ----
@@ -267,6 +291,33 @@ module tb_ecpix5;
         begin : ddr3_check
             integer waited;
             waited = 0;
+            // The state before the lanes have anything to say: the DRAM's power-up wait is about 500 us from the board's
+            // reset (the checks above took 200 us of it), so the controller's PLL and DLL are locked and the initialisation
+            // is not done. LED0 is blue and the lanes' LEDs are dark; only a decoder with the right inputs on the right
+            // LEDs shows that, since all three are green a little later.
+            while (!(DUT.SOC.SOC.DDR3.pll_locked === 1'b1 && DUT.SOC.SOC.DDR3.dll_locked === 1'b1) && waited < DDR3_WAIT_CLKS) begin
+                @(posedge clk_sys);
+                waited = waited + 1;
+            end
+            @(posedge clk_sys);
+            check("(the DRAM is still initialising)", DUT.SOC.SOC.DDR3.init_ready, 1'b0);
+            check("LED0 (controller) is blue while the DRAM initialises", led0_rgb === 3'b100, 1'b1);
+            check("LED1 (lane 0) is dark: calibration has not started", led1_rgb === 3'b000, 1'b1);
+            check("LED3 (lane 1) is dark: calibration has not started", led3_rgb === 3'b000, 1'b1);
+            waited = 0;
+`ifdef LEDS_LANE1_DEAD
+            // No memory behind lane 1: its sweep finds no working tap and ends in an error, lane 0's does not.
+            while (!(DUT.SOC.SOC.DDR3.calib_done === 1'b1 && DUT.SOC.SOC.DDR3.calib1_error === 1'b1) &&
+                   waited < DDR3_WAIT_CLKS) begin
+                @(posedge clk_sys);
+                waited = waited + 1;
+            end
+            $display("  (lane 0 calibrated and lane 1 failed after %0d board clocks)", waited);
+            check("lane 0 calibrated", DUT.SOC.SOC.DDR3.calib_done, 1'b1);
+            check("no calibration error, lane 0", DUT.SOC.SOC.DDR3.calib_error, 1'b0);
+            check("lane 1 reports its calibration error", DUT.SOC.SOC.DDR3.calib1_error, 1'b1);
+            check("lane 1 is not calibrated", DUT.SOC.SOC.DDR3.calib1_done, 1'b0);
+`else
             while (!(DUT.SOC.SOC.DDR3.calib_done === 1'b1 && DUT.SOC.SOC.DDR3.calib1_done === 1'b1) &&
                    waited < DDR3_WAIT_CLKS) begin
                 @(posedge clk_sys);
@@ -277,6 +328,27 @@ module tb_ecpix5;
             check("lane 1 calibrated", DUT.SOC.SOC.DDR3.calib1_done, 1'b1);
             check("no calibration error, lane 0", DUT.SOC.SOC.DDR3.calib_error, 1'b0);
             check("no calibration error, lane 1", DUT.SOC.SOC.DDR3.calib1_error, 1'b0);
+`endif
+            // The status LEDs, at the board's pins (active low: lit is 0). LED0 is the controller, LED1 lane 0, LED3 lane 1;
+            // LED2's green is the CPU's heartbeat and its red and blue are driven off, like every channel nobody uses.
+            @(posedge clk_sys);
+            check("LED0 (controller) is green: PLL and DLL locked, DRAM initialised", led0_rgb === 3'b010, 1'b1);
+            check("LED1 (lane 0) is green: calibrated", led1_rgb === 3'b010, 1'b1);
+`ifdef LEDS_LANE1_DEAD
+            check("LED3 (lane 1) is red: its calibration failed", led3_rgb === 3'b001, 1'b1);
+`else
+            check("LED3 (lane 1) is green: calibrated", led3_rgb === 3'b010, 1'b1);
+`endif
+`ifdef LEDS_LANE1_DEAD
+            $display("  (from the board's reset: initialisation done after %0d us, lane 0 calibrated after %0d us)",
+                     (ddr3_t_init - ddr3_t_reset_high) / 1000, (ddr3_t_lane0 - ddr3_t_reset_high) / 1000);
+`else
+            $display("  (from the board's reset: initialisation done after %0d us, lane 0 calibrated after %0d us, lane 1 after %0d us)",
+                     (ddr3_t_init - ddr3_t_reset_high) / 1000, (ddr3_t_lane0 - ddr3_t_reset_high) / 1000,
+                     (ddr3_t_lane1 - ddr3_t_reset_high) / 1000);
+`endif
+            check("LED2's red is driven off", led2_r_n === 1'b1, 1'b1);
+            check("LED2's blue is driven off", led2_b_n === 1'b1, 1'b1);
             check("CK reaches its pin and moves", ck_seen, 1'b1);
             check("CKE is high at its pin", ddr3_cke, 1'b1);
             $display("  (CKE rose %0d ns after the board's reset was released)", ddr3_t_cke_high - ddr3_t_reset_high);
@@ -286,6 +358,7 @@ module tb_ecpix5;
             check("the DQ model saw nothing wrong", ddr3_dq_error, 1'b0);
         end
 
+`ifndef LEDS_LANE1_DEAD
         // ---- words through the bus, both lanes, with byte enables ----
         // The calibration above proves the pins carry a pattern round; it cannot see a swap of RAS# with CAS#, of
         // a strobe with the other lane's, or of a data mask with the other's, because a lane calibrates against a
@@ -347,6 +420,7 @@ module tb_ecpix5;
             check("the DDR3 protocol checker still saw nothing wrong", ddr3_model_error, 1'b0);
             check("the DQ model still saw nothing wrong", ddr3_dq_error, 1'b0);
         end
+`endif
 `endif
 `endif
 
