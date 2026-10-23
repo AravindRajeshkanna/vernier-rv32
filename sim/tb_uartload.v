@@ -167,7 +167,7 @@ module tb_uartload;
         .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
-        .read_active(DUT.DDR3.DDR.read_active),
+        .read_active(DUT.DDR3.DDR.read_active_final),
         .mem_dq_o(ddr3_mem_dq_o), .mem_dq_oe(ddr3_mem_dq_oe),
         .mem_dqs_oe(ddr3_mem_dqs_oe), .mem_dqs_o(ddr3_mem_dqs_o),
         .dq_error(ddr3_dq_error), .dq_error_msg(ddr3_dq_error_msg)

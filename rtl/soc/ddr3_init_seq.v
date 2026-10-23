@@ -56,10 +56,12 @@
 // CKE is low, and this is a cold start against a DRAM that was running. What the DRAM does then
 // is outside what this module can fix (an open bank gets the first MRS, a burst loses its CKE).
 // sim/tb_ddr3_restart.v runs all three (make sim_ddr3_restart), against a checker whose rules
-// are reasoned from JESD79-3 and not from the datasheet. After every kind of restart both
-// lanes' calibration ends in an error (docs/roadmap/index.md, the open defect on the read
-// calibration), so the controller then takes no request. A write burst cut by the reset loses
-// the write's data: the data path resets with the rest, and nothing here finishes the burst.
+// are reasoned from JESD79-3 and not from the datasheet. After an ndmreset the read calibration
+// keeps its results (rtl/soc/ddr3_read_calib.v), so the controller takes requests again as soon as
+// `ready` is up; after the other kinds the sweep runs again, with real commands. (Until Phase 9
+// Stage 3 both lanes' calibration ended in an error after every restart, because the sweep sent
+// the DRAM no command.) A write burst cut by the reset loses the write's data: the data path
+// resets with the rest, and nothing here finishes the burst.
 module ddr3_init_seq #(
     // Real, ns-based JEDEC timing, converted to cycles at elaboration
     // time - the same NS2CYC-style approach rtl/soc/wb_sdram.v already

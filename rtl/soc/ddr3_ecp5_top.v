@@ -51,6 +51,9 @@
 // is kept, not replaced - it still needs its own simple mechanism to
 // find a working `READCLKSEL` tap before any command-driven read/write
 // can be trusted, and it still runs first, gated on `init_ready` alone.
+// (Phase 9 Stage 3 replaced it: the sweep is command-driven now, a client of the
+// sequencers below, and runs first, gated on `init_ready`, through their own request
+// port. Its header says how; the paragraphs here that say "injection" are what it was.)
 // Once `calib_done`, `rtl/soc/ddr3_write_seq.v`/`rtl/soc/ddr3_read_seq.v`
 // take over as the real, command-driven path: each drives
 // `ddr3_phy_ecp5.v`'s own `cmd_*` interface with a real ACT then a real
@@ -203,8 +206,8 @@
 // ddr3_read_seq.v is therefore no longer invisible: 2, 4 and 5 each fail the
 // command-driven, address-path and one-transaction tests, where Part 16 measured
 // them all passing. sim/tb_ddr3_rd_window.v pins the read window and the byte it
-// returns. Calibration's reads issue no READ command and still follow
-// `read_active`. Not closed: at sclk resolution the tDQSCK spread (1-10 ns) is
+// returns. (Calibration's reads issued no READ command then and followed
+// `read_active`; since Stage 3 they are real READs.) Not closed: at sclk resolution the tDQSCK spread (1-10 ns) is
 // invisible, and the ECP5's own capture latency through IDDRX2DQA is not modelled.
 //
 // ---- Part 25: lane 1's own calibration, wired in for real ----
@@ -362,26 +365,36 @@ module ddr3_ecp5_top (
     // Held until init_ready too - see header: a real controller would
     // not start read-timing calibration against a DRAM that has not
     // finished its own power-up sequence yet.
+    // `rst_calib` is a synchronous input to the calibration sweep and an asynchronous reset everywhere else: the sweep's
+    // results survive a warm reset, so for it a warm reset cannot be an asynchronous one. That is what SYNCASYNCNET
+    // reports, and is meant.
+    /* verilator lint_off SYNCASYNCNET */
     wire rst_calib = rst_all || !init_ready;
+    /* verilator lint_on SYNCASYNCNET */
 
-    wire [7:0] wr_d0, rd_q0;
-    wire       wr_en, read_active;
-    wire [2:0] readclksel;
-    wire       datavalid;
+    // Phase 9 Stage 3: calibration is command-driven (rtl/soc/ddr3_read_calib.v). It asks the sequencers below for a real
+    // WRITE and real READs, so they run from init_ready and calibration is their first client; a caller's own requests wait
+    // for it (`calib_ok`). Until Stage 3 the sequencers were held in reset until both lanes had calibrated, and calibration
+    // injected its pattern onto the pins and sent the DRAM no command. Declared here, instantiated below, once the capture
+    // results it reads exist.
+    wire        cal_write_req, cal_read_req, cal_active;
+    wire [2:0]  cal_bank;
+    wire [15:0] cal_row, cal_col, cal_write_data;
+    wire [1:0]  cal_write_be;
+    wire [2:0]  readclksel, readclksel_1;
+    wire [7:0]  rd_q0;
+    wire        datavalid;
+    wire        calib_ok = calib_done && calib1_done;
 
-    ddr3_read_calib CALIB (
-        .clk(sclk), .rst(rst_calib),
-        .wr_d0(wr_d0), .wr_en(wr_en),
-        .read_active(read_active), .readclksel(readclksel),
-        .datavalid(datavalid), .rd_q0(rd_q0),
-        .calib_done(calib_done), .calib_readclksel(calib_readclksel),
-        .calib_error(calib_error)
-    );
-
-    // Part 9: held until calib_done - see header. A real read/write
-    // before a working READCLKSEL tap is known would sample data at an
-    // unproven, possibly-wrong point. Part 26: until lane 1's tap is known too.
-    wire rst_cmd = rst_calib || !(calib_done && calib1_done);
+    // Part 9: a caller's request is held until both lanes' taps are known - see header. A real read/write before a
+    // working READCLKSEL tap is known would sample data at an unproven, possibly-wrong point. Part 26: until lane 1's
+    // tap is known too. (Through Stage 2 this was a reset of the sequencers; they now run, for calibration, and the
+    // caller is held by `calib_ok` below and by `busy`.)
+    wire rst_cmd = rst_calib;
+    // Refresh scheduling starts when the controller is usable, as it always has (through Stage 2 that was the release of
+    // the sequencers' own reset): the DRAM is not refreshed through its power-up and calibration either way, and a caller
+    // sees the same refresh phase against its first request.
+    wire rst_refresh = rst_cmd || !calib_ok;
 
     // Part 12: see header. Declared ahead of the sequencers, which they
     // gate, and the refresh scheduler below, which drives them.
@@ -402,12 +415,24 @@ module ddr3_ecp5_top (
     // while `write_data_latch` (which only captured when not busy) kept
     // the previous write's data.
     wire wseq_busy, rseq_busy;
-    wire wseq_write_req = write_req & ~refresh_hold_d & ~wseq_busy & ~rseq_busy;
-    wire rseq_read_req  = read_req  & ~refresh_hold_d & ~wseq_busy & ~rseq_busy & ~wseq_write_req;
+    // Whose request the sequencers see: calibration's while its sweep runs, the caller's after, and only once both lanes
+    // have a tap. A request before that is not taken, and `busy` does not claim it was (a caller waits for calibration:
+    // rtl/soc/wb_ddr.v does, on `calib_done` and `calib1_done`).
+    wire        w_req  = cal_active ? cal_write_req : (write_req & calib_ok);
+    wire        r_req  = cal_active ? cal_read_req  : (read_req  & calib_ok);
+    wire [2:0]  w_bank = cal_active ? cal_bank : write_bank;
+    wire [15:0] w_row  = cal_active ? cal_row  : write_row;
+    wire [15:0] w_col  = cal_active ? cal_col  : write_col;
+    wire [2:0]  r_bank = cal_active ? cal_bank : read_bank;
+    wire [15:0] r_row  = cal_active ? cal_row  : read_row;
+    wire [15:0] r_col  = cal_active ? cal_col  : read_col;
+    wire seq_busy = wseq_busy | rseq_busy | refresh_hold;     // what calibration sees, and a caller
+    wire wseq_write_req = w_req & ~refresh_hold_d & ~wseq_busy & ~rseq_busy;
+    wire rseq_read_req  = r_req & ~refresh_hold_d & ~wseq_busy & ~rseq_busy & ~wseq_write_req;
     // Both ports carry the same value on purpose: a caller waiting on its
     // own direction's busy must be safe against the other direction too.
-    assign write_busy = wseq_busy | rseq_busy | refresh_hold;
-    assign read_busy  = wseq_busy | rseq_busy | refresh_hold;
+    assign write_busy = seq_busy;
+    assign read_busy  = seq_busy;
 
     wire        wseq_cmd_valid;
     wire [2:0]  wseq_cmd_ras_cas_we;
@@ -417,7 +442,7 @@ module ddr3_ecp5_top (
 
     ddr3_write_seq WSEQ (
         .clk(sclk), .rst(rst_cmd),
-        .write_req(wseq_write_req), .bank(write_bank), .row(write_row), .col(write_col),
+        .write_req(wseq_write_req), .bank(w_bank), .row(w_row), .col(w_col),
         .busy(wseq_busy),
         .cmd_valid(wseq_cmd_valid), .cmd_ras_cas_we(wseq_cmd_ras_cas_we),
         .cmd_ba(wseq_cmd_ba), .cmd_addr(wseq_cmd_addr),
@@ -432,7 +457,7 @@ module ddr3_ecp5_top (
 
     ddr3_read_seq RSEQ (
         .clk(sclk), .rst(rst_cmd),
-        .read_req(rseq_read_req), .bank(read_bank), .row(read_row), .col(read_col),
+        .read_req(rseq_read_req), .bank(r_bank), .row(r_row), .col(r_col),
         .busy(rseq_busy),
         .cmd_valid(rseq_cmd_valid), .cmd_ras_cas_we(rseq_cmd_ras_cas_we),
         .cmd_ba(rseq_cmd_ba), .cmd_addr(rseq_cmd_addr),
@@ -457,7 +482,7 @@ module ddr3_ecp5_top (
     wire [15:0] refresh_cmd_addr;
 
     ddr3_refresh_ctrl REFRESH (
-        .clk(sclk), .rst(rst_cmd),
+        .clk(sclk), .rst(rst_refresh),
         .refresh_grant(refresh_grant),
         .refresh_req(refresh_req), .busy(refresh_busy),
         .cmd_valid(refresh_cmd_valid), .cmd_ras_cas_we(refresh_cmd_ras_cas_we),
@@ -521,8 +546,8 @@ module ddr3_ecp5_top (
             write_data_latch <= 16'b0;
             write_be_latch   <= 2'b00;
         end else if (wseq_write_req) begin
-            write_data_latch <= write_data;
-            write_be_latch   <= write_be;
+            write_data_latch <= cal_active ? cal_write_data : write_data;
+            write_be_latch   <= cal_active ? cal_write_be   : write_be;
         end
     end
 
@@ -539,10 +564,9 @@ module ddr3_ecp5_top (
         .ddrdel(ddrdel), .dll_locked(dll_locked)
     );
 
-    // Real read_active mux - mutually exclusive the same way the
-    // command mux above is: CALIB's own read_active only fires during
-    // calibration, real_read_active only fires after calib_done.
-    wire read_active_final = read_active | real_read_active;
+    // The read window is the read sequencer's, calibration's own reads included (Stage 3): there is no second source.
+    // (The name stays: the testbenches' DQ models take their window from it.)
+    wire read_active_final = real_read_active;
 
     ddr3_dqs_ecp5 DQS (
         .eclk(eclk), .sclk(sclk), .rst(rst_all),
@@ -553,12 +577,10 @@ module ddr3_ecp5_top (
         .rdpntr(rdpntr), .wrpntr(wrpntr)
     );
 
-    // Part 5/9: real DQS write-drive, triggered by whichever of
-    // CALIB's own wr_en or WSEQ's own write_start fires - mutually
-    // exclusive by the same real sequencing (calibration completes
-    // before any real command-driven write can start).
+    // Part 5/9: real DQS write-drive, triggered by the write sequencer's own write_start - calibration's WRITE
+    // included (Stage 3; until then calibration's own `wr_en` triggered it with no WRITE command behind it).
     wire dqs_wr_o, dqs_wr_oe, dqs_wr_t, dq_burst, dq_active0;
-    wire write_start_final = wr_en | wseq_write_start;
+    wire write_start_final = wseq_write_start;
 
     ddr3_dqs_write_ecp5 DQS_WR (
         .sclk(sclk), .eclk(eclk), .dqsw(dqsw), .rst(rst_all),
@@ -573,7 +595,7 @@ module ddr3_ecp5_top (
     // unlike DQ/DQS this needs no BB and no separate synthesis/simulation split at the
     // pad itself.
     // Part 26: low only if this write stores lane 0's byte. `lane0_store` is captured with the
-    // byte when the burst is triggered (below); a calibration write has no request and stores.
+    // byte when the burst is triggered (below); calibration's write asks for both lanes (be = 11).
     reg  lane0_store;
     wire dm_o;
     wire dm_level = !(dq_active0 && lane0_store);
@@ -603,19 +625,17 @@ module ddr3_ecp5_top (
     // enabled for the single cycle of `write_start_final`, two cycles before DQS's
     // first active toggle, so the eight beats of a BL8 write saw no DQ enable (the
     // Part 14/15 survey; sim/ddr3_dq_model.v now checks it from the pins).
-    // The byte is captured when the burst is triggered - CALIB's own wr_d0 for a
-    // calibration write, write_data_latch for a real one, mutually exclusive the
-    // same way write_start_final's two sources are - and held until the window
-    // opens, since the trigger comes before it and CALIB's wr_d0 is only valid for
-    // the trigger cycle.
+    // The byte is captured when the burst is triggered - from write_data_latch, which holds
+    // calibration's pattern for its WRITE and the caller's data for a real one - and held until
+    // the window opens, since the trigger comes before it.
     reg [7:0] dq_data_hold;
     always @(posedge sclk or posedge rst_all) begin
         if (rst_all) begin
             dq_data_hold <= 8'b0;
             lane0_store  <= 1'b0;
         end else if (write_start_final) begin
-            dq_data_hold <= wr_en ? wr_d0 : write_data_latch[7:0];
-            lane0_store  <= wr_en | write_be_latch[0];
+            dq_data_hold <= write_data_latch[7:0];
+            lane0_store  <= write_be_latch[0];
         end
     end
 
@@ -663,29 +683,16 @@ module ddr3_ecp5_top (
 
     // (`read_data` and `read_data_valid` are assigned below, after lane 1's signals exist - Part 26.)
 
-    // ---- Part 25: lane 1's own calibration, run automatically at boot the same way
-    // lane 0's does - see the module header for scope ----
-    wire [7:0] wr_d0_1, rd_q0_1;
-    wire       wr_en_1, read_active_1;
-    wire [2:0] readclksel_1;
+    // ---- Part 25/26: lane 1. Its calibration is the same sweep as lane 0's (rtl/soc/ddr3_read_calib.v serves both lanes). ----
+    wire [7:0] rd_q0_1;
     wire       datavalid_1, burstdet_1;
-
-    ddr3_read_calib #(.TEST_PATTERN(8'h3C)) CALIB1 (
-        .clk(sclk), .rst(rst_calib),
-        .wr_d0(wr_d0_1), .wr_en(wr_en_1),
-        .read_active(read_active_1), .readclksel(readclksel_1),
-        .datavalid(datavalid_1), .rd_q0(rd_q0_1),
-        .calib_done(calib1_done), .calib_readclksel(calib1_readclksel),
-        .calib_error(calib1_error)
-    );
 
     wire dqsr90_1, dqsw_1, dqsw270_1;
     wire [2:0] rdpntr_1, wrpntr_1;
     wire dqs_pad_in_1;
 
-    // Part 26: lane 1's read window opens for a command-driven read too, the way lane 0's
-    // does (`read_active_final` above) - calibration's own signal only fires before calib_done.
-    wire read_active_final_1 = read_active_1 | real_read_active;
+    // Part 26: lane 1's read window is the same one as lane 0's (`read_active_final` above).
+    wire read_active_final_1 = real_read_active;
 
     ddr3_dqs_ecp5 DQS1 (
         .eclk(eclk), .sclk(sclk), .rst(rst_all),
@@ -697,9 +704,8 @@ module ddr3_ecp5_top (
     );
 
     wire dqs_wr_o_1, dqs_wr_oe_1, dqs_wr_t_1, dq_burst_1, dq_active0_1;
-    // Part 26: the same two sources as lane 0's `write_start_final` - this lane's own
-    // calibration sweep, and the write sequencer (mutually exclusive by the same sequencing).
-    wire write_start_final_1 = wr_en_1 | wseq_write_start;
+    // Part 26: the same trigger as lane 0's `write_start_final`.
+    wire write_start_final_1 = wseq_write_start;
     ddr3_dqs_write_ecp5 DQS_WR1 (
         .sclk(sclk), .eclk(eclk), .dqsw(dqsw_1), .rst(rst_all),
         .write_start(write_start_final_1),
@@ -728,16 +734,15 @@ module ddr3_ecp5_top (
     wire [7:0] dq_o_1, dq_oe_1, dq_t_1, dq_i_1;
     wire [7:0] rd_q3_1, rd_q2_1, rd_q1_1;
 
-    // Mirrors lane 0's `dq_data_hold`: calibration's byte for a calibration write, the upper
-    // half of the request's data for a real one (Part 26).
+    // Mirrors lane 0's `dq_data_hold`: the upper half of the latched data (Part 26).
     reg [7:0] dq_data_hold_1;
     always @(posedge sclk or posedge rst_all) begin
         if (rst_all) begin
             dq_data_hold_1 <= 8'b0;
             lane1_store    <= 1'b0;
         end else if (write_start_final_1) begin
-            dq_data_hold_1 <= wr_en_1 ? wr_d0_1 : write_data_latch[15:8];
-            lane1_store    <= wr_en_1 | write_be_latch[1];
+            dq_data_hold_1 <= write_data_latch[15:8];
+            lane1_store    <= write_be_latch[1];
         end
     end
 
@@ -764,6 +769,25 @@ module ddr3_ecp5_top (
 
     assign read_data       = {rd_q0_1, rd_q0};
     assign read_data_valid = read_active_falling && datavalid_seen && datavalid_seen_1;
+
+    // Phase 9 Stage 3: the calibration sweep, a client of the sequencers above (rtl/soc/ddr3_read_calib.v). It looks at
+    // each lane's capture when the window closes (`read_active_falling`, the cycle `read_data_valid` is judged in), keeps
+    // its results across a warm reset (`por` clears them, `rst_calib` only restarts a sweep that has not finished), and
+    // drives each lane's READCLKSEL.
+    ddr3_read_calib CALIB (
+        .clk(sclk), .por(rst_cold), .rst(rst_calib),
+        .busy(seq_busy),
+        .write_req(cal_write_req), .read_req(cal_read_req),
+        .bank(cal_bank), .row(cal_row), .col(cal_col),
+        .write_data(cal_write_data), .write_be(cal_write_be),
+        .active(cal_active),
+        .rd_done(read_active_falling),
+        .valid0(datavalid_seen), .valid1(datavalid_seen_1),
+        .q0(rd_q0), .q1(rd_q0_1),
+        .readclksel0(readclksel), .readclksel1(readclksel_1),
+        .calib_done(calib_done), .calib_readclksel(calib_readclksel), .calib_error(calib_error),
+        .calib1_done(calib1_done), .calib1_readclksel(calib1_readclksel), .calib1_error(calib1_error)
+    );
 
     genvar i;
     generate

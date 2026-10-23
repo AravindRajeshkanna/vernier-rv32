@@ -1,158 +1,177 @@
-// Directed test for Phase 9 Stage 1, Part 2 (docs/roadmap/phase-09-ddr.md): one
-// byte lane's own DQ/DQS read-calibration and write-then-readback
-// round trip, against sim/ddr3_dq_model.v's own real behavioral
-// memory. Confirms rtl/soc/ddr3_read_calib.v's own real READCLKSEL
-// sweep finds a genuinely working tap (not the lucky-default-position
-// case) and that the captured data actually matches what was written.
+// Directed test for the DDR3 read calibration, command-driven (Phase 9 Stage 3; the injected scheme it replaces was
+// Stage 1, Part 2: docs/roadmap/phase-09-ddr.md). Through Stage 2 this ran rtl/soc/ddr3_read_calib.v by itself against a
+// DQ model that answered a pattern the calibration drove onto the pins with no command behind it. The calibration now
+// asks the controller's own sequencers for a real WRITE and real READs, so this runs the controller (rtl/soc/
+// ddr3_ecp5_top.v), against the DRAM's protocol checker (sim/ddr3_model.v) and both lanes' memory models, and looks at what
+// reaches the pins:
+//   - the sweep is a WRITE of the pattern to the reserved column (bank 7, row 0x7FFF, column 0x3F8), then one READ of it
+//     per tap, each READ with its ACTIVATE, until both lanes have a tap: the simulation's DQSBUFM has a valid window of
+//     taps 2 to 5, so taps 0, 1 and 2 are tried and both lanes take 2 (the first that passes, not a lucky default);
+//   - the protocol checker and both DQ models have no objection to any of it, and no pin is ever driven by two sides;
+//   - the pattern is really in the DRAM: a read of the reserved column through the controller's own caller interface,
+//     at the tap the sweep found, returns it, lane 0's byte and lane 1's;
+//   - the controller is usable the moment `calib_done` rises (it is not still finishing the sweep's last PRECHARGE).
+// What it does not establish: the sweep on silicon. The DQSBUFM here is a stand-in that does not look at the DQS pin.
 `timescale 1ns/1ps
 module tb_ddr3_data;
     localparam CLK_PERIOD = 40;   // 25 MHz, this project's own default
+    localparam CLK_HZ     = 25_000_000;
     reg clk = 0;
     always #(CLK_PERIOD / 2) clk = ~clk;
-
     reg rst = 1'b1;
 
-    wire eclk, sclk, pll_locked;
-    ddr3_eclk_pll #(.CLK_PERIOD_NS(CLK_PERIOD)) PLL (
-        .clk(clk), .eclk(eclk), .sclk(sclk), .locked(pll_locked)
+    wire        ddr3_ck, ddr3_ras_n, ddr3_cas_n, ddr3_we_n;
+    wire [2:0]  ddr3_ba;
+    wire [14:0] ddr3_a;
+    wire        ddr3_cke, ddr3_odt;
+    wire        ddr3_reset_n = ~rst;
+    wire [7:0]  ddr3_dq, ddr3_dqu;
+    wire        ddr3_dqs, ddr3_dm, ddr3_udqs, ddr3_udm;
+
+    wire pll_locked, dll_locked, init_ready;
+    wire calib_done, calib_error, calib1_done, calib1_error;
+    wire [2:0] calib_readclksel, calib1_readclksel;
+
+    reg         read_req = 1'b0;
+    reg  [2:0]  read_bank = 3'd0;
+    reg  [15:0] read_row = 16'd0, read_col = 16'd0;
+    wire        read_busy, write_busy, read_data_valid, refresh_busy;
+    wire [15:0] read_data;
+
+    ddr3_ecp5_top DUT (
+        .rst_warm(1'b0),
+        .clk(clk), .rst(rst),
+        .ddr3_ck(ddr3_ck), .ddr3_ras_n(ddr3_ras_n), .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),
+        .ddr3_ba(ddr3_ba), .ddr3_a(ddr3_a), .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
+        .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
+        .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .write_req(1'b0), .write_bank(3'b0), .write_row(16'b0),
+        .write_col(16'b0), .write_data(16'b0), .write_be(2'b00), .write_busy(write_busy),
+        .read_req(read_req), .read_bank(read_bank), .read_row(read_row), .read_col(read_col),
+        .read_busy(read_busy), .read_data(read_data), .read_data_valid(read_data_valid),
+        .refresh_busy(refresh_busy),
+        .pll_locked(pll_locked), .dll_locked(dll_locked), .init_ready(init_ready),
+        .calib_done(calib_done), .calib_readclksel(calib_readclksel), .calib_error(calib_error),
+        .calib1_done(calib1_done), .calib1_readclksel(calib1_readclksel), .calib1_error(calib1_error)
     );
 
-    wire [7:0] wr_d0;
-    wire       wr_en, read_active;
-    wire [2:0] readclksel;
-    wire       datavalid;
-    wire [7:0] rd_q0;
-    wire       calib_done, calib_error;
-    wire [2:0] calib_readclksel;
-
-    ddr3_read_calib #(.TEST_PATTERN(8'hA5)) CALIB (
-        .clk(sclk), .rst(rst),
-        .wr_d0(wr_d0), .wr_en(wr_en),
-        .read_active(read_active), .readclksel(readclksel),
-        .datavalid(datavalid), .rd_q0(rd_q0),
-        .calib_done(calib_done), .calib_readclksel(calib_readclksel),
-        .calib_error(calib_error)
+    wire         model_error;
+    wire [511:0] model_error_msg;
+    ddr3_model #(.CLK_HZ(CLK_HZ)) PROTO (
+        .ck(ddr3_ck), .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
+        .ba(ddr3_ba), .a(ddr3_a), .cke(ddr3_cke), .reset_n(ddr3_reset_n), .odt(ddr3_odt),
+        .error(model_error), .error_msg(model_error_msg), .seq_done()
     );
 
-    wire       dqsr90, dqsw, dqsw270, burstdet, dll_locked;
-    wire       dqs_bus;
-
-    // Part 24: the shared DLL, one instance regardless of how many byte lanes exist.
-    wire ddrdel;
-    ddr3_ddrdlla_ecp5 DLL (
-        .eclk(eclk), .rst(rst),
-        .ddrdel(ddrdel), .dll_locked(dll_locked)
-    );
-
-    ddr3_dqs_ecp5 DQS (
-        .eclk(eclk), .sclk(sclk), .rst(rst),
-        .dqs_pad_i(dqs_bus), .read_active(read_active), .readclksel(readclksel),
-        .ddrdel(ddrdel),
-        .dqsr90(dqsr90), .dqsw(dqsw), .dqsw270(dqsw270),
-        .datavalid(datavalid), .burstdet(burstdet)
-    );
-
-    wire [7:0] fpga_dq_o, fpga_dq_oe;
-    wire [7:0] dq_bus;
-    wire [7:0] fpga_rd_q3, fpga_rd_q2, fpga_rd_q1, fpga_rd_q0;
-
-    // The write side as rtl/soc/ddr3_ecp5_top.v wires it (Part 17): calibration's
-    // wr_en triggers the DQS write FSM, and DQ is enabled, carrying the held byte,
-    // for exactly the cycles DQS is toggling - not for the trigger cycle alone.
-    wire dqs_wr_o, dqs_wr_oe, dq_burst;
-    ddr3_dqs_write_ecp5 DQS_WR (
-        .sclk(sclk), .eclk(eclk), .dqsw(dqsw), .rst(rst),
-        .write_start(wr_en),
-        .dqs_o(dqs_wr_o), .dqs_oe(dqs_wr_oe), .burst_active(dq_burst)
-    );
-    reg [7:0] dq_data_hold;
-    always @(posedge sclk or posedge rst) begin
-        if (rst)        dq_data_hold <= 8'b0;
-        else if (wr_en) dq_data_hold <= wr_d0;
-    end
-
-    ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES (
-        .sclk(sclk), .eclk(eclk), .rst(rst),
-        .dqsr90(dqsr90), .dqsw270(dqsw270),
-        .rdpntr(3'b0), .wrpntr(3'b0),
-        .wr_d3(dq_data_hold), .wr_d2(dq_data_hold), .wr_d1(dq_data_hold), .wr_d0(dq_data_hold),
-        .wr_en(dq_burst),
-        .rd_q3(fpga_rd_q3), .rd_q2(fpga_rd_q2), .rd_q1(fpga_rd_q1), .rd_q0(fpga_rd_q0),
-        .dq_o(fpga_dq_o), .dq_oe(fpga_dq_oe), .dq_i(dq_bus)
-    );
-    assign rd_q0 = fpga_rd_q0;
-
-    wire [7:0] mem_dq_o;
-    wire       mem_dq_oe, mem_dqs_oe, mem_dqs_o;
-
-    wire         dq_error;
-
-    wire [511:0] dq_error_msg;
-
+    wire [7:0] mem_dq_o;  wire mem_dq_oe, mem_dqs_oe, mem_dqs_o;  wire dq_error;  wire [511:0] dq_error_msg;
     ddr3_dq_model MEM (
-        .sclk(sclk), .rst(rst),
-        .ck(1'b0),   // calibration issues no DRAM commands
-        .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(15'b0),   // calibration issues no DRAM commands
-        .dq_pin(dq_bus), .dqs_pin(dqs_bus),
-        .read_active(read_active),
+        .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n), .ba(ddr3_ba), .a(ddr3_a),
+        .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
+        .read_active(DUT.read_active_final),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
-
-    // ---- real tristate bus arbitration, matching how the two real
-    // sides of an actual DDR3 bus share one set of pins - and a real
-    // bus-contention check, not assumed impossible ----
     genvar b;
-    generate
-        for (b = 0; b < 8; b = b + 1) begin : DQ_BUS
-            assign dq_bus[b] = fpga_dq_oe[b] ? fpga_dq_o[b] :
-                                (mem_dq_oe    ? mem_dq_o[b]  : 1'bz);
-        end
-    endgenerate
-    assign dqs_bus = dqs_wr_oe ? dqs_wr_o : (mem_dqs_oe ? mem_dqs_o : 1'bz);
+    generate for (b = 0; b < 8; b = b + 1) begin : DQ_BUS assign ddr3_dq[b] = mem_dq_oe ? mem_dq_o[b] : 1'bz; end endgenerate
+    assign ddr3_dqs = mem_dqs_oe ? mem_dqs_o : 1'bz;
 
-    wire bus_contention = (|fpga_dq_oe) && mem_dq_oe;
+    wire [7:0] mem_dqu_o;  wire mem_dqu_oe, mem_udqs_oe, mem_udqs_o;  wire dqu_error;  wire [511:0] dqu_error_msg;
+    ddr3_dq_model MEM1 (
+        .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n), .ba(ddr3_ba), .a(ddr3_a),
+        .dq_pin(ddr3_dqu), .dqs_pin(ddr3_udqs), .dm_pin(ddr3_udm),
+        .read_active(DUT.read_active_final_1),
+        .mem_dq_o(mem_dqu_o), .mem_dq_oe(mem_dqu_oe), .mem_dqs_oe(mem_udqs_oe), .mem_dqs_o(mem_udqs_o),
+        .dq_error(dqu_error), .dq_error_msg(dqu_error_msg)
+    );
+    genvar b1;
+    generate for (b1 = 0; b1 < 8; b1 = b1 + 1) begin : DQU_BUS assign ddr3_dqu[b1] = mem_dqu_oe ? mem_dqu_o[b1] : 1'bz; end endgenerate
+    assign ddr3_udqs = mem_udqs_oe ? mem_udqs_o : 1'bz;
 
-    // Latches the first real bus-contention violation seen at any point
-    // during the run - the FPGA's own write-drive window is two real
-    // cycles (the DQS burst), long over by the time the final check
-    // below runs, so sampling `bus_contention` live at that one instant
-    // would miss a real transient violation earlier in the run. Declared here, above its first use, rather
-    // than after - `always @(posedge sclk)` below only reads it.
-    reg contention_seen = 1'b0;
-    always @(posedge sclk) if (bus_contention) contention_seen <= 1'b1;
+    // ---- the commands as the DRAM sees them, and what they addressed ----
+    wire c_act = !ddr3_ras_n &&  ddr3_cas_n &&  ddr3_we_n;
+    wire c_wr  =  ddr3_ras_n && !ddr3_cas_n && !ddr3_we_n;
+    wire c_rd  =  ddr3_ras_n && !ddr3_cas_n &&  ddr3_we_n;
+    reg calib_done_seen = 1'b0;     // the sweep is over: what follows is the test's own read
+    always @(posedge calib_done) calib_done_seen <= 1'b1;
+    integer n_act = 0, n_wr = 0, n_rd = 0;
+    reg [2:0]  act_bank = 3'd0, wr_bank = 3'd0, rd_bank = 3'd0;
+    reg [14:0] act_row = 15'd0;
+    reg [9:0]  wr_col = 10'd0, rd_col = 10'd0;
+    reg        sweep_cmds_ok = 1'b1;    // every ACTIVATE, WRITE and READ of the sweep addressed the reserved column
+    always @(posedge ddr3_ck) if (!rst && ddr3_reset_n && ddr3_cke && !calib_done_seen) begin
+        if (c_act) begin n_act = n_act + 1; act_bank = ddr3_ba; act_row = ddr3_a;
+                         if (ddr3_ba !== 3'd7 || ddr3_a !== 15'h7FFF) sweep_cmds_ok = 1'b0; end
+        if (c_wr)  begin n_wr  = n_wr  + 1; wr_bank = ddr3_ba;  wr_col = ddr3_a[9:0];
+                         if (ddr3_ba !== 3'd7 || ddr3_a[9:0] !== 10'h3F8) sweep_cmds_ok = 1'b0; end
+        if (c_rd)  begin n_rd  = n_rd  + 1; rd_bank = ddr3_ba;  rd_col = ddr3_a[9:0];
+                         if (ddr3_ba !== 3'd7 || ddr3_a[9:0] !== 10'h3F8) sweep_cmds_ok = 1'b0; end
+    end
+    // ---- no pin ever driven by two sides (per bit: a reduction would hide an x behind a 1) ----
+    function automatic has_real_x(input [7:0] v);
+        integer i;
+        begin has_real_x = 1'b0; for (i = 0; i < 8; i = i + 1) if (v[i] === 1'bx) has_real_x = 1'b1; end
+    endfunction
+    reg contention = 1'b0;
+    always @(posedge DUT.sclk) if (!rst && (has_real_x(ddr3_dq) || has_real_x(ddr3_dqu) || ddr3_dqs === 1'bx || ddr3_udqs === 1'bx)) contention <= 1'b1;
 
     integer errors = 0;
-
     task check(input [511:0] what, input got, input want);
         begin
-            if (got !== want) begin
-                $display("  FAIL %0s: got %b, expected %b", what, got, want);
-                errors = errors + 1;
-            end else begin
-                $display("  ok   %0s", what);
-            end
+            if (got !== want) begin $display("  FAIL %0s: got %b, expected %b", what, got, want); errors = errors + 1; end
+            else $display("  ok   %0s", what);
         end
     endtask
 
+    integer     tt;
+    reg  [15:0] got_word;
+    integer     busy_at_done;
     initial begin
-        $display("=== DDR3 DQ/DQS data path (Phase 9 Stage 1, Part 2) ===");
+        $display("=== DDR3 read calibration, command-driven (Phase 9 Stage 3) ===");
         repeat (4) @(posedge clk);
         rst = 1'b0;
-
-        repeat (8) @(posedge sclk);
+        repeat (8) @(posedge clk);
         check("PLL locked", pll_locked, 1'b1);
         check("DLL locked", dll_locked, 1'b1);
 
-        while (!calib_done && !calib_error && $time < 500_000) @(posedge sclk);
+        while (!((calib_done || calib_error) && (calib1_done || calib1_error)) && $time < 900_000) @(posedge clk);
+        busy_at_done = (read_busy || write_busy) ? 1 : 0;
+        check("calibration completed on lane 0 (not errored)", calib_error, 1'b0);
+        check("calibration found a working tap on lane 0", calib_done, 1'b1);
+        check("calibration completed on lane 1 (not errored)", calib1_error, 1'b0);
+        check("calibration found a working tap on lane 1", calib1_done, 1'b1);
+        $display("  calibrated READCLKSEL = %0d (lane 0), %0d (lane 1)", calib_readclksel, calib1_readclksel);
+        check("first passing tap, lane 0: 2 (taps 0, 1 are outside the window)", calib_readclksel == 3'd2, 1'b1);
+        check("first passing tap, lane 1: 2", calib1_readclksel == 3'd2, 1'b1);
+        check("the controller is idle when calib_done rises", busy_at_done == 0, 1'b1);
 
-        check("calibration completed (not errored)", calib_error, 1'b0);
-        check("calibration found a working tap", calib_done, 1'b1);
-        if (calib_done)
-            $display("  calibrated READCLKSEL = %0d", calib_readclksel);
+        // ---- what the DRAM was asked ----
+        $display("  the sweep sent the DRAM %0d ACTIVATE, %0d WRITE, %0d READ", n_act, n_wr, n_rd);
+        check("one WRITE of the pattern", n_wr == 1, 1'b1);
+        check("one READ per tap tried: taps 0, 1 and 2", n_rd == 3, 1'b1);
+        check("four ACTIVATEs: one for the write, one for each read", n_act == 4, 1'b1);
+        check("every sweep command addressed bank 7 row 0x7FFF column 0x3F8", sweep_cmds_ok, 1'b1);
 
-        repeat (4) @(posedge sclk);
-        check("no bus contention seen at any point", contention_seen, 1'b0);
+        // ---- the pattern is in the DRAM, and a caller reads it ----
+        begin : readback
+            integer n0, g;
+            n0 = 0;
+            @(posedge clk);
+            read_bank <= 3'd7; read_row <= 16'h7FFF; read_col <= 16'h03F8;
+            @(posedge clk); read_req <= 1'b1; @(posedge clk); read_req <= 1'b0;
+            g = 0; while (!read_data_valid && g < 400) begin @(posedge clk); g = g + 1; end
+            got_word = read_data;
+            g = 0; while (read_busy && g < 400) begin @(posedge clk); g = g + 1; end
+        end
+        check("a caller's read of the reserved column: lane 0's byte is 0xA5", got_word[7:0] === 8'hA5, 1'b1);
+        check("and lane 1's byte is 0x3C", got_word[15:8] === 8'h3C, 1'b1);
+
+        repeat (8) @(posedge clk);
+        check("the DRAM's protocol checker has no objection", model_error, 1'b0);
+        check("lane 0's DQ model has no objection", dq_error, 1'b0);
+        check("lane 1's DQ model has no objection", dqu_error, 1'b0);
+        check("no pin was ever driven by two sides at once", contention, 1'b0);
 
         $display("");
         $display("---------------------------------------------");
@@ -163,7 +182,7 @@ module tb_ddr3_data;
     end
 
     initial begin
-        #1_000_000;
+        #1_500_000;
         $display("TIMEOUT - calibration never completed");
         $finish;
     end

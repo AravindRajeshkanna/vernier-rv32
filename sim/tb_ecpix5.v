@@ -122,7 +122,7 @@ module tb_ecpix5;
         .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
-        .read_active(DUT.SOC.SOC.DDR3.DDR.read_active),
+        .read_active(DUT.SOC.SOC.DDR3.DDR.read_active_final),
         .mem_dq_o(ddr3_mem_dq_o), .mem_dq_oe(ddr3_mem_dq_oe),
         .mem_dqs_oe(ddr3_mem_dqs_oe), .mem_dqs_o(ddr3_mem_dqs_o),
         .dq_error(ddr3_dq_error), .dq_error_msg(ddr3_dq_error_msg)
@@ -362,11 +362,11 @@ module tb_ecpix5;
 
 `ifndef LEDS_LANE1_DEAD
         // ---- words through the bus, both lanes, with byte enables ----
-        // The calibration above proves the pins carry a pattern round; it cannot see a swap of RAS# with CAS#, of
-        // a strobe with the other lane's, or of a data mask with the other's, because a lane calibrates against a
-        // model that answers on `read_active` whatever the command wires say. A store and a load do: the command
-        // must decode as an activate, a write and a read; each lane's mask must reach its own byte; and a store
-        // that selects one lane must leave the other's byte alone.
+        // The calibration above is command-driven (rtl/soc/ddr3_read_calib.v: a WRITE and READs of one column), so it
+        // already fails on a swap of RAS# with CAS# and of a strobe with the other lane's. What it does not look at is the
+        // data masks, the byte placement and the addresses beyond its one column. A store and a load do: each lane's mask
+        // must reach its own byte, a store that selects one lane must leave the other's byte alone, and a second block
+        // must not disturb the first.
         //
         // Every load below follows a load from another block. The slave keeps the block it last touched (rtl/soc/wb_ddr.v:
         // a store writes through and updates that copy), so a load straight after a store is answered from the copy

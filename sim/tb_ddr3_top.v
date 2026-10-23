@@ -100,11 +100,10 @@ module tb_ddr3_top;
 
     // The memory model judges writes from the real DQ and DQS pins (Part 17), so
     // nothing about the write side is tapped here any more. Reads follow the READ
-    // command at the DRAM's own latency (Part 18); `read_active` is still tapped
-    // for calibration's reads, which issue no READ command and so give the model
-    // nothing else to go on. A testbench may tap an internal net; synthesizable
-    // RTL may not.
-    wire       tap_read_active = DUT.read_active;
+    // command at the DRAM's own latency (Part 18); the controller's read window is
+    // still tapped, for the model's own checks of it. A testbench may tap an internal
+    // net; synthesizable RTL may not.
+    wire       tap_read_active = DUT.read_active_final;
 
     wire         dq_error;
 

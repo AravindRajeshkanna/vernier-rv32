@@ -2,10 +2,9 @@
 // first real, command-driven write-then-read round trip through
 // rtl/soc/ddr3_ecp5_top.v - a real ACT+WR (rtl/soc/ddr3_write_seq.v)
 // followed by a real ACT+RD (rtl/soc/ddr3_read_seq.v), not
-// rtl/soc/ddr3_read_calib.v's own direct-signal-injection scheme,
-// which this test still exercises first (calibration has to complete
-// before either command sequencer is allowed to start - see
-// ddr3_ecp5_top.v's own header).
+// rtl/soc/ddr3_read_calib.v's direct-signal-injection scheme (Stage 1; since
+// Stage 3 the sweep is command-driven too), which this test still waits for
+// first (a caller's request waits for calibration - see ddr3_ecp5_top.v's own header).
 //
 // Real, honestly scoped: this test writes and reads back ONE location, so
 // it proves the real command *timing and wiring* (does the write-drive/

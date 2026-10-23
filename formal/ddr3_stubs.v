@@ -13,10 +13,11 @@
 // So the two power-up modules are replaced by what they hold for the rest of time:
 //   - ddr3_init_seq: `ready` high, no command, CKE high - exactly its
 //     S_READY state, which never reassigns them;
-//   - ddr3_read_calib: `calib_done` high, no error, nothing driven - its idle state.
+//   - ddr3_read_calib: both lanes done, no error, no request of its own, the request port not its (`active` low) -
+//     its state once the sweep is over and kept.
 // The claim this makes is therefore "after initialisation and calibration", which is
-// the only time the request ports do anything (`rst_cmd` holds the sequencers in
-// reset until then), and the proof says so wherever it is quoted.
+// the only time a caller's request ports do anything (`calib_ok` and the sequencers' own
+// reset hold them until then), and the proof says so wherever it is quoted.
 //
 // The rest have tri-state nets, delays or `===` in their simulation bodies, none of
 // which yosys's SMT back end accepts, and none of which the properties depend on.
@@ -58,28 +59,56 @@ module ddr3_init_seq #(
 endmodule
 
 module ddr3_read_calib #(
-    parameter [7:0] TEST_PATTERN = 8'hA5
+    parameter [7:0]  PATTERN0    = 8'hA5,
+    parameter [7:0]  PATTERN1    = 8'h3C,
+    parameter [2:0]  BANK        = 3'd7,
+    parameter [15:0] ROW         = 16'h7FFF,
+    parameter [15:0] COL         = 16'h03F8,
+    parameter        TIMEOUT_CYC = 64
 )(
-    input  wire       clk,
-    input  wire       rst,
-    output wire [7:0] wr_d0,
-    output wire       wr_en,
-    output wire       read_active,
-    output wire [2:0] readclksel,
-    input  wire       datavalid,
-    input  wire [7:0] rd_q0,
-    output wire       calib_done,
-    output wire [2:0] calib_readclksel,
-    output wire       calib_error
+    input  wire        clk,
+    input  wire        por,
+    input  wire        rst,
+    input  wire        busy,
+    output wire        write_req,
+    output wire        read_req,
+    output wire [2:0]  bank,
+    output wire [15:0] row,
+    output wire [15:0] col,
+    output wire [15:0] write_data,
+    output wire [1:0]  write_be,
+    output wire        active,
+    input  wire        rd_done,
+    input  wire        valid0,
+    input  wire        valid1,
+    input  wire [7:0]  q0,
+    input  wire [7:0]  q1,
+    output wire [2:0]  readclksel0,
+    output wire [2:0]  readclksel1,
+    output wire        calib_done,
+    output wire [2:0]  calib_readclksel,
+    output wire        calib_error,
+    output wire        calib1_done,
+    output wire [2:0]  calib1_readclksel,
+    output wire        calib1_error
 );
-    assign wr_d0             = 8'b0;
-    assign wr_en             = 1'b0;
-    assign read_active       = 1'b0;
-    assign readclksel        = 3'b0;
+    assign write_req         = 1'b0;
+    assign read_req          = 1'b0;
+    assign bank              = 3'b0;
+    assign row               = 16'b0;
+    assign col               = 16'b0;
+    assign write_data        = 16'b0;
+    assign write_be          = 2'b00;
+    assign active            = 1'b0;
+    assign readclksel0       = 3'b0;
+    assign readclksel1       = 3'b0;
     assign calib_done        = 1'b1;
     assign calib_readclksel  = 3'b0;
     assign calib_error       = 1'b0;
-    wire _unused_ok = &{1'b0, clk, rst, datavalid, rd_q0, 1'b0};
+    assign calib1_done       = 1'b1;
+    assign calib1_readclksel = 3'b0;
+    assign calib1_error      = 1'b0;
+    wire _unused_ok = &{1'b0, clk, por, rst, busy, rd_done, valid0, valid1, q0, q1, 1'b0};
 endmodule
 
 module ddr3_phy_ecp5 (

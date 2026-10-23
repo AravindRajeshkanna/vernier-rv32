@@ -28,6 +28,8 @@
 // calibration path, not replacing it - calibration still needs its
 // own simple mechanism to find a working `READCLKSEL` tap before any
 // command-driven read/write can be trusted) is later, separate work.
+// (Done since: and since Phase 9 Stage 3 calibration is no longer an injection, it asks
+// these sequencers for real reads, so this extender's window is the only read window.)
 // The write side needs no equivalent extender:
 // `rtl/soc/ddr3_dqs_write_ecp5.v` already takes `write_start` as a
 // single-cycle pulse directly and handles its own real multi-cycle

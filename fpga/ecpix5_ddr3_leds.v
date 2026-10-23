@@ -15,21 +15,23 @@
 //   LED1  lane 0's read calibration,  LED3  lane 1's
 //           dark   waiting: calibration is held in reset until the initialisation is done
 //           blue   sweeping the eight capture taps for one that reads a pattern back
-//           green  calibrated: the sweep found a tap that captures the pattern the lane itself drove (see "What it is not")
-//           red    every tap failed (see "What it is not")
+//           green  calibrated: a pattern written to the DRAM came back right through the lane's pins at some tap
+//           red    every tap failed: nothing came back right (no DRAM behind the lane, a wrong or open DQ or DQS pin, a strobe that
+//                  never reaches the capture)
 //
 // In simulation (sim/tb_ecpix5.v) the three go green about half a millisecond after the board's reset: the initialisation is
-// done 522 us after it and each lane calibrates within 1 us of that. So the blue states are not seen going by (the longest
+// done 522 us after it and each lane calibrates within 2 us of that. So the blue states are not seen going by (the longest
 // is 522 us); a blue that stays is the finding. The rest is in fpga/README.md: what each colour says
 // to do next. LED2's green is the CPU's heartbeat (fpga/ecpix5_top.v) and has nothing to do with this.
 //
-// What it is not. Green on a lane means the sweep found a read tap that captures the pattern the lane itself drove onto its
-// DQ and DQS pins (rtl/soc/ddr3_read_calib.v injects it directly). The sweep sends the DRAM no ACTIVATE, WRITE or READ
-// (measured in simulation: no command but NOP in the sweep's 58 slots), so no DRAM took part: green does not say that the
-// pins, the strobe or the DRAM answered, and it is not a memory test. What the sweep ends in on a board is not known; a
-// green found without the DRAM's data is not a tap proven for real reads, and a red stops every access, since the Wishbone
-// slave waits for both lanes. Neither colour is evidence about the DRAM (docs/roadmap/index.md has the open defect).
-// Dark and blue are told apart from "the FPGA has no bitstream" only by LED2 blinking.
+// What it is not. Green on a lane means the sweep (rtl/soc/ddr3_read_calib.v) wrote a known pattern to one column of the DRAM,
+// with a real ACTIVATE and WRITE, and read it back at a tap with a real ACTIVATE and READ, and got the pattern and the
+// DQSBUFM's `datavalid`. So the DRAM took part: the lane's DQ pins and the command pins were good enough for that. It is not a
+// memory test (one column, two bytes), it says nothing about refresh over time, and the tap is the first that passed, the edge
+// of the valid window and not its middle. In simulation the DQSBUFM is a stand-in that does not look at the DQS pin, so the
+// strobe's own path is not shown here. (Through Phase 9 Stage 2 the sweep injected its pattern onto the pins and sent the DRAM
+// no command, and green meant none of this: docs/roadmap/phase-09-ddr.md.) Dark and blue are told apart from "the FPGA has no
+// bitstream" only by LED2 blinking.
 //
 // Inputs are rtl/soc/soc_top.v's ddr3_status: [0] pll_locked, [1] dll_locked, [2] init_ready, [3] calib_done,
 // [4] calib_error, [5] calib1_done, [6] calib1_error. Outputs are {blue, green, red}, 1 = lit; the polarity of the
