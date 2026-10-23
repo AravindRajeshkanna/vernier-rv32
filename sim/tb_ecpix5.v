@@ -70,6 +70,8 @@ module tb_ecpix5;
     time        ddr3_t_reset_high = 0, ddr3_t_cke_high = 0;
     always @(posedge ddr3_reset_n) ddr3_t_reset_high = $time;
     always @(posedge ddr3_cke) if (ddr3_t_cke_high == 0) ddr3_t_cke_high = $time;
+    reg nd_armed = 1'b0, nd_cke_fell = 1'b0;     // the debugger's ndmreset, below: CKE must not fall with it
+    always @(negedge ddr3_cke) if (nd_armed) nd_cke_fell = 1'b1;
     // when each LED stage is reached, from the board's reset: how long the blue and the dark states last
     time ddr3_t_init = 0, ddr3_t_lane0 = 0, ddr3_t_lane1 = 0;
     always @(posedge DUT.SOC.SOC.DDR3.init_ready)  if (ddr3_t_init  == 0) ddr3_t_init  = $time;
@@ -419,6 +421,28 @@ module tb_ecpix5;
             check("and the second block reads back itself", r === 32'hCAFE_F00D, 1'b1);
             check("the DDR3 protocol checker still saw nothing wrong", ddr3_model_error, 1'b0);
             check("the DQ model still saw nothing wrong", ddr3_dq_error, 1'b0);
+        end
+
+        // ---- the debugger's ndmreset resets the controller and the slave, and not the DRAM ----
+        // The debug module's ndmreset restarts the SoC without touching the board (rtl/debug/dm.v), and the DRAM's RESET# is the
+        // board's: so this must reach the controller as a warm reset, which keeps CKE up (rtl/soc/ddr3_init_seq.v), and reset the
+        // slave's own state (the block it holds) as it always has. Forced here, since no JTAG host is attached. The unit
+        // version, with the DRAM mid-burst and with a bank open, is sim/tb_ddr3_restart.v (make sim_ddr3_restart).
+        begin : ddr3_ndmreset
+            integer waited;
+            check("(the slave holds a block before the reset)", DUT.SOC.SOC.DDR3.block_valid, 1'b1);
+            check("(and the controller is initialised)", DUT.SOC.SOC.DDR3.init_ready, 1'b1);
+            nd_armed = 1'b1;
+            force DUT.SOC.SOC.dbg_ndmreset = 1'b1;
+            repeat (4) @(posedge clk_sys);
+            release DUT.SOC.SOC.dbg_ndmreset;
+            check("the slave's own state was reset: it no longer holds a block", DUT.SOC.SOC.DDR3.block_valid, 1'b0);
+            check("the controller was reset: init_ready fell", DUT.SOC.SOC.DDR3.init_ready, 1'b0);
+            waited = 0;
+            while (DUT.SOC.SOC.DDR3.init_ready !== 1'b1 && waited < 60_000) begin @(posedge clk_sys); waited = waited + 1; end
+            check("init_ready returned within 100 us (10,000 board clocks), well before a cold start's 500 us", waited < 10_000, 1'b1);
+            check("CKE never fell", nd_cke_fell, 1'b0);
+            check("the DDR3 protocol checker has no objection to the restart", ddr3_model_error, 1'b0);
         end
 `endif
 `endif

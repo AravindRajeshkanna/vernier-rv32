@@ -70,6 +70,7 @@ module tb_ddr3_rd_window;
     wire        refresh_busy;
 
     ddr3_ecp5_top DUT (
+        .rst_warm(1'b0),
         .clk(clk), .rst(rst),
         .ddr3_ck(ddr3_ck),
         .ddr3_ras_n(ddr3_ras_n),

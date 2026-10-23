@@ -27,7 +27,7 @@ module tb_ddr3_init;
     wire        ready;
 
     ddr3_init_seq #(.CLK_HZ(CLK_HZ)) SEQ (
-        .clk(clk), .rst(rst),
+        .clk(clk), .rst(rst), .por(rst),
         .cmd_valid(cmd_valid), .cmd_ras_cas_we(cmd_ras_cas_we),
         .cmd_ba(cmd_ba), .cmd_addr(cmd_addr),
         .cmd_cke(cmd_cke), .cmd_odt(cmd_odt),
@@ -45,7 +45,7 @@ module tb_ddr3_init;
     ddr3_eclk_pll PLL (.clk(clk), .eclk(eclk), .sclk(pll_sclk), .locked(pll_locked));
 
     ddr3_phy_ecp5 PHY (
-        .clk(clk), .eclk(eclk), .rst(rst),
+        .clk(clk), .eclk(eclk), .rst(rst), .por(rst),
         .cmd_valid(cmd_valid), .cmd_ras_cas_we(cmd_ras_cas_we),
         .cmd_ba(cmd_ba), .cmd_addr(cmd_addr[14:0]),
         .cmd_cke(cmd_cke), .cmd_odt(cmd_odt),

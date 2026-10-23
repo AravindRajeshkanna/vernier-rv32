@@ -39,6 +39,7 @@ module ecpix5_ddr3_probe (
     wire [2:0]  calib_readclksel;
 
     ddr3_ecp5_top TOP (
+        .rst_warm(1'b0),
         .clk(clk), .rst(rst),
         .ddr3_ck(ddr3_ck),
         .ddr3_ras_n(ddr3_ras_n), .ddr3_cas_n(ddr3_cas_n), .ddr3_we_n(ddr3_we_n),

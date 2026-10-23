@@ -82,6 +82,7 @@ module ddr3_phy_ecp5 (
     input  wire        clk,        // sclk: the controller-rate clock, one command slot pair per cycle
     input  wire        eclk,       // the edge clock, twice sclk - CK runs on it
     input  wire        rst,
+    input  wire        por,        // the cold ones among the resets: CKE is reset by this and not by `rst` (rtl/soc/ddr3_init_seq.v)
 
     // ---- command interface from rtl/soc/ddr3_init_seq.v (or, later,
     // a full controller) ----
@@ -123,14 +124,19 @@ module ddr3_phy_ecp5 (
         if (rst) begin
             ba_q      <= 3'b0;
             a_q       <= 15'b0;
-            cke_q     <= 1'b0;
             odt_q     <= 1'b0;
         end else begin
             ba_q      <= cmd_ba;
             a_q       <= cmd_addr;
-            cke_q     <= cmd_cke;
             odt_q     <= cmd_odt;
         end
+    end
+
+    // CKE outlives a warm reset: the debugger's ndmreset resets the controller and not the DRAM, and a CKE that fell with it
+    // would fall in the middle of whatever burst the DRAM was in (rtl/soc/ddr3_init_seq.v's header).
+    always @(posedge clk or posedge por) begin
+        if (por) cke_q <= 1'b0;
+        else     cke_q <= cmd_cke;
     end
 
 `ifdef SYNTHESIS

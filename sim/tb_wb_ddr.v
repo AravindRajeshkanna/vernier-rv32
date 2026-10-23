@@ -59,6 +59,7 @@ module tb_wb_ddr;
     wire [2:0] calib1_readclksel;
 
     wb_ddr WB (
+        .rst_warm(1'b0),
         .clk(clk), .rst(rst),
         .wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we),
         .wb_adr(wb_adr), .wb_dat_w(wb_dat_w), .wb_sel(wb_sel),

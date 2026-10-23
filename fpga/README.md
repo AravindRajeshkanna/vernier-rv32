@@ -2152,9 +2152,12 @@ it takes milliseconds and not seventy. The script refuses to build with an image
 board's reset circuit's, schematic R02 sheet 3), which is the power-up the controller is written for. A DRAM left
 running by an earlier bitstream, with the bitstream loaded over it and no reset, makes the controller start its
 initialisation against a DRAM that was not reset, which may work and is not guaranteed
-(`rtl/soc/ddr3_init_seq.v`). In simulation (`make sim_ddr3_restart`) the initialisation re-runs in full after such a restart and then
-**both lanes' calibration ends in an error**, so the controller takes no request until the board's reset: the open defect on the read
-calibration in `docs/roadmap/index.md`. If the first run fails, press the button and read it again before believing it.
+(`rtl/soc/ddr3_init_seq.v`). The debug module's `ndmreset` is different: the controller knows the DRAM is running, keeps CKE up, lets
+what the DRAM was doing finish, closes every bank and writes the mode registers again, in about 23 us, and in simulation the DRAM's
+protocol checker has no objection at any of seven points of a restart (`make sim_ddr3_restart`). After either kind of restart
+**both lanes' calibration ends in an error** in simulation, so the controller takes no request until the board's reset: the open
+defect on the read calibration in `docs/roadmap/index.md`. If the first run fails, press the button and read it again before
+believing it.
 
 Open the board's second USB serial port (the FT2232H's channel B is the UART; channel A is the JTAG) at 115200 8N1.
 A run that works prints, within a second or so of the reset:
