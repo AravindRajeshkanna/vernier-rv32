@@ -95,9 +95,9 @@ module ddr3_write_seq (
     output reg  [15:0] cmd_addr,
 
     // ---- triggers the real DQS/DQ write-drive mechanism once CWL has
-    // elapsed - the same wr_en-shaped single-cycle pulse
-    // rtl/soc/ddr3_read_calib.v's own direct-injection scheme already
-    // produces, meant to eventually replace it, not yet wired to do so ----
+    // elapsed - a single-cycle pulse shaped like the `wr_en` that
+    // rtl/soc/ddr3_read_calib.v's direct-injection scheme produced; since Phase 9
+    // Stage 3 this is the only trigger, calibration's own WRITE included ----
     output reg         write_start
 );
     localparam [2:0] CMD_NOP = 3'b111;

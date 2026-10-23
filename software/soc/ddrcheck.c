@@ -1,5 +1,5 @@
 /* DDR3, exercised through the whole SoC - the real command path this time,
- * not rtl/soc/ddr3_read_calib.v's own direct-signal-injection scheme, and
+ * not rtl/soc/ddr3_read_calib.v's own sweep (a direct-signal injection until Stage 3), and
  * not a raw Wishbone-master testbench tap either (sim/tb_wb_ddr.v already
  * proved the module standalone, Phase 9 Stage 2 Part 1). This is the first
  * real CPU-issued access: rtl/soc/soc_top.v's own interconnect decodes

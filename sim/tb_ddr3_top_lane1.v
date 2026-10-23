@@ -72,7 +72,7 @@ module tb_ddr3_top_lane1;
         .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
         .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dq), .dqs_pin(ddr3_dqs), .dm_pin(ddr3_dm),
-        .read_active(DUT.read_active),
+        .read_active(DUT.read_active_final),
         .mem_dq_o(mem_dq_o), .mem_dq_oe(mem_dq_oe), .mem_dqs_oe(mem_dqs_oe), .mem_dqs_o(mem_dqs_o),
         .dq_error(dq_error), .dq_error_msg(dq_error_msg)
     );
@@ -86,20 +86,19 @@ module tb_ddr3_top_lane1;
 
     // ---- lane 1's own memory model - the same role MEM plays for lane 0, and for
     // the identical reason: calibration's own read-back self-check needs a real DRAM
-    // to loop its test pattern back through, or every tap fails and calib1_error
-    // asserts regardless of whether the RTL is correct. `read_active` is tapped from
-    // DUT.read_active_1 (calibration's own signal, mirroring DUT.read_active for lane
-    // 0 in sim/tb_ddr3_top.v) - lane 1 issues no real DRAM command either. ----
+    // to write its test pattern to and read it back from, or every tap fails and calib1_error
+    // asserts regardless of whether the RTL is correct. It sees the same command pins as lane 0's
+    // model, and takes its read window from DUT.read_active_final_1. ----
     wire [7:0] mem_dqu_o;
     wire       mem_dqu_oe, mem_udqs_oe, mem_udqs_o;
     wire       dqu_error;
     wire [511:0] dqu_error_msg;
     ddr3_dq_model MEM1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all),
-        .ck(1'b0),
-        .ras_n(1'b1), .cas_n(1'b1), .we_n(1'b1), .ba(3'b0), .a(15'b0),
+        .ck(ddr3_ck),
+        .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n), .ba(ddr3_ba), .a(ddr3_a),
         .dq_pin(ddr3_dqu), .dqs_pin(ddr3_udqs), .dm_pin(ddr3_udm),
-        .read_active(DUT.read_active_1),
+        .read_active(DUT.read_active_final_1),
         .mem_dq_o(mem_dqu_o), .mem_dq_oe(mem_dqu_oe), .mem_dqs_oe(mem_udqs_oe), .mem_dqs_o(mem_udqs_o),
         .dq_error(dqu_error), .dq_error_msg(dqu_error_msg)
     );

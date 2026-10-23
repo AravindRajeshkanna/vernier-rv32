@@ -26,12 +26,14 @@
 //   - WARM=0: CKE falls with the reset and rises again 500 us or more later, init_ready falls and rises again, and the
 //     initialisation runs in full again; the checker says: idle and just after a REFRESH are clean; with a bank open the first
 //     MRS is issued to a DRAM with that bank open; in the middle of a write or a read burst CKE falls in the middle of the burst;
-//   - KNOWN DEFECT, docs/roadmap/index.md: after every one of them both lanes' calibration ends in an error, so the controller
-//     takes no request again until the board is reset. The sweep drives a DQ/DQS burst and a read window and issues no command
-//     (rtl/soc/ddr3_read_calib.v), and sim/ddr3_dq_model.v answers that only until it has seen the first command, as a DRAM
-//     would answer it never. When calibration issues real commands this expectation is the one to flip (EXPECT_RECAL below).
+//   - the controller is usable again: both lanes are calibrated (Stage 3: the sweep is command-driven, rtl/soc/ddr3_read_calib.v;
+//     until then both lanes ended in an error after every restart, because the sweep issued no command and the memory model
+//     answered its injected pattern only before the first one). After an ndmreset (WARM=1) the results are kept, so the sweep
+//     does not run again and writes nothing; after a cold start (WARM=0) it does, with a real WRITE and real READs;
+//   - the words written before the reset are still in the DRAM and read back through the restarted controller (all but the
+//     one a write cut by the reset was aimed at, scenarios 2 and 5), and a write burst cut by the reset is seen by the DQ model.
 // What it does not establish: that a restart is safe on a real DRAM, which no model here can show, or anything about retention
-// (the DRAM is not refreshed for the 500 us and the rest of the sequence: ten times what JEDEC lets a refresh be postponed).
+// (the DRAM is not refreshed for the restart: about 23 us after an ndmreset, 500 us and more after a cold start).
 `timescale 1ns/1ps
 module tb_ddr3_restart;
     parameter SCEN = 0;     // when the controller is reset: 0 idle, 1 bank open (after an ACTIVATE), 2 mid write burst, 3 mid read burst, 4 just after a REFRESH, 5 at a WRITE, 6 at a REFRESH
@@ -135,18 +137,22 @@ module tb_ddr3_restart;
             if (c_ref) ev_ref <= ~ev_ref;
         end
     end
-    integer n_mrs = 0, n_pre = 0, n_zq = 0;
+    integer n_mrs = 0, n_pre = 0, n_zq = 0, n_wrc = 0, n_rdc = 0;
     always @(posedge ddr3_ck) if (ddr3_reset_n && ddr3_cke) begin
         if (c_mrs) n_mrs <= n_mrs + 1;
         if (!ddr3_ras_n && ddr3_cas_n && !ddr3_we_n) n_pre <= n_pre + 1;
+        if (c_wr) n_wrc <= n_wrc + 1;
+        if (c_rd) n_rdc <= n_rdc + 1;
         if (ddr3_ras_n && ddr3_cas_n && !ddr3_we_n) n_zq <= n_zq + 1;
     end
 
     // ---- a log of what happens, with times ----
     reg  armed = 1'b0;     // the controller is about to be reset: the events below are the restart's
     time t_cke_fall = 0, t_cke_rise = 0, t_init_fall = 0, t_init_rise = 0;
-    integer np0;
+    integer np0, nw0, nr0, nw1, nr1;
+    reg [15:0] w_back0, w_back1, w_back2, w_back3;
     reg     dq_early;      // a DQ model had flagged something 10 us after the reset: a burst the reset cut
+    reg     calib_early;   // a calibration result was being shown 10 us after the reset, with the controller still held in it
     always @(negedge ddr3_cke)  if (armed && t_cke_fall == 0) t_cke_fall = $time;
     always @(posedge ddr3_cke)  if (armed && t_cke_fall != 0 && t_cke_rise == 0) t_cke_rise = $time;
     always @(negedge init_ready) if (armed && t_init_fall == 0) t_init_fall = $time;
@@ -254,23 +260,26 @@ module tb_ddr3_restart;
             6: begin ef = ev_ref; while (ev_ref === ef) @(posedge ddr3_ck); end
         endcase
         armed = 1'b1;
-        np0 = n_pre;
+        np0 = n_pre; nw0 = n_wrc; nr0 = n_rdc;
         if (WARM) rst_warm = 1'b1; else rst = 1'b1;
         repeat (2) @(posedge clk);          // as short as a debugger's ndmreset can be: the reset itself gives the DRAM no time to finish
         rst_warm = 1'b0; rst = 1'b0;
         repeat (250) @(posedge clk);        // 10 us in: before the initialisation is done and calibration starts
         dq_early = dq_error || dqu_error;
+        calib_early = calib_done || calib1_done || calib_error || calib1_error;
         // what happens next
         waited = 0;
         while (!((calib_done || calib_error) && (calib1_done || calib1_error) && init_ready) && waited < 40000) begin @(posedge clk); waited = waited + 1; end
         $display("  [%0d us] settled: init_ready=%b lane0 done/err=%b/%b lane1 done/err=%b/%b (MRS %0d, PRE %0d, ZQ %0d seen in all)", $time / 1000,
                  init_ready, calib_done, calib_error, calib1_done, calib1_error, n_mrs, n_pre, n_zq);
+        nw1 = n_wrc; nr1 = n_rdc;           // the commands up to the end of the restart, before this test reads anything back
+        w_back0 = 16'hxxxx; w_back1 = 16'hxxxx; w_back2 = 16'hxxxx; w_back3 = 16'hxxxx;
         if (calib_done && calib1_done) begin
             repeat (50) @(posedge clk);
-            do_read(3'd0, 16'h0010, 16'h0020); $display("  read of the word written before: %h (was %h)", got_word, W0);
-            do_read(3'd1, 16'h0020, 16'h0040); $display("  read of the word written before: %h (was %h)", got_word, W1);
-            do_read(3'd2, 16'h0030, 16'h0060); $display("  read of the word written before: %h (was %h)", got_word, W2);
-            do_read(3'd3, 16'h0040, 16'h0080); $display("  read of the word written before: %h (was %h)", got_word, W3);
+            do_read(3'd0, 16'h0010, 16'h0020); w_back0 = got_word; $display("  read of the word written before: %h (was %h)", got_word, W0);
+            do_read(3'd1, 16'h0020, 16'h0040); w_back1 = got_word; $display("  read of the word written before: %h (was %h)", got_word, W1);
+            do_read(3'd2, 16'h0030, 16'h0060); w_back2 = got_word; $display("  read of the word written before: %h (was %h)", got_word, W2);
+            do_read(3'd3, 16'h0040, 16'h0080); w_back3 = got_word; $display("  read of the word written before: %h (was %h)", got_word, W3);
         end
         $display("  verdicts: protocol checker %b, lane 0 DQ model %b, lane 1 DQ model %b", model_error, dq_error, dqu_error);
         $display("");
@@ -298,13 +307,22 @@ module tb_ddr3_restart;
             2, 5: check("the checker says: CKE fell in the middle of a write burst", model_error && model_error_msg === "CKE fell in the middle of a write burst (before tWRPDEN)", 1'b1);
             3:    check("the checker says: CKE fell in the middle of a read burst", model_error && model_error_msg === "CKE fell in the middle of a read burst (before tRDPDEN)", 1'b1);
         endcase
-        // ---- the known defect ----
-`ifdef EXPECT_RECAL
-        check("both lanes recalibrated", calib_done && calib1_done && !calib_error && !calib1_error, 1'b1);
-`else
-        check("KNOWN DEFECT: lane 0's calibration ended in an error", calib_error && !calib_done, 1'b1);
-        check("KNOWN DEFECT: lane 1's calibration ended in an error", calib1_error && !calib1_done, 1'b1);
-`endif
+        // ---- nobody is told "calibrated" while the controller behind it is held in reset ----
+        // (the Wishbone slave starts a request on calib_done, and the sequencers it would reach are in reset until init_ready)
+        check("no calibration result is shown while the controller is held in reset", calib_early, 1'b0);
+        // ---- the controller is usable again ----
+        check("lane 0 is calibrated again", calib_done && !calib_error, 1'b1);
+        check("lane 1 is calibrated again", calib1_done && !calib1_error, 1'b1);
+        if (WARM) begin
+            check("the results were kept: no WRITE and no READ from a sweep", nw1 == nw0 && nr1 == nr0, 1'b1);
+        end else begin
+            check("a cold start sweeps again: a real WRITE", nw1 > nw0, 1'b1);
+            check("and real READs", nr1 > nr0, 1'b1);
+        end
+        check("a word written before the reset reads back (1)", w_back0 === W0, 1'b1);
+        check("a word written before the reset reads back (2)", w_back1 === W1, 1'b1);
+        check("a word written before the reset reads back (4)", w_back3 === W3, 1'b1);
+        if (SCEN != 2 && SCEN != 5) check("a word written before the reset reads back (3)", w_back2 === W2, 1'b1);
         $display("");
         if (errors == 0) $display("DDR3 RESTART SCENARIO %0d PASSED", SCEN);
         else             $display("DDR3 RESTART SCENARIO %0d FAILED (%0d)", SCEN, errors);

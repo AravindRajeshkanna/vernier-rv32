@@ -2393,8 +2393,8 @@ sim_sdramcheck: sim/bootrom_$(CORE).hex sim/sdramcheckimage.hex sim/sim_sdramche
 # preloaded program differs, and this one is the first to ever reach
 # DDR3_BASE from real, CPU-executed load/store instructions through the
 # real interconnect, not a raw Wishbone-master testbench tap
-# (sim/tb_wb_ddr.v, Stage 2 Part 1) or calibration's own direct-signal
-# injection (Stage 1).
+# (sim/tb_wb_ddr.v, Stage 2 Part 1) or calibration's own sweep (Stage 1's was a
+# direct-signal injection; since Stage 3 it is command-driven).
 software/soc/ddrcheck.elf: $(SOCRT_SRCS) software/soc/ddrcheck.c \
                             software/soc/link_ram.ld $(SOC_HDRS)
 	$(RISCV_CC) $(SOCPROG_CFLAGS) -T software/soc/link_ram.ld \
@@ -3717,12 +3717,17 @@ sim_ddr3_init: sim/sim_ddr3_init.out
 # behavioral DQ/DQS memory. Distinct from sim_ddr3_init above: that one
 # proves the command/mode-register sequence, this one proves the
 # genuinely double-data-rate data path none of Part 1's own files touch.
-sim/sim_ddr3_data.out: sim/tb_ddr3_data.v rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
+sim/sim_ddr3_data.out: sim/tb_ddr3_data.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
-    sim/ddr3_dq_model.v
-	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_data.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_data.v rtl/soc/ddr3_ecp5_top.v \
+	    rtl/soc/ddr3_eclk_pll.v rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v \
 	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
-	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
+	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
+	    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+	    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
 
 sim_ddr3_data: sim/sim_ddr3_data.out
 	@cd sim && $(VVP) sim_ddr3_data.out $(VVP_DUMP) 2>&1 | tee ddr3_data.log
@@ -3758,8 +3763,8 @@ sim_ddr3_top: sim/sim_ddr3_top.out
 #
 # The first real ACT+WR followed by a real ACT+RD through
 # rtl/soc/ddr3_ecp5_top.v, not rtl/soc/ddr3_read_calib.v's own direct-
-# signal-injection scheme (which still runs first - calibration must
-# complete before either command sequencer is allowed to start).
+# signal-injection scheme (Stage 1; since Stage 3 calibration is itself a client of
+# the sequencers, and still runs first - a caller's request waits for it).
 sim/sim_ddr3_cmd_seq.out: sim/tb_ddr3_cmd_seq.v rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
     rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
     rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
@@ -3987,24 +3992,35 @@ sim_ddr3_dm_window: sim/sim_ddr3_dm_window.out
 	@grep -q "DDR3 DATA MASK TEST PASSED" sim/ddr3_dm_window.log || \
 	    { echo "sim_ddr3_dm_window FAILED"; exit 1; }
 
-# ---- DDR3 second byte lane: independent calibration (Phase 9 Stage 1, Part 24) ----
+# ---- DDR3 second byte lane: independent calibration (Phase 9 Stage 1, Part 24; command-driven since Stage 3) ----
 #
-# The same real proof sim/tb_ddr3_data.v (Part 2) gave lane 0, run a second time on
-# lane 1's own pins, sharing the one real rtl/soc/ddr3_ddrdlla_ecp5.v instance real
-# hardware has exactly one of - and, in the same run, proof the two do not interfere:
-# each lane's own calibration must find its OWN test pattern, and neither lane's bus may
-# ever show the other's.
-sim/sim_ddr3_data_lane1.out: sim/tb_ddr3_data_lane1.v rtl/soc/ddr3_eclk_pll.v \
-    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
-    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
-	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_data_lane1.v rtl/soc/ddr3_eclk_pll.v \
-	    rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v rtl/soc/ddr3_dq_serdes_ecp5.v \
-	    rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_read_calib.v sim/ddr3_dq_model.v
+# The two lanes are swept by one sequence of real reads and resolve independently, sharing the one real
+# rtl/soc/ddr3_ddrdlla_ecp5.v instance real hardware has exactly one of. Three runs of sim/tb_ddr3_data_lane1.v:
+# DEAD1=0, both lanes with a memory behind them and different patterns, each finds its OWN pattern and neither lane's
+# bus ever shows the other's; DEAD1=1, nothing behind lane 1, which ends in an error while lane 0 calibrates and the
+# controller then takes no request; and DEAD0=1, the same the other way round. Each is its own run, since the DRAM's protocol checker judges one DRAM.
+DDR3_DATA_LANE1_SRCS = rtl/soc/ddr3_ecp5_top.v rtl/soc/ddr3_eclk_pll.v \
+    rtl/soc/ddr3_init_seq.v rtl/soc/ddr3_phy_ecp5.v rtl/soc/ddr3_dqs_ecp5.v rtl/soc/ddr3_ddrdlla_ecp5.v \
+    rtl/soc/ddr3_dq_serdes_ecp5.v rtl/soc/ddr3_dqs_write_ecp5.v rtl/soc/ddr3_dm_drv_ecp5.v rtl/soc/ddr3_read_calib.v \
+    rtl/soc/ddr3_write_seq.v rtl/soc/ddr3_read_seq.v rtl/soc/ddr3_read_burst_ext.v \
+    rtl/soc/ddr3_refresh_ctrl.v sim/ddr3_model.v sim/ddr3_dq_model.v
+sim/sim_ddr3_data_lane1.out: sim/tb_ddr3_data_lane1.v $(DDR3_DATA_LANE1_SRCS)
+	$(IVERILOG) $(IVFLAGS) -o $@ sim/tb_ddr3_data_lane1.v $(DDR3_DATA_LANE1_SRCS)
+sim/sim_ddr3_data_lane1_dead.out: sim/tb_ddr3_data_lane1.v $(DDR3_DATA_LANE1_SRCS)
+	$(IVERILOG) $(IVFLAGS) -P tb_ddr3_data_lane1.DEAD1=1 -o $@ sim/tb_ddr3_data_lane1.v $(DDR3_DATA_LANE1_SRCS)
+sim/sim_ddr3_data_lane0_dead.out: sim/tb_ddr3_data_lane1.v $(DDR3_DATA_LANE1_SRCS)
+	$(IVERILOG) $(IVFLAGS) -P tb_ddr3_data_lane1.DEAD0=1 -o $@ sim/tb_ddr3_data_lane1.v $(DDR3_DATA_LANE1_SRCS)
 
-sim_ddr3_data_lane1: sim/sim_ddr3_data_lane1.out
+sim_ddr3_data_lane1: sim/sim_ddr3_data_lane1.out sim/sim_ddr3_data_lane1_dead.out sim/sim_ddr3_data_lane0_dead.out
 	@cd sim && $(VVP) sim_ddr3_data_lane1.out $(VVP_DUMP) 2>&1 | tee ddr3_data_lane1.log
 	@grep -q "DDR3 SECOND LANE TEST PASSED" sim/ddr3_data_lane1.log || \
 	    { echo "sim_ddr3_data_lane1 FAILED"; exit 1; }
+	@cd sim && $(VVP) sim_ddr3_data_lane1_dead.out $(VVP_DUMP) 2>&1 | tee ddr3_data_lane1_dead.log
+	@grep -q "DDR3 SECOND LANE TEST PASSED" sim/ddr3_data_lane1_dead.log || \
+	    { echo "sim_ddr3_data_lane1 FAILED (nothing behind lane 1)"; exit 1; }
+	@cd sim && $(VVP) sim_ddr3_data_lane0_dead.out $(VVP_DUMP) 2>&1 | tee ddr3_data_lane0_dead.log
+	@grep -q "DDR3 SECOND LANE TEST PASSED" sim/ddr3_data_lane0_dead.log || \
+	    { echo "sim_ddr3_data_lane1 FAILED (nothing behind lane 0)"; exit 1; }
 
 # ---- DDR3 lane 1 wired in for real (Phase 9 Stage 1, Part 25) ----
 #

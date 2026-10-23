@@ -93,33 +93,25 @@ reset block, on a BTB at four times its size, and on a stale or a missing line o
 tables are still 8x8, by hand), does not convert the BTB (still about 7,200 LUT4s, still the one worth a look), and synthesises
 `BOARD=ulx3s85` only: the ECPIX-5 wrapper shares the SoC but is not built by it.
 
-**OPEN - the DDR3 read calibration issues no DRAM command, so it cannot calibrate against a DRAM, and it cannot run twice (found 2026-10-22, while testing a restart on a live DRAM).**
-`rtl/soc/ddr3_read_calib.v` sweeps the eight read taps by *injecting* a pattern onto a byte lane's DQ and DQS pins and capturing it
-back; Phase 9 Stage 1 Part 2 recorded that it "still does not issue real ACT/WR/RD commands". Measured for this entry: a whole sweep
-is 58 command slots and every one is a NOP. Three things follow, none of them seen on a board.
-**(1) The DRAM takes no part in a lane's `calib_done`**, so the tap it picks is not proven for a read the DRAM answers, and a green
-LED1 or LED3 is not evidence about the DRAM (the LED update of 2026-10-22 in `phase-09-ddr.md` first said it was, and is corrected).
-On the chip the capture is expected to need a strobe at the pad, which a DRAM gives only after a READ; what a sweep ends in on
-silicon is unknown, and a sweep that ends in `calib_error` stops every access, because the Wishbone slave waits for both lanes.
-**(2) It cannot run a second time**, even in simulation. `sim/tb_ddr3_restart.v` (`make sim_ddr3_restart`) resets only the controller
-at seven points (idle, a bank open, mid write burst, mid read burst, just after a REFRESH, at a WRITE, at a REFRESH), for two kinds
-of reset (the debug module's `ndmreset`, and a cold start against a DRAM that was not reset). The initialisation re-runs in full each time,
-and then both lanes end in `calib_error` and the controller takes no request until the board's reset. In the simulation the cause is
-that the DQ model answers the injected pattern only before the first command it has seen.
-**(3) The restarts were not legal for the DRAM (found by the same test, 2026-10-22; closed for the debug module's `ndmreset` 2026-10-22).**
-By rules reasoned from JESD79-3 and not from the datasheet: the initialisation had no PRECHARGE ALL, so a restart with a bank open
-issued its first MRS into an open bank, and CKE fell with the reset, in the middle of whatever burst the DRAM was in. The `ndmreset` is
-now a warm reset (`rst_warm`, `phase-09-ddr.md` has the change): CKE stays up, the controller waits for the DRAM to finish,
-issues PRECHARGE ALL and writes the mode registers again, in about 23 us, and the checker has no objection at any of the seven
-points. It stays open for a bitstream loaded over a powered board, where the flip-flops start at zero, CKE is low, and the DRAM may be
-mid-burst: nothing in the controller can fix that. And a write burst cut by the reset loses its data in both kinds.
-The fix for (1) and (2) is large: make the calibration command-driven (ACTIVATE, WRITE, READ per `READCLKSEL` tap), which touches
-the controller, the formal proofs and the DQ model, and can only be validated in simulation until a board runs it (the DQSBUFM
-stand-in does not look at the DQS pin). Until then `tb_ddr3_restart.v` asserts the defect (`KNOWN DEFECT`), and flipping it
-(`-DEXPECT_RECAL`) is the first thing to do when the fix lands. Not established: what the sweep ends in on silicon, whether the
-rules in (3) are JEDEC's exact ones, and anything about a DRAM's state after a restart (retention, refresh debt: the DRAM is not
-refreshed for the roughly 23 us of a warm restart: with the interval already run and the first refresh after it, under nine
-refresh intervals, JEDEC's limit with refreshes postponed; reasoned, not measured).
+**RESOLVED - the DDR3 read calibration issued no DRAM command, so it could not calibrate against a DRAM, and it could not run twice (found 2026-10-22, fixed 2026-10-23).**
+`rtl/soc/ddr3_read_calib.v` swept the eight read taps by *injecting* a pattern onto a byte lane's DQ and DQS pins and capturing it back;
+Phase 9 Stage 1 Part 2 had recorded that it "still does not issue real ACT/WR/RD commands". Measured when it was found: a whole sweep was 58
+command slots and every one a NOP. So the DRAM took no part in a lane's `calib_done` (the tap was not proven for a read the DRAM answers, and a green LED said
+nothing about the DRAM: the LED update of 2026-10-22 had said it did, and was corrected), on the chip the capture is expected to need a strobe burst
+that only a READ makes a DRAM give, and in simulation the sweep could not run a second time against a DRAM that had been commanded (the memory model answered
+the injected pattern only before the first command): after every restart both lanes ended in `calib_error` and the controller took no request.
+**Fixed:** the sweep is a client of the controller's own sequencers (`phase-09-ddr.md` has the change and the measurements). It asks for one real WRITE of a
+pattern to a reserved column (bank 7, row 0x7FFF, column 0x3F8, two bytes), then one real READ of it per tap, each lane taking the first tap whose read
+returns its pattern with the capture's `datavalid`; both lanes are swept together and resolve independently. Measured in simulation: one WRITE and three reads
+(taps 0, 1 and 2: the stand-in capture's valid window is taps 2 to 5), four ACTIVATE commands, and the protocol checker and both DQ models have no objection; a lane with nothing behind it
+ends in an error after eight reads while the other calibrates. The results survive a warm reset (the debug module's `ndmreset`): no sweep, no write, the controller
+is usable as soon as its initialisation is done (about 23 us); a cold start sweeps again. `sim_ddr3_restart` (fourteen runs) now asserts that both lanes are
+calibrated again after every restart and that the words written before it read back, where it asserted the defect.
+The restart's other half, that the restarts were not legal for the DRAM (a bank open, CKE falling mid-burst), is closed for `ndmreset` (#274); it stays for a
+bitstream loaded over a powered board, where CKE is low and the DRAM may be mid-burst, which nothing in the controller can fix, and a write burst cut by the reset still loses
+its data. **Not established:** anything on a board, and what a sweep ends in on silicon (the simulation's DQSBUFM is a stand-in with a window of taps 2 to 5 that does not look at the DQS pin);
+that the first tap that passes, the edge of the valid window and not its middle, has enough margin; and that overwriting two bytes at the top of the part at every cold start costs
+nobody anything (a software user of the last 16 bytes of the 512 MB should know they are not theirs across a cold start).
 
 **RESOLVED - the whole-SoC synthesis check's time limit was not a margin an unrelated change cannot cross (found and fixed 2026-10-17).** `fpga/synth/soc_synth.sh` killed the build at
 600 s (in-order core) and 1,500 s (wide core), set at about four times what a laptop took (129 s and 330 s) and, for the wide core, 3.2 times what a CI runner took (472 s).

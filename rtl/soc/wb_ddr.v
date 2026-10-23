@@ -209,12 +209,13 @@ module wb_ddr (
 
             case (state)
                 S_IDLE: begin
-                    // Not before the controller is calibrated: its command
-                    // sequencers are held in reset until calib_done, so a
-                    // request pulse sent earlier is dropped, while this state
-                    // machine would wait on a busy that calibration's own
-                    // activity raises and then acknowledge a transfer that
-                    // never happened. A boot loader writing DDR3 right after
+                    // Not before the controller is calibrated: it does not
+                    // take a caller's request until calib_done (the sequencers
+                    // are busy with calibration's own requests until then, and
+                    // held in reset before that), so a request pulse sent
+                    // earlier is dropped, while this state machine would wait
+                    // on a busy that calibration's own activity raises and then
+                    // acknowledge a transfer that never happened. A boot loader writing DDR3 right after
                     // reset lost the first byte of its image that way. Since
                     // Part 26 the controller waits for lane 1's calibration
                     // too, so this does as well.

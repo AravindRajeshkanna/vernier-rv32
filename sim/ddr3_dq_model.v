@@ -25,9 +25,13 @@
 // purpose: a read that returns stale data from somewhere else would
 // otherwise look like a hit.
 //
-// Data written before any command has been seen goes to one separate
-// "calibration" cell, which is what rtl/soc/ddr3_read_calib.v's direct
-// write burst and read_active injection needs (it issues no DRAM commands at all).
+// Through Phase 9 Stage 2 data written before any command had been seen went to one separate "calibration"
+// cell, and a read window opened with no READ was answered from it: that is what the calibration's injected write
+// burst and read_active needed, since it issued no DRAM command at all. The calibration is command-driven now
+// (rtl/soc/ddr3_read_calib.v, Stage 3): it writes and reads a real column through the controller's own sequencers, so the
+// cell is gone, a read window with no READ behind it is answered with nothing, and a strobe outside a WRITE's burst is
+// an error whenever it happens, not only after the first command. `read_active` is still an input so the testbenches'
+// connection lists stay as they were; it is no longer read.
 //
 // ---- Part 17: writes are checked against the DRAM's own write latency,
 // from the pins ----
@@ -83,8 +87,8 @@
 // cell content rather than an undriven bus.
 // Quantised to whole sclk cycles, the tDQSCK spread (up to 10 ns) is invisible;
 // sub-cycle capture alignment is what the READCLKSEL calibration is for.
-// Calibration reads issue no READ command, so with no command yet seen the model
-// still responds to `read_active`, as before.
+// (Until Stage 3, calibration's reads issued no READ command and the model answered `read_active` itself while it had
+// seen no command; the calibration's reads are real READs now and that is gone: see above.)
 //
 // What this does and does not catch, measured (Part 18): a READ window at the wrong
 // cycle now returns the wrong byte, or an unknown one, so a wrong CL fails the
@@ -185,8 +189,6 @@ module ddr3_dq_model #(
     integer    n_used;
     reg        overflowed;
 
-    reg [7:0]  calib_data;   // written before any command has been seen
-
     integer i;
 
     // ---- write-burst expectations (Part 17) ----
@@ -196,8 +198,6 @@ module ddr3_dq_model #(
     integer    cyc;
     reg [2:0]  wexp [0:7];   // 0 nothing expected, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
     reg [2:0]  rdexp [0:7];  // the same, for a READ: 0 nothing, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
-    reg        cmd_seen;     // a WRITE or READ has been seen: calibration is over
-    reg        cal_active_prev;
 
     task dq_fail(input [511:0] msg);
         begin
@@ -223,7 +223,7 @@ module ddr3_dq_model #(
     function [7:0] current_value(input dummy);
         integer j;
         begin
-            if (!cur_valid) current_value = calib_data;
+            if (!cur_valid) current_value = 8'hxx;
             else begin
                 j = find(cur_bank, cur_row, cur_col);
                 current_value = (j < 0) ? 8'hxx : k_data[j];
@@ -263,8 +263,7 @@ module ddr3_dq_model #(
 
     task store_current(input [7:0] d);
         begin
-            if (!cur_valid) calib_data = d;
-            else store_at(cur_bank, cur_row, cur_col, d);
+            if (cur_valid) store_at(cur_bank, cur_row, cur_col, d);
         end
     endtask
 
@@ -290,7 +289,6 @@ module ddr3_dq_model #(
     initial begin
         overflowed = 1'b0;
         n_used     = 0;
-        calib_data = 8'b0;
         cur_valid  = 1'b0;
         cur_bank   = 3'b0;
         cur_row    = 15'b0;
@@ -303,8 +301,6 @@ module ddr3_dq_model #(
         dq_error        = 1'b0;
         dq_error_msg    = "";
         cyc             = 0;
-        cmd_seen        = 1'b0;
-        cal_active_prev = 1'b0;
         for (i = 0; i < 8; i = i + 1) begin wexp[i] = 3'd0; rdexp[i] = 3'd0; end
     end
 
@@ -315,32 +311,21 @@ module ddr3_dq_model #(
             mem_dqs_oe <= 1'b0;
             mem_dqs_o  <= 1'b0;
             n_used     = 0;
-            calib_data = 8'b0;
             cyc        = 0;
-            cal_active_prev = 1'b0;
             for (i = 0; i < 8; i = i + 1) begin wexp[i] = 3'd0; rdexp[i] = 3'd0; end
             for (i = 0; i < DEPTH; i = i + 1) k_used[i] = 1'b0;
         end else begin
             // ---- drive for the NEXT cycle ----
-            // A READ scheduled this cycle's successor (see the header); otherwise,
-            // only before any command has been seen (calibration, which issues no
-            // READ), respond to `read_active` as the single-cell model did.
+            // A READ scheduled this cycle's successor (see the header); otherwise the model drives nothing.
             case (rdexp[(cyc + 1) % 8])
                 3'd1: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b0; mem_dq_oe <= 1'b0; end
                 3'd2: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b1; mem_dq_oe <= 1'b1; mem_dq_o <= current_value(1'b0); end
                 3'd3: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b1; mem_dq_oe <= 1'b1; mem_dq_o <= beat4_value(1'b0); end
                 3'd4: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b0; mem_dq_oe <= 1'b0; end
                 default: begin
-                    if (!cmd_seen) begin
-                        mem_dq_o   <= current_value(1'b0);
-                        mem_dq_oe  <= read_active;
-                        mem_dqs_oe <= read_active;
-                        mem_dqs_o  <= read_active;
-                    end else begin
-                        mem_dq_oe  <= 1'b0;
-                        mem_dqs_oe <= 1'b0;
-                        mem_dqs_o  <= 1'b0;
-                    end
+                    mem_dq_oe  <= 1'b0;
+                    mem_dqs_oe <= 1'b0;
+                    mem_dqs_o  <= 1'b0;
                 end
             endcase
             rdexp[(cyc + 1) % 8] = 3'd0;
@@ -366,15 +351,10 @@ module ddr3_dq_model #(
                     3'd4: if (dqs_pin !== 1'b0)
                               dq_fail("write postamble: DQS not driven low after the burst");
                     default: begin
-                        if (cmd_seen && dqs_pin !== 1'bz)
+                        if (dqs_pin !== 1'bz)
                             dq_fail("DQS driven outside the write burst a WRITE command asked for");
                     end
                 endcase
-                // Calibration writes issue no command: capture the first active cycle.
-                if (!cmd_seen) begin
-                    if (dqs_pin === 1'b1 && !cal_active_prev && (^dq_pin) !== 1'bx) calib_data = dq_pin;
-                    cal_active_prev = (dqs_pin === 1'b1);
-                end
             end
             wexp[cyc % 8] = 3'd0;
             cyc = cyc + 1;
@@ -387,7 +367,6 @@ module ddr3_dq_model #(
     always @(posedge ck) begin
         if (rst) begin
             cur_valid <= 1'b0;
-            cmd_seen  <= 1'b0;
             for (i = 0; i < 8; i = i + 1) row_known[i] <= 1'b0;
         end else begin
             if (is_act) begin
@@ -410,7 +389,6 @@ module ddr3_dq_model #(
                 rdexp[(cyc + 5) % 8] = 3'd4;
             end
             if (is_wr || is_rd) begin
-                cmd_seen  <= 1'b1;
                 cur_valid <= 1'b1;
                 cur_bank  <= ba;
                 cur_row   <= row_known[ba] ? open_row[ba] : 15'bx;
