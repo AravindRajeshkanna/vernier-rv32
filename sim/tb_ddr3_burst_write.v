@@ -96,20 +96,24 @@ module tb_ddr3_burst_write;
     // ACTIVATE bank 1 row ROW, wait, WRITE at `col` with the burst set up, the strobe started in the cycle after it
     // (rtl/soc/ddr3_write_seq.v starts it then: preamble W+2, burst W+3 and W+4, postamble W+5), wait for the burst to end
     localparam [14:0] ROW = 15'h0123;
+    // Every stimulus is driven 1 ns AFTER the clock edge it is synchronous to. A process that waits and then assigns in the
+    // same time step as the edge is not scheduled the same way by every Verilator: 5.020 applied the assignment at once, ahead
+    // of the memory model sampling the command on CK's rising edge, so the model saw a NOP where the WRITE was.
     task burst(input [14:0] col);
         begin
-            @(posedge clk);
+            @(posedge clk); #1;
             ras_n <= 1'b0; cas_n <= 1'b1; we_n <= 1'b1; ba <= 3'd1; a <= ROW;
-            @(posedge ck);
+            @(posedge ck); #1;
             ras_n <= 1'b1;
             repeat (3) @(posedge clk);
+            #1;
             // the cycle W: WRITE on the pins
             ras_n <= 1'b1; cas_n <= 1'b0; we_n <= 1'b0; ba <= 3'd1; a <= col;
-            @(posedge ck);
+            @(posedge ck); #1;
             cas_n <= 1'b1; we_n <= 1'b1;
-            @(posedge clk);                        // W+1: the strobe FSM is told to go
+            @(posedge clk); #1;                    // W+1: the strobe FSM is told to go
             write_start <= 1'b1;
-            @(posedge clk);
+            @(posedge clk); #1;
             write_start <= 1'b0;
             repeat (8) @(posedge clk);             // past the postamble
         end
