@@ -4208,7 +4208,7 @@ $(DDR3_VL_RUNS): verilator_ddr3_%: sim/tb_ddr3_%.v $(DDR3_VL_SRCS)
 	    if grep -q "TEST PASSED" sim/vl_ddr3/$*.log; then \
 	        echo "verilator_ddr3_$*: $$(grep -m1 'TEST PASSED' sim/vl_ddr3/$*.log)"; \
 	    else \
-	        echo "verilator_ddr3_$*: FAILED"; grep -a "FAIL\|TIMEOUT" sim/vl_ddr3/$*.log | head -10; exit 1; \
+	        echo "verilator_ddr3_$*: FAILED"; grep -a "FAIL\|TIMEOUT" sim/vl_ddr3/$*.log | head -40; exit 1; \
 	    fi
 
 verilator_ddr3: $(DDR3_VL_RUNS)

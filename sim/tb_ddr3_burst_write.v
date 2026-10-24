@@ -119,6 +119,28 @@ module tb_ddr3_burst_write;
         peekb = MEM.peek(3'd1, {1'b0, ROW}, col);
     endfunction
 
+    // A record of the first strobe edges, DQ and DM at each, printed if the test fails: when it fails under a simulator I
+    // cannot run here (CI's Verilator), the log is all there is to go on.
+    integer ed_n = 0;
+    integer ed_t [0:31];
+    reg     ed_dqs [0:31];
+    reg [7:0] ed_dq [0:31];
+    reg     ed_dm [0:31];
+    always @(dqs) if (ed_n < 32 && !rst) begin
+        ed_t[ed_n] = $time; ed_dqs[ed_n] = dqs; ed_dq[ed_n] = dq; ed_dm[ed_n] = dm; ed_n = ed_n + 1;
+    end
+    integer di;
+    task dump_diag;
+        begin
+            $display("  FAIL diagnostics: %0d strobe edges seen in the first 32 events", ed_n);
+            for (di = 0; di < ed_n && di < 20; di = di + 1)
+                $display("  FAIL   edge %0d at %0d ps: dqs=%b dq=%h dm=%b", di, ed_t[di], ed_dqs[di], ed_dq[di], ed_dm[di]);
+            for (di = 0; di < 8; di = di + 1)
+                $display("  FAIL   column 0x%02h holds %h", 16 + di, peekb(16'h0010 + di));
+            $display("  FAIL   model error: %b, message: %0s", dq_error, dq_error_msg);
+        end
+    endtask
+
     integer c, bad;
     reg [7:0] want;
     initial begin
@@ -182,7 +204,7 @@ module tb_ddr3_burst_write;
         check("5: two bursts one after the other each land whole", bad == 0);
 
         check("the memory model saw no violation of the strobe, DQ or DM rules throughout", !dq_error);
-        if (dq_error) $display("       (%0s)", dq_error_msg);
+        if (errors != 0) dump_diag;
 
         $display("");
         $display("---------------------------------------------");
