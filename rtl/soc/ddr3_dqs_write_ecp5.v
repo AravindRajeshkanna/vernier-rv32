@@ -70,22 +70,20 @@ module ddr3_dqs_write_ecp5 (
         S_POSTAMBLE = 3'd4;
 
     reg [2:0] state;
-    reg [2:0] nstate;    // the state the next sclk edge enters (the simulation body below launches its first UI from it)
-
-    always @(*) begin
-        case (state)
-            S_IDLE:      nstate = write_start ? S_PREAMBLE : S_IDLE;
-            S_PREAMBLE:  nstate = S_ACTIVE0;
-            S_ACTIVE0:   nstate = S_ACTIVE1;
-            S_ACTIVE1:   nstate = S_POSTAMBLE;
-            S_POSTAMBLE: nstate = S_IDLE;
-            default:     nstate = S_IDLE;
-        endcase
-    end
 
     always @(posedge sclk or posedge rst) begin
-        if (rst) state <= S_IDLE;
-        else     state <= nstate;
+        if (rst) begin
+            state <= S_IDLE;
+        end else begin
+            case (state)
+                S_IDLE:      state <= write_start ? S_PREAMBLE : S_IDLE;
+                S_PREAMBLE:  state <= S_ACTIVE0;
+                S_ACTIVE0:   state <= S_ACTIVE1;
+                S_ACTIVE1:   state <= S_POSTAMBLE;
+                S_POSTAMBLE: state <= S_IDLE;
+                default:     state <= S_IDLE;
+            endcase
+        end
     end
 
     // D0 first in time, D3 last (Phase 9 Stage 3: this comment said the opposite until then, and the pattern below
@@ -124,31 +122,31 @@ module ddr3_dqs_write_ecp5 (
 `else
     // Simulation. Neither ODDRX2DQSB nor TSHX2DQSA has a behavioral model in this toolchain - the same real gap every
     // other DDR-I/O primitive in this stage found - so this does what the primitive does at the pin: the four values of
-    // the cycle, D0 first, one per UI (10 ns, half a CK), starting at the sclk edge, and the enable from the same edge.
+    // the cycle, D0 first, one per UI (10 ns, half a CK), starting at the sclk edge. The enable is `oe`, from `state`, as
+    // it has always been.
     // Phase 9 Stage 3: through Stage 2 this was `assign dqs_o = d[3]`, one level per sclk cycle, so nothing in a
     // simulation ever saw the strobe toggle and the memory model judged a burst by which cycles the strobe was high in.
     // Now the strobe toggles: rising 10 ns into the first active cycle (WL = 6 CK after the WRITE's CK edge, which
     // is 10 ns into its own cycle), then every 10 ns, eight edges for the eight beats, falling at the end of the second
-    // active cycle. The first UI is launched from `nstate`, the state the edge is entering, because at the edge itself
-    // `state` still holds the old one; the others are read as they come, when it has settled. Designed, not derived: the
-    // 90 degree relation of DQSW to ECLK is the bring-up's to show.
-    reg dqs_r;
-    reg oe_r;
-    initial begin dqs_r = 1'b0; oe_r = 1'b0; end
-    function automatic en(input [2:0] st);
-        en = (st == S_PREAMBLE) || (st == S_ACTIVE0) || (st == S_ACTIVE1) || (st == S_POSTAMBLE);
-    endfunction
+    // active cycle. Designed, not derived: the 90 degree relation of DQSW to ECLK is the bring-up's to show.
+    // How: D0 is low in every state, so the first UI of a cycle is "low" whatever the state is, and the others are read
+    // from `d` as they come, 10, 20 and 30 ns later. Nothing the rest of the design samples at an sclk edge is assigned by
+    // a process that waits: a nonblocking assignment in such a process is not treated the same way by every Verilator
+    // (CI's 5.020 saw the enable a cycle early, which 5.052 does not), so the "first UI is low" flag is a pair of
+    // toggles, one flipped at the edge by a process that never waits and one chasing it 10 ns later by the one that does.
+    reg first_ui_a, first_ui_b;       // the strobe is in the first UI of the cycle while they differ
+    reg dqs_late;                     // the strobe's level in UI 1 to 3 of the cycle
+    initial begin first_ui_a = 1'b0; first_ui_b = 1'b0; dqs_late = 1'b0; end
+    always @(posedge sclk) first_ui_a <= ~first_ui_a;
     always @(posedge sclk) begin
-        dqs_r <= 1'b0;           // D0 is low in every state (the pattern above): the first UI needs no state at all
-        oe_r  <= en(nstate);
-        #10 dqs_r <= d[1];
-        #10 dqs_r <= d[2];
-        #10 dqs_r <= d[3];
+        #10 begin dqs_late <= d[1]; first_ui_b <= first_ui_a; end
+        #10 dqs_late <= d[2];
+        #10 dqs_late <= d[3];
     end
-    assign dqs_o  = dqs_r;
-    assign dqs_oe = oe_r;
-    assign dqs_t  = !oe_r;
+    assign dqs_o  = (first_ui_a != first_ui_b) ? 1'b0 : dqs_late;
+    assign dqs_oe = oe;
+    assign dqs_t  = !oe;
 
-    wire _unused_ok = &{1'b0, eclk, dqsw, oe, 1'b0};
+    wire _unused_ok = &{1'b0, eclk, dqsw, 1'b0};
 `endif
 endmodule
