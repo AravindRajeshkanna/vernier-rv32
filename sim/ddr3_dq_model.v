@@ -144,8 +144,19 @@
 // The strobe's own protocol is checked: it must be driven low for 0.9 tCK or more before the first rising edge and (the
 // controller drives it from 2.5 tCK before) no more than 3 tCK, must carry exactly eight edges at the expected times with
 // the right polarity, must stay low for 0.4 tCK after the last, and must be high-Z otherwise. DQ must be known at every
-// beat DM does not mask. The read side is still the two-sample model above (Part 18): beat 0 and beat 4 on two sclk
-// cycles; making it beat-resolved is the next part.
+// beat DM does not mask.
+//
+// ---- Phase 9 Stage 3: the read side is driven beat by beat ----
+// The Part 18 text above (a strobe held high, DQ with beat 0's byte for one sclk and beat 4's for the next) is history: a READ
+// sampled in sclk cycle R still starts its burst at R+3 (the first strobe edge, the rising one, on the sclk edge that begins
+// R+3: 10 ns into the READ's own CK edge, five CK of latency, and tDQSCK at the top of its 1 to 10 ns range), but the part now
+// answers as a part does. DQS is driven low in R+2 (the preamble), then toggles every half CK: eight edges, the first rising,
+// the last falling, 10 ns apart, in R+3 and R+4; it stays low through R+5 (the postamble) and is high-Z after. DQ carries
+// beat b from tDQSQ (1 ns) after strobe edge b until the next one, so it is edge-aligned with the strobe, as a DRAM drives it:
+// the controller's capture finds the middle of each beat from the strobe's phase, and the stand-in for it (rtl/soc/
+// ddr3_dq_serdes_ecp5.v) samples 5 ns after each edge. Beat b is column {c[9:3], (c[2:0] + b) mod 8}, the sequential burst order
+// from the addressed column c: the byte stored there, 00 for a column never written, except beat 0 (the addressed column
+// itself), which reads as unknown if it was never written, so that a stale read cannot pass as a hit.
 `timescale 1ns/1ps
 module ddr3_dq_model #(
     parameter DEPTH = 1024,
@@ -220,6 +231,8 @@ module ddr3_dq_model #(
     // Indexed mod 8, consumed as each cycle ends.
     integer    cyc;
     reg [2:0]  rdexp [0:7];  // 0 nothing, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
+    reg [2:0]  rd_ph;        // the entry for the cycle that has just begun: what the beat driver below does in it
+    localparam real TDQSQ_NS = 1.0;   // DQ is valid this long after the strobe edge it belongs to
 
     task dq_fail(input [511:0] msg);
         begin
@@ -253,12 +266,17 @@ module ddr3_dq_model #(
         end
     endfunction
 
-    // beat 4 of a BL8 read in sequential order: four columns on, wrapping in the aligned 8
-    function [7:0] beat4_value(input dummy);
+    // beat k of a BL8 read in sequential order from the addressed column: k columns on, wrapping in the aligned 8. The
+    // addressed column itself (beat 0) is unknown if it was never written; any other column reads 00 then, a defined cell
+    // content rather than an undriven bus.
+    function [7:0] read_beat(input integer k);
         integer j;
         begin
-            j = find(cur_bank, cur_row, {cur_col[9:3], cur_col[2:0] ^ 3'b100});
-            beat4_value = (j < 0) ? 8'h00 : k_data[j];
+            if (k == 0) read_beat = current_value(1'b0);
+            else begin
+                j = find(cur_bank, cur_row, {cur_col[9:3], cur_col[2:0] + k[2:0]});
+                read_beat = (j < 0) ? 8'h00 : k_data[j];
+            end
         end
     endfunction
 
@@ -345,6 +363,9 @@ module ddr3_dq_model #(
         dq_error_msg    = "";
         cyc             = 0;
         for (i = 0; i < 8; i = i + 1) rdexp[i] = 3'd0;
+        rd_ph           = 3'd0;
+        mem_dq_o        = 8'b0;
+        mem_dqs_o       = 1'b0;
         for (i = 0; i < NW; i = i + 1) wq_v[i] = 1'b0;
         for (i = 0; i < NW; i = i + 1) wq_post[i] = 1'b0;
         dqs_s1 = 2'd2;
@@ -355,33 +376,57 @@ module ddr3_dq_model #(
         t_edge_last = -1000.0;
     end
 
+    // The cycle-level part of the read drive, at the sclk edge: who drives the pins in the cycle that begins now. What
+    // they carry inside the cycle is the beat driver's, below - a separate process, because an assignment made at a clock
+    // edge by a process that also waits is applied at once, not at the end of the time step, by the Verilator that CI uses.
     always @(posedge sclk or posedge rst) begin
         if (rst) begin
-            mem_dq_o   <= 8'b0;
             mem_dq_oe  <= 1'b0;
             mem_dqs_oe <= 1'b0;
-            mem_dqs_o  <= 1'b0;
             n_used     = 0;
             cyc        = 0;
+            rd_ph      = 3'd0;
             for (i = 0; i < 8; i = i + 1) rdexp[i] = 3'd0;
             for (i = 0; i < DEPTH; i = i + 1) k_used[i] = 1'b0;
         end else begin
             // ---- drive for the NEXT cycle ----
             // A READ scheduled this cycle's successor (see the header); otherwise the model drives nothing.
-            case (rdexp[(cyc + 1) % 8])
-                3'd1: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b0; mem_dq_oe <= 1'b0; end
-                3'd2: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b1; mem_dq_oe <= 1'b1; mem_dq_o <= current_value(1'b0); end
-                3'd3: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b1; mem_dq_oe <= 1'b1; mem_dq_o <= beat4_value(1'b0); end
-                3'd4: begin mem_dqs_oe <= 1'b1; mem_dqs_o <= 1'b0; mem_dq_oe <= 1'b0; end
+            rd_ph = rdexp[(cyc + 1) % 8];
+            case (rd_ph)
+                3'd1:    begin mem_dqs_oe <= 1'b1; mem_dq_oe <= 1'b0; end
+                3'd2, 3'd3: begin mem_dqs_oe <= 1'b1; mem_dq_oe <= 1'b1; end
+                3'd4:    begin mem_dqs_oe <= 1'b1; mem_dq_oe <= 1'b0; end
                 default: begin
                     mem_dq_oe  <= 1'b0;
                     mem_dqs_oe <= 1'b0;
-                    mem_dqs_o  <= 1'b0;
                 end
             endcase
             rdexp[(cyc + 1) % 8] = 3'd0;
 
             cyc = cyc + 1;
+        end
+    end
+
+    // The beat driver: the strobe and the data inside the cycles of a read burst (the header has the timing). Everything is
+    // assigned after a delay, never at the edge itself: the strobe's first rising edge is 1 ps after it.
+    always @(posedge sclk) begin : RD_BEATS
+        real t_base;
+        reg [2:0] ph;
+        integer k0;
+        t_base = $realtime;
+        #0.001 ph = rd_ph;
+        if (ph == 3'd1 || ph == 3'd4) begin
+            mem_dqs_o <= 1'b0;
+        end else if (ph == 3'd2 || ph == 3'd3) begin
+            k0 = (ph == 3'd2) ? 0 : 4;
+            mem_dqs_o <= 1'b1;                                   // edge k0: rising
+            #(t_base + TDQSQ_NS - $realtime) mem_dq_o <= read_beat(k0);
+            #(t_base + UI_NS - $realtime)    mem_dqs_o <= 1'b0;  // edge k0 + 1: falling
+            #(t_base + UI_NS + TDQSQ_NS - $realtime) mem_dq_o <= read_beat(k0 + 1);
+            #(t_base + 2.0 * UI_NS - $realtime) mem_dqs_o <= 1'b1;
+            #(t_base + 2.0 * UI_NS + TDQSQ_NS - $realtime) mem_dq_o <= read_beat(k0 + 2);
+            #(t_base + 3.0 * UI_NS - $realtime) mem_dqs_o <= 1'b0;
+            #(t_base + 3.0 * UI_NS + TDQSQ_NS - $realtime) mem_dq_o <= read_beat(k0 + 3);
         end
     end
 
