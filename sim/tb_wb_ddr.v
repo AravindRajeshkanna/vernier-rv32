@@ -13,6 +13,16 @@
 // changes only the selected bytes, leaving the others exactly as they
 // were.
 //
+// Since Phase 9 Stage 3 (8-beat bursts, part C, read half) a fill is ONE controller read, not eight: the slave asks for the
+// block's first column and takes all eight columns from the burst that comes back (`read_burst`). This holds that too:
+//   - a miss sends exactly one READ command to the DRAM, to the block's first column, and is acknowledged within a bound
+//     (measured: it took eight times as long when a fill was eight reads);
+//   - all four words of a block come back right after a fill, each from its own column (eight different words, the block read
+//     from a cold start of the slave, so the columns' order is what the data shows);
+//   - a fill whose burst the controller rejects (a lane's capture window never opened) is acknowledged, does not hang the bus,
+//     and does not mark the block resident, so the next access fills it again and gets what was stored (Icarus only: it forces
+//     the controller's verdict).
+//
 // Since Stage 2, Part 14 the slave is x16 and its window the part's whole 512 MB, and this holds that too:
 //   - the address geometry, written out again here from the part's own addressing (row A[28:14],
 //     bank A[13:11], column A[10:1], lane A[0]) and not from the slave's: a word written at each of
@@ -161,6 +171,29 @@ module tb_wb_ddr;
     always @(posedge clk) if (wb_ack) ack_count <= ack_count + 1;
     integer n_ack0, t_wait;
 
+    // READ commands on the pins, as the DRAM samples them (CS# is tied low on the board, so any slot with RAS# high, CAS# low and
+    // WE# high is a READ), and where the last of them went.
+    integer rd_cmds = 0;
+    reg [2:0]  rd_last_ba;
+    reg [9:0]  rd_last_col;
+    always @(posedge ddr3_ck)
+        if (!rst && ddr3_ras_n === 1'b1 && ddr3_cas_n === 1'b0 && ddr3_we_n === 1'b1) begin
+            rd_cmds    = rd_cmds + 1;
+            rd_last_ba  = ddr3_ba;
+            rd_last_col = ddr3_a[9:0];
+        end
+    // clock cycles an access takes: the slave's own accounting of request to acknowledge
+    integer t_acc;
+    // how long before the controller says its read transaction is over (`read_busy` falls) the burst arrived
+    integer cyc = 0, t_burst_seen = -1, t_busy_fell = -1;
+    reg busy_prev = 1'b0;
+    always @(posedge clk) begin
+        cyc = cyc + 1;
+        if (WB.read_burst_valid) t_burst_seen = cyc;
+        if (busy_prev && !WB.read_busy) t_busy_fell = cyc;
+        busy_prev <= WB.read_busy;
+    end
+
     // ---- the part's own geometry, for the x16 checks (Phase 9 Stage 2, Part 14) ----
     // byte address -> bank, row, column, lane. Written from the part's addressing, not from rtl/soc/wb_ddr.v.
     reg [2:0]  c_bank;
@@ -245,6 +278,24 @@ module tb_wb_ddr;
     integer    op;
 
     reg [31:0] got;
+
+    // like wb_access, and counts the clock cycles from the request to the acknowledge
+    task wb_timed(input we, input [31:0] adr, input [31:0] dat_w, input [3:0] sel, output [31:0] dat_r);
+        begin
+            @(posedge clk);
+            wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= we;
+            wb_adr <= adr; wb_dat_w <= dat_w; wb_sel <= sel;
+            t_acc = 0;
+            @(posedge clk);
+            while (!wb_ack) begin @(posedge clk); t_acc = t_acc + 1; end
+            dat_r = wb_dat_r;
+            wb_cyc <= 1'b0; wb_stb <= 1'b0; wb_we <= 1'b0;
+            @(posedge clk);
+        end
+    endtask
+
+    reg [31:0] blk_w [0:3];
+    integer    n_rd0;
 
     initial begin
         $display("=== wb_ddr.v standalone (Phase 9 Stage 2, Part 1) ===");
@@ -373,6 +424,50 @@ module tb_wb_ddr;
         wb_access(1'b1, 32'h0000_3000, 32'h11223344, 4'b1001, got);
         wb_access(1'b0, 32'h0000_3000, 32'b0, 4'b1111, got);
         check("a select of the outer two bytes", got, 32'h11BB_CC44);
+
+        // ---- a fill is one READ (Phase 9 Stage 3, 8-beat bursts, part C, read half) ----
+        $display("  a fill is one controller read...");
+        blk_w[0] = 32'h8C21_A001; blk_w[1] = 32'h5E37_B102; blk_w[2] = 32'hF04D_C203; blk_w[3] = 32'h1259_D304;
+        for (gi = 0; gi < 4; gi = gi + 1)
+            wb_access(1'b1, 32'h0000_5A40 + 4*gi, blk_w[gi], 4'b1111, got);
+        wb_access(1'b0, 32'h0000_5A50, 32'b0, 4'b1111, got);        // another block resident: block 0x500 is not
+        n_rd0 = rd_cmds;
+        wb_timed(1'b0, 32'h0000_5A48, 32'b0, 4'b1111, got);          // a miss, on word 2
+        check("the miss returns the word stored there", got, blk_w[2]);
+        check("a miss sent exactly one READ to the DRAM", rd_cmds - n_rd0, 32'd1);
+        // block 0x5A4: column bits [9:3] = 0x24, so the block's first column is 0x120; bank 3
+        check("... to the block's first column", {22'b0, rd_last_col}, 32'h120);
+        check("... in the block's bank", {29'b0, rd_last_ba}, 32'd3);
+        $display("  measured: a miss took %0d clock cycles from the request to the acknowledge", t_acc);
+        $display("  measured: the burst's pulse at cycle %0d, read_busy fell at %0d", t_burst_seen, t_busy_fell);
+        check("the burst arrived no later than the cycle read_busy fell", {31'b0, t_burst_seen <= t_busy_fell}, 32'b1);
+        check("a miss is acknowledged within 60 clock cycles", {31'b0, t_acc <= 60}, 32'b1);
+        for (gi = 0; gi < 4; gi = gi + 1) begin
+            wb_access(1'b0, 32'h0000_5A40 + 4*gi, 32'b0, 4'b1111, got);
+            check("word of the filled block", got, blk_w[gi]);
+        end
+        check("... and none of those re-read the DRAM (the block was resident)", rd_cmds - n_rd0, 32'd1);
+
+`ifndef VERILATOR
+        // a fill whose burst the controller rejects: lane 1's capture window held shut by hand
+        wb_access(1'b0, 32'h0000_5A50, 32'b0, 4'b1111, got);        // the other block is resident now
+        n_rd0 = rd_cmds;
+        force WB.DDR.datavalid_seen_1 = 1'b0;
+        t_wait = 0;
+        @(posedge clk);
+        wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= 1'b0; wb_adr <= 32'h0000_5A44; wb_sel <= 4'b1111;
+        @(posedge clk);
+        while (!wb_ack && t_wait < 2000) begin @(posedge clk); t_wait = t_wait + 1; end
+        check("a fill whose burst was rejected is acknowledged (no hang)", {31'b0, wb_ack}, 32'b1);
+        wb_cyc <= 1'b0; wb_stb <= 1'b0;
+        @(posedge clk);
+        release WB.DDR.datavalid_seen_1;
+        repeat (4) @(posedge clk);
+        check("... after one READ", rd_cmds - n_rd0, 32'd1);
+        wb_access(1'b0, 32'h0000_5A44, 32'b0, 4'b1111, got);
+        check("... block not left resident: next access fills it again", rd_cmds - n_rd0, 32'd2);
+        check("... and returns what was stored", got, blk_w[1]);
+`endif
 
         // ---- a random sweep over the whole 512 MB against a byte-wise reference ----
         $display("  a random sweep over the whole part...");
