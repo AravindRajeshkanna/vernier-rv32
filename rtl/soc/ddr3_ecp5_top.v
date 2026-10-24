@@ -598,11 +598,15 @@ module ddr3_ecp5_top (
     // byte when the burst is triggered (below); calibration's write asks for both lanes (be = 11).
     reg  lane0_store;
     wire dm_o;
-    wire dm_level = !(dq_active0 && lane0_store);
+    // One mask bit per UI of the cycle, UI 0 first (rtl/soc/ddr3_dm_drv_ecp5.v): UI 0 of the first active cycle is the
+    // beat that carries the column's byte, so DM is low for that beat only, when this write stores lane 0's byte, and high
+    // for the other seven beats of the burst. (Through Stage 2 one level covered all four UI of the cycle, so a real part
+    // would have written beats 0 to 3.)
+    wire [3:0] dm_mask = (dq_active0 && lane0_store) ? 4'b1110 : 4'b1111;
 
     ddr3_dm_drv_ecp5 DM_DRV (
         .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270),
-        .dm_level(dm_level), .dm_o(dm_o)
+        .dm_mask(dm_mask), .dm_o(dm_o)
     );
     assign ddr3_dm = dm_o;
 
@@ -717,10 +721,10 @@ module ddr3_ecp5_top (
     // the same way lane 0's does. Part 26: low only if this write stores lane 1's byte.
     reg  lane1_store;
     wire dm_o_1;
-    wire dm_level_1 = !(dq_active0_1 && lane1_store);
+    wire [3:0] dm_mask_1 = (dq_active0_1 && lane1_store) ? 4'b1110 : 4'b1111;
     ddr3_dm_drv_ecp5 DM_DRV1 (
         .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270_1),
-        .dm_level(dm_level_1), .dm_o(dm_o_1)
+        .dm_mask(dm_mask_1), .dm_o(dm_o_1)
     );
     assign ddr3_udm = dm_o_1;
 

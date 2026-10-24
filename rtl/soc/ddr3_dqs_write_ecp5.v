@@ -57,10 +57,9 @@ module ddr3_dqs_write_ecp5 (
     // the one this design's data path treats as the addressed column (Part 18's read
     // side and Part 17's write side both single out "the first half" the same way).
     // rtl/soc/ddr3_ecp5_top.v drives DM from this (Part 22): DM low - unmasked, write
-    // it - only here, high everywhere else `burst_active` is high. At this design's own
-    // sclk resolution that is the honest analogue of "DM low for the one UI that
-    // carries real data, high for the other seven" - not real per-UI masking, which
-    // would need the beat-level resolution this project does not model.
+    // it - for beat 0 only, the first UI of this cycle (rtl/soc/ddr3_dm_drv_ecp5.v takes a mask
+    // per UI since Phase 9 Stage 3; through Stage 2 one level covered all four UI of the cycle,
+    // which on a real part writes four columns), high for every other beat of the burst.
     output wire        active0
 );
     localparam [2:0]
@@ -87,10 +86,11 @@ module ddr3_dqs_write_ecp5 (
         end
     end
 
-    // D3 first in time, D0 last - matching ODDRX2DQA/IDDRX2DQA's own
-    // real bit-time ordering (rtl/soc/ddr3_dq_serdes_ecp5.v's own
-    // header). A real write strobe toggles every UI during the active
-    // cycles; held low (with OE already asserted) during
+    // D0 first in time, D3 last (Phase 9 Stage 3: this comment said the opposite until then, and the pattern below
+    // would have put the first rising edge at the start of the active cycle instead of 10 ns into it, half a CK
+    // early). The ordering is the one LiteDRAM's ECP5 PHY, which runs on boards, uses: its DQS is an `ODDRX2DQSB` with
+    // D_n = (0b1010 >> n) & 1, so D0 low and D1 high, the same pattern as here, and its DQ takes beat n of a chunk on D_n.
+    // A real write strobe toggles every UI during the active cycles; held low (with OE already asserted) during
     // preamble/postamble.
     reg [3:0] d;
     reg       oe;
@@ -120,30 +120,30 @@ module ddr3_dqs_write_ecp5 (
     );
     assign dqs_oe = !dqs_t;
 `else
-    // Simulation. Neither ODDRX2DQSB nor TSHX2DQSA has a behavioral
-    // model in this toolchain - the same real gap every other DDR-I/O
-    // primitive in this stage already found. Presents the intended
-    // waveform at sclk granularity, the same honest, not eclk-
-    // accurate, approximation rtl/soc/ddr3_dq_serdes_ecp5.v's own
-    // simulation body already uses - a real DQS toggles at 2x this
-    // rate, but that finer edge is not meaningfully observable in a
-    // plain Verilog testbench against an equally-behavioral model.
-    // Combinational from `state`, deliberately matching `oe`'s own
-    // combinational timing above rather than adding a second register
-    // with its own separate latency - a first draft registered this
-    // signal instead and a real run caught it: `oe` dropped low
-    // immediately on leaving the active window while this register's
-    // own one-cycle lag kept showing DQS high for one extra cycle,
-    // an artifact of this simulation substitute's own inconsistency,
-    // not of the real ODDRX2DQSB/TSHX2DQSA primitives (which both
-    // take D/T combinationally at the same real cadence). `d[3]` is 1
-    // exactly during S_ACTIVE0/S_ACTIVE1 (see the pattern above) and 0
-    // everywhere else, so it doubles as a low/high activity indicator
-    // - not a claim of real per-UI toggling, the same honestly
-    // sclk-granularity-only approximation
-    // rtl/soc/ddr3_dq_serdes_ecp5.v's own simulation body already
-    // uses.
-    assign dqs_o  = d[3];
+    // Simulation. Neither ODDRX2DQSB nor TSHX2DQSA has a behavioral model in this toolchain - the same real gap every
+    // other DDR-I/O primitive in this stage found - so this does what the primitive does at the pin: the four values of
+    // the cycle, D0 first, one per UI (10 ns, half a CK), starting at the sclk edge. The enable is `oe`, from `state`, as
+    // it has always been.
+    // Phase 9 Stage 3: through Stage 2 this was `assign dqs_o = d[3]`, one level per sclk cycle, so nothing in a
+    // simulation ever saw the strobe toggle and the memory model judged a burst by which cycles the strobe was high in.
+    // Now the strobe toggles: rising 10 ns into the first active cycle (WL = 6 CK after the WRITE's CK edge, which
+    // is 10 ns into its own cycle), then every 10 ns, eight edges for the eight beats, falling at the end of the second
+    // active cycle. Designed, not derived: the 90 degree relation of DQSW to ECLK is the bring-up's to show.
+    // How: D0 is low in every state, so the first UI of a cycle is "low" whatever the state is, and the others are read
+    // from `d` as they come, 10, 20 and 30 ns later. Nothing the rest of the design samples at an sclk edge is assigned by
+    // a process that waits: a nonblocking assignment in such a process is not treated the same way by every Verilator
+    // (CI's 5.020 saw the enable a cycle early, which 5.052 does not), so the "first UI is low" flag is a pair of
+    // toggles, one flipped at the edge by a process that never waits and one chasing it 10 ns later by the one that does.
+    reg first_ui_a, first_ui_b;       // the strobe is in the first UI of the cycle while they differ
+    reg dqs_late;                     // the strobe's level in UI 1 to 3 of the cycle
+    initial begin first_ui_a = 1'b0; first_ui_b = 1'b0; dqs_late = 1'b0; end
+    always @(posedge sclk) first_ui_a <= ~first_ui_a;
+    always @(posedge sclk) begin
+        #10 begin dqs_late <= d[1]; first_ui_b <= first_ui_a; end
+        #10 dqs_late <= d[2];
+        #10 dqs_late <= d[3];
+    end
+    assign dqs_o  = (first_ui_a != first_ui_b) ? 1'b0 : dqs_late;
     assign dqs_oe = oe;
     assign dqs_t  = !oe;
 

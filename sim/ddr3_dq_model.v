@@ -127,8 +127,30 @@
 // This is still not real per-UI BL8 fidelity: only two of the eight real UI have any
 // modeled effect, matching every other simplification in this file, and each is honestly
 // named rather than silently assumed.
+//
+// ---- Phase 9 Stage 3: the write side is judged beat by beat ----
+// Everything above this section that says "at sclk resolution" about WRITES is history: the write side now samples DQ and
+// DM on every DQS edge, as the part does, and it is the strobe that decides what is written. A WRITE sampled on CK's
+// rising edge at time t expects its first DQS rising edge at t + CWL x tCK (CWL = 6, the controller's MR2), within
+// tDQSS (+-0.25 tCK), and then an edge every half CK: eight edges, rising then falling, one per beat. At each edge the
+// byte on DQ and the level on DM are taken as that beat's. When the eighth edge has come the burst is written: beat b goes
+// to column {c[9:3], (c[2:0] + b) mod 8} (sequential burst order from the addressed column c, wrapping inside the aligned
+// block of 8), if DM was low for it. So a burst whose DM is low on beat 0 and high on the other seven stores one column, and
+// one whose DM is low for beats 0 to 3 stores four, which is the hazard the data mask exists to prevent and which the
+// earlier two-sample model could not show. A `dm_pin` left unconnected (`z`) means no information: beat 0 stores and the
+// others do not, as before.
+// DQ and DM must be steady for 2 ns before each strobe edge and 2 ns after it (tDS, tDH: coarse, the part's are a few hundred
+// picoseconds; the design launches them half a UI, 5 ns, ahead of the edge, which is what puts the edge in the middle of the beat).
+// The strobe's own protocol is checked: it must be driven low for 0.9 tCK or more before the first rising edge and (the
+// controller drives it from 2.5 tCK before) no more than 3 tCK, must carry exactly eight edges at the expected times with
+// the right polarity, must stay low for 0.4 tCK after the last, and must be high-Z otherwise. DQ must be known at every
+// beat DM does not mask. The read side is still the two-sample model above (Part 18): beat 0 and beat 4 on two sclk
+// cycles; making it beat-resolved is the next part.
+`timescale 1ns/1ps
 module ddr3_dq_model #(
-    parameter DEPTH = 1024
+    parameter DEPTH = 1024,
+    parameter real TCK_NS = 20.0,   // CK's period: the controller's eclk, twice sclk
+    parameter CWL_CK = 6            // MR2's CWL (rtl/soc/ddr3_init_seq.v)
 )(
     input  wire       sclk,
     input  wire       rst,
@@ -153,7 +175,9 @@ module ddr3_dq_model #(
     // Part 22: high = mask (do not write this beat), low = write it, `z` (left
     // unconnected, as in every testbench predating Part 22) = no information - see the
     // header for exactly what each of those three does and does not change.
-    input  wire       dm_pin,
+    // `inout` like the others: the model compares it to `z` now (Phase 9 Stage 3), which Verilator reads correctly
+    // through an inout and refuses through an input.
+    inout  wire       dm_pin,
 
     input  wire       read_active,
     output reg  [7:0] mem_dq_o,
@@ -191,13 +215,11 @@ module ddr3_dq_model #(
 
     integer i;
 
-    // ---- write-burst expectations (Part 17) ----
-    // `cyc` counts sclk cycles; a WRITE sampled in cycle W schedules what the
-    // pins must show in W+2..W+5 (see the header). Indexed mod 8, consumed as
-    // each cycle ends.
+    // ---- read-burst expectations (Part 18) ----
+    // `cyc` counts sclk cycles; a READ sampled in cycle R schedules what the model drives in R+2..R+5 (see the header).
+    // Indexed mod 8, consumed as each cycle ends.
     integer    cyc;
-    reg [2:0]  wexp [0:7];   // 0 nothing expected, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
-    reg [2:0]  rdexp [0:7];  // the same, for a READ: 0 nothing, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
+    reg [2:0]  rdexp [0:7];  // 0 nothing, 1 preamble, 2 burst half 1, 3 burst half 2, 4 postamble
 
     task dq_fail(input [511:0] msg);
         begin
@@ -267,14 +289,6 @@ module ddr3_dq_model #(
         end
     endtask
 
-    // Part 22: the neighbour column a write's second half lands on if DM does not mask
-    // it - the same column Part 18's read-side beat4_value reads from.
-    task store_neighbour(input [7:0] d);
-        begin
-            if (cur_valid) store_at(cur_bank, cur_row, {cur_col[9:3], cur_col[2:0] ^ 3'b100}, d);
-        end
-    endtask
-
     // For testbenches: what is stored at a location, given the caller's own
     // (wider) bank/row/column values, decoded the way the part decodes them.
     // `x` if never written.
@@ -285,6 +299,35 @@ module ddr3_dq_model #(
             peek = (j < 0) ? 8'hxx : k_data[j];
         end
     endfunction
+
+    // ---- the write side's state (Phase 9 Stage 3; the process is below the command capture) ----
+    localparam NW = 4;                 // WRITE commands that can be waiting for their burst at once
+    localparam real UI_NS  = TCK_NS / 2.0;
+    localparam real TOL_NS = TCK_NS / 4.0;      // tDQSS: +-0.25 tCK
+    localparam real EPS_NS = 0.01;
+    reg        wq_v    [0:NW-1];       // an entry is waiting for / in its burst
+    real       wq_t    [0:NW-1];       // when its first DQS rising edge is due
+    reg [2:0]  wq_bank [0:NW-1];
+    reg [14:0] wq_row  [0:NW-1];
+    reg [9:0]  wq_col  [0:NW-1];
+    integer    wq_n    [0:NW-1];       // DQS edges seen so far
+    real       wq_last [0:NW-1];       // when the last one was
+    reg [7:0]  wq_dq   [0:NW*8-1];     // the byte on DQ at each beat
+    reg [1:0]  wq_dm   [0:NW*8-1];     // DM at each beat: 0 low (write), 1 high (masked), 2 z (no information), 3 x
+    reg        wq_bad  [0:NW*8-1];     // some DQ bit was not driven (z or x) at that beat
+    integer    wq_slot;
+
+    reg [1:0]  dqs_s1, dqs_s2;         // DQS at the last two CK rising edges: 0 low, 1 high, 2 z, 3 x
+    reg [1:0]  dqs_ev_prev;            // DQS the last time it moved
+    real       t_dqdm_change;          // when DQ or DM last changed
+    real       t_edge_last;            // when the last accepted write strobe edge fell
+    localparam real TDS_NS = 2.0;      // DQ/DM setup before a strobe edge, and hold after it: coarse (the part's are
+    localparam real TDH_NS = 2.0;      // hundreds of picoseconds), against a launch half a UI (5 ns) from the edge
+    reg        wq_post [0:NW-1];       // the postamble has been checked
+    real       t_rd_until;             // the model's own read drive of DQS lasts until here: not the controller's
+    real       ev_now, ev_delta;
+    integer    ev_e, ev_i, ev_k;
+    reg [1:0]  ev_cur;
 
     initial begin
         overflowed = 1'b0;
@@ -301,7 +344,15 @@ module ddr3_dq_model #(
         dq_error        = 1'b0;
         dq_error_msg    = "";
         cyc             = 0;
-        for (i = 0; i < 8; i = i + 1) begin wexp[i] = 3'd0; rdexp[i] = 3'd0; end
+        for (i = 0; i < 8; i = i + 1) rdexp[i] = 3'd0;
+        for (i = 0; i < NW; i = i + 1) wq_v[i] = 1'b0;
+        for (i = 0; i < NW; i = i + 1) wq_post[i] = 1'b0;
+        dqs_s1 = 2'd2;
+        dqs_s2 = 2'd2;
+        dqs_ev_prev = 2'd2;
+        t_rd_until = -1.0;
+        t_dqdm_change = -1000.0;
+        t_edge_last = -1000.0;
     end
 
     always @(posedge sclk or posedge rst) begin
@@ -312,7 +363,7 @@ module ddr3_dq_model #(
             mem_dqs_o  <= 1'b0;
             n_used     = 0;
             cyc        = 0;
-            for (i = 0; i < 8; i = i + 1) begin wexp[i] = 3'd0; rdexp[i] = 3'd0; end
+            for (i = 0; i < 8; i = i + 1) rdexp[i] = 3'd0;
             for (i = 0; i < DEPTH; i = i + 1) k_used[i] = 1'b0;
         end else begin
             // ---- drive for the NEXT cycle ----
@@ -330,34 +381,148 @@ module ddr3_dq_model #(
             endcase
             rdexp[(cyc + 1) % 8] = 3'd0;
 
-            // ---- the write burst, judged from the pins for the cycle that just
-            // ended ----
-            // The model's own read drive is on the same bus; skip while it drives.
-            if (!mem_dq_oe && !mem_dqs_oe) begin
-                case (wexp[cyc % 8])
-                    3'd1: if (dqs_pin !== 1'b0)
-                              dq_fail("write preamble: DQS not driven low the cycle before the burst");
-                    3'd2, 3'd3: begin
-                        if (dqs_pin !== 1'b1)
-                            dq_fail("write burst: DQS not active in an expected burst cycle");
-                        else if ((^dq_pin) === 1'bx)
-                            dq_fail("write burst: DQ not driven while DQS is active");
-                        else if (wexp[cyc % 8] == 3'd2) begin
-                            if (dm_pin !== 1'b1 && cur_valid) store_current(dq_pin);
-                        end else begin   // half 2: not stored unless DM explicitly leaves it unmasked (Part 22)
-                            if (dm_pin === 1'b0) store_neighbour(dq_pin);
-                        end
-                    end
-                    3'd4: if (dqs_pin !== 1'b0)
-                              dq_fail("write postamble: DQS not driven low after the burst");
-                    default: begin
-                        if (dqs_pin !== 1'bz)
-                            dq_fail("DQS driven outside the write burst a WRITE command asked for");
-                    end
-                endcase
-            end
-            wexp[cyc % 8] = 3'd0;
             cyc = cyc + 1;
+        end
+    end
+
+    // ---- the write side, beat by beat (Phase 9 Stage 3; see the header) ----
+    task commit_write(input integer e);
+        integer b;
+        reg [1:0] dmc;
+        begin
+            for (b = 0; b < 8; b = b + 1) begin
+                dmc = wq_dm[e * 8 + b];
+                if (dmc == 2'd3) dq_fail("write burst: DM unknown at a DQS edge");
+                else if (dmc == 2'd0 || (dmc == 2'd2 && b == 0)) begin
+                    if (wq_bad[e * 8 + b])
+                        dq_fail("write burst: DQ not driven at a beat DM does not mask");
+                    else
+                        store_at(wq_bank[e], wq_row[e], {wq_col[e][9:3], wq_col[e][2:0] + b[2:0]}, wq_dq[e * 8 + b]);
+                end
+            end
+        end
+    endtask
+
+    // The pins, classified the way sim/pin_probe.v classifies them (see that file for why): in combinational logic, on
+    // an `inout` port, so that a floating pin reads as high-Z under Verilator as well as under Icarus. 0 low, 1 high, 2 z, 3 x.
+    // (Continuous assignments, not an `always @*`: that does not run at time zero in Icarus, and a pin that has never moved
+    // would read as unknown instead of high-Z.)
+    function [1:0] code_of(input v);
+        code_of = (v === 1'b0) ? 2'd0 : (v === 1'b1) ? 2'd1 : (v === 1'bz) ? 2'd2 : 2'd3;
+    endfunction
+    function bad_of(input [7:0] v);
+        integer k;
+        begin
+            bad_of = 1'b0;
+            for (k = 0; k < 8; k = k + 1) if (v[k] !== 1'b0 && v[k] !== 1'b1) bad_of = 1'b1;
+        end
+    endfunction
+    wire [1:0] dqs_code = code_of(dqs_pin);
+    wire [1:0] dm_code  = code_of(dm_pin);
+    wire       dq_bad_c = bad_of(dq_pin);     // some DQ bit is high-Z or unknown
+    wire [7:0] dq_val   = dq_pin;
+
+    // tDH: DQ and DM must not move for TDH_NS after a strobe edge. (Reads move DQ too, but never within TDH_NS of a write edge.)
+    always @(dq_pin or dm_pin) begin
+        if (!rst) begin
+            if ($realtime - t_edge_last < TDH_NS - EPS_NS)
+                dq_fail("write burst: DQ or DM changed less than tDH after a DQS edge");
+            t_dqdm_change = $realtime;
+        end
+    end
+
+    // The edges (0 <-> 1) of DQS, wherever they come. Nothing here depends on seeing DQS go to or from high-Z as an event:
+    // that is not reported as an event on a net by Verilator, so everything about whether DQS is DRIVEN (the preamble, the
+    // postamble, a strobe nobody asked for) is judged from samples taken on CK's rising edge, below, which both simulators read
+    // the same.
+    always @(dqs_code) begin
+        ev_cur = dqs_code;
+        ev_now = $realtime;
+        // an edge is a move between the two driven levels; the driver appearing (z to a level) is not one, and where a
+        // simulator reports that at all it is not a beat
+        if (!rst && ev_now > t_rd_until && dqs_ev_prev == 2'd2 && ev_cur == 2'd1) begin
+            // the driver appears high: no preamble (where a simulator reports the appearing at all; Verilator does not)
+            dq_fail("write preamble: DQS not driven low before its first rising edge");
+        end else if (!rst && ev_now > t_rd_until && ev_cur != 2'd2 && (dqs_ev_prev == 2'd3 || ev_cur == 2'd3 || dqs_ev_prev != 2'd2)) begin
+            if (ev_cur == 2'd3) begin
+                dq_fail("DQS unknown: two drivers on it, or none and a floating net");
+            end else begin
+                ev_e = -1;
+                for (ev_k = 0; ev_k < NW; ev_k = ev_k + 1)
+                    if (wq_v[ev_k] && ev_now >= wq_t[ev_k] - TOL_NS - EPS_NS &&
+                        ev_now <= wq_t[ev_k] + 7.0 * UI_NS + 2.0 * UI_NS + EPS_NS) ev_e = ev_k;
+                if (ev_e < 0) begin
+                    dq_fail("DQS toggled outside the burst a WRITE command asked for");
+                end else begin
+                    // the edge this one should be is the next in order: wq_n; where it should fall, and which way
+                    ev_i = wq_n[ev_e];
+                    ev_delta = ev_now - wq_t[ev_e] - ev_i * UI_NS;
+                    if (ev_i >= 8)
+                        dq_fail("write burst: more than eight DQS edges");
+                    else if (ev_delta > TOL_NS + EPS_NS || -ev_delta > TOL_NS + EPS_NS)
+                        dq_fail("write burst: a DQS edge outside tDQSS of where the WRITE puts it");
+                    else begin
+                        // DQS low and driven at the last two CK edges before the first rising edge: 0.9 tCK of preamble at least
+                        if (ev_i == 0 && (dqs_s1 !== 2'd0 || dqs_s2 !== 2'd0))
+                            dq_fail("write preamble: DQS not driven low before its first rising edge");
+                        // tDS: DQ and DM must have been steady for TDS_NS before the edge (they are launched half a UI ahead of it)
+                        if (ev_now - t_dqdm_change < TDS_NS - EPS_NS)
+                            dq_fail("write burst: DQ or DM changed less than tDS before a DQS edge");
+                        t_edge_last = ev_now;
+                        wq_dq[ev_e * 8 + ev_i] = dq_val;
+                        wq_bad[ev_e * 8 + ev_i] = dq_bad_c;
+                        wq_dm[ev_e * 8 + ev_i] = dm_code;
+                        wq_n[ev_e]    = wq_n[ev_e] + 1;
+                        wq_last[ev_e] = ev_now;
+                        if (wq_n[ev_e] == 8) commit_write(ev_e);
+                    end
+                end
+            end
+        end
+        dqs_ev_prev = ev_cur;
+    end
+
+    // On CK's rising edge: the strobe is sampled (this runs before the same instant's changes land, so it sees DQS as it was
+    // an instant ago), and what only a sample can say is judged. DQS may be driven only around a burst a WRITE asked for, from
+    // 3 tCK ahead of its first edge to 3 tCK after its last, low except for its eight edges, and must be low 0.4 tCK after the
+    // last edge; a WRITE whose burst never came, or stopped part way, is reported, and an entry is dropped when its window is over.
+    always @(posedge ck) begin
+        if (rst) begin
+            for (ev_k = 0; ev_k < NW; ev_k = ev_k + 1) wq_v[ev_k] = 1'b0;
+            dqs_s1 <= 2'd2;
+            dqs_s2 <= 2'd2;
+        end else begin
+            ev_cur = dqs_code;
+            ev_now = $realtime;
+`ifndef VERILATOR
+            // (Verilator reads an undriven strobe as low, so it cannot tell "driven" from "idle": this check, and the
+            // preamble and postamble ones, which only ever see a low there, are Icarus's. Everything about the edges is both's.)
+            if (ev_cur != 2'd2 && ev_now > t_rd_until) begin
+                ev_e = -1;
+                for (ev_k = 0; ev_k < NW; ev_k = ev_k + 1)
+                    if (wq_v[ev_k] && ev_now >= wq_t[ev_k] - 3.0 * TCK_NS - EPS_NS &&
+                        ev_now <= wq_t[ev_k] + 8.0 * UI_NS + 3.0 * TCK_NS + EPS_NS) ev_e = ev_k;
+                if (ev_e < 0) dq_fail("DQS driven outside the write burst a WRITE command asked for");
+            end
+`endif
+            for (ev_k = 0; ev_k < NW; ev_k = ev_k + 1)
+                if (wq_v[ev_k]) begin
+                    if (wq_n[ev_k] == 0 && ev_now > wq_t[ev_k] + 9.0 * UI_NS + 2.0 * TCK_NS) begin
+                        dq_fail("a WRITE command without its DQS burst");
+                        wq_v[ev_k] = 1'b0;
+                    end else if (wq_n[ev_k] > 0 && wq_n[ev_k] < 8 && ev_now > wq_last[ev_k] + 2.0 * UI_NS + 2.0 * TCK_NS) begin
+                        dq_fail("write burst: DQS stopped before the eighth beat");
+                        wq_v[ev_k] = 1'b0;
+                    end else if (wq_n[ev_k] == 8) begin
+                        if (!wq_post[ev_k] && ev_now >= wq_last[ev_k] + 0.4 * TCK_NS - EPS_NS) begin
+                            wq_post[ev_k] = 1'b1;
+                            if (ev_cur != 2'd0) dq_fail("write postamble: DQS not driven low after the burst");
+                        end
+                        if (ev_now > wq_t[ev_k] + 8.0 * UI_NS + 3.0 * TCK_NS) wq_v[ev_k] = 1'b0;
+                    end
+                end
+            dqs_s2 <= dqs_s1;
+            dqs_s1 <= ev_cur;
         end
     end
 
@@ -374,13 +539,23 @@ module ddr3_dq_model #(
                 row_known[ba] <= 1'b1;
             end
             if (is_wr) begin
-                // WL = 6 CK = 3 sclk after the cycle this WRITE was driven in
-                wexp[(cyc + 2) % 8] = 3'd1;
-                wexp[(cyc + 3) % 8] = 3'd2;
-                wexp[(cyc + 4) % 8] = 3'd3;
-                wexp[(cyc + 5) % 8] = 3'd4;
+                // the write's burst is judged by the strobe's own edges (below): note where it must start
+                wq_slot = -1;
+                for (i = 0; i < NW; i = i + 1) if (!wq_v[i] && wq_slot < 0) wq_slot = i;
+                if (wq_slot < 0) dq_fail("too many WRITE commands in flight for this model");
+                else begin
+                    wq_v[wq_slot]    = 1'b1;
+                    wq_t[wq_slot]    = $realtime + CWL_CK * TCK_NS;
+                    wq_bank[wq_slot] = ba;
+                    wq_row[wq_slot]  = row_known[ba] ? open_row[ba] : 15'bx;
+                    wq_col[wq_slot]  = a[9:0];
+                    wq_n[wq_slot]    = 0;
+                    wq_last[wq_slot] = 0.0;
+                    wq_post[wq_slot] = 1'b0;
+                end
             end
             if (is_rd) begin
+                t_rd_until = $realtime + 14 * TCK_NS;   // the model drives DQS itself for this long (below): not the controller's
                 // read data starts CL - 1 = 5 CK after the READ (DLL-off), so at sclk
                 // resolution the preamble is two cycles on and the burst the two after
                 rdexp[(cyc + 2) % 8] = 3'd1;
@@ -422,7 +597,7 @@ module ddr3_lane1_mem #(
     input  wire [14:0] a,
     inout  wire [7:0]  dqu,
     inout  wire        udqs,
-    input  wire        udm,
+    inout  wire        udm,
     input  wire        read_active,   // the controller's lane-1 read window (DUT.read_active_final_1)
     output wire        dq_error
 );
