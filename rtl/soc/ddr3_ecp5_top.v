@@ -240,8 +240,9 @@
 // sequencers until `calib_done` always meant for the one lane there was. `read_data_valid`
 // needs both lanes' `datavalid`, so a lane whose capture window never opened cannot return
 // a word that looks complete.
-// Not attempted, and not what this part is: hardware-faithful bursts (the pins still carry one
-// DQ word per sclk, so a burst still moves one column and masks the neighbour, Part 22), the
+// Not attempted, and not what this part is: hardware-faithful bursts (the pins carried one
+// DQ word per sclk then, so a burst moved one column and masked the neighbour, Part 22; the
+// pins are at beat resolution since Phase 9 Stage 3, below), the
 // Wishbone side (rtl/soc/wb_ddr.v used lane 0 alone until Stage 2, Part 14), and
 // any claim about the ECP5's own capture latency on lane 1 - the two lanes calibrate
 // independently and `read_data_valid` assumes their windows open together, which no simulation
@@ -272,6 +273,17 @@
 // DRAM is let finish what it was doing, every bank is closed, and the mode registers are written again, in about 20 us
 // instead of the 500 us a power-up waits. They cannot be told apart from the controller's side, which is why they are two
 // ports. Everything else is reset by either.
+//
+// ---- The read side is judged beat by beat (Phase 9 Stage 3, 8-beat bursts part B) ----
+// A READ's burst is eight beats on two sclk cycles, and the capture takes four a cycle (rtl/soc/ddr3_dq_serdes_ecp5.v: Q0
+// the earliest). `read_data` is still the addressed column, beat 0, in the cycle `read_data_valid` is high, as it has been
+// since Part 18 (the part-18 text above, which says the second half is beat 4 on its own cycle, is the history: the
+// model now drives every beat, sim/ddr3_dq_model.v). New is `read_burst`: all eight beats of {lane 1, lane 0}, beat b in
+// [16*b +: 16], which is the sequential burst order from the addressed column (c + b) mod 8 in the aligned block of 8,
+// with `read_burst_valid` for one cycle, two cycles after `read_data_valid` and under the same verdict. Nothing in the SoC
+// reads it yet: the controller still moves one column per request, and rtl/soc/wb_ddr.v still asks for a block as eight
+// reads. A request for the block as one burst is the next part. sim/tb_ddr3_burst_read.v holds the order, sim/
+// tb_ddr3_rd_window.v the pins.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
     input  wire        rst,        // the board's reset: the DRAM is reset with the FPGA (its RESET# is the board's), so this is a cold start
@@ -317,6 +329,11 @@ module ddr3_ecp5_top (
     output wire        read_busy,
     output wire [15:0] read_data,    // {lane 1, lane 0}
     output wire        read_data_valid,
+    // Phase 9 Stage 3 (8-beat bursts, part B): the whole burst a read brings back, eight beats of {lane 1, lane 0}, beat b in
+    // [16*b +: 16]; beat b is column {c[9:3], (c[2:0] + b) mod 8} of the addressed column c, and beat 0 is `read_data`. Valid
+    // for the one cycle `read_burst_valid` is high, two cycles after `read_data_valid`; nothing in the SoC reads it yet.
+    output wire [127:0] read_burst,
+    output wire        read_burst_valid,
 
     // ---- Part 10: real refresh, observability only - see header ----
     output wire        refresh_busy,
@@ -773,6 +790,29 @@ module ddr3_ecp5_top (
 
     assign read_data       = {rd_q0_1, rd_q0};
     assign read_data_valid = read_active_falling && datavalid_seen && datavalid_seen_1;
+
+    // Phase 9 Stage 3 (8-beat bursts, part B): all eight beats. A BL8 burst is two sclk cycles of four beats each, Q0 the
+    // earliest of a cycle's four (rtl/soc/ddr3_dq_serdes_ecp5.v): the first cycle's are what `read_data` takes beat 0 from, in
+    // the cycle `read_data_valid` is high, and the second cycle's are there the cycle after. Both are judged by the same
+    // verdict `read_data` is: a burst that `read_data_valid` rejects is not reported.
+    reg [127:0] read_burst_r;
+    reg         rb_second, read_burst_valid_r;
+    always @(posedge sclk or posedge rst_all) begin
+        if (rst_all) begin
+            read_burst_r       <= 128'b0;
+            rb_second          <= 1'b0;
+            read_burst_valid_r <= 1'b0;
+        end else begin
+            rb_second          <= read_data_valid;
+            read_burst_valid_r <= rb_second;
+            if (read_data_valid)
+                read_burst_r[63:0]   <= {rd_q3_1, rd_q3, rd_q2_1, rd_q2, rd_q1_1, rd_q1, rd_q0_1, rd_q0};
+            if (rb_second)
+                read_burst_r[127:64] <= {rd_q3_1, rd_q3, rd_q2_1, rd_q2, rd_q1_1, rd_q1, rd_q0_1, rd_q0};
+        end
+    end
+    assign read_burst       = read_burst_r;
+    assign read_burst_valid = read_burst_valid_r;
 
     // Phase 9 Stage 3: the calibration sweep, a client of the sequencers above (rtl/soc/ddr3_read_calib.v). It looks at
     // each lane's capture when the window closes (`read_active_falling`, the cycle `read_data_valid` is judged in), keeps

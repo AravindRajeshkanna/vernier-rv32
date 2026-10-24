@@ -40,7 +40,7 @@ module ddr3_dq_serdes_ecp5 #(
     input  wire [DQ_WIDTH-1:0]     wr_d3, wr_d2, wr_d1, wr_d0,
     input  wire                    wr_en,   // the DQ enable window (Part 17: rtl/soc/ddr3_ecp5_top.v drives it from the DQS FSM's burst_active, so DQ is enabled exactly while DQS toggles), drives every lane's TSHX2DQA the same way
 
-    // ---- read side: the same 4-bit-wide shape, captured ----
+    // ---- read side: the same 4-bit-wide shape, captured; Q0 is the earliest beat of the four, as D0 is on the write side ----
     output wire [DQ_WIDTH-1:0]     rd_q3, rd_q2, rd_q1, rd_q0,
 
     // ---- real pins ----
@@ -82,21 +82,39 @@ module ddr3_dq_serdes_ecp5 #(
             // behavioral model in this toolchain - the same real gap
             // Part 1 and rtl/soc/ddr3_dqs_ecp5.v already found and
             // documented. A functionally equivalent (not
-            // cycle/phase-accurate) stand-in. Phase 9 Stage 3: the WRITE side is
-            // at beat resolution now (below: four UI per sclk, D0 first, on a grid
-            // a quarter of CK from the strobe's); the READ side is still at sclk
-            // granularity (the capture below takes one word per edge and repeats
-            // it on Q0 to Q3), which is the next part's to make faithful.
+            // cycle/phase-accurate) stand-in. Phase 9 Stage 3: both sides are
+            // at beat resolution now - the write side (below) puts four UI on the
+            // pin per sclk, D0 first, on a grid a quarter of CK from the strobe's;
+            // the read side takes four samples per sclk, at the middle of each UI
+            // a DRAM that drives its beats edge-aligned with the strobe (sim/
+            // ddr3_dq_model.v) would hold them, and presents them on Q0 to Q3,
+            // Q0 the earliest. (LiteDRAM's ECP5 PHY, which runs on boards, relies
+            // on the same order: its IDDRX2DQA Q0 to Q3 feed a four-bit word whose
+            // bit 0 is the first beat, and the older sclk cycle of two carries beats
+            // 0 to 3. Not checked against Lattice's own document here.)
+            // The samples are taken at +5, +15, +25 and +35 ns into the sclk cycle
+            // in which the DRAM's beats are on the pins, and the word appears at the
+            // next sclk edge: the timing the one-sample-per-sclk stand-in had.
+            // Through Stage 2 the capture took one word per edge and repeated it on
+            // Q0 to Q3.
+            reg rd_s0, rd_s1, rd_s2, rd_s3;
             reg rd_q3_r, rd_q2_r, rd_q1_r, rd_q0_r;
+            initial begin rd_s0 = 1'b0; rd_s1 = 1'b0; rd_s2 = 1'b0; rd_s3 = 1'b0; end
+            always @(posedge sclk) begin
+                #5  rd_s0 <= dq_i[i];
+                #10 rd_s1 <= dq_i[i];
+                #10 rd_s2 <= dq_i[i];
+                #10 rd_s3 <= dq_i[i];
+            end
             always @(posedge sclk or posedge rst) begin
                 if (rst) begin
                     rd_q3_r <= 1'b0; rd_q2_r <= 1'b0;
                     rd_q1_r <= 1'b0; rd_q0_r <= 1'b0;
                 end else begin
-                    rd_q3_r <= dq_i[i];
-                    rd_q2_r <= dq_i[i];
-                    rd_q1_r <= dq_i[i];
-                    rd_q0_r <= dq_i[i];
+                    rd_q3_r <= rd_s3;
+                    rd_q2_r <= rd_s2;
+                    rd_q1_r <= rd_s1;
+                    rd_q0_r <= rd_s0;
                 end
             end
             assign rd_q3[i] = rd_q3_r;

@@ -131,6 +131,10 @@ module wb_ddr (
     wire        read_busy;
     wire [15:0] read_data;
     wire        read_data_valid;
+    // The whole 8-beat burst of a read (Phase 9 Stage 3, part B): not used yet - the 128-bit interface that moves a block as one
+    // burst is part C's.
+    wire [127:0] read_burst;
+    wire        read_burst_valid;
 
     ddr3_ecp5_top DDR (
         .clk(clk), .rst(rst), .rst_warm(rst_warm),
@@ -147,6 +151,7 @@ module wb_ddr (
         .read_req(read_req), .read_bank(read_bank), .read_row(read_row),
         .read_col(read_col), .read_busy(read_busy), .read_data(read_data),
         .read_data_valid(read_data_valid),
+        .read_burst(read_burst), .read_burst_valid(read_burst_valid),
         .refresh_busy(refresh_busy),
         .pll_locked(pll_locked), .dll_locked(dll_locked), .init_ready(init_ready),
         .calib_done(calib_done), .calib_readclksel(calib_readclksel),
