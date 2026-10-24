@@ -17,26 +17,46 @@
 //
 // The controller moves a 16-bit word per request (Stage 1, Part 26): lane 0 is
 // the even byte of the word and lane 1 the odd one, little-endian like the rest
-// of this bus. A 16-byte block is therefore 8 columns, not 16: a fill is 8
-// controller reads (it was 16, one per byte) and a 32-bit store is at most 2
-// writes (it was at most 4), each carrying the byte enables of its half. Both
-// lanes are used, so the capacity is the part's own: 8 banks x 32768 rows x
+// of this bus. A 16-byte block is therefore 8 columns, not 16: a 32-bit store is
+// at most 2 writes (it was at most 4), each carrying the byte enables of its half.
+// Both lanes are used, so the capacity is the part's own: 8 banks x 32768 rows x
 // 1024 columns x 2 bytes = 512MB.
 //
-// A request still moves one column, and the controller still masks the
-// neighbour column its burst's second half would reach (Part 22), on both
-// lanes, so a store of one column never disturbs another.
+// ---- A fill is one controller read (Phase 9 Stage 3, 8-beat bursts, part C, read half) ----
+//
+// A fill used to be eight reads, one per column, each keeping the first beat of the
+// burst the DRAM sent and discarding the other seven. It is one read now: the slave asks
+// for the block's first column and takes all eight columns from the burst that comes
+// back (`read_burst` of rtl/soc/ddr3_ecp5_top.v: beat b is column b, because the
+// request is for column 0 of an aligned 8). Measured on rtl/sim/tb_wb_ddr.v, a miss went
+// from 8 READ commands and 122 clock cycles to 1 and about a seventh of that.
+//
+// The fill is over when `read_busy` falls, as before, and the contract this relies on is
+// the controller's: a burst it reports arrives no later than the cycle `read_busy` falls
+// (measured: in that very cycle; sim/tb_ddr3_burst_read.v checks it for every read, so a
+// change to the sequencer that moved it later is caught there, not here). If the
+// burst did not arrive by then - the controller rejects a read whose capture window it
+// did not see open, and says so by not pulsing `read_burst_valid` - the access is
+// acknowledged all the same (a hang would be worse), the block is NOT marked resident,
+// and the next access to it fills it again. (Until this change a rejected column was
+// simply left stale, and the block marked resident after its eighth read.) What an
+// acknowledged access to such a block returns is whatever the buffer held: nothing here
+// tells the bus master that the read failed, as before.
+//
+// A write is still one column per request, and the controller still masks the neighbour
+// columns its burst's other seven beats would reach (Part 22, Phase 9 Stage 3), on both
+// lanes, so a store of one column never disturbs another. The write half of part C - a
+// store as one burst - is not done.
 //
 // ---- What this does not establish ----
 //
 // The real, still-open "data path is not yet hardware-faithful" Known
-// Defect (`docs/roadmap/phase-09-ddr.md`) is unchanged by this: a real x16 BL8 burst
-// moves 16 real, distinct bytes in one electrical transaction, and this
-// design still moves them as 8 separate ACT+WR/RD command sequences -
-// correct, and genuinely block-granular from the Wishbone side, but
-// not a claim of hardware-faithful burst timing. That gap stays open,
-// named, and orthogonal to this stage's own "Done when" bar (a CPU
-// executing real code from DDR in simulation), which does not require it.
+// Defect (`docs/roadmap/phase-09-ddr.md`) is narrower than it was: a real x16 BL8 burst
+// moves 16 real, distinct bytes in one electrical transaction, and a fill does that
+// now; a store still moves its bytes as up to 2 separate ACT+WR command sequences.
+// That gap stays open, named, and orthogonal to this stage's own "Done when" bar
+// (a CPU executing real code from DDR in simulation), which does not require it.
+// Nothing here has run on a board.
 //
 // ---- Address mapping (512MB, byte-addressed) ----
 //
@@ -131,8 +151,7 @@ module wb_ddr (
     wire        read_busy;
     wire [15:0] read_data;
     wire        read_data_valid;
-    // The whole 8-beat burst of a read (Phase 9 Stage 3, part B): not used yet - the 128-bit interface that moves a block as one
-    // burst is part C's.
+    // The whole 8-beat burst of a read (Phase 9 Stage 3, part B): a fill takes the block from it (part C, read half).
     wire [127:0] read_burst;
     wire        read_burst_valid;
 
@@ -160,8 +179,8 @@ module wb_ddr (
         .calib1_error(calib1_error)
     );
 
-    // ---- the sequencer: turns one Wishbone access into up to 8 real
-    // 16-bit controller calls (a miss: the block's 8 columns) or up to 2 (a
+    // ---- the sequencer: turns one Wishbone access into 1 real controller
+    // read (a miss: the block, as one burst) or up to 2 real 16-bit writes (a
     // store: one per half of the word that has a wb_sel bit set) - one at a
     // time, the controller accepts nothing else ----
     // Each real controller call is accept-pulse-then-busy: `write_req`/
@@ -174,16 +193,16 @@ module wb_ddr (
     // stimulus already uses driving this exact interface by hand.
     localparam [2:0]
         S_IDLE       = 3'd0,
-        S_FILL_ISS   = 3'd1,   // issue read_req for the current fill offset
+        S_FILL_ISS   = 3'd1,   // issue read_req for the block's first column
         S_FILL_RISE  = 3'd2,   // wait for read_busy to assert
-        S_FILL_WAIT  = 3'd3,   // wait for read_busy to drop, then next offset
+        S_FILL_WAIT  = 3'd3,   // wait for read_busy to drop; the burst has arrived by then, or the read was rejected
         S_STORE_ISS  = 3'd4,   // issue write_req for the current byte
         S_STORE_RISE = 3'd5,   // wait for write_busy to assert
         S_STORE_WAIT = 3'd6,   // wait for write_busy to drop, then next byte
         S_ACK        = 3'd7;
 
     reg [2:0] state;
-    reg [2:0] fill_col;    // 0-7, which column of the block is being fetched
+    reg       fill_got;    // the burst of the fill in progress has been taken into block_buf
     reg       store_half;  // 0-1, which 16-bit half of the word is being written
 
     integer i;
@@ -196,7 +215,7 @@ module wb_ddr (
             block_tag   <= 25'b0;
             write_req   <= 1'b0;
             read_req    <= 1'b0;
-            fill_col    <= 3'b0;
+            fill_got    <= 1'b0;
             store_half  <= 1'b0;
             write_be    <= 2'b00;
             for (i = 0; i < 8; i = i + 1) block_buf[i] <= 16'b0;
@@ -204,13 +223,18 @@ module wb_ddr (
             write_req <= 1'b0;
             read_req  <= 1'b0;
 
-            // read_data_valid is a pulse tied to the PHY's own read-active
+            // read_burst_valid is a pulse tied to the PHY's own read-active
             // window, not guaranteed to land on the same cycle read_busy
             // itself falls (Part 18's own header has the full reasoning) -
             // captured unconditionally here rather than folded into the
             // busy-based transitions below, so the two can drift by a
-            // cycle without losing data.
-            if (read_data_valid) block_buf[fill_col] <= read_data;
+            // cycle without losing data. It comes no later than the cycle read_busy
+            // falls (see the header). The eight beats are the block's eight columns in
+            // order: the request is for column 0 of an aligned 8.
+            if (read_burst_valid) begin
+                for (i = 0; i < 8; i = i + 1) block_buf[i] <= read_burst[16*i +: 16];
+                fill_got <= 1'b1;
+            end
 
             case (state)
                 S_IDLE: begin
@@ -237,33 +261,32 @@ module wb_ddr (
                         end else if (req_hit) begin
                             state    <= S_ACK;
                         end else begin
-                            fill_col <= 3'b0;
+                            fill_got <= 1'b0;
                             state    <= S_FILL_ISS;
                         end
                     end
                 end
 
-                // ---- read miss: fetch the block's 8 columns, 16 real bytes ----
+                // ---- read miss: fetch the block, 8 columns, 16 real bytes, as one burst ----
                 S_FILL_ISS: begin
                     if (!read_busy) begin
                         read_req  <= 1'b1;
                         read_bank <= req_bank;
                         read_row  <= {1'b0, req_row};
-                        read_col  <= {6'b0, req_colh, fill_col};
+                        read_col  <= {6'b0, req_colh, 3'b000};
                         state     <= S_FILL_RISE;
                     end
                 end
                 S_FILL_RISE: if (read_busy) state <= S_FILL_WAIT;
                 S_FILL_WAIT: begin
                     if (!read_busy) begin
-                        if (fill_col == 3'd7) begin
+                        // The burst's pulse can be in this very cycle (measured: read_busy falls in the cycle
+                        // read_burst_valid pulses), so a burst that has not been taken yet counts too.
+                        if (fill_got || read_burst_valid) begin
                             block_valid <= 1'b1;
                             block_tag   <= req_block;
-                            state       <= S_ACK;
-                        end else begin
-                            fill_col <= fill_col + 3'd1;
-                            state    <= S_FILL_ISS;
                         end
+                        state <= S_ACK;
                     end
                 end
 

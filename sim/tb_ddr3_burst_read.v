@@ -161,8 +161,12 @@ module tb_ddr3_burst_read;
     reg [15:0]  last_read;
     reg [127:0] last_burst;
     reg         rbv_during_write = 1'b0;
+    integer     busy_fell_cyc = -1;
+    reg         busy_prev = 1'b0;
     always @(posedge DUT.sclk) begin
         cyc = cyc + 1;
+        busy_prev <= read_busy;
+        if (busy_prev && !read_busy) busy_fell_cyc <= cyc;
         if (read_data_valid) begin
             n_rdv   <= n_rdv + 1;
             rdv_cyc <= cyc;
@@ -250,6 +254,11 @@ module tb_ddr3_burst_read;
             check16("read_data is beat 0", last_read, word(blk, c));
             if (rbv_cyc - rdv_cyc != 2) begin
                 $display("  FAIL read_burst_valid is %0d cycles after read_data_valid, expected 2", rbv_cyc - rdv_cyc);
+                errors = errors + 1;
+            end
+            // the contract rtl/soc/wb_ddr.v's fill relies on: the burst is out by the cycle read_busy falls
+            if (rbv_cyc > busy_fell_cyc) begin
+                $display("  FAIL the burst came at cycle %0d, after read_busy fell at %0d", rbv_cyc, busy_fell_cyc);
                 errors = errors + 1;
             end
             for (k = 0; k < 8; k = k + 1) begin

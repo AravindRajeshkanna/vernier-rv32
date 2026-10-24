@@ -280,10 +280,11 @@
 // since Part 18 (the part-18 text above, which says the second half is beat 4 on its own cycle, is the history: the
 // model now drives every beat, sim/ddr3_dq_model.v). New is `read_burst`: all eight beats of {lane 1, lane 0}, beat b in
 // [16*b +: 16], which is the sequential burst order from the addressed column (c + b) mod 8 in the aligned block of 8,
-// with `read_burst_valid` for one cycle, two cycles after `read_data_valid` and under the same verdict. Nothing in the SoC
-// reads it yet: the controller still moves one column per request, and rtl/soc/wb_ddr.v still asks for a block as eight
-// reads. A request for the block as one burst is the next part. sim/tb_ddr3_burst_read.v holds the order, sim/
-// tb_ddr3_rd_window.v the pins.
+// with `read_burst_valid` for one cycle, two cycles after `read_data_valid` and under the same verdict, and no later than
+// the cycle `read_busy` falls (rtl/soc/wb_ddr.v relies on that, and sim/tb_ddr3_burst_read.v checks it for every read).
+// rtl/soc/wb_ddr.v takes a fill's block from it since part C's read half: one READ, to the block's first column, instead
+// of eight. A write is still one column per request. sim/tb_ddr3_burst_read.v holds the order, sim/tb_ddr3_rd_window.v the
+// pins.
 module ddr3_ecp5_top (
     input  wire        clk,        // board-rate input, same as every other file in this stage (25 MHz)
     input  wire        rst,        // the board's reset: the DRAM is reset with the FPGA (its RESET# is the board's), so this is a cold start
