@@ -205,11 +205,11 @@ module ddr3_dm_drv_ecp5 (
     input  wire eclk,
     input  wire rst,
     input  wire dqsw270,
-    input  wire dm_level,
+    input  wire [3:0] dm_mask,
     output wire dm_o
 );
     assign dm_o = 1'b1;
-    wire _unused_ok = &{1'b0, sclk, eclk, rst, dqsw270, dm_level, 1'b0};
+    wire _unused_ok = &{1'b0, sclk, eclk, rst, dqsw270, dm_mask, 1'b0};
 endmodule
 
 module ddr3_dq_serdes_ecp5 #(

@@ -155,10 +155,11 @@ module tb_ddr3_x16;
         if (!rst && (has_real_x(ddr3_dq) || has_real_x(ddr3_dqu) || ddr3_dqs === 1'bx || ddr3_udqs === 1'bx))
             contention_seen <= 1'b1;
 
-    // The data-mask waveform of each lane over one write: how many sclk cycles it is low.
+    // The data-mask waveform of each lane over one write: at how many strobe edges it is low (DM is low for beat 0 only, so one
+    // for a write that stores the lane and none otherwise). Sampled on CK's rising edge, where a beat falls (Phase 9 Stage 3).
     integer dm_low = 0, udm_low = 0;
     reg     counting = 1'b0;
-    always @(posedge DUT.sclk) begin
+    always @(posedge ddr3_ck) begin
         if (counting && ddr3_dm  === 1'b0) dm_low  <= dm_low  + 1;
         if (counting && ddr3_udm === 1'b0) udm_low <= udm_low + 1;
     end

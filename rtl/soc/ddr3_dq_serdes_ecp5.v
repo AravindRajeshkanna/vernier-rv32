@@ -32,8 +32,11 @@ module ddr3_dq_serdes_ecp5 #(
     input  wire [2:0]              wrpntr,
 
     // ---- write side: one 4-bit-wide parallel word per pin per SCLK
-    // cycle, D3 first in time, D0 last (matching IDDRX2DQA/ODDRX2DQA's
-    // own real bit-time ordering) ----
+    // cycle, D0 first in time, D3 last. (This comment said the opposite until
+    // Phase 9 Stage 3. D0 first is the order LiteDRAM's ECP5 PHY, which runs on
+    // boards, relies on: its strobe is an ODDRX2DQSB with D_n = (0b1010 >> n) & 1,
+    // low then high, and its DQ takes beat n of a chunk on D_n. Not checked against
+    // Lattice's own document here.) ----
     input  wire [DQ_WIDTH-1:0]     wr_d3, wr_d2, wr_d1, wr_d0,
     input  wire                    wr_en,   // the DQ enable window (Part 17: rtl/soc/ddr3_ecp5_top.v drives it from the DQS FSM's burst_active, so DQ is enabled exactly while DQS toggles), drives every lane's TSHX2DQA the same way
 
@@ -79,14 +82,11 @@ module ddr3_dq_serdes_ecp5 #(
             // behavioral model in this toolchain - the same real gap
             // Part 1 and rtl/soc/ddr3_dqs_ecp5.v already found and
             // documented. A functionally equivalent (not
-            // cycle/phase-accurate) stand-in: on each real SCLK edge,
-            // present the write word directly and capture the read
-            // word directly - real ECLK-rate serialization is not
-            // meaningfully observable in a plain-Verilog testbench
-            // driving an equally-behavioral DDR3 model, so this
-            // approximates at SCLK granularity, honestly, rather than
-            // claiming ECLK-accurate timing it cannot actually
-            // provide.
+            // cycle/phase-accurate) stand-in. Phase 9 Stage 3: the WRITE side is
+            // at beat resolution now (below: four UI per sclk, D0 first, on a grid
+            // a quarter of CK from the strobe's); the READ side is still at sclk
+            // granularity (the capture below takes one word per edge and repeats
+            // it on Q0 to Q3), which is the next part's to make faithful.
             reg rd_q3_r, rd_q2_r, rd_q1_r, rd_q0_r;
             always @(posedge sclk or posedge rst) begin
                 if (rst) begin
@@ -103,9 +103,21 @@ module ddr3_dq_serdes_ecp5 #(
             assign rd_q2[i] = rd_q2_r;
             assign rd_q1[i] = rd_q1_r;
             assign rd_q0[i] = rd_q0_r;
-            assign dq_o[i]  = wr_d0[i];
-            assign dq_oe[i] = wr_en;
-            assign dq_t[i]  = !wr_en;
+            // The write side at the pin: one value per UI, four per sclk, D0 first, on the grid a quarter of CK (5 ns)
+            // later than the strobe's (rtl/soc/ddr3_dm_drv_ecp5.v says why), and the enable on the same grid, so DQ is
+            // driven from half a UI before the first strobe edge to half a UI after the last. Phase 9 Stage 3: through
+            // Stage 2 this was `assign dq_o = wr_d0`, one value per sclk.
+            reg dq_w_r, oe_w_r;
+            initial begin dq_w_r = 1'b0; oe_w_r = 1'b0; end
+            always @(posedge sclk) begin
+                #5  begin dq_w_r <= wr_d0[i]; oe_w_r <= wr_en; end
+                #10 dq_w_r <= wr_d1[i];
+                #10 dq_w_r <= wr_d2[i];
+                #10 dq_w_r <= wr_d3[i];
+            end
+            assign dq_o[i]  = dq_w_r;
+            assign dq_oe[i] = oe_w_r;
+            assign dq_t[i]  = !oe_w_r;
 `endif
         end
     endgenerate

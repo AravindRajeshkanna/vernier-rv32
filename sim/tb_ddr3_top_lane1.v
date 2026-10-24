@@ -139,14 +139,16 @@ module tb_ddr3_top_lane1;
     // `dqs_write_drive_seen`-style proof sim/tb_ddr3_top.v gives lane 0's DQS_WR.
     reg udm_floated = 1'b0;
     always @(posedge DUT.sclk) if (!rst && ddr3_udm !== 1'b0 && ddr3_udm !== 1'b1) udm_floated <= 1'b1;
+    // (Sampled on CK's rising edge, which is where a strobe edge and so a beat falls: UDM is low for beat 0 only, and
+    // that is 10 ns wide, which a sample on the sclk edge never lands in. Phase 9 Stage 3.)
     reg udm_went_low = 1'b0;
-    always @(posedge DUT.sclk) if (ddr3_udm === 1'b0) udm_went_low <= 1'b1;
+    always @(posedge ddr3_ck) if (ddr3_udm === 1'b0) udm_went_low <= 1'b1;
     // Masking, not just toggling: UDM tied permanently low would still pass the two
     // checks above, so this also requires it to go back HIGH after having been low -
     // real evidence of a burst window, not a stuck level.
     reg udm_seen_low_then_high = 1'b0;
     reg udm_was_low = 1'b0;
-    always @(posedge DUT.sclk) begin
+    always @(posedge ddr3_ck) begin
         if (ddr3_udm === 1'b0)                 udm_was_low <= 1'b1;
         if (udm_was_low && ddr3_udm === 1'b1)  udm_seen_low_then_high <= 1'b1;
     end

@@ -19,42 +19,46 @@
 // an enable. Lattice's own FPGA-TN-02035, section 6.3.3/Figure 6.9, groups DM with DQ
 // under the same `ODDRX2DQA`-generated write side for exactly this reason.
 //
-// Scope, at this design's own established sclk resolution (rtl/soc/ddr3_dq_serdes_ecp5.v's
-// header: "real ECLK-rate serialization is not meaningfully observable ... this
-// approximates at SCLK granularity"): `dm_level` is one value per sclk cycle, broadcast
-// to all four UI that cycle covers, exactly the way `dq_data_hold` broadcasts one byte
-// to `wr_d3`..`wr_d0`. So this does not achieve real per-UI masking (DM high on seven
-// of eight UI, low on the eighth) - it achieves the honest analogue this project has
-// used throughout: DM low during the sclk cycle this design treats as the addressed
-// column (rtl/soc/ddr3_ecp5_top.v drives it from `active0`, Part 22), high during the
-// other. Real per-UI fidelity needs the beat-level resolution this project does not
-// model, named as still open in every account since Part 15's survey.
+// ---- Phase 9 Stage 3: a mask per unit interval ----
+// Through Phase 9 Stage 2 `dm_level` was ONE value per sclk cycle, broadcast to all four UI that cycle covers (the
+// four `ODDRX2DQA` inputs below were tied together), so a "single-column" write that kept DM low for the first sclk cycle
+// of the burst kept it low for four beats: on a real part that writes the same byte to FOUR columns, beats 0 to 3
+// (sequential order, wrapping inside the aligned block of 8), and the Wishbone slave's eight column stores per block
+// clobber each other. The simulation could not show it: its data path was one value per sclk. `dm_mask` is now one bit
+// per UI: bit k is the mask for the k-th UI of the cycle (1 = masked, DM high, the DRAM ignores that beat; 0 = written),
+// D0 first, the order DQ's own `ODDRX2DQA` and the strobe's use. A write of one column keeps DM low for beat 0 only.
 module ddr3_dm_drv_ecp5 (
     input  wire sclk,
     input  wire eclk,
     input  wire rst,
     input  wire dqsw270,
 
-    input  wire dm_level,   // 1 = mask (DM high, do not write this cycle's UI), 0 = write (DM low)
-    output wire dm_o        // the real DM pin
+    input  wire [3:0] dm_mask,  // bit k: 1 = mask (DM high, the DRAM ignores UI k of this cycle), 0 = write (DM low); UI 0 first
+    output wire dm_o            // the real DM pin
 );
 `ifdef SYNTHESIS
     ODDRX2DQA DRV (
-        .D3(dm_level), .D2(dm_level), .D1(dm_level), .D0(dm_level),
+        .D3(dm_mask[3]), .D2(dm_mask[2]), .D1(dm_mask[1]), .D0(dm_mask[0]),
         .DQSW270(dqsw270), .SCLK(sclk), .ECLK(eclk), .RST(rst),
         .Q(dm_o)
     );
 `else
-    // Simulation. ODDRX2DQA has no behavioral model in this toolchain (the same real
-    // gap every other DDR-I/O primitive in this stage already found) - combinational
-    // passthrough at sclk granularity, the same stand-in
-    // rtl/soc/ddr3_dq_serdes_ecp5.v's own simulation body uses for DQ
-    // (`assign dq_o[i] = wr_d0[i];`) and rtl/soc/ddr3_dqs_write_ecp5.v's own simulation
-    // body uses for DQS (`assign dqs_o = d[3];`). A first version registered this
-    // instead, and a real run caught it: DM then read the PREVIOUS cycle's `dm_level`,
-    // one `sclk` late against the state register `active0` is read from directly -
-    // masked exactly where it should write and vice versa.
-    assign dm_o = dm_level;
+    // Simulation. ODDRX2DQA has no behavioral model in this toolchain (the same real gap every other DDR-I/O primitive in
+    // this stage found), so this does what it does at the pin: one value per UI, four per sclk, D0 first. The UI grid of
+    // the data pins is shifted a quarter of CK (5 ns) later than the strobe's, so that each strobe edge falls in the middle
+    // of a data beat: DQ and DM are launched 5, 15, 25 and 35 ns after the sclk edge (rtl/soc/ddr3_dqs_write_ecp5.v has the
+    // strobe, at 0, 10, 20 and 30). Designed, not derived: where the ECP5's DQSW and DQSW270 put these on silicon is the
+    // bring-up's to show. The mask for the cycle is read when each UI is launched, from the signals the design drives for
+    // that cycle (they are settled after the edge), which is the alignment the passthrough this replaces had.
+    reg dm_r;
+    initial dm_r = 1'b1;
+    always @(posedge sclk) begin
+        #5  dm_r <= dm_mask[0];
+        #10 dm_r <= dm_mask[1];
+        #10 dm_r <= dm_mask[2];
+        #10 dm_r <= dm_mask[3];
+    end
+    assign dm_o = dm_r;
 
     wire _unused_ok = &{1'b0, rst, eclk, dqsw270, 1'b0};
 `endif

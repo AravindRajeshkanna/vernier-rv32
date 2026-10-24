@@ -8,13 +8,15 @@
 // overwrite a real neighbour column with the same byte. `rtl/soc/ddr3_dm_drv_ecp5.v`
 // now drives DM; this test pins its waveform down and then asks the real question.
 //
-// For a WRITE driven in sclk cycle W (Part 17's own timing, unchanged):
-//     W+2  preamble        DM high (masked)
-//     W+3  burst, half 1   DM low  (write it - the addressed column)
-//     W+4  burst, half 2   DM high (masked - the neighbour column this design never
-//                                    intends to touch)
-//     W+5  postamble       DM high
-//     every other cycle    DM high (the safe idle default)
+// For a WRITE driven in sclk cycle W (Part 17's own timing, unchanged), DM at each strobe edge:
+//     W+3  beat 0          DM low  (write it - the addressed column)
+//     every other beat of the burst (beats 1 to 7), and everywhere outside it: DM high (masked)
+//
+// Phase 9 Stage 3: judged at beat resolution. Until then DM was one level per sclk cycle and "low in W+3" meant four
+// beats, which on a real part writes the byte to four columns; the test could not see it, and its neighbour check looked
+// at one neighbour (the column four on). DM is now sampled at each strobe edge, 10, 20, 30 and 40 ns after every sclk edge,
+// and the neighbour check covers every other column of the aligned block of 8 the burst belongs to: each is given a
+// sentinel byte first, and none may change.
 `timescale 1ns/1ps
 module tb_ddr3_dm_window;
     localparam CLK_PERIOD = 40;   // 25 MHz sclk
@@ -47,6 +49,7 @@ module tb_ddr3_dm_window;
     reg  [15:0] write_row  = 16'h0000;
     reg  [15:0] write_col  = 16'h0000;
     reg  [7:0]  write_data = 8'h00;
+    wire [7:0]  write_data_hi = ~write_data;   // lane 1's byte: the complement of lane 0's, so the lanes cannot be taken for each other
     wire        write_busy, read_busy, read_data_valid, refresh_busy;
     wire [7:0]  read_data;
     wire [7:0]  read_data_hi;   // lane 1's byte (Part 26); this test is about lane 0
@@ -62,7 +65,7 @@ module tb_ddr3_dm_window;
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
-        .write_col(write_col), .write_data({8'h00, write_data}), .write_be(2'b01), .write_busy(write_busy),
+        .write_col(write_col), .write_data({write_data_hi, write_data}), .write_be(2'b11), .write_busy(write_busy),
         .read_req(1'b0), .read_bank(3'b0), .read_row(16'b0), .read_col(16'b0),
         .read_busy(read_busy), .read_data({read_data_hi, read_data}), .read_data_valid(read_data_valid),
         .refresh_busy(refresh_busy),
@@ -73,7 +76,8 @@ module tb_ddr3_dm_window;
     );
 
     // Lane 1's memory (Part 26): the controller takes no request until both lanes have calibrated, and a
-    // lane calibrates by looping its pattern back through a DRAM. This test is about lane 0.
+    // lane calibrates by looping its pattern back through a DRAM. Since Phase 9 Stage 3 this test looks at both lanes:
+    // each write stores both bytes, and each lane's mask and neighbour protection are judged on its own.
     ddr3_lane1_mem LANE1 (
         .sclk(DUT.sclk), .rst(DUT.rst_all), .ck(ddr3_ck),
         .ras_n(ddr3_ras_n), .cas_n(ddr3_cas_n), .we_n(ddr3_we_n),
@@ -109,12 +113,24 @@ module tb_ddr3_dm_window;
     // DM is a plain, always-driven output (no tri-state - rtl/soc/ddr3_dm_drv_ecp5.v's
     // own header says why), so a direct sample is enough; no probe module needed the
     // way the tri-stated DQ/DQS pins in tb_ddr3_wr_window.v need one.
-    integer cyc = 0;
-    reg dm_log [0:LOG-1];
+    // `ncyc` counts sclk edges, the cycle an edge opens is numbered by the count before it, and DM is sampled at 10, 20, 30
+    // and 40 ns after the edge: dm_ui[4c + j] is DM at the strobe edge ending slot j of cycle c, which is beat j of a burst
+    // that starts in cycle c. (The 40 ns one is taken at the next edge, so the sampling sequence never runs into it.)
+    integer ncyc = 0;
+    reg dm_ui  [0:LOG*4-1];     // lane 0's DM
+    reg udm_ui [0:LOG*4-1];     // lane 1's DM
+    integer mc;
     always @(posedge DUT.sclk) begin
         if (!rst) begin
-            dm_log[cyc % LOG] = ddr3_dm;
-            cyc = cyc + 1;
+            if (ncyc > 0) begin
+                dm_ui [((ncyc - 1) * 4 + 3) % (LOG * 4)] = ddr3_dm;
+                udm_ui[((ncyc - 1) * 4 + 3) % (LOG * 4)] = ddr3_udm;
+            end
+            mc = ncyc;
+            ncyc = ncyc + 1;
+            #10; dm_ui[(mc * 4 + 0) % (LOG * 4)] = ddr3_dm;  udm_ui[(mc * 4 + 0) % (LOG * 4)] = ddr3_udm;
+            #10; dm_ui[(mc * 4 + 1) % (LOG * 4)] = ddr3_dm;  udm_ui[(mc * 4 + 1) % (LOG * 4)] = ddr3_udm;
+            #10; dm_ui[(mc * 4 + 2) % (LOG * 4)] = ddr3_dm;  udm_ui[(mc * 4 + 2) % (LOG * 4)] = ddr3_udm;
         end
     end
 
@@ -122,7 +138,7 @@ module tb_ddr3_dm_window;
     integer wr_cyc [0:NWRITES-1];
     always @(posedge ddr3_ck) begin
         if (!rst && calib_done && ddr3_ras_n && !ddr3_cas_n && !ddr3_we_n && wr_n < NWRITES) begin
-            wr_cyc[wr_n] = cyc;
+            wr_cyc[wr_n] = ncyc - 1;    // the cycle the sclk edge ten ns ago opened
             wr_n = wr_n + 1;
         end
     end
@@ -139,17 +155,21 @@ module tb_ddr3_dm_window;
         end
     endtask
 
-    // Two locations four columns apart (an aligned-8 pair, the same wrap the write
-    // burst's second half lands on), each written with its OWN test to keep the
-    // neighbour-protection check honest: if the design ever failed to mask that
-    // second half, the earlier write's byte would appear here even though this
-    // location itself was never addressed.
+    // One aligned block of 8 columns: seven of them are given a sentinel byte, then the eighth is written. If the design ever
+    // left DM low for a beat other than beat 0 - the first, as the old model's "second half" or the four beats of a cycle -
+    // a sentinel would change, because a real burst writes sequential columns from the addressed one, wrapping inside the block.
     localparam [2:0]  NB_BANK = 3'd4;
     localparam [15:0] NB_ROW  = 16'h0222;
-    localparam [15:0] NB_COL  = 16'h0033;   // col[2:0] = 3'b011; the neighbour is col ^ 4 = ...111
+    localparam [15:0] NB_BASE = 16'h0030;   // the block: columns 0x30 to 0x37
+    localparam integer NB_TGT = 3;          // the one the final write addresses: column 0x33
 
-    integer i, k, w, dm_fails, guard;
+    // lane 1's sentinel for column n of the block: the complement of lane 0's, as an 8-bit value
+    function [7:0] sent1(input integer n);
+        sent1 = ~(8'h50 + n[7:0]);
+    endfunction
+    integer i, k, u, w, n, dm_fails, guard;
     reg wanted_dm;
+    reg nb_ok;
     initial begin
         $display("=== DDR3 data mask (DM) window and neighbour-column protection (Phase 9 Stage 1, Part 22) ===");
         repeat (4) @(posedge clk);
@@ -180,36 +200,63 @@ module tb_ddr3_dm_window;
         dm_fails = 0;
         for (w = 0; w < NWRITES; w = w + 1) begin
             for (k = 0; k <= 7; k = k + 1) begin
-                wanted_dm = (k == 3) ? 1'b0 : 1'b1;   // low only in the first burst half (W+3)
-                if (dm_log[(wr_cyc[w] + k) % LOG] !== wanted_dm) begin
-                    if (dm_fails < 8)
-                        $display("  FAIL write %0d: DM at W+%0d is %b, expected %b", w, k, dm_log[(wr_cyc[w] + k) % LOG], wanted_dm);
-                    dm_fails = dm_fails + 1;
+                for (u = 0; u < 4; u = u + 1) begin
+                    wanted_dm = (k == 3 && u == 0) ? 1'b0 : 1'b1;   // low only at beat 0, the burst's first strobe edge
+                    if (dm_ui[((wr_cyc[w] + k) * 4 + u) % (LOG * 4)] !== wanted_dm) begin
+                        if (dm_fails < 8)
+                            $display("  FAIL write %0d: DM at W+%0d edge %0d is %b, expected %b", w, k, u,
+                                     dm_ui[((wr_cyc[w] + k) * 4 + u) % (LOG * 4)], wanted_dm);
+                        dm_fails = dm_fails + 1;
+                    end
+                    if (udm_ui[((wr_cyc[w] + k) * 4 + u) % (LOG * 4)] !== wanted_dm) begin
+                        if (dm_fails < 8)
+                            $display("  FAIL write %0d: UDM (lane 1) at W+%0d edge %0d is %b, expected %b", w, k, u,
+                                     udm_ui[((wr_cyc[w] + k) * 4 + u) % (LOG * 4)], wanted_dm);
+                        dm_fails = dm_fails + 1;
+                    end
                 end
             end
         end
-        check_true("every write: DM low only in the burst's first half (W+3), high everywhere else", dm_fails == 0);
+        check_true("every write: both lanes' DM low at beat 0 only, high at the other seven beats and everywhere else", dm_fails == 0);
 
-        // ---- does DM actually protect the neighbour column? ----
-        // Write once to the neighbour column itself, with a byte the intended-write check
-        // below does not use, so a leak would be unmistakable.
-        write_bank <= NB_BANK; write_row <= NB_ROW; write_col <= (NB_COL ^ 16'h0004); write_data <= 8'h5A;
-        @(posedge clk); write_req <= 1'b1; @(posedge clk); write_req <= 1'b0; @(posedge clk);
-        guard = 0; while (write_busy && guard < 400) begin @(posedge clk); guard = guard + 1; end
-        check_true("the neighbour column itself accepts a write (sanity: the model can store there)",
-                    MEM.peek(NB_BANK, NB_ROW, NB_COL ^ 16'h0004) === 8'h5A);
+        // ---- does DM actually protect the other seven columns of the block? ----
+        // Sentinels first (a byte per column, none the one the final write uses), through the same controller.
+        for (n = 0; n < 8; n = n + 1) begin
+            if (n != NB_TGT) begin
+                write_bank <= NB_BANK; write_row <= NB_ROW; write_col <= NB_BASE + n; write_data <= 8'h50 + n;
+                @(posedge clk); write_req <= 1'b1; @(posedge clk); write_req <= 1'b0; @(posedge clk);
+                guard = 0; while (write_busy && guard < 400) begin @(posedge clk); guard = guard + 1; end
+            end
+        end
+        nb_ok = 1'b1;
+        for (n = 0; n < 8; n = n + 1)
+            if (n != NB_TGT && (MEM.peek(NB_BANK, NB_ROW, NB_BASE + n) !== (8'h50 + n) ||
+                                LANE1.MEM.peek(NB_BANK, NB_ROW, NB_BASE + n) !== sent1(n))) nb_ok = 1'b0;
+        check_true("each of the block's other columns accepts a write, in both lanes (sanity: the models can store there)", nb_ok);
 
-        // Now write the ADDRESSED column, a different byte, and confirm the neighbour
-        // written above is untouched by THIS write's own burst.
-        write_bank <= NB_BANK; write_row <= NB_ROW; write_col <= NB_COL; write_data <= 8'hC3;
+        // Now the target, a byte of its own: the seven sentinels must be untouched by THIS write's burst.
+        write_bank <= NB_BANK; write_row <= NB_ROW; write_col <= NB_BASE + NB_TGT; write_data <= 8'hC3;
         @(posedge clk); write_req <= 1'b1; @(posedge clk); write_req <= 1'b0; @(posedge clk);
         guard = 0; while (write_busy && guard < 400) begin @(posedge clk); guard = guard + 1; end
         repeat (10) @(posedge clk);
 
-        check_true("the addressed column holds the byte this write sent",
-                    MEM.peek(NB_BANK, NB_ROW, NB_COL) === 8'hC3);
-        check_true("the neighbour column - written earlier, four columns off - is unchanged by this write: DM protected it",
-                    MEM.peek(NB_BANK, NB_ROW, NB_COL ^ 16'h0004) === 8'h5A);
+        check_true("the addressed column holds the byte this write sent, in both lanes",
+                    MEM.peek(NB_BANK, NB_ROW, NB_BASE + NB_TGT) === 8'hC3 &&
+                    LANE1.MEM.peek(NB_BANK, NB_ROW, NB_BASE + NB_TGT) === ~8'hC3);
+        nb_ok = 1'b1;
+        for (n = 0; n < 8; n = n + 1) begin
+            if (n != NB_TGT && MEM.peek(NB_BANK, NB_ROW, NB_BASE + n) !== (8'h50 + n)) begin
+                nb_ok = 1'b0;
+                $display("  FAIL lane 0, column %0d of the block holds %02h, expected its sentinel %02h", n,
+                         MEM.peek(NB_BANK, NB_ROW, NB_BASE + n), 8'h50 + n);
+            end
+            if (n != NB_TGT && LANE1.MEM.peek(NB_BANK, NB_ROW, NB_BASE + n) !== sent1(n)) begin
+                nb_ok = 1'b0;
+                $display("  FAIL lane 1, column %0d of the block holds %02h, expected its sentinel %02h", n,
+                         LANE1.MEM.peek(NB_BANK, NB_ROW, NB_BASE + n), sent1(n));
+            end
+        end
+        check_true("the other seven columns of the block are unchanged by this write, in both lanes: DM protected every one", nb_ok);
         check_true("no DQ/DQS/DM timing error across any of the above", !dq_error);
 
         $display("");
