@@ -17,10 +17,9 @@
 //
 // The controller moves a 16-bit word per request (Stage 1, Part 26): lane 0 is
 // the even byte of the word and lane 1 the odd one, little-endian like the rest
-// of this bus. A 16-byte block is therefore 8 columns, not 16: a 32-bit store is
-// at most 2 writes (it was at most 4), each carrying the byte enables of its half.
-// Both lanes are used, so the capacity is the part's own: 8 banks x 32768 rows x
-// 1024 columns x 2 bytes = 512MB.
+// of this bus. A 16-byte block is therefore 8 columns, not 16, and a 32-bit word is two
+// of them (beats 2k and 2k+1 of the block's burst, k = wb_adr[3:2]). Both lanes are used,
+// so the capacity is the part's own: 8 banks x 32768 rows x 1024 columns x 2 bytes = 512MB.
 //
 // ---- A fill is one controller read (Phase 9 Stage 3, 8-beat bursts, part C, read half) ----
 //
@@ -43,20 +42,29 @@
 // acknowledged access to such a block returns is whatever the buffer held: nothing here
 // tells the bus master that the read failed, as before.
 //
-// A write is still one column per request, and the controller still masks the neighbour
-// columns its burst's other seven beats would reach (Part 22, Phase 9 Stage 3), on both
-// lanes, so a store of one column never disturbs another. The write half of part C - a
-// store as one burst - is not done.
+// ---- A store is one controller write (Phase 9 Stage 3, 8-beat bursts, part C, write half) ----
+//
+// A 32-bit store used to be up to two controller writes, one per column of the word, each
+// storing its first beat and masking the other seven. It is one now: the word goes out as
+// one burst to the block's first column, in beats 2k and 2k+1, with the byte selects as
+// the mask of those beats (`write_burst_be`: bit 2*b is lane 0's for beat b, bit 2*b+1
+// lane 1's) and every other beat masked in both lanes, so a store never disturbs another
+// byte of the block. The word is replicated into all four pairs of beats (`{4{wb_dat_w}}`):
+// only the pair the mask leaves open is stored, and the others carry data nobody reads.
+// A store with no byte selected is acknowledged and sends nothing, as before. The slave
+// stays write-through: a store goes to the DRAM whether or not the block is resident, and
+// keeps a resident block's copy coherent (the lanes that were stored change).
 //
 // ---- What this does not establish ----
 //
 // The real, still-open "data path is not yet hardware-faithful" Known
 // Defect (`docs/roadmap/phase-09-ddr.md`) is narrower than it was: a real x16 BL8 burst
-// moves 16 real, distinct bytes in one electrical transaction, and a fill does that
-// now; a store still moves its bytes as up to 2 separate ACT+WR command sequences.
-// That gap stays open, named, and orthogonal to this stage's own "Done when" bar
-// (a CPU executing real code from DDR in simulation), which does not require it.
-// Nothing here has run on a board.
+// moves 16 real, distinct bytes in one electrical transaction, and a fill does that now.
+// A store moves one 32-bit word in a burst whose other 12 bytes are masked; moving a
+// whole block in one write (a write-back cache line) needs the block to be held dirty,
+// and this slave is write-through. That gap stays open, named, and orthogonal to this
+// stage's own "Done when" bar (a CPU executing real code from DDR in simulation), which
+// does not require it. Nothing here has run on a board.
 //
 // ---- Address mapping (512MB, byte-addressed) ----
 //
@@ -140,8 +148,8 @@ module wb_ddr (
     reg  [2:0]  write_bank;
     reg  [15:0] write_row;
     reg  [15:0] write_col;
-    reg  [15:0] write_data;
-    reg  [1:0]  write_be;
+    reg  [127:0] write_burst;    // eight beats of {lane 1, lane 0}: the word in all four pairs, only one pair unmasked
+    reg  [15:0] write_burst_be;  // bit 2*b: lane 0 stores beat b; bit 2*b+1: lane 1
     wire        write_busy;
 
     reg         read_req;
@@ -165,7 +173,8 @@ module wb_ddr (
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
-        .write_col(write_col), .write_data(write_data), .write_be(write_be),
+        .write_col(write_col), .write_data(16'b0), .write_be(2'b00),
+        .write_wide(1'b1), .write_burst(write_burst), .write_burst_be(write_burst_be),
         .write_busy(write_busy),
         .read_req(read_req), .read_bank(read_bank), .read_row(read_row),
         .read_col(read_col), .read_busy(read_busy), .read_data(read_data),
@@ -180,9 +189,9 @@ module wb_ddr (
     );
 
     // ---- the sequencer: turns one Wishbone access into 1 real controller
-    // read (a miss: the block, as one burst) or up to 2 real 16-bit writes (a
-    // store: one per half of the word that has a wb_sel bit set) - one at a
-    // time, the controller accepts nothing else ----
+    // read (a miss: the block, as one burst) or 1 real write (a store: the
+    // word, as one burst, with wb_sel as its mask) - one at a time, the
+    // controller accepts nothing else ----
     // Each real controller call is accept-pulse-then-busy: `write_req`/
     // `read_req` is a single-cycle pulse, and `write_busy`/`read_busy`
     // itself only rises the cycle after - so a state that just checked
@@ -196,14 +205,13 @@ module wb_ddr (
         S_FILL_ISS   = 3'd1,   // issue read_req for the block's first column
         S_FILL_RISE  = 3'd2,   // wait for read_busy to assert
         S_FILL_WAIT  = 3'd3,   // wait for read_busy to drop; the burst has arrived by then, or the read was rejected
-        S_STORE_ISS  = 3'd4,   // issue write_req for the current byte
+        S_STORE_ISS  = 3'd4,   // issue write_req for the word
         S_STORE_RISE = 3'd5,   // wait for write_busy to assert
-        S_STORE_WAIT = 3'd6,   // wait for write_busy to drop, then next byte
+        S_STORE_WAIT = 3'd6,   // wait for write_busy to drop
         S_ACK        = 3'd7;
 
     reg [2:0] state;
     reg       fill_got;    // the burst of the fill in progress has been taken into block_buf
-    reg       store_half;  // 0-1, which 16-bit half of the word is being written
 
     integer i;
 
@@ -216,8 +224,8 @@ module wb_ddr (
             write_req   <= 1'b0;
             read_req    <= 1'b0;
             fill_got    <= 1'b0;
-            store_half  <= 1'b0;
-            write_be    <= 2'b00;
+            write_burst    <= 128'b0;
+            write_burst_be <= 16'b0;
             for (i = 0; i < 8; i = i + 1) block_buf[i] <= 16'b0;
         end else begin
             write_req <= 1'b0;
@@ -256,8 +264,7 @@ module wb_ddr (
                             // other real location, and Part 26's byte enables
                             // mask the lane a write does not store), so a
                             // store never needs a fill first.
-                            store_half <= 1'b0;
-                            state      <= S_STORE_ISS;
+                            state <= S_STORE_ISS;
                         end else if (req_hit) begin
                             state    <= S_ACK;
                         end else begin
@@ -290,24 +297,22 @@ module wb_ddr (
                     end
                 end
 
-                // ---- store: write through each half of the word that has a byte selected ----
-                // The word's low half is the column {offset[3:2], 0} and its high half the
-                // column {offset[3:2], 1}; wb_sel's two bits for a half are that column's
-                // byte enables, lane 0 first.
+                // ---- store: write the word through, as one burst ----
+                // The word is columns {offset[3:2], 0} (low half) and {offset[3:2], 1} (high half) of the block: beats
+                // 2k and 2k+1 of a burst that starts at the block's first column. wb_sel's four bits are those two
+                // columns' byte enables, lane 0 first, so the mask of the burst is wb_sel moved to bit 4k.
                 S_STORE_ISS: begin
                     if (!write_busy) begin
-                        if (wb_sel[2*store_half +: 2] != 2'b00) begin
-                            write_req  <= 1'b1;
-                            write_bank <= req_bank;
-                            write_row  <= {1'b0, req_row};
-                            write_col  <= {6'b0, req_colh, req_offset[3:2], store_half};
-                            write_data <= wb_dat_w[16*store_half +: 16];
-                            write_be   <= wb_sel[2*store_half +: 2];
-                            state      <= S_STORE_RISE;
-                        end else if (store_half) begin
-                            state <= S_ACK;
+                        if (wb_sel != 4'b0000) begin
+                            write_req      <= 1'b1;
+                            write_bank     <= req_bank;
+                            write_row      <= {1'b0, req_row};
+                            write_col      <= {6'b0, req_colh, 3'b000};
+                            write_burst    <= {4{wb_dat_w}};
+                            write_burst_be <= {12'b0, wb_sel} << {req_offset[3:2], 2'b00};
+                            state          <= S_STORE_RISE;
                         end else begin
-                            store_half <= 1'b1;
+                            state <= S_ACK;
                         end
                     end
                 end
@@ -319,19 +324,12 @@ module wb_ddr (
                         // return stale data without a re-fill. Only the
                         // lanes that were stored change.
                         if (block_valid && block_tag == req_block) begin
-                            if (write_be[0])
-                                block_buf[{req_offset[3:2], store_half}][7:0] <=
-                                    write_data[7:0];
-                            if (write_be[1])
-                                block_buf[{req_offset[3:2], store_half}][15:8] <=
-                                    write_data[15:8];
+                            if (wb_sel[0]) block_buf[{req_offset[3:2], 1'b0}][7:0]  <= wb_dat_w[7:0];
+                            if (wb_sel[1]) block_buf[{req_offset[3:2], 1'b0}][15:8] <= wb_dat_w[15:8];
+                            if (wb_sel[2]) block_buf[{req_offset[3:2], 1'b1}][7:0]  <= wb_dat_w[23:16];
+                            if (wb_sel[3]) block_buf[{req_offset[3:2], 1'b1}][15:8] <= wb_dat_w[31:24];
                         end
-                        if (store_half) begin
-                            state <= S_ACK;
-                        end else begin
-                            store_half <= 1'b1;
-                            state      <= S_STORE_ISS;
-                        end
+                        state <= S_ACK;
                     end
                 end
 

@@ -56,6 +56,7 @@ module tb_ddr3_top;
         .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .write_wide(1'b0), .write_burst(128'b0), .write_burst_be(16'b0),
         .write_req(1'b0), .write_bank(3'b0), .write_row(16'b0),
         .write_col(16'b0), .write_data(16'b0), .write_be(2'b00), .write_busy(write_busy),
         .read_req(1'b0), .read_bank(3'b0), .read_row(16'b0), .read_col(16'b0),

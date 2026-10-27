@@ -90,6 +90,7 @@ module tb_ddr3_reverse_arb;
         .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .write_wide(1'b0), .write_burst(128'b0), .write_burst_be(16'b0),
         .write_req(write_req), .write_bank(write_bank), .write_row(write_row),
         .write_col(write_col), .write_data({8'h00, write_data}), .write_be(2'b01), .write_busy(write_busy),
         .read_req(read_req), .read_bank(read_bank), .read_row(read_row), .read_col(read_col),

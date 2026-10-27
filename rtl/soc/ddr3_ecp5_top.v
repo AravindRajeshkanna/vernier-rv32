@@ -274,6 +274,18 @@
 // instead of the 500 us a power-up waits. They cannot be told apart from the controller's side, which is why they are two
 // ports. Everything else is reset by either.
 //
+// ---- A write can be one burst (Phase 9 Stage 3, 8-beat bursts part C, write half) ----
+// A request with `write_wide` high carries a whole burst, `write_burst` (eight beats of {lane 1, lane 0}) and `write_burst_be`
+// (which lane stores which beat), instead of `write_data` and `write_be`. The latch holds all of it from the request until the
+// next one is accepted, which is not while a transaction is in flight, so the burst's data and mask are read straight from it:
+// the first active cycle sends beats 0 to 3 on D0 to D3 and the second beats 4 to 7, and each lane's DM is low for exactly the
+// beats it stores (`store0`, `store1`). A request without `write_wide` (calibration's, and every caller that predates it) is
+// beat 0 of the same thing, the other seven masked. The register that held the byte from the trigger to the burst
+// (`dq_data_hold`) and the two store flags are gone: the latch does their job, so the wide path costs the latch's width
+// (126 more flip-flops) and the muxes, not a second copy. Beat b lands in column {c[9:3], (c[2:0] + b) mod 8}; rtl/soc/wb_ddr.v
+// asks for the block's first column and puts a 32-bit word in beats 2k and 2k+1. sim/tb_ddr3_wide_write.v holds the order, the
+// masks and the DM waveform, through this module.
+//
 // ---- The read side is judged beat by beat (Phase 9 Stage 3, 8-beat bursts part B) ----
 // A READ's burst is eight beats on two sclk cycles, and the capture takes four a cycle (rtl/soc/ddr3_dq_serdes_ecp5.v: Q0
 // the earliest). `read_data` is still the addressed column, beat 0, in the cycle `read_data_valid` is high, as it has been
@@ -321,6 +333,14 @@ module ddr3_ecp5_top (
     input  wire [15:0] write_col,
     input  wire [15:0] write_data,   // {lane 1, lane 0}
     input  wire [1:0]  write_be,     // which lanes this write stores: bit 0 lane 0, bit 1 lane 1
+    // Phase 9 Stage 3 (8-beat bursts, part C, write half): a write as one burst. With `write_wide` high the request carries
+    // `write_burst` (eight beats of {lane 1, lane 0}, beat b in [16*b +: 16]) and `write_burst_be` (which lane stores which
+    // beat: bit 2*b is lane 0's, bit 2*b+1 lane 1's) instead of `write_data` and `write_be`, and beat b goes to column
+    // {c[9:3], (c[2:0] + b) mod 8} of the addressed column c. Without `write_wide` the request is the narrow one it always
+    // was: beat 0 only, the other seven masked.
+    input  wire        write_wide,
+    input  wire [127:0] write_burst,
+    input  wire [15:0] write_burst_be,
     output wire        write_busy,
 
     input  wire        read_req,
@@ -557,15 +577,17 @@ module ddr3_ecp5_top (
     // ddr3_write_seq.v's own bank/row/col inputs only need to be valid
     // for the one cycle write_req pulses, not held throughout. Neither
     // command sequencer carries its own data path.
-    reg [15:0] write_data_latch;
-    reg [1:0]  write_be_latch;   // Part 26; reset to "store nothing", the safe idle default
+    // Phase 9 Stage 3 (part C, write half): the latch holds a whole burst, eight beats of {lane 1, lane 0} and which lane
+    // stores which beat. A narrow request (calibration's, and every caller that predates `write_wide`) is beat 0 of it.
+    reg [127:0] write_data_latch;
+    reg [15:0]  write_be_latch;   // Part 26; reset to "store nothing", the safe idle default
     always @(posedge sclk or posedge rst_cmd) begin
         if (rst_cmd) begin
-            write_data_latch <= 16'b0;
-            write_be_latch   <= 2'b00;
+            write_data_latch <= 128'b0;
+            write_be_latch   <= 16'b0;
         end else if (wseq_write_req) begin
-            write_data_latch <= cal_active ? cal_write_data : write_data;
-            write_be_latch   <= cal_active ? cal_write_be   : write_be;
+            write_data_latch <= cal_active ? {112'b0, cal_write_data} : (write_wide ? write_burst    : {112'b0, write_data});
+            write_be_latch   <= cal_active ? {14'b0,  cal_write_be}   : (write_wide ? write_burst_be : {14'b0,  write_be});
         end
     end
 
@@ -612,15 +634,16 @@ module ddr3_ecp5_top (
     // for what this does and does not establish. FPGA-output-only: no tri-state, so
     // unlike DQ/DQS this needs no BB and no separate synthesis/simulation split at the
     // pad itself.
-    // Part 26: low only if this write stores lane 0's byte. `lane0_store` is captured with the
-    // byte when the burst is triggered (below); calibration's write asks for both lanes (be = 11).
-    reg  lane0_store;
+    // Part 26: low only for a beat this write stores in lane 0. Calibration's write asks for both lanes (be = 11).
     wire dm_o;
-    // One mask bit per UI of the cycle, UI 0 first (rtl/soc/ddr3_dm_drv_ecp5.v): UI 0 of the first active cycle is the
-    // beat that carries the column's byte, so DM is low for that beat only, when this write stores lane 0's byte, and high
-    // for the other seven beats of the burst. (Through Stage 2 one level covered all four UI of the cycle, so a real part
-    // would have written beats 0 to 3.)
-    wire [3:0] dm_mask = (dq_active0 && lane0_store) ? 4'b1110 : 4'b1111;
+    // One mask bit per UI of the cycle, UI 0 first (rtl/soc/ddr3_dm_drv_ecp5.v), taken from the request's per-beat byte
+    // enables: DM is low for the beats the write stores in this lane and high for all the others. The first active cycle
+    // carries beats 0 to 3 and the second beats 4 to 7. A narrow request stores beat 0 only, so DM is low for UI 0 of the
+    // first cycle and nothing else, as before. (Through Stage 2 one level covered all four UI of the cycle, so a real part
+    // would have written beats 0 to 3; until part C's write half a request could store beat 0 only.)
+    wire [7:0] store0 = {write_be_latch[14], write_be_latch[12], write_be_latch[10], write_be_latch[8],
+                         write_be_latch[6],  write_be_latch[4],  write_be_latch[2],  write_be_latch[0]};
+    wire [3:0] dm_mask = dq_active0 ? ~store0[3:0] : (dq_burst ? ~store0[7:4] : 4'b1111);
 
     ddr3_dm_drv_ecp5 DM_DRV (
         .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270),
@@ -647,26 +670,26 @@ module ddr3_ecp5_top (
     // enabled for the single cycle of `write_start_final`, two cycles before DQS's
     // first active toggle, so the eight beats of a BL8 write saw no DQ enable (the
     // Part 14/15 survey; sim/ddr3_dq_model.v now checks it from the pins).
-    // The byte is captured when the burst is triggered - from write_data_latch, which holds
-    // calibration's pattern for its WRITE and the caller's data for a real one - and held until
-    // the window opens, since the trigger comes before it.
-    reg [7:0] dq_data_hold;
-    always @(posedge sclk or posedge rst_all) begin
-        if (rst_all) begin
-            dq_data_hold <= 8'b0;
-            lane0_store  <= 1'b0;
-        end else if (write_start_final) begin
-            dq_data_hold <= write_data_latch[7:0];
-            lane0_store  <= write_be_latch[0];
+    // The beats come straight from write_data_latch, which holds calibration's pattern for its WRITE and the caller's data
+    // for a real one from the request until the next one is accepted, and a new request is not accepted while the
+    // transaction is in flight, so the latch is stable through the whole burst. (Until part C's write half there was a
+    // second register here, `dq_data_hold`, loaded when the burst was triggered: it dates from when calibration injected its
+    // own data and the latch did not hold it.) The first active cycle carries beats 0 to 3 on D0 to D3 and the second beats
+    // 4 to 7.
+    wire [7:0] wd0 [0:7];
+    genvar wb;
+    generate
+        for (wb = 0; wb < 8; wb = wb + 1) begin : WDATA_L0
+            assign wd0[wb] = write_data_latch[16*wb +: 8];
         end
-    end
+    endgenerate
 
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES (
         .sclk(sclk), .eclk(eclk), .rst(rst_all),
         .dqsr90(dqsr90), .dqsw270(dqsw270),
         .rdpntr(rdpntr), .wrpntr(wrpntr),
-        .wr_d3(dq_data_hold), .wr_d2(dq_data_hold),
-        .wr_d1(dq_data_hold), .wr_d0(dq_data_hold),
+        .wr_d3(dq_active0 ? wd0[3] : wd0[7]), .wr_d2(dq_active0 ? wd0[2] : wd0[6]),
+        .wr_d1(dq_active0 ? wd0[1] : wd0[5]), .wr_d0(dq_active0 ? wd0[0] : wd0[4]),
         .wr_en(dq_burst),
         .rd_q3(rd_q3), .rd_q2(rd_q2), .rd_q1(rd_q1), .rd_q0(rd_q0),
         .dq_o(dq_o), .dq_oe(dq_oe), .dq_t(dq_t), .dq_i(dq_i)
@@ -736,10 +759,11 @@ module ddr3_ecp5_top (
     );
 
     // Part 22's own data mask, a second instance - lane 1's DM is UDM, masking exactly
-    // the same way lane 0's does. Part 26: low only if this write stores lane 1's byte.
-    reg  lane1_store;
+    // the same way lane 0's does. Part 26: low only for a beat this write stores in lane 1.
     wire dm_o_1;
-    wire [3:0] dm_mask_1 = (dq_active0_1 && lane1_store) ? 4'b1110 : 4'b1111;
+    wire [7:0] store1 = {write_be_latch[15], write_be_latch[13], write_be_latch[11], write_be_latch[9],
+                         write_be_latch[7],  write_be_latch[5],  write_be_latch[3],  write_be_latch[1]};
+    wire [3:0] dm_mask_1 = dq_active0_1 ? ~store1[3:0] : (dq_burst_1 ? ~store1[7:4] : 4'b1111);
     ddr3_dm_drv_ecp5 DM_DRV1 (
         .sclk(sclk), .eclk(eclk), .rst(rst_all), .dqsw270(dqsw270_1),
         .dm_mask(dm_mask_1), .dm_o(dm_o_1)
@@ -756,24 +780,21 @@ module ddr3_ecp5_top (
     wire [7:0] dq_o_1, dq_oe_1, dq_t_1, dq_i_1;
     wire [7:0] rd_q3_1, rd_q2_1, rd_q1_1;
 
-    // Mirrors lane 0's `dq_data_hold`: the upper half of the latched data (Part 26).
-    reg [7:0] dq_data_hold_1;
-    always @(posedge sclk or posedge rst_all) begin
-        if (rst_all) begin
-            dq_data_hold_1 <= 8'b0;
-            lane1_store    <= 1'b0;
-        end else if (write_start_final_1) begin
-            dq_data_hold_1 <= write_data_latch[15:8];
-            lane1_store    <= write_be_latch[1];
+    // Mirrors lane 0's beats: the upper byte of each beat of the latched burst (Part 26).
+    wire [7:0] wd1 [0:7];
+    genvar wb1;
+    generate
+        for (wb1 = 0; wb1 < 8; wb1 = wb1 + 1) begin : WDATA_L1
+            assign wd1[wb1] = write_data_latch[16*wb1 + 8 +: 8];
         end
-    end
+    endgenerate
 
     ddr3_dq_serdes_ecp5 #(.DQ_WIDTH(8)) SERDES1 (
         .sclk(sclk), .eclk(eclk), .rst(rst_all),
         .dqsr90(dqsr90_1), .dqsw270(dqsw270_1),
         .rdpntr(rdpntr_1), .wrpntr(wrpntr_1),
-        .wr_d3(dq_data_hold_1), .wr_d2(dq_data_hold_1),
-        .wr_d1(dq_data_hold_1), .wr_d0(dq_data_hold_1),
+        .wr_d3(dq_active0_1 ? wd1[3] : wd1[7]), .wr_d2(dq_active0_1 ? wd1[2] : wd1[6]),
+        .wr_d1(dq_active0_1 ? wd1[1] : wd1[5]), .wr_d0(dq_active0_1 ? wd1[0] : wd1[4]),
         .wr_en(dq_burst_1),
         .rd_q3(rd_q3_1), .rd_q2(rd_q2_1), .rd_q1(rd_q1_1), .rd_q0(rd_q0_1),
         .dq_o(dq_o_1), .dq_oe(dq_oe_1), .dq_t(dq_t_1), .dq_i(dq_i_1)
