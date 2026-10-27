@@ -423,6 +423,29 @@ module tb_ecpix5;
             check("the DQ model still saw nothing wrong", ddr3_dq_error, 1'b0);
         end
 
+        // ---- a rejected read, from the slave to the board's pins ----
+        // sim/tb_wb_ddr.v holds the flag and the count; this holds the wiring: bit 7 of the status word through the SoC and the
+        // board's top level to the decoder, and LED0 yellow at the pin. The controller's verdict is forced (lane 1's capture
+        // window held shut, as there), on a block that is not resident, so a real fill is asked for and rejected.
+        begin : ddr3_rejected
+            reg [31:0] r;
+            check("(LED0 is green before: nothing was rejected)", led0_rgb === 3'b010, 1'b1);
+            check("(the flag is clear)", DUT.SOC.SOC.DDR3.read_rejected, 1'b0);
+            force DUT.SOC.SOC.DDR3.DDR.datavalid_seen_1 = 1'b0;
+            ddr3_access(1'b0, 32'hA000_0200, 32'h0, 4'b1111, r);
+            release DUT.SOC.SOC.DDR3.DDR.datavalid_seen_1;
+            repeat (4) @(posedge clk_sys);
+            check("a rejected read sets the slave's flag", DUT.SOC.SOC.DDR3.read_rejected, 1'b1);
+            check("... it is bit 7 of the SoC's status word", DUT.ddr3_status[7], 1'b1);
+            check("... LED0 (controller) is yellow at the board's pins", led0_rgb === 3'b011, 1'b1);
+            check("... lane 0's LED stays green", led1_rgb === 3'b010, 1'b1);
+            check("... lane 1's LED stays green", led3_rgb === 3'b010, 1'b1);
+            ddr3_access(1'b0, 32'hA000_0200, 32'h0, 4'b1111, r);     // a good fill: the block is resident again
+            check("(the next fill went through)", DUT.SOC.SOC.DDR3.block_valid, 1'b1);
+            check("... and LED0 is still yellow: the flag is sticky", led0_rgb === 3'b011, 1'b1);
+            check("the DDR3 protocol checker saw nothing wrong", ddr3_model_error, 1'b0);
+        end
+
         // ---- the debugger's ndmreset resets the controller and the slave, and not the DRAM ----
         // The debug module's ndmreset restarts the SoC without touching the board (rtl/debug/dm.v), and the DRAM's RESET# is the
         // board's: so this must reach the controller as a warm reset, which keeps CKE up (rtl/soc/ddr3_init_seq.v), and reset the
@@ -441,6 +464,7 @@ module tb_ecpix5;
             waited = 0;
             while (DUT.SOC.SOC.DDR3.init_ready !== 1'b1 && waited < 60_000) begin @(posedge clk_sys); waited = waited + 1; end
             check("init_ready returned within 100 us (10,000 board clocks), well before a cold start's 500 us", waited < 10_000, 1'b1);
+            check("the flag of a rejected read outlasted it: LED0 is yellow again, not green", led0_rgb === 3'b011, 1'b1);
             check("CKE never fell", nd_cke_fell, 1'b0);
             check("the DDR3 protocol checker has no objection to the restart", ddr3_model_error, 1'b0);
         end

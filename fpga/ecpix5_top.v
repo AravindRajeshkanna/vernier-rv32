@@ -92,7 +92,7 @@ module ecpix5_top #(
     wire [GPIO_WIDTH-1:0] gpio;    // left floating - no GPIO header pin claimed yet
     wire [3:0] led;
 `ifdef DDR3_ENABLE
-    wire [6:0] ddr3_status;        // the controller's, for the LEDs below
+    wire [7:0] ddr3_status;        // the controller's, for the LEDs below
 `endif
 
     soc_fpga #(

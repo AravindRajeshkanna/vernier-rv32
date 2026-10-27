@@ -1,11 +1,15 @@
 // Test for fpga/ecpix5_ddr3_leds.v: what the ECPIX-5's three controller LEDs say for every value of the status bus.
 //
-// The decoder is a pure function of seven bits, so the test is the whole of its domain: 128 values, each checked against
+// The decoder is a pure function of eight bits, so the test is the whole of its domain: 256 values, each checked against
 // properties that do not repeat the decoder's own expressions, and then a list of named situations, read as a person
 // reading the board would read them.
 //
-//   - A LED never shows two colours at once: a mixed colour (red and green make yellow on these LEDs) would be a state
-//     the README's table does not have, and nobody could tell it from a fault.
+//   - A LED never shows two colours at once, with one exception: the controller LED is yellow (red and green) when the
+//     controller is up and a read has been rejected (bit 7). The four single colours were all taken on that LED, and a
+//     mixed colour anywhere else would be a state the README's table does not have; yellow is exactly that one state, on
+//     that LED, and nowhere else (checked in both directions below).
+//   - The controller LED depends on its four bits (PLL, DLL, init, rejected) and on nothing else, and a lane's on its own
+//     three: the rejected bit changes neither lane.
 //   - Nothing is lit before the controller's PLL has locked: that is what "the FPGA is configured and the controller has
 //     not started" looks like, and it must look different from every state in which it has.
 //   - A lane's LED is dark until the DRAM's initialisation is done: calibration is held in reset until then
@@ -14,14 +18,14 @@
 //     if they ever did the LED must say the bad thing).
 //
 // Status bus, rtl/soc/soc_top.v's ddr3_status: [0] pll_locked, [1] dll_locked, [2] init_ready, [3] calib_done,
-// [4] calib_error, [5] calib1_done, [6] calib1_error. Outputs are {blue, green, red}, 1 = lit.
+// [4] calib_error, [5] calib1_done, [6] calib1_error, [7] read_rejected. Outputs are {blue, green, red}, 1 = lit.
 `timescale 1ns/1ps
 module tb_ecpix5_leds;
-    reg  [6:0] st;
+    reg  [7:0] st;
     wire [2:0] ctl, l0, l1;
     ecpix5_ddr3_leds DUT (.ddr3_status(st), .led_ctl_rgb(ctl), .led_l0_rgb(l0), .led_l1_rgb(l1));
 
-    localparam OFF = 3'b000, RED = 3'b001, GREEN = 3'b010, BLUE = 3'b100;   // {blue, green, red}
+    localparam OFF = 3'b000, RED = 3'b001, GREEN = 3'b010, BLUE = 3'b100, YELLOW = 3'b011;   // {blue, green, red}
 
     integer errors = 0, i;
 
@@ -41,7 +45,7 @@ module tb_ecpix5_leds;
         end
     endtask
 
-    task situation(input [511:0] what, input [6:0] bits, input [2:0] want_ctl, input [2:0] want_l0, input [2:0] want_l1);
+    task situation(input [511:0] what, input [7:0] bits, input [2:0] want_ctl, input [2:0] want_l0, input [2:0] want_l1);
         begin
             st = bits; #1;
             say(what, ctl, want_ctl, l0, want_l0, l1, want_l1);
@@ -52,10 +56,18 @@ module tb_ecpix5_leds;
         $display("=== ECPIX-5 controller LEDs ===");
 
         // ---- the properties, over every value ----
-        for (i = 0; i < 128; i = i + 1) begin
-            st = i[6:0]; #1;
-            if (!onehot_or_zero(ctl) || !onehot_or_zero(l0) || !onehot_or_zero(l1)) begin
-                $display("  FAIL status %b shows a mixed colour: %b/%b/%b", st, ctl, l0, l1);
+        for (i = 0; i < 256; i = i + 1) begin
+            st = i[7:0]; #1;
+            if (!(onehot_or_zero(ctl) || ctl === YELLOW) || !onehot_or_zero(l0) || !onehot_or_zero(l1)) begin
+                $display("  FAIL status %b shows a mixed colour other than the controller's yellow: %b/%b/%b", st, ctl, l0, l1);
+                errors = errors + 1;
+            end
+            if ((ctl === YELLOW) !== (st[0] && st[1] && st[2] && st[7])) begin
+                $display("  FAIL status %b: the controller LED is %b, yellow exactly when up and a read was rejected", st, ctl);
+                errors = errors + 1;
+            end
+            if (ctl !== CTL_REF(st[0], st[1], st[2], st[7])) begin
+                $display("  FAIL status %b: the controller LED = %b, expected %b from its own bits", st, ctl, CTL_REF(st[0], st[1], st[2], st[7]));
                 errors = errors + 1;
             end
             if (!st[0] && (ctl !== OFF)) begin
@@ -92,7 +104,7 @@ module tb_ecpix5_leds;
                 errors = errors + 1;
             end
         end
-        $display("  (128 values checked against the properties)");
+        $display("  (256 values checked against the properties)");
 
         // ---- the situations, in the order a board goes through them ----
         //                                        status {c1err,c1done,cerr,cdone,init,dll,pll}   controller lane0  lane1
@@ -109,6 +121,12 @@ module tb_ecpix5_leds;
         situation("an error beats a done, lane 0",            7'b0011111, GREEN, RED,   BLUE);
         situation("an error beats a done, lane 1",            7'b1100111, GREEN, BLUE,  RED);
         situation("PLL bit low, the rest set: controller dark",  7'b0101110, OFF,   GREEN, GREEN);
+        //                                        status {rej,c1err,c1done,cerr,cdone,init,dll,pll}
+        situation("good board, then a read was rejected",     8'b10101111, YELLOW, GREEN, GREEN);
+        situation("rejected, one lane failed too",            8'b11001111, YELLOW, GREEN, RED);
+        situation("rejected bit set, init not done: stage wins", 8'b10000011, BLUE,  OFF,   OFF);
+        situation("rejected bit set, DLL lost: red wins",     8'b10000001, RED,    OFF,   OFF);
+        situation("rejected bit set, PLL low: dark",          8'b10101110, OFF,    GREEN, GREEN);
 
         $display("");
         $display("---------------------------------------------");
@@ -117,6 +135,19 @@ module tb_ecpix5_leds;
         $display("---------------------------------------------");
         $finish;
     end
+
+    // The controller LED from its four bits alone, as a table.
+    function [2:0] CTL_REF(input pll, input dll, input init, input rej);
+        begin
+            case ({pll, dll, init, rej})
+                4'b0000, 4'b0001, 4'b0010, 4'b0011, 4'b0100, 4'b0101, 4'b0110, 4'b0111: CTL_REF = OFF;   // no PLL
+                4'b1000, 4'b1001, 4'b1010, 4'b1011:                                       CTL_REF = RED;   // PLL, no DLL
+                4'b1100, 4'b1101:                                                         CTL_REF = BLUE;  // initialising
+                4'b1110:                                                                  CTL_REF = GREEN; // ready
+                4'b1111:                                                                  CTL_REF = YELLOW; // ready, a read rejected
+            endcase
+        end
+    endfunction
 
     // A lane's colour from its three bits alone, written as a table and not as the decoder writes it.
     function [2:0] DUT_LANE_REF(input init, input done, input err);

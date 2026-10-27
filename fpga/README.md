@@ -2198,12 +2198,12 @@ Heartbeat first, then the serial port, then the program: each line of the table 
 says nothing, which is the case the table above could only guess at. The names are the schematic's (R02); which number is printed
 on the board by which LED was not checked, but LED2 is the one whose green channel blinks.
 
-| LED | shows | dark | blue | green | red |
-|---|---|---|---|---|---|
-| LED0 | the controller's clocks, and the DRAM's initialisation | its PLL has not locked | locked, initialising | initialisation done | PLL locked, DLL not |
-| LED1 | byte lane 0's read calibration | waiting for initialisation | sweeping the eight taps | a pattern written to the DRAM came back right at a tap | every tap failed |
-| LED3 | byte lane 1's read calibration | waiting for initialisation | sweeping | a pattern written to the DRAM came back right at a tap | every tap failed |
-| LED2 | the CPU: green blinks (`heartbeat[24]`); red and blue are always dark | | | | |
+| LED | shows | dark | blue | green | red | yellow |
+|---|---|---|---|---|---|---|
+| LED0 | the controller's clocks, and the DRAM's initialisation | its PLL has not locked | locked, initialising | initialisation done | PLL locked, DLL not | initialisation done, and a read of the DRAM has been rejected since the board's reset |
+| LED1 | byte lane 0's read calibration | waiting for initialisation | sweeping the eight taps | a pattern written to the DRAM came back right at a tap | every tap failed | never |
+| LED3 | byte lane 1's read calibration | waiting for initialisation | sweeping | a pattern written to the DRAM came back right at a tap | every tap failed | never |
+| LED2 | the CPU: green blinks (`heartbeat[24]`); red and blue are always dark | | | | | |
 
 In simulation the three go green about half a millisecond after the reset (initialisation done 522 us after it, each lane 2 us
 later), so the blue and dark states are not seen going by: a LED that stays blue or dark is the finding. The two lanes turn at the
@@ -2218,6 +2218,7 @@ a board:
 | LED0 red | the PLL locked and the DLL did not: the edge clock that feeds the DLL, or the DLL itself |
 | LED0 blue, for good | the PLL and DLL locked and the DRAM's initialisation never finished: the controller's `sclk` is not running, or it is held in reset |
 | LED0 green, LED1 and LED3 dark or blue, for good | initialisation finished and a lane's sweep never ended, which the design cannot do except with its clock stopped: treat it as a clock fault |
+| LED0 yellow | **a read of the DRAM came back without its data, at least once since the board's reset** (`rtl/soc/wb_ddr.v` counts them; the count is not shown). The controller asked for a block, a lane's capture window did not open, and the access was acknowledged all the same with whatever the slave's buffer held. It does not say which read or how many, so any read since the board's reset may have returned stale data; it stays yellow until the board's reset, and it is the only mixed colour on these LEDs. Calibration passed, so what differs is later: from the design and not from a board, a capture window that was open for calibration's one column and not for another read (drift with temperature or supply, or a DQS pin that is marginal) |
 | LED1 or LED3 red | **that lane's calibration failed**: a pattern was written to the DRAM and read back at all eight taps, and none returned it. Nothing came back right through that lane: no DRAM behind it, or that lane's DQ or DQS pins (a wrong or open pin, or a strobe that never reaches the capture). It stops every access, because the slave waits for both lanes, so the program's banner will be the last thing on the serial port |
 | both red | everything shared: CK, CKE, the command and address pins (the WRITE and the READ never reached the DRAM, or not decoded), the DRAM's power or reset, or the clock plan |
 | all three green, nothing on the serial port | the controller is fine as far as calibration can say, and the problem is the UART or the program (the table above) |
