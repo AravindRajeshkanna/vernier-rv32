@@ -47,6 +47,7 @@ module ecpix5_ddr3_probe (
         .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .write_wide(1'b0), .write_burst(128'b0), .write_burst_be(16'b0),
         .write_req(sh[0]), .write_bank(sh[3:1]), .write_row(sh[19:4]),
         .write_col(sh[35:20]), .write_data({sh[91:84], sh[43:36]}), .write_be(sh[93:92]),
         .write_busy(write_busy),

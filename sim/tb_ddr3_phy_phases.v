@@ -65,6 +65,7 @@ module tb_ddr3_phy_phases;
         .ddr3_cke(ddr3_cke), .ddr3_odt(ddr3_odt),
         .ddr3_dq(ddr3_dq), .ddr3_dqs(ddr3_dqs), .ddr3_dm(ddr3_dm),
         .ddr3_dqu(ddr3_dqu), .ddr3_udqs(ddr3_udqs), .ddr3_udm(ddr3_udm),
+        .write_wide(1'b0), .write_burst(128'b0), .write_burst_be(16'b0),
         .write_req(write_req), .write_bank(3'd2), .write_row(16'h0123),
         .write_col(16'h0040), .write_data({8'h00, 8'hA7}), .write_be(2'b01), .write_busy(write_busy),
         .read_req(read_req), .read_bank(3'd2), .read_row(16'h0123), .read_col(16'h0040),

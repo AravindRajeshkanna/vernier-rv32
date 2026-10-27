@@ -23,6 +23,14 @@
 //     and does not mark the block resident, so the next access fills it again and gets what was stored (Icarus only: it forces
 //     the controller's verdict).
 //
+// Since Phase 9 Stage 3 (8-beat bursts, part C, write half) a STORE is one controller write, not up to two: the word goes out
+// as one burst, its two columns in the beats the word occupies and the byte selects as the mask of those beats. This holds:
+//   - a store sends exactly one WRITE command to the DRAM, whatever its select (one for a full word, one for the inner two
+//     bytes that straddle the word's two columns, one for a single byte), and none for a select of zero;
+//   - a store is acknowledged within a bound (measured: it took twice as long when it was two writes);
+//   - the bytes not selected are untouched in both columns and the neighbouring words of the block are untouched (the masked
+//     beats and lanes), and a store to the last word of a block (the highest beats) lands there.
+//
 // Since Stage 2, Part 14 the slave is x16 and its window the part's whole 512 MB, and this holds that too:
 //   - the address geometry, written out again here from the part's own addressing (row A[28:14],
 //     bank A[13:11], column A[10:1], lane A[0]) and not from the slave's: a word written at each of
@@ -182,6 +190,9 @@ module tb_wb_ddr;
             rd_last_ba  = ddr3_ba;
             rd_last_col = ddr3_a[9:0];
         end
+    integer wr_cmds = 0;
+    always @(posedge ddr3_ck)
+        if (!rst && ddr3_ras_n === 1'b1 && ddr3_cas_n === 1'b0 && ddr3_we_n === 1'b0) wr_cmds = wr_cmds + 1;
     // clock cycles an access takes: the slave's own accounting of request to acknowledge
     integer t_acc;
     // how long before the controller says its read transaction is over (`read_busy` falls) the burst arrived
@@ -468,6 +479,45 @@ module tb_wb_ddr;
         check("... block not left resident: next access fills it again", rd_cmds - n_rd0, 32'd2);
         check("... and returns what was stored", got, blk_w[1]);
 `endif
+
+        // ---- a store is one WRITE (Phase 9 Stage 3, 8-beat bursts, part C, write half) ----
+        $display("  a store is one controller write...");
+        // block 0x6B7: eight words in two blocks' worth of context, so the neighbours are known
+        for (gi = 0; gi < 4; gi = gi + 1)
+            wb_access(1'b1, 32'h0000_6B70 + 4*gi, 32'h1111_1111 * (gi + 1), 4'b1111, got);
+        n_rd0 = wr_cmds;
+        wb_timed(1'b1, 32'h0000_6B78, 32'hA1B2_C3D4, 4'b1111, got);       // a full word, word 2 of the block
+        check("a full-word store sent exactly one WRITE", wr_cmds - n_rd0, 32'd1);
+        $display("  measured: a store took %0d clock cycles from the request to the acknowledge", t_acc);
+        check("a store is acknowledged within 24 clock cycles", {31'b0, t_acc <= 24}, 32'b1);
+        n_rd0 = wr_cmds;
+        wb_access(1'b1, 32'h0000_6B7C, 32'h5566_7788, 4'b0110, got);      // the inner two bytes: straddles both columns of word 3
+        check("a store of the inner two bytes sent exactly one WRITE", wr_cmds - n_rd0, 32'd1);
+        n_rd0 = wr_cmds;
+        wb_access(1'b1, 32'h0000_6B70, 32'hFEDC_BA98, 4'b1000, got);      // one byte, in the second column of word 0
+        check("a one-byte store sent exactly one WRITE", wr_cmds - n_rd0, 32'd1);
+        n_rd0 = wr_cmds;
+        wb_access(1'b1, 32'h0000_6B74, 32'hDEAD_BEEF, 4'b0000, got);      // nothing selected: acknowledged, nothing sent
+        check("a store with no byte selected sent no WRITE", wr_cmds - n_rd0, 32'd0);
+        // what is in the block now, word by word, through the bus (the block is resident: this is the slave's own copy) ...
+        wb_access(1'b0, 32'h0000_6B70, 32'b0, 4'b1111, got);
+        check("word 0: only its top byte changed", got, 32'hFE11_1111);
+        wb_access(1'b0, 32'h0000_6B74, 32'b0, 4'b1111, got);
+        check("word 1: untouched by the store that selected nothing", got, 32'h2222_2222);
+        wb_access(1'b0, 32'h0000_6B78, 32'b0, 4'b1111, got);
+        check("word 2: the full word", got, 32'hA1B2_C3D4);
+        wb_access(1'b0, 32'h0000_6B7C, 32'b0, 4'b1111, got);
+        check("word 3: only the inner two bytes changed", got, 32'h4466_7744);
+        // ... and the same, from the DRAM, after the block has been evicted and filled again
+        wb_access(1'b0, 32'h0000_6B80, 32'b0, 4'b1111, got);
+        wb_access(1'b0, 32'h0000_6B70, 32'b0, 4'b1111, got);
+        check("word 0 as the DRAM holds it", got, 32'hFE11_1111);
+        wb_access(1'b0, 32'h0000_6B74, 32'b0, 4'b1111, got);
+        check("word 1 as the DRAM holds it", got, 32'h2222_2222);
+        wb_access(1'b0, 32'h0000_6B78, 32'b0, 4'b1111, got);
+        check("word 2 as the DRAM holds it", got, 32'hA1B2_C3D4);
+        wb_access(1'b0, 32'h0000_6B7C, 32'b0, 4'b1111, got);
+        check("word 3 as the DRAM holds it", got, 32'h4466_7744);
 
         // ---- a random sweep over the whole 512 MB against a byte-wise reference ----
         $display("  a random sweep over the whole part...");
