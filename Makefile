@@ -925,7 +925,7 @@ sim_ecpix5_ddr3: sim/bootrom_$(CORE)_ddr3.hex
 	@grep -q "ECPIX5 WRAPPER TEST PASSED" sim/ecpix5_ddr3.log || \
 	    { echo "sim_ecpix5_ddr3 FAILED"; exit 1; }
 
-# The board's status LEDs (fpga/ecpix5_ddr3_leds.v, Phase 9 Stage 3): what each of the 128 values of the controller's status bus
+# The board's status LEDs (fpga/ecpix5_ddr3_leds.v, Phase 9 Stage 3): what each of the 256 values of the controller's status bus
 # looks like on the three LEDs it drives, against properties and a list of named situations (sim/tb_ecpix5_leds.v).
 # The decoder is a pure function, so there is no SoC in it and no firmware. Under `sim_ecpix5_ddr3` the same LEDs are checked
 # at the board's pins for the good board, and under the target below for a board whose lane 1 has nothing behind it.

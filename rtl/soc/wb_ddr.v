@@ -40,7 +40,25 @@
 // and the next access to it fills it again. (Until this change a rejected column was
 // simply left stale, and the block marked resident after its eighth read.) What an
 // acknowledged access to such a block returns is whatever the buffer held: nothing here
-// tells the bus master that the read failed, as before.
+// tells the bus master that the read failed, as before - the bus has no way to say so: an
+// error response would have to travel through rtl/soc/wb_interconnect.v (which
+// acknowledges an unmapped address with zeros, by design) and into both cores' trap logic,
+// which take access faults from PMP and the MMU and from nothing on the bus.
+//
+// ---- A rejected fill is counted, and the first one is remembered ----
+//
+// What this does instead (Phase 9 Stage 3): every fill that ends without its burst bumps
+// `read_reject_count` (8 bits, saturating at 255, so a count that wraps cannot read as
+// "none") and sets `read_rejected`, which stays set until the board's reset (`rst`; not
+// `rst_warm`, which restarts the slave's state for the debug module's ndmreset and leaves
+// the DRAM and the evidence alone). rtl/soc/soc_top.v puts `read_rejected` in the status
+// word ([7] of `ddr3_status`) and fpga/ecpix5_ddr3_leds.v turns it into a colour. The count
+// has no output in the SoC (synthesis drops it); a testbench reads it. It sees only reads:
+// the controller gives a write no verdict, so a write that did not reach the DRAM cannot be
+// told from one that did. And it sees only a fill that was asked for after calibration: an
+// access before `calib_done` and `calib1_done` is not accepted at all (it waits, below), and
+// a lane whose calibration failed never reaches them, so that access waits for ever - the
+// LEDs show the failed lane (red), and this does not.
 //
 // ---- A store is one controller write (Phase 9 Stage 3, 8-beat bursts, part C, write half) ----
 //
@@ -127,7 +145,11 @@ module wb_ddr (
     output wire        calib1_done,
     output wire [2:0]  calib1_readclksel,
     output wire        calib1_error,
-    output wire        refresh_busy
+    output wire        refresh_busy,
+
+    // A fill ended without the burst it asked for (the controller rejected the read): sticky until `rst`, and how many (saturating).
+    output wire        read_rejected,
+    output wire [7:0]  read_reject_count
 );
     // ---- the block currently held open: 8 columns of 16 bits, lane 1's byte above lane 0's ----
     reg [24:0] block_tag;
@@ -212,6 +234,7 @@ module wb_ddr (
 
     reg [2:0] state;
     reg       fill_got;    // the burst of the fill in progress has been taken into block_buf
+    wire      fill_ok = fill_got || read_burst_valid;    // the fill has its burst: taken, or pulsing in this very cycle
 
     integer i;
 
@@ -289,7 +312,7 @@ module wb_ddr (
                     if (!read_busy) begin
                         // The burst's pulse can be in this very cycle (measured: read_busy falls in the cycle
                         // read_burst_valid pulses), so a burst that has not been taken yet counts too.
-                        if (fill_got || read_burst_valid) begin
+                        if (fill_ok) begin
                             block_valid <= 1'b1;
                             block_tag   <= req_block;
                         end
@@ -340,6 +363,24 @@ module wb_ddr (
             endcase
         end
     end
+
+    // ---- rejected fills, counted (see the header) ----
+    // The cycle a fill is judged: read_busy has fallen and the fill has no burst. The sequencer above marks the block resident
+    // on the same `fill_ok`, so a fill is exactly one of the two.
+    wire fill_rejected = (state == S_FILL_WAIT) && !read_busy && !fill_ok;
+    reg       rejected_r;
+    reg [7:0] reject_count_r;
+    always @(posedge clk or posedge rst) begin    // `rst` alone: an ndmreset (rst_warm) does not clear the evidence
+        if (rst) begin
+            rejected_r     <= 1'b0;
+            reject_count_r <= 8'd0;
+        end else if (fill_rejected) begin
+            rejected_r <= 1'b1;
+            if (reject_count_r != 8'hFF) reject_count_r <= reject_count_r + 8'd1;
+        end
+    end
+    assign read_rejected     = rejected_r;
+    assign read_reject_count = reject_count_r;
 
     // req_offset[3:2] selects which of the block's 4 words the Wishbone
     // access wants, two columns of it; each column is lane 1's byte over

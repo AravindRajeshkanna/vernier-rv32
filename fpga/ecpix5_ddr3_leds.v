@@ -2,16 +2,19 @@
 //
 // A board that has never been loaded, with nothing coming out of its UART, tells you nothing: the CPU may be dead, the
 // serial port may be on another channel, or the controller may never have come up. The controller itself starts without
-// the CPU (initialisation, then each byte lane's read calibration), and seven of its signals say how far it got. This turns
+// the CPU (initialisation, then each byte lane's read calibration), and eight of its signals say how far it got. This turns
 // them into colours, so that the first thing to look at is the board.
 //
-// Three LEDs, one stage each, and one colour per state:
+// Three LEDs, one stage each, and one colour per state (the one mixed colour is LED0's yellow, below):
 //
 //   LED0  the controller's clocks and the DRAM's initialisation
 //           dark   the controller's PLL has not locked (the FPGA is configured, the controller has not started)
 //           red    the PLL is locked and the DLL is not: a fault if it stays
 //           blue   both locked, the DRAM's power-up sequence is running (JEDEC's 500 us wait, then the mode registers)
 //           green  initialisation done
+//           yellow initialisation done and, since the board's reset, a read of the DRAM came back without its data (the
+//                  controller rejected it, rtl/soc/wb_ddr.v counts them): the one mixed colour here, because the four single
+//                  ones were taken, and it stays until the board is reset. The access was acknowledged with stale data.
 //   LED1  lane 0's read calibration,  LED3  lane 1's
 //           dark   waiting: calibration is held in reset until the initialisation is done
 //           blue   sweeping the eight capture taps for one that reads a pattern back
@@ -34,17 +37,18 @@
 // bitstream" only by LED2 blinking.
 //
 // Inputs are rtl/soc/soc_top.v's ddr3_status: [0] pll_locked, [1] dll_locked, [2] init_ready, [3] calib_done,
-// [4] calib_error, [5] calib1_done, [6] calib1_error. Outputs are {blue, green, red}, 1 = lit; the polarity of the
+// [4] calib_error, [5] calib1_done, [6] calib1_error, [7] read_rejected. Outputs are {blue, green, red}, 1 = lit; the polarity of the
 // board's LEDs is fpga/ecpix5_top.v's to know. Combinational on purpose: the inputs come from the controller's own clock
 // domains and stay put once reached, so a decoder that sampled them in a third domain would be a crossing for nothing,
 // and a glitch for a few nanoseconds on an LED nobody can see is not a fault.
 module ecpix5_ddr3_leds (
-    input  wire [6:0] ddr3_status,
+    input  wire [7:0] ddr3_status,
     output wire [2:0] led_ctl_rgb,    // LED0
     output wire [2:0] led_l0_rgb,     // LED1
     output wire [2:0] led_l1_rgb      // LED3
 );
     localparam [2:0] DARK = 3'b000, RED = 3'b001, GREEN = 3'b010, BLUE = 3'b100;    // {blue, green, red}
+    localparam [2:0] YELLOW = RED | GREEN;
 
     wire pll_locked  = ddr3_status[0];
     wire dll_locked  = ddr3_status[1];
@@ -53,6 +57,7 @@ module ecpix5_ddr3_leds (
     wire calib_error = ddr3_status[4];
     wire calib1_done = ddr3_status[5];
     wire calib1_error = ddr3_status[6];
+    wire read_rejected = ddr3_status[7];
 
     // An error is red whatever else is set: the two cannot both be (a lane ends in one state or the other), and if they
     // ever were, the LED must say the bad thing.
@@ -60,7 +65,9 @@ module ecpix5_ddr3_leds (
         lane = !init ? DARK : err ? RED : done ? GREEN : BLUE;
     endfunction
 
-    assign led_ctl_rgb = !pll_locked ? DARK : !dll_locked ? RED : !init_ready ? BLUE : GREEN;
+    // The rejected-read bit only counts once the controller is up: it cannot be set earlier (a read needs both lanes calibrated),
+    // and if it ever were, the stage the controller is stuck at is what the LED must show.
+    assign led_ctl_rgb = !pll_locked ? DARK : !dll_locked ? RED : !init_ready ? BLUE : read_rejected ? YELLOW : GREEN;
     assign led_l0_rgb  = lane(init_ready, calib_done,  calib_error);
     assign led_l1_rgb  = lane(init_ready, calib1_done, calib1_error);
 endmodule

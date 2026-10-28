@@ -21,7 +21,11 @@
 //     from a cold start of the slave, so the columns' order is what the data shows);
 //   - a fill whose burst the controller rejects (a lane's capture window never opened) is acknowledged, does not hang the bus,
 //     and does not mark the block resident, so the next access fills it again and gets what was stored (Icarus only: it forces
-//     the controller's verdict).
+//     the controller's verdict);
+//   - and a rejected fill is counted and remembered (Phase 9 Stage 3): `read_rejected` stays clear through every good access
+//     of the run (both simulators), and then (Icarus only, with the verdict forced) is set by the first rejected fill, counts it,
+//     is not cleared by the good fill that follows, counts 255 and does not wrap at 260, survives an ndmreset (`rst_warm`) and
+//     is cleared by the board's reset.
 //
 // Since Phase 9 Stage 3 (8-beat bursts, part C, write half) a STORE is one controller write, not up to two: the word goes out
 // as one burst, its two columns in the beats the word occupies and the byte selects as the mask of those beats. This holds:
@@ -76,8 +80,12 @@ module tb_wb_ddr;
     wire calib1_done, calib1_error;
     wire [2:0] calib1_readclksel;
 
+    reg  rst_warm = 1'b0;
+    wire read_rejected;
+    wire [7:0] read_reject_count;
+
     wb_ddr WB (
-        .rst_warm(1'b0),
+        .rst_warm(rst_warm),
         .clk(clk), .rst(rst),
         .wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we),
         .wb_adr(wb_adr), .wb_dat_w(wb_dat_w), .wb_sel(wb_sel),
@@ -93,7 +101,8 @@ module tb_wb_ddr;
         .calib_done(calib_done), .calib_readclksel(calib_readclksel),
         .calib_error(calib_error),
         .calib1_done(calib1_done), .calib1_readclksel(calib1_readclksel),
-        .calib1_error(calib1_error)
+        .calib1_error(calib1_error),
+        .read_rejected(read_rejected), .read_reject_count(read_reject_count)
     );
 
     // ---- the real protocol checker, same as every Stage 1 integration
@@ -459,6 +468,9 @@ module tb_wb_ddr;
         end
         check("... and none of those re-read the DRAM (the block was resident)", rd_cmds - n_rd0, 32'd1);
 
+        check("no fill so far was rejected: the flag is clear", {31'b0, read_rejected}, 32'b0);
+        check("... and the count is zero", {24'b0, read_reject_count}, 32'd0);
+
 `ifndef VERILATOR
         // a fill whose burst the controller rejects: lane 1's capture window held shut by hand
         wb_access(1'b0, 32'h0000_5A50, 32'b0, 4'b1111, got);        // the other block is resident now
@@ -478,6 +490,25 @@ module tb_wb_ddr;
         wb_access(1'b0, 32'h0000_5A44, 32'b0, 4'b1111, got);
         check("... block not left resident: next access fills it again", rd_cmds - n_rd0, 32'd2);
         check("... and returns what was stored", got, blk_w[1]);
+        check("a rejected fill set the flag", {31'b0, read_rejected}, 32'b1);
+        check("... and counted one", {24'b0, read_reject_count}, 32'd1);
+        check("... the good fill after it left the flag set", {31'b0, read_rejected}, 32'b1);
+        check("... and did not count another", {24'b0, read_reject_count}, 32'd1);
+
+        // many rejections: the count adds up, and stops at 255 instead of wrapping (260 would read as 4). A rejected fill leaves
+        // its block out, so the same address is a fill again each time; the first needs the good fill above to be evicted.
+        wb_access(1'b0, 32'h0000_5A50, 32'b0, 4'b1111, got);
+        force WB.DDR.datavalid_seen_1 = 1'b0;
+        wb_access(1'b0, 32'h0000_5A44, 32'b0, 4'b1111, got);
+        check("a second rejected fill makes the count two", {24'b0, read_reject_count}, 32'd2);
+        for (gi = 0; gi < 253; gi = gi + 1) wb_access(1'b0, 32'h0000_5A44, 32'b0, 4'b1111, got);
+        check("... 255 rejected fills in all: 255", {24'b0, read_reject_count}, 32'd255);
+        for (gi = 0; gi < 5; gi = gi + 1) wb_access(1'b0, 32'h0000_5A44, 32'b0, 4'b1111, got);
+        check("... 260 do not wrap it: it stops at 255", {24'b0, read_reject_count}, 32'd255);
+        release WB.DDR.datavalid_seen_1;
+        repeat (4) @(posedge clk);
+        wb_access(1'b0, 32'h0000_5A44, 32'b0, 4'b1111, got);
+        check("... and the flag is still set after a good fill", {31'b0, read_rejected}, 32'b1);
 `endif
 
         // ---- a store is one WRITE (Phase 9 Stage 3, 8-beat bursts, part C, write half) ----
@@ -581,6 +612,22 @@ module tb_wb_ddr;
 
         check("no DDR3 protocol error the whole run", {31'b0, model_error}, 32'b0);
         check("no DQ/DQS timing error the whole run", {31'b0, dq_error}, 32'b0);
+
+`ifndef VERILATOR
+        // the evidence outlasts an ndmreset and not the board's reset (last, because both restart the controller)
+        @(posedge clk); rst_warm <= 1'b1;
+        repeat (3) @(posedge clk);
+        rst_warm <= 1'b0;
+        repeat (2) @(posedge clk);
+        check("an ndmreset (rst_warm) leaves the flag set", {31'b0, read_rejected}, 32'b1);
+        check("... and the count", {24'b0, read_reject_count}, 32'd255);
+        @(posedge clk); rst <= 1'b1;
+        repeat (3) @(posedge clk);
+        rst <= 1'b0;
+        repeat (2) @(posedge clk);
+        check("the board's reset (rst) clears the flag", {31'b0, read_rejected}, 32'b0);
+        check("... and the count", {24'b0, read_reject_count}, 32'd0);
+`endif
 
         $display("");
         $display("---------------------------------------------");
